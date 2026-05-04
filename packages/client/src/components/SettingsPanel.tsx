@@ -11,6 +11,7 @@ import { KnownServersSection } from "./KnownServersSection.js";
 import { NetworkDiscoverySection } from "./NetworkDiscoverySection.js";
 import { PackageBrowser } from "./PackageBrowser.js";
 import { ToolsSection, SpawnFailuresSection } from "./ToolsSection.js";
+import { PushNotificationsSection } from "./PushNotificationsSection.js";
 import { PackageInstallConfirmDialog } from "./PackageInstallConfirmDialog.js";
 import { PackageReadmeDialog } from "./PackageReadmeDialog.js";
 import { useInstalledPackages } from "../hooks/useInstalledPackages.js";
@@ -489,6 +490,11 @@ export function SettingsPanel({ availableModels }: { availableModels?: Array<{ p
 
               <ToolsSection />
               <SpawnFailuresSection />
+
+              <Section title="Push Notifications">
+                <PushNotificationsSection />
+              </Section>
+
               {/* Plugin slot: settings-section (general tab) */}
               <SettingsSectionSlot tab="general" />
             </>

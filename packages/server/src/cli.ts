@@ -148,6 +148,7 @@ export function buildConfig(flags: Partial<ServerConfig>): ServerConfig {
     reattachPlacement: fileConfig.reattachPlacement,
     resolvedTrustedNetworks: fileConfig.resolvedTrustedNetworks,
     corsAllowedOrigins: fileConfig.cors.allowedOrigins,
+    push: fileConfig.push,
   };
 }
 

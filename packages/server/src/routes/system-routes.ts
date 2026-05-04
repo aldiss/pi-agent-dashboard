@@ -187,7 +187,7 @@ export function registerSystemRoutes(
         cwd: s.cwd,
         ...s.processMetrics,
       }));
-    return {
+    const health: Record<string, unknown> = {
       ok: true,
       pid: process.pid,
       version: version ?? "unknown",
@@ -203,6 +203,14 @@ export function registerSystemRoutes(
       agents: agentMetrics,
       plugins: getPluginStatusStore().listAll(),
     };
+
+    // Surface push config errors when push is enabled but misconfigured.
+    // See change: add-server-push-notifications.
+    if (config.push?.enabled && config.push.errors && config.push.errors.length > 0) {
+      health.push = { errors: config.push.errors };
+    }
+
+    return health;
   });
 
   // Shutdown endpoint — used by devBuildOnReload
