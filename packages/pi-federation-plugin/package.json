@@ -1,0 +1,62 @@
+{
+  "name": "@aldiss/pi-dashboard-federation-plugin",
+  "version": "0.4.6",
+  "private": true,
+  "description": "WebSocket-over-Tailscale federation plugin for pi-agent-dashboard. Aggregates sessions across cross-machine pi-dashboard instances on a personal Tailnet (operator's TWO-TRANSPORT MVP — option E live-coordination half; substrate-sync via option A is sister scope). Per Schema 7 §3.5 + investigator #1 §6.3 federation-hook sketch.",
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/client/index.tsx",
+      "default": "./src/client/index.tsx"
+    },
+    "./client": {
+      "types": "./src/client/index.tsx",
+      "default": "./src/client/index.tsx"
+    },
+    "./server": {
+      "types": "./src/server/index.ts",
+      "default": "./src/server/index.ts"
+    }
+  },
+  "files": [
+    "src/"
+  ],
+  "pi-dashboard-plugin": {
+    "id": "federation",
+    "displayName": "Federation (cross-machine sessions)",
+    "priority": 200,
+    "client": "./src/client/index.tsx",
+    "server": "./src/server/index.ts",
+    "configSchema": "./src/configSchema.json",
+    "claims": [
+      {
+        "slot": "session-card-badge",
+        "component": "MachineBadge",
+        "predicate": "isFederatedSession"
+      },
+      {
+        "slot": "settings-section",
+        "component": "FederationSettings",
+        "tab": "general"
+      }
+    ]
+  },
+  "peerDependencies": {
+    "react": ">=18.0.0",
+    "react-dom": ">=18.0.0"
+  },
+  "dependencies": {
+    "@blackbelt-technology/dashboard-plugin-runtime": "^0.4.6",
+    "@blackbelt-technology/pi-dashboard-shared": "^0.4.6",
+    "bonjour-service": "^1.2.1",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@types/ws": "^8.5.10",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  }
+}
