@@ -1,0 +1,74 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Federation plugin configuration",
+  "description": "Per-plugin (global) configuration for the federation plugin. Aggregates sessions across cross-machine pi-dashboard instances over WebSocket-over-Tailscale (option E per Schema 7 §3.5) with mDNS-LAN-shortcut for same-LAN peers (option C composed). The plugin opens persistent WebSocket connections from THIS machine's dashboard server to each configured peer's /ws endpoint, subscribes to their session events, and re-broadcasts to local browsers. Session ids are prefixed with the peer's machineId (e.g. 'imac:abc123') so cross-machine collisions are impossible. NOTE: substrate-state sync (option A — Tailscale-ssh-rsync) is the sister scope and ships via separate dispatch; this plugin only handles live-coordination.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "machineId": {
+      "type": "string",
+      "default": "",
+      "description": "Stable identifier for THIS machine, used to prefix outgoing session ids when peers federate back to us. Defaults to os.hostname() if empty. Recommend setting to short canonical names per AGENTS.md § Machine inventory: 'imac', 'macbook', 'win'."
+    },
+    "peers": {
+      "type": "array",
+      "default": [],
+      "description": "List of peer dashboard servers to federate with. Each peer is a separate machine on the operator's Tailnet running its own pi-agent-dashboard instance. The plugin opens one persistent WebSocket per peer.",
+      "items": {
+        "type": "object",
+        "required": ["host", "port", "machineId"],
+        "additionalProperties": false,
+        "properties": {
+          "host": {
+            "type": "string",
+            "description": "Tailscale IP or DNS name of the peer (e.g. '100.85.193.46' for imac, '100.126.219.9' for macbook, OR Tailscale MagicDNS name like 'vyacheslavs-imac'). The plugin connects via ws://${host}:${port}/ws."
+          },
+          "port": {
+            "type": "number",
+            "default": 8000,
+            "description": "Peer's dashboard HTTP port. The /ws WebSocket upgrade lives on the same port (Fastify with @fastify/websocket)."
+          },
+          "machineId": {
+            "type": "string",
+            "description": "Short stable identifier for the peer. Used to prefix peer's session ids when surfaced locally (e.g. 'imac:abc123'). Operator-curated; should match the peer's own machineId config."
+          },
+          "label": {
+            "type": "string",
+            "description": "Optional human-readable label for UI display."
+          }
+        }
+      }
+    },
+    "discoverLan": {
+      "type": "boolean",
+      "default": true,
+      "description": "Enable mDNS browse for same-LAN _pi-dashboard._tcp peers. When a configured peer is reachable via mDNS-discovered LAN address (lower latency), the plugin prefers that path over the configured Tailscale IP. This is the LAN-shortcut layer (option C composed with option E per Schema 7 §3.5). Disable for pure Tailscale-only deployments."
+    },
+    "authMode": {
+      "type": "string",
+      "enum": ["loopback-trusted-networks", "shared-secret-jwt"],
+      "default": "loopback-trusted-networks",
+      "description": "Auth handshake mode per Schema 7 §9.3. 'loopback-trusted-networks' (default) relies on the peer's trustedNetworks bypass for Tailscale CGNAT range — works out of the box if peer's config includes 100.64.0.0/10 (the dashboard default). 'shared-secret-jwt' mints a pi_dash_token cookie via shared auth.secret per investigator #2 §5.3 machine-pair JWT discipline — required when peer has tightened trustedNetworks to specific IPs."
+    },
+    "sharedAuthSecret": {
+      "type": "string",
+      "default": "",
+      "description": "Shared HMAC secret for shared-secret-jwt mode. MUST match the peer's auth.secret. Recommend syncing via pi-config (operator-managed). Empty in loopback-trusted-networks mode."
+    },
+    "reconnectInitialMs": {
+      "type": "number",
+      "default": 1000,
+      "description": "Initial reconnect delay in ms. Doubles on each consecutive failure up to reconnectMaxMs. Reset to this value on successful connection."
+    },
+    "reconnectMaxMs": {
+      "type": "number",
+      "default": 30000,
+      "description": "Maximum reconnect delay in ms (exponential backoff cap)."
+    },
+    "watchdogTimeoutMs": {
+      "type": "number",
+      "default": 60000,
+      "description": "Liveness watchdog: if no message received from peer in this window, force reconnect. Mirrors packages/extension/src/connection.ts ConnectionManager defaults."
+    }
+  }
+}
