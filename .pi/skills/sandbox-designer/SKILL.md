@@ -165,6 +165,27 @@ read <change-dir>/screenshots/session-list-mobile.png
 read <change-dir>/screenshots/mockup-final.png
 ```
 
+**Additionally — emit interactive inline preview (Pillar 3 inline-rendering pattern):**
+
+After the static screenshot, also emit the live `mockup.html` inline as a `data:text/html` iframe so the user can interact with it (hover, scroll, click) without leaving the chat-pane:
+
+```bash
+# macOS
+ENCODED=$(base64 -i <change-dir>/mockup.html)
+# Linux
+ENCODED=$(base64 -w 0 <change-dir>/mockup.html)
+```
+
+Then emit a chat message containing:
+
+```html
+<iframe src="data:text/html;base64,${ENCODED}" width="100%" height="600" sandbox="allow-scripts allow-forms"></iframe>
+```
+
+The dashboard's `MarkdownContent` renders raw `<iframe>` tags inline (rehypeRaw + no sanitizer + identity urlTransform; empirically validated 2026-05-14 — see `~/.pi/orchestration-state/pi-dashboard-pillar3-iframe-test-2026-05-14.md`). The disk artifact at `<change-dir>/mockup.html` is preserved unchanged — operator can still open it in an external browser tab if preferred. Iframe emission is **additive**, not replacement.
+
+**Sandbox-attribute discipline:** `data:` URL iframes are unique-origin, so `allow-same-origin` would NOT grant access to the parent dashboard origin (natural defense in depth). For static design mockups, `sandbox="allow-scripts allow-forms"` is sufficient; consider omitting `sandbox=` entirely for purely-static markup. NEVER add `allow-same-origin` for `data:` URLs (no benefit; weakens isolation contract).
+
 ### Step 3: List ALL visual states for approval
 
 Output a checklist of every `<!-- state: -->` block from mockup.html so the user can verify:
