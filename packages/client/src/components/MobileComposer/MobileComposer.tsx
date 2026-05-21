@@ -231,14 +231,23 @@ export function MobileComposer({
    * regression avoidance preserved). */
   return (
     <div
-      className="absolute left-2 right-2 z-10 rounded-t-3xl backdrop-blur-xl border border-white/10 shadow-2xl"
+      className="absolute left-2 right-2 z-10 rounded-t-3xl"
       style={{
         bottom: "var(--keyboard-h, 0px)",
         paddingTop: "0.5rem",
         paddingBottom: "max(0.5rem, env(safe-area-inset-bottom, 0.5rem))",
         paddingLeft: "0.75rem",
         paddingRight: "0.75rem",
-        background: "rgba(20, 20, 20, 0.65)",
+        // r30.4 blob-reduction (operator-verbatim 2026-05-21 ~02 CEST via Bert tenure-2 relay,
+        // typo PRESERVED per Pattern 87: "this blob around the composer window - why cant we remove it"):
+        // Q3-amendment pill outer wrapper was reading as bloated translucent card with visible
+        // blur-glow border. Removed `backdrop-blur-xl border border-white/10 shadow-2xl`; switched
+        // background from `rgba(20,20,20,0.65)` translucent-blurred to solid `var(--bg-secondary)`.
+        // ChatGPT iOS reference pattern: opaque, no halo, no border, no shadow, tight padding.
+        // Internal padding (top 0.5rem / sides 0.75rem / bottom max(0.5rem, env())) already tight
+        // — no trim warranted per measurement. Q3-amendment shape (bottom: var(--keyboard-h, 0px)
+        // + rounded-t-3xl flat-bottom) preserved. r29.1 keyboard-avoidance pipeline preserved.
+        background: "var(--bg-secondary)",
       }}
       data-testid="mobile-composer"
     >
