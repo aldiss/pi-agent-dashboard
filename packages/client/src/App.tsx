@@ -6,6 +6,7 @@ import { SessionList } from "./components/SessionList.js";
 import { ResizableSidebar } from "./components/ResizableSidebar.js";
 import { HamburgerButton, MobileOverlay } from "./components/MobileOverlay.js";
 import { MobileShell } from "./components/MobileShell.js";
+import { DebugOverlay, shouldShowDebugOverlay } from "./components/DebugOverlay.js";
 import { useMobile } from "./hooks/useMobile.js";
 import { getMobileDepth } from "./lib/mobile-depth.js";
 import { ChatView, type ChatViewHandle } from "./components/ChatView.js";
@@ -1435,6 +1436,7 @@ export default function App() {
     });
     return apiProvider(
       <div className="bg-[var(--bg-primary)] text-[var(--text-primary)]">
+        {shouldShowDebugOverlay() && <DebugOverlay />}
         <BootstrapBanner state={bootstrapStatus.state} onRetry={bootstrapStatus.retry} />
         {sessions.size === 0 && (
           <ConnectionStatusBanner
@@ -1590,6 +1592,7 @@ export default function App() {
   // Desktop: side-by-side layout
   return apiProvider(
     <div className="flex h-screen bg-[var(--bg-primary)] text-[var(--text-primary)]">
+      {shouldShowDebugOverlay() && <DebugOverlay />}
       <div className="hidden md:flex">
         <ResizableSidebar sidebar={sidebar}>
           {sessionList}

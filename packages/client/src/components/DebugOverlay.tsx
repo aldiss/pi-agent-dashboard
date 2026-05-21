@@ -39,6 +39,17 @@ interface Snapshot {
   focusedTag: string;
   displayMode: string;
   safeBot: string;
+  // r30.3 diagnostic (EphemeralPillCtx tenure-1 2026-05-21 ~01:30 CEST):
+  // 4 NEW rows to disambiguate iOS visual-vs-layout viewport semantics.
+  // r30.2's claim that `fixed inset:0` fills VISUAL viewport is FALSIFIED per
+  // CSS spec + WebKit impl — fixed-positioned resolves to LAYOUT viewport =
+  // window.innerHeight (798 on iPhone 16 PWA). These 4 values let operator
+  // empirically distinguish: outerH=852 + innerH=798 → JS-driven --app-h CSS
+  // var feasible; outerH=798 too → iOS truly clipping → escape-hatch Capacitor.
+  outerH: number;        // window.outerHeight (physical screen on iOS PWA expected)
+  scrnH: number;         // screen.height (physical screen)
+  clntH: number;         // document.documentElement.clientHeight (layout viewport)
+  shellH: number | null; // MobileShell outer fixed container getBoundingClientRect().height
 }
 
 function takeSnapshot(probe: HTMLDivElement | null): Snapshot {
@@ -84,6 +95,30 @@ function takeSnapshot(probe: HTMLDivElement | null): Snapshot {
     }
   } catch { /* ignore */ }
 
+  // r30.3 diagnostic: 4 NEW values for visual-vs-layout viewport disambiguation.
+  // Zero behavior change — read-only; same trigger cadence as existing rows.
+  const outerH = typeof window !== "undefined" ? Math.round(window.outerHeight || 0) : 0;
+  const scrnH = typeof window !== "undefined" && window.screen ? Math.round(window.screen.height || 0) : 0;
+  let clntH = 0;
+  try {
+    if (typeof document !== "undefined" && document.documentElement) {
+      clntH = Math.round(document.documentElement.clientHeight || 0);
+    }
+  } catch { /* ignore */ }
+  let shellH: number | null = null;
+  try {
+    if (typeof document !== "undefined") {
+      // Query for MobileShell outer container per r30.2 className shape.
+      // Primary: attribute-selector matching r30.2 commit `8f1af3b4` className tokens.
+      // Fallback: first .fixed.inset-0 element (defensive against future className tweaks).
+      const primary = document.querySelector<HTMLElement>('[class*="fixed inset-0 overflow-hidden"]');
+      const fallback = primary ?? document.querySelector<HTMLElement>('.fixed.inset-0');
+      if (fallback) {
+        shellH = Math.round(fallback.getBoundingClientRect().height);
+      }
+    }
+  } catch { /* ignore */ }
+
   return {
     bundle: readBundleHash(),
     innerH: Math.round(innerH),
@@ -94,6 +129,10 @@ function takeSnapshot(probe: HTMLDivElement | null): Snapshot {
     focusedTag,
     displayMode,
     safeBot,
+    outerH,
+    scrnH,
+    clntH,
+    shellH,
   };
 }
 
@@ -173,7 +212,11 @@ vvGap: ${snap.vvGap}
 --keyboard-h: ${snap.keyboardH}
 editable: ${snap.focusedYN} (${snap.focusedTag})
 display-mode: ${snap.displayMode}
-safe-bot: ${snap.safeBot}`}
+safe-bot: ${snap.safeBot}
+outerH: ${snap.outerH}
+scrnH: ${snap.scrnH}
+clntH: ${snap.clntH}
+shellH: ${snap.shellH ?? "n/a"}`}
       </div>
     </>
   );
