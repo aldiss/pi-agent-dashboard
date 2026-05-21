@@ -192,32 +192,52 @@ export function MobileComposer({
   // Stop button becomes ADDITIONAL (renders alongside Send when isWorking), not replacement.
   const canSend = !disabled && (text.trim().length > 0 || pendingImages.length > 0);
 
+  /* Q3-amendment (Bert tenure-2 mid-cycle verdict 2026-05-21 ~00:35 CEST per operator
+   * empirical observation; Pattern 87 verbatim preserved: "composer also should be
+   * much closer to the bottom!!!! the same way as it is in chat gpt"):
+   *
+   * Composer pill BACKGROUND extends to screen bottom (no env(safe-area-inset-bottom)
+   * on outer container; bottom: var(--keyboard-h, 0px) hugs screen edge when keyboard
+   * down + pushes above keyboard when keyboard up via r29 mechanism preserved).
+   * Interactive CONTENT stays above home-indicator via internal padding-bottom:
+   * env(safe-area-inset-bottom). Border-radius rounded-t-3xl only (flat bottom fits
+   * screen edge OR keyboard top per Apple HIG sister-precedent iMessage pattern).
+   *
+   * W6-v2 PRIOR shape: bottom: calc(env(safe-area-inset-bottom, 0.5rem) + var(--keyboard-h, 0px))
+   *                    + rounded-3xl + p-3 + paddingBottom max(0.5rem, env(safe-area-inset-bottom, 0.5rem))
+   * Q3-amendment shape: bottom: var(--keyboard-h, 0px) + rounded-t-3xl + explicit per-side padding
+   *                     + paddingBottom max(0.5rem, env(safe-area-inset-bottom, 0.5rem)) preserved
+   * Cell: mobile-pwa-chatgpt-style-restructure/v1 (MintOwl L2 cell-executor; W6-v2 stacked on r30.2
+   * `8f1af3b4`; Q3-amendment stacks on `75ca2a32` restructure-commit).
+   *
+   * Keyboard-avoidance composition (cell-executor judgment-call extending Bert spec):
+   *   - Bert did NOT specify keyboard handling explicitly; preserving r29 canonical mechanism
+   *     (`9cc91427` useKeyboardInsets CSS-var pipeline) is load-bearing for T7 (r29 keyboard-
+   *     avoidance preserved).
+   *   - `bottom: var(--keyboard-h, 0px)` extends r29: when keyboard down `--keyboard-h = 0` →
+   *     composer hugs screen bottom per Bert "no gap" framing; when keyboard up `--keyboard-h
+   *     = N px` → composer pushed up by N to sit above keyboard top per iMessage sister-precedent.
+   *   - `rounded-t-3xl` flat-bottom corners fit both screen edge (keyboard down) AND keyboard top
+   *     (keyboard up); rounded top corners preserve pill identity at top edge.
+   *
+   * r29 PRESERVED rationale (operator empirical 2026-05-20 ~16:01 CEST via Bert tenure-2 +
+   * SwiftIce Joan-tenure-22 per Mega-Cluster M tier-(b); Pattern 87 typos `beleive inasked`
+   * PRESERVED): "i am talking specifically about wasted space in the bottom of the form. I
+   * beleive inasked Joan to remove it". The `max(0.5rem, env(safe-area-inset-bottom, 0.5rem))`
+   * paddingBottom on outer container retains the interactive-content safe-area clearance per
+   * Bert Q3 amendment "controls stay finger-reachable" framing; 8px fallback for non-notched
+   * devices preserves r29 wasted-space discipline. Bottom safe-area ownership stays with the
+   * composer (MobileShell architecture comment unchanged; Termina1 3df2a0ec double-gap
+   * regression avoidance preserved). */
   return (
     <div
-      className="absolute left-2 right-2 z-10 rounded-3xl backdrop-blur-xl border border-white/10 shadow-2xl p-3"
+      className="absolute left-2 right-2 z-10 rounded-t-3xl backdrop-blur-xl border border-white/10 shadow-2xl"
       style={{
-        // W6 (mobile-pwa-chatgpt-style-restructure/v1, MintOwl L2 cell-executor) per Bert tenure-2
-        // Q3 W3 verdict 2026-05-20 ~23:55 CEST (RATIFY + sharpening): "backdrop-blur translucent pill
-        // is the right pattern. ONE sharpening: with the r30.2 outer container being `position:
-        // fixed; inset: 0`, the pill should be `position: absolute` (not nested-fixed) inside that
-        // container. Verify the worker resolves the `bottom: env()` shape against the fixed-positioned
-        // ancestor cleanly." Composer now floats OVER chat with backdrop-blur + 8px horizontal
-        // gutters; chat scrolls behind it per ChatGPT-iOS pattern. Operator-verbatim per Pattern 87
-        // (typo `unncessay` PRESERVED): "space should be for the chat, not for unncessay info". The
-        // `bottom:` composes safe-area home-indicator clearance with `--keyboard-h` CSS-var from r29
-        // (defense-in-depth keyboard-avoidance; canonical T4 + T5 + T7 + T8 from Bert W3 canonical
-        // T-list — T4 backdrop-blur pill / T5 chat scrolls behind / T7 r29 preserved / T8 r30.2
-        // fixed-inset-0 preserved). Border-t removed per T5 (no separator; chat extends behind).
-        //
-        // r29 PRESERVED rationale (operator empirical 2026-05-20 ~16:01 CEST via Bert tenure-2 +
-        // SwiftIce Joan-tenure-22 per Mega-Cluster M tier-(b); Pattern 87 typos `beleive inasked`
-        // PRESERVED): "i am talking specifically about wasted space in the bottom of the form. I
-        // beleive inasked Joan to remove it". The `max(0.5rem, env(safe-area-inset-bottom, 0.5rem))`
-        // paddingBottom retains the bottom safe-area ownership per MobileShell architecture comment
-        // — bottom safe area is OWNED by the composer; MobileShell deliberately does NOT apply it
-        // to avoid the Termina1 3df2a0ec double-gap regression. 8px fallback for non-notched devices.
-        bottom: "calc(env(safe-area-inset-bottom, 0.5rem) + var(--keyboard-h, 0px))",
+        bottom: "var(--keyboard-h, 0px)",
+        paddingTop: "0.5rem",
         paddingBottom: "max(0.5rem, env(safe-area-inset-bottom, 0.5rem))",
+        paddingLeft: "0.75rem",
+        paddingRight: "0.75rem",
         background: "rgba(20, 20, 20, 0.65)",
       }}
       data-testid="mobile-composer"
