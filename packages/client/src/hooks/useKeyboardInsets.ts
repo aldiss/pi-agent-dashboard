@@ -37,6 +37,20 @@ interface KeyboardInsets {
  * (>50px = clearly keyboard; ≤50px = address-bar chrome, leave CSS-var at 0 so `h-[100dvh]`
  * is the single source of viewport-fit). Composes cleanly with `keyboardUp = > 50` predicate
  * (same threshold used as `keyboardUp` flag for downstream consumers).
+ *
+ * r29 BUGFIX (operator empirical 2026-05-20 ~22:50 CEST via Bert tenure-2 ephemeral
+ * diagnostic, real iPhone 14 Pro Max installed PWA): r28 threshold `> 50` covered Safari
+ * address-bar (~30-45px) but NOT iOS standalone-PWA mode where `window.visualViewport.height`
+ * persistently reports ~140px LESS than `window.innerHeight` even when keyboard is DOWN.
+ * The 140px standalone-PWA accounting gap blows past the >50 threshold → `--keyboard-h`
+ * stuck at 140px → MobileShell panel `paddingBottom: var(--keyboard-h)` pushes composer up
+ * by 140px → empty band below composer on installed PWA (operator-visible defect).
+ *
+ * Fix: additionally gate the CSS-var setter on an editable element actually having focus.
+ * Real keyboard rise → preserved (textarea/input/contenteditable focused at rise time).
+ * False standalone-PWA visualViewport gap → ignored (no editable focus). Adds `focusin` +
+ * `focusout` listeners on window so the hook re-evaluates when focus transitions (otherwise
+ * --keyboard-h won't update when user taps the textarea AFTER initial mount).
  */
 export function useKeyboardInsets(): KeyboardInsets {
   const [keyboardHeight, setKeyboardHeight] = useState(0);
@@ -53,15 +67,30 @@ export function useKeyboardInsets(): KeyboardInsets {
       // accounted for by `h-[100dvh]` on MobileShell container. Double-subtracting it via
       // paddingBottom: var(--keyboard-h) created ~30% empty white space at bottom of
       // mobile detail-panel (operator empirical 2026-05-18 via YoungUnion peggy relay).
-      const cssValue = occlusion > 50 ? occlusion : 0;
+      //
+      // r29 BUGFIX (operator empirical 2026-05-20 via Bert tenure-2 ephemeral diagnostic):
+      // additionally gate on editable-focus — iOS standalone-PWA mode has ~140px persistent
+      // visualViewport gap even when keyboard is DOWN, blowing past the >50 threshold. Real
+      // keyboard rise always coincides with an editable element having focus; standalone-PWA
+      // accounting gap does not. Gate eliminates the false-positive without regressing real
+      // keyboard-avoidance behavior.
+      const editableFocused = !!document.activeElement?.matches('input, textarea, [contenteditable="true"]');
+      const cssValue = (occlusion > 50 && editableFocused) ? occlusion : 0;
       document.documentElement.style.setProperty("--keyboard-h", `${cssValue}px`);
     };
     window.visualViewport.addEventListener("resize", onResize);
     window.visualViewport.addEventListener("scroll", onResize);
+    // r29: re-evaluate on focus transitions so --keyboard-h updates when user taps the
+    // textarea AFTER initial mount (visualViewport resize fires on geometry change but
+    // not on focus-only transitions; editable-focus gate needs its own trigger).
+    window.addEventListener("focusin", onResize);
+    window.addEventListener("focusout", onResize);
     onResize();
     return () => {
       window.visualViewport?.removeEventListener("resize", onResize);
       window.visualViewport?.removeEventListener("scroll", onResize);
+      window.removeEventListener("focusin", onResize);
+      window.removeEventListener("focusout", onResize);
       document.documentElement.style.removeProperty("--keyboard-h");
     };
   }, []);
