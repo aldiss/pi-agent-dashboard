@@ -135,9 +135,23 @@ function MobileAttachButton({ session, openspecChanges, onAttach, onDetach }: {
   );
 }
 
-/** Mobile header: back + name + attach icon + kebab */
-function MobileHeader({ session, showBack, onBack, isRenaming, onConfirmRename, onCancelRename, canRename, onStartRename, mobileActions, onReadArtifact }: {
+/** Mobile header: back + name + attach icon + kebab.
+ *
+ *  Per Bert tenure-2 Q1 W3 verdict 2026-05-20 ~23:55 CEST (AMEND (c)→(a)):
+ *  absorb a minimal model + thinking-level indicator into MobileHeader so
+ *  operator can see (and via the desktop StatusBar / mobile kebab still
+ *  switch) model mid-work without back-navigating to the session list.
+ *  Operator-verbatim per Pattern 87 byte-identical (typo `unncessay`
+ *  preserved): "space should be for the chat, not for unncessay info".
+ *  The indicator is read-only here (mobile picker affordance lives in the
+ *  desktop StatusBar reachable from session-list view and in the existing
+ *  MobileActionMenu kebab on row 1). Sister-precedent: desktop header at
+ *  the bottom of this file renders the same model + thinkingLevel pair
+ *  inline next to the session name.
+ *  Cell: mobile-pwa-chatgpt-style-restructure/v1 (MintOwl). */
+function MobileHeader({ session, state, showBack, onBack, isRenaming, onConfirmRename, onCancelRename, canRename, onStartRename, mobileActions, onReadArtifact }: {
   session: DashboardSession;
+  state?: SessionState;
   showBack?: boolean;
   onBack?: () => void;
   isRenaming: boolean;
@@ -212,7 +226,37 @@ function MobileHeader({ session, showBack, onBack, isRenaming, onConfirmRename, 
     </div>
   );
 
-  // Row 2: attached-proposal chip. Read-only (action affordances stay in the
+  // Row 2a: minimal model + thinking-level indicator (per Bert Q1 W3 verdict
+  // AMEND (c)→(a) 2026-05-20 ~23:55 CEST). Read-only compact pill at ~14-16px
+  // total row-height; rendered iff a model OR thinkingLevel is known for the
+  // session. Composes with chipRow (row 2b) cleanly: both are flex-col
+  // siblings of row1, so the modelRow appears between the title row and the
+  // attached-proposal chip when both are present, OR alone above the chip,
+  // OR alone below row1 when no attached proposal. When neither model nor
+  // thinkingLevel are known yet (cold session pre-stream), modelRow returns
+  // null and the header collapses back to the previous single/double-row
+  // layout per fix-mobile-header-and-orientation precedent.
+  // Cell: mobile-pwa-chatgpt-style-restructure/v1 (MintOwl).
+  const displayModel = state?.model || session.model;
+  const displayThinking = state?.thinkingLevel || session.thinkingLevel;
+  const modelRow = (displayModel || displayThinking) ? (
+    <div
+      className="flex items-center gap-1.5 min-h-[16px] pl-1 text-[10px] text-[var(--text-tertiary)]"
+      data-testid="mobile-header-model-indicator"
+    >
+      {displayModel && (
+        <span className="truncate min-w-0" title={displayModel}>{displayModel}</span>
+      )}
+      {displayThinking && (
+        <span className="inline-flex items-center gap-0.5 flex-shrink-0" title={`Thinking level: ${displayThinking}`}>
+          <Icon path={mdiHeadLightbulb} size={0.4} />
+          {displayThinking}
+        </span>
+      )}
+    </div>
+  ) : null;
+
+  // Row 2b: attached-proposal chip. Read-only (action affordances stay in the
   // MobileAttachButton popover on row 1). The chip's data-testid, content,
   // tooltip, and reactivity are unchanged from fix-mobile-attach-proposal-display
   // — only its parent moved from row-1 sibling to row-2 sibling.
@@ -250,12 +294,15 @@ function MobileHeader({ session, showBack, onBack, isRenaming, onConfirmRename, 
     </div>
   ) : null;
 
-  // When there's an attached proposal, render two rows. When there isn't, the
-  // header stays a single-row container exactly as before — no empty row 2 is
-  // reserved. See change: fix-mobile-header-and-orientation.
+  // When there's an attached proposal OR a model/thinking indicator, render
+  // additional rows below row1. When neither is present, the header stays a
+  // single-row container exactly as before — no empty row is reserved. See
+  // change: fix-mobile-header-and-orientation + Bert Q1 W3 verdict
+  // (mobile-pwa-chatgpt-style-restructure/v1).
   return (
     <div className="px-2 py-1 border-b border-[var(--border-primary)] flex flex-col text-sm">
       {row1}
+      {modelRow}
       {chipRow}
     </div>
   );
@@ -325,11 +372,13 @@ export function SessionHeader({ session, state, onRename, showBack, onBack, mobi
 
   const isMobile = useMobile();
 
-  // Mobile: compact header with back + name + attach icon + kebab
+  // Mobile: compact header with back + name + attach icon + kebab + model
+  // indicator absorbed (Bert Q1 W3 verdict; mobile-pwa-chatgpt-style-restructure/v1).
   if (isMobile) {
     return (
       <MobileHeader
         session={session}
+        state={state}
         showBack={showBack}
         onBack={onBack}
         isRenaming={isRenaming}

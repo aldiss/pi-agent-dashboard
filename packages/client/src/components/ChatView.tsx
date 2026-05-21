@@ -264,7 +264,27 @@ export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ se
 
   return (
     <div className="flex-1 relative overflow-hidden">
-    <div ref={scrollRef} onScroll={handleScroll} className={`h-full overflow-y-auto ${isMobile ? "p-2" : "p-4"}`}>
+    {/* W7 fade-mask + bottom-padding for floating-composer-pill overlap zone
+        (Bert tenure-2 W3 Q4 verdict 2026-05-20 ~23:55 CEST RATIFY 80px mask-image).
+        Cell: mobile-pwa-chatgpt-style-restructure/v1. Mobile only.
+        - paddingBottom 100px: floats few-message sessions above composer pill's
+          ~80px effective height + 20px buffer (composes with bottom-anchor
+          justify-end below; messages stick above pill, not behind it)
+        - mask-image 80px gradient: messages scrolled INTO the bottom 80px
+          visually fade to transparent (graceful degradation when long-session
+          scrolling pushes messages into the composer's translucent overlap)
+        - theme-agnostic per Q4: alpha-only mask, no color coupling
+        - desktop layout unchanged (isMobile gate) */}
+    <div
+      ref={scrollRef}
+      onScroll={handleScroll}
+      className={`h-full overflow-y-auto ${isMobile ? "p-2" : "p-4"}`}
+      style={isMobile ? {
+        paddingBottom: "100px",
+        WebkitMaskImage: "linear-gradient(to bottom, black 0%, black calc(100% - 80px), transparent 100%)",
+        maskImage: "linear-gradient(to bottom, black 0%, black calc(100% - 80px), transparent 100%)",
+      } : undefined}
+    >
       {/* Tier-A operator-direct 2026-05-20 (follow-up to cd70e4dd content-header-sticky
           relocation): bottom-anchor messages so few-message sessions don't leave a large
           empty band between the last message and the composer. `min-h-full flex flex-col

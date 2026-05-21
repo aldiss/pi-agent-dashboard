@@ -916,43 +916,16 @@ export default function App() {
           send({ type: "subscribe", sessionId: selectedId, lastSeq: 0 });
         }}
       />
-      {/* Mobile info strip */}
-      {isMobile && selectedSession && (
-        <div className="px-4 py-1.5 border-b border-[var(--border-primary)] text-xs text-[var(--text-tertiary)]">
-          <div className="flex items-center gap-2 flex-wrap">
-            {(selectedState.model || selectedSession.model) && (
-              <span>{selectedState.model || selectedSession.model}</span>
-            )}
-            {(selectedState.thinkingLevel || selectedSession.thinkingLevel) && (
-              <span>💭 {selectedState.thinkingLevel || selectedSession.thinkingLevel}</span>
-            )}
-            {selectedState.status === "streaming" && selectedState.currentTool && (
-              <span className="text-yellow-400">⚡ {selectedState.currentTool}</span>
-            )}
-            {selectedState.status === "streaming" && !selectedState.currentTool && (
-              <span className="text-green-400">Thinking…</span>
-            )}
-            <span className="flex-1" />
-            {selectedState.cost > 0 && <span>${selectedState.cost.toFixed(2)}</span>}
-          </div>
-          {selectedState.contextUsage && selectedState.contextUsage.contextWindow > 0 && (
-            <div className="mt-1">
-              <div className="flex items-center gap-2 text-[10px]">
-                <span>{selectedState.contextUsage.tokens != null ? `${Math.round((selectedState.contextUsage.tokens / 1000))}k` : "—"}</span>
-                <div className="flex-1 h-1.5 bg-[var(--bg-tertiary)] rounded-full overflow-hidden">
-                  {selectedState.contextUsage.tokens != null && (
-                    <div
-                      className="h-full bg-blue-500 rounded-full"
-                      style={{ width: `${Math.min((selectedState.contextUsage.tokens / selectedState.contextUsage.contextWindow) * 100, 100)}%` }}
-                    />
-                  )}
-                </div>
-                <span>{Math.round(selectedState.contextUsage.contextWindow / 1000)}k</span>
-              </div>
-            </div>
-          )}
-        </div>
-      )}
+      {/* Mobile info strip: ELIMINATED per Bert tenure-2 Q2 W3 verdict 2026-05-20
+          ~23:55 CEST (RATIFY (a) full elimination). Operator-verbatim per
+          Pattern 87 (typo `unncessay` preserved byte-identical):
+          "space should be for the chat, not for unncessay info". The strip
+          duplicated StatusBar info (model + thinking + streaming + cost +
+          context-usage) and consumed 46-60px per-session vertical real-estate.
+          Context-usage + cost remain drillable via mobile kebab
+          (MobileActionMenu) and the absorbed model+thinking indicator now
+          lives compactly in SessionHeader's MobileHeader (Bert Q1 amend).
+          Cell: mobile-pwa-chatgpt-style-restructure/v1 (MintOwl). */}
       {!isMobile && (
         <TokenStatsBar
           turnStats={selectedState.turnStats}
@@ -1143,46 +1116,59 @@ export default function App() {
             } : undefined} />
             </SessionAssetsProvider>
           </ErrorBoundary>
-          <StatusBar
-            model={selectedState.model ?? selectedSession?.model}
-            models={modelsMap.get(selectedId)}
-            roles={rolesMap.get(selectedId)}
-            thinkingLevel={selectedState.thinkingLevel ?? selectedSession?.thinkingLevel}
-            status={selectedState.status}
-            currentTool={selectedState.currentTool}
-            streamingText={selectedState.streamingText || undefined}
-            onSelectModel={(modelStr) => {
-              const slashIdx = modelStr.indexOf("/");
-              if (slashIdx > 0) {
-                const provider = modelStr.slice(0, slashIdx);
-                const modelId = modelStr.slice(slashIdx + 1);
-                send({ type: "set_model", sessionId: selectedId, provider, modelId });
-              }
-            }}
-            onSelectThinkingLevel={(level) => {
-              send({ type: "set_thinking_level", sessionId: selectedId, level });
-            }}
-            onRoleSet={(role, modelId) => {
-              send({ type: "role_set", sessionId: selectedId, role, modelId });
-            }}
-            onPresetLoad={(presetName) => {
-              send({ type: "role_preset_load", sessionId: selectedId, presetName });
-            }}
-            onPresetSave={(presetName) => {
-              send({ type: "role_preset_save", sessionId: selectedId, presetName });
-            }}
-            onPresetDelete={(presetName) => {
-              send({ type: "role_preset_delete", sessionId: selectedId, presetName });
-            }}
-            bellState={selectedSession?.pushPrefs?.notifyCompletion ?? "off"}
-            onBellClick={() => {
-              const states = ["off", "on", "auto"] as const;
-              const current = selectedSession?.pushPrefs?.notifyCompletion ?? "off";
-              const nextIdx = (states.indexOf(current) + 1) % states.length;
-              send({ type: "set_push_prefs", sessionId: selectedId, prefs: { notifyCompletion: states[nextIdx] } });
-            }}
-            pushEnabled={true}
-          />
+          {/* StatusBar: desktop-only per-session footer (Bert tenure-2 Q1 W3
+              verdict 2026-05-20 ~23:55 CEST AMEND (c)→(a)). Mobile path
+              absorbs a minimal model+thinking indicator into SessionHeader's
+              MobileHeader instead — model-switching mid-work is a real flow;
+              ChatGPT-iOS reference confirms model picker visible in top
+              header. The 29px footer was operator-verbatim chrome per
+              "space should be for the chat, not for unncessay info" (typo
+              `unncessay` preserved byte-identical per Pattern 87).
+              Sister-precedent: cd70e4dd `!isMobile` ContentHeaderStickySlot
+              gate at line ~1291.
+              Cell: mobile-pwa-chatgpt-style-restructure/v1 (MintOwl). */}
+          {!isMobile && (
+            <StatusBar
+              model={selectedState.model ?? selectedSession?.model}
+              models={modelsMap.get(selectedId)}
+              roles={rolesMap.get(selectedId)}
+              thinkingLevel={selectedState.thinkingLevel ?? selectedSession?.thinkingLevel}
+              status={selectedState.status}
+              currentTool={selectedState.currentTool}
+              streamingText={selectedState.streamingText || undefined}
+              onSelectModel={(modelStr) => {
+                const slashIdx = modelStr.indexOf("/");
+                if (slashIdx > 0) {
+                  const provider = modelStr.slice(0, slashIdx);
+                  const modelId = modelStr.slice(slashIdx + 1);
+                  send({ type: "set_model", sessionId: selectedId, provider, modelId });
+                }
+              }}
+              onSelectThinkingLevel={(level) => {
+                send({ type: "set_thinking_level", sessionId: selectedId, level });
+              }}
+              onRoleSet={(role, modelId) => {
+                send({ type: "role_set", sessionId: selectedId, role, modelId });
+              }}
+              onPresetLoad={(presetName) => {
+                send({ type: "role_preset_load", sessionId: selectedId, presetName });
+              }}
+              onPresetSave={(presetName) => {
+                send({ type: "role_preset_save", sessionId: selectedId, presetName });
+              }}
+              onPresetDelete={(presetName) => {
+                send({ type: "role_preset_delete", sessionId: selectedId, presetName });
+              }}
+              bellState={selectedSession?.pushPrefs?.notifyCompletion ?? "off"}
+              onBellClick={() => {
+                const states = ["off", "on", "auto"] as const;
+                const current = selectedSession?.pushPrefs?.notifyCompletion ?? "off";
+                const nextIdx = (states.indexOf(current) + 1) % states.length;
+                send({ type: "set_push_prefs", sessionId: selectedId, prefs: { notifyCompletion: states[nextIdx] } });
+              }}
+              pushEnabled={true}
+            />
+          )}
           <CommandInput
             commands={selectedCommands}
             onSend={wrappedHandleSend}

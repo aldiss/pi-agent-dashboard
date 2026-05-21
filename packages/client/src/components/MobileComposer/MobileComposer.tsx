@@ -194,20 +194,31 @@ export function MobileComposer({
 
   return (
     <div
-      className="border-t border-[var(--border-primary)] p-3 relative"
+      className="absolute left-2 right-2 z-10 rounded-3xl backdrop-blur-xl border border-white/10 shadow-2xl p-3"
       style={{
-        // r29 BUGFIX (operator empirical 2026-05-20 ~16:01 CEST via Bert tenure-2 architect-of-coherence
-        // routing + SwiftIce Joan-tenure-22 dispatcher per Mega-Cluster M Direction 1 tier-(b) 3-gate
-        // discipline; Pattern 87 typos `beleive inasked` PRESERVED): "this one still not done" + "i am
-        // talking specifically about wasted space in the bottom of the form. I beleive inasked Joan
-        // to remove it". Previous: `calc(0.75rem + env(safe-area-inset-bottom, 0px))` stacked an
-        // extra 12px ABOVE the iOS safe-area (~34px home-indicator zone), producing visible ~46px of
-        // wasted space on iPhone 14 etc. Fix: drop the extra 12px; keep safe-area-inset-bottom for
-        // home-indicator clearance (load-bearing per MobileShell architecture comment — bottom safe
-        // area is OWNED by the composer; MobileShell deliberately does NOT apply it to avoid the
-        // Termina1 3df2a0ec double-gap regression). `max(0.5rem, ...)` provides 8px minimum fallback
-        // for non-notched devices (iPhone SE, Android) so composer never touches the screen edge.
+        // W6 (mobile-pwa-chatgpt-style-restructure/v1, MintOwl L2 cell-executor) per Bert tenure-2
+        // Q3 W3 verdict 2026-05-20 ~23:55 CEST (RATIFY + sharpening): "backdrop-blur translucent pill
+        // is the right pattern. ONE sharpening: with the r30.2 outer container being `position:
+        // fixed; inset: 0`, the pill should be `position: absolute` (not nested-fixed) inside that
+        // container. Verify the worker resolves the `bottom: env()` shape against the fixed-positioned
+        // ancestor cleanly." Composer now floats OVER chat with backdrop-blur + 8px horizontal
+        // gutters; chat scrolls behind it per ChatGPT-iOS pattern. Operator-verbatim per Pattern 87
+        // (typo `unncessay` PRESERVED): "space should be for the chat, not for unncessay info". The
+        // `bottom:` composes safe-area home-indicator clearance with `--keyboard-h` CSS-var from r29
+        // (defense-in-depth keyboard-avoidance; canonical T4 + T5 + T7 + T8 from Bert W3 canonical
+        // T-list — T4 backdrop-blur pill / T5 chat scrolls behind / T7 r29 preserved / T8 r30.2
+        // fixed-inset-0 preserved). Border-t removed per T5 (no separator; chat extends behind).
+        //
+        // r29 PRESERVED rationale (operator empirical 2026-05-20 ~16:01 CEST via Bert tenure-2 +
+        // SwiftIce Joan-tenure-22 per Mega-Cluster M tier-(b); Pattern 87 typos `beleive inasked`
+        // PRESERVED): "i am talking specifically about wasted space in the bottom of the form. I
+        // beleive inasked Joan to remove it". The `max(0.5rem, env(safe-area-inset-bottom, 0.5rem))`
+        // paddingBottom retains the bottom safe-area ownership per MobileShell architecture comment
+        // — bottom safe area is OWNED by the composer; MobileShell deliberately does NOT apply it
+        // to avoid the Termina1 3df2a0ec double-gap regression. 8px fallback for non-notched devices.
+        bottom: "calc(env(safe-area-inset-bottom, 0.5rem) + var(--keyboard-h, 0px))",
         paddingBottom: "max(0.5rem, env(safe-area-inset-bottom, 0.5rem))",
+        background: "rgba(20, 20, 20, 0.65)",
       }}
       data-testid="mobile-composer"
     >
