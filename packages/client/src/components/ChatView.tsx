@@ -264,7 +264,15 @@ export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ se
 
   return (
     <div className="flex-1 relative overflow-hidden">
-    <div ref={scrollRef} onScroll={handleScroll} className={`h-full overflow-y-auto ${isMobile ? "p-2" : "p-4"} space-y-1`}>
+    <div ref={scrollRef} onScroll={handleScroll} className={`h-full overflow-y-auto ${isMobile ? "p-2" : "p-4"}`}>
+      {/* Tier-A operator-direct 2026-05-20 (follow-up to cd70e4dd content-header-sticky
+          relocation): bottom-anchor messages so few-message sessions don't leave a large
+          empty band between the last message and the composer. `min-h-full flex flex-col
+          justify-end` keeps content at the bottom when scrollHeight < clientHeight; when
+          content overflows, the wrapper grows past 100% and overflow-y-auto on the parent
+          provides normal upward scrolling. `space-y-1` (formerly on the parent) moved here
+          so the spacing utility composes with the new flex layout instead of fighting it. */}
+      <div className="min-h-full flex flex-col justify-end space-y-1">
       {groupedMessages.map((item, idx) => {
         // Collapsed group of repeated tool calls
         if ((item as ToolCallGroup).type === "group") {
@@ -501,6 +509,7 @@ export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ se
           <p>No messages yet</p>
         </div>
       )}
+      </div>
     </div>
     {showScrollButton && (
       <button
