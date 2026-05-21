@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 interface KeyboardInsets {
   /** CSS pixels of keyboard occlusion (0 when keyboard down). */
@@ -51,9 +51,28 @@ interface KeyboardInsets {
  * False standalone-PWA visualViewport gap → ignored (no editable focus). Adds `focusin` +
  * `focusout` listeners on window so the hook re-evaluates when focus transitions (otherwise
  * --keyboard-h won't update when user taps the textarea AFTER initial mount).
+ *
+ * r29.1 BUGFIX (operator empirical 2026-05-21 ~00:55 CEST via Bert tenure-2 +
+ * EphemeralComposerDiag tenure-1 diagnostic; Q3-amendment composer-pill stuck at 140px above
+ * bottom container edge on iPhone 16 installed PWA): r29 editable-focus gate is necessary
+ * but not sufficient. iOS standalone-PWA persistent ~140px visualViewport gap trivially
+ * passes the `> 50` threshold whenever textarea is activeElement → `--keyboard-h: 140px`
+ * → composer pill floats 140px above bottom → operator-visible band below pill.
+ *
+ * Fix: BASELINE SUBTRACTION. Capture the visualViewport gap when no editable is focused as
+ * the chrome baseline; compute real keyboard occlusion as `max(0, occlusion - baseline)`.
+ * Apply r28's >50 threshold + r29's editable-focus gate to the BASELINE-SUBTRACTED value.
+ * Baseline measured per-session (no magic device-specific numbers); refreshed whenever no
+ * editable is focused so it stays current with any chrome-state changes. Composes cleanly
+ * with r28+r29+r30.2: r28 threshold rejects sub-50 jitter post-subtraction; r29 gate still
+ * requires real editable; r30.2 outer container `position:fixed inset:0` unaffected.
  */
 export function useKeyboardInsets(): KeyboardInsets {
   const [keyboardHeight, setKeyboardHeight] = useState(0);
+  // r29.1: per-session chrome baseline (visualViewport gap when no editable focused).
+  // -1 sentinel = uninitialized; first onResize fire captures it. Refreshed whenever
+  // no editable is focused so it stays current with chrome-state changes.
+  const baselineGapRef = useRef<number>(-1);
 
   useEffect(() => {
     if (typeof window === "undefined" || !window.visualViewport) return;
@@ -74,8 +93,17 @@ export function useKeyboardInsets(): KeyboardInsets {
       // keyboard rise always coincides with an editable element having focus; standalone-PWA
       // accounting gap does not. Gate eliminates the false-positive without regressing real
       // keyboard-avoidance behavior.
+      //
+      // r29.1 BUGFIX (operator empirical 2026-05-21 via Bert tenure-2 + EphemeralComposerDiag):
+      // baseline-subtract the persistent standalone-PWA visualViewport gap. Capture baseline
+      // when no editable focused; compute real keyboard occlusion as `max(0, occlusion - baseline)`.
+      // Apply r28's >50 + r29's editable-focus gate to the BASELINE-SUBTRACTED value.
       const editableFocused = !!document.activeElement?.matches('input, textarea, [contenteditable="true"]');
-      const cssValue = (occlusion > 50 && editableFocused) ? occlusion : 0;
+      if (baselineGapRef.current < 0 || !editableFocused) {
+        baselineGapRef.current = occlusion;
+      }
+      const realKeyboard = Math.max(0, occlusion - baselineGapRef.current);
+      const cssValue = (realKeyboard > 50 && editableFocused) ? realKeyboard : 0;
       document.documentElement.style.setProperty("--keyboard-h", `${cssValue}px`);
     };
     window.visualViewport.addEventListener("resize", onResize);
