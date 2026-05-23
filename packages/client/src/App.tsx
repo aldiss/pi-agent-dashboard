@@ -3,6 +3,7 @@ import { useRoute, useLocation, Redirect, Switch, Route } from "wouter";
 import { useWebSocket } from "./hooks/useWebSocket.js";
 import { useSidebarState } from "./hooks/useSidebarState.js";
 import { SessionList } from "./components/SessionList.js";
+import { ActiveOperatorSurfaces } from "./components/ActiveOperatorSurfaces.js";
 import { ResizableSidebar } from "./components/ResizableSidebar.js";
 import { HamburgerButton, MobileOverlay } from "./components/MobileOverlay.js";
 import { MobileShell } from "./components/MobileShell.js";
@@ -183,6 +184,14 @@ export default function App() {
   const installPrompt = useInstallPrompt();
   const bootstrapStatus = useBootstrapStatus();
   const [mobileOpen, setMobileOpen] = useState(false);
+  /* Feature 2 (message-type filter; cell
+   * pi-agent-dashboard-ux-message-discoverability/v1 W4.2.1 wiring fix per
+   * Pete tenure-2 W9 strict-spec QA T2 BLOCK 2026-05-23): App-owned toggle
+   * state for MessageFilterControls visibility. Wired into SessionHeader
+   * (onFilterToggle/isFilterActive) and ChatView (showFilterControls/
+   * onCloseFilterControls) below. Sister-shape to chatViewRef-based search
+   * toggle wiring — both are W4.x discoverability features. */
+  const [showMessageFilterControls, setShowMessageFilterControls] = useState(false);
   const [sessions, setSessions] = useState<Map<string, DashboardSession>>(new Map());
   const [sessionStates, setSessionStates] = useState<Map<string, SessionState>>(new Map());
   // Per-session chat-input drafts. Hydrated once from localStorage on mount,
@@ -752,6 +761,12 @@ export default function App() {
   }, [sessionStates]);
 
   const sessionList = (
+    <div className="flex flex-col h-full min-h-0">
+      {/* Active operator surfaces (Path B sister-coupling Feature 4) — mounted
+          at the top of the sidebar so it is visible across all session views.
+          Cell: pi-agent-dashboard-ux-message-discoverability/v1 (W4.4 + W6). */}
+      <ActiveOperatorSurfaces />
+      <div className="flex-1 flex flex-col min-h-0">
     <SessionList
       sessions={Array.from(sessions.values())}
       terminals={Array.from(terminals.values())}
@@ -833,6 +848,8 @@ export default function App() {
         </div>
       }
     />
+      </div>
+    </div>
   );
 
   const connectionBanner = (
@@ -893,6 +910,14 @@ export default function App() {
             subscribedRef.current.add(selectedId);
             send({ type: "subscribe", sessionId: selectedId, lastSeq: 0 });
           },
+          // W4.4.1 mobile-kebab context-usage + cost drill (cell
+          // pi-agent-dashboard-ux-message-discoverability/v1; operator-direct
+          // verdict 2026-05-23 ~23:15 CEST). Closes sister-cell ccd79aa9's
+          // broken promise that context-usage/cost would "remain drillable via
+          // mobile kebab" — the kebab now actually renders them. Pass-through
+          // mirrors the desktop TokenStatsBar wiring below (line 952+).
+          contextUsage: selectedState.contextUsage,
+          cost: selectedState.cost,
         } : undefined}
         commands={selectedCommands}
         flows={selectedFlows}
@@ -915,6 +940,9 @@ export default function App() {
           subscribedRef.current.add(selectedId);
           send({ type: "subscribe", sessionId: selectedId, lastSeq: 0 });
         }}
+        onFilterToggle={() => setShowMessageFilterControls((v) => !v)}
+        isFilterActive={showMessageFilterControls}
+        onSearchToggle={() => chatViewRef.current?.toggleSearch()}
       />
       {/* Mobile info strip: ELIMINATED per Bert tenure-2 Q2 W3 verdict 2026-05-20
           ~23:55 CEST (RATIFY (a) full elimination). Operator-verbatim per
@@ -1113,7 +1141,7 @@ export default function App() {
                 }
                 return next;
               });
-            } : undefined} />
+            } : undefined} showFilterControls={showMessageFilterControls} onCloseFilterControls={() => setShowMessageFilterControls(false)} />
             </SessionAssetsProvider>
           </ErrorBoundary>
           {/* StatusBar: desktop-only per-session footer (Bert tenure-2 Q1 W3

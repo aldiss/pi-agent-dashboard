@@ -22,6 +22,29 @@ import { findRetriedErrorIds, findActiveInteractiveToolResultIds } from "../lib/
 import { RetriedErrorBadge } from "./RetriedErrorBadge.js";
 import { ImageLightbox } from "./ImageLightbox.js";
 import { SkillInvocationCard } from "./SkillInvocationCard.js";
+import { ChatSearch } from "./ChatSearch.js";
+import {
+  getMessageFilter,
+  setMessageFilter,
+  isDefaultMessageFilter,
+  DEFAULT_MESSAGE_FILTER,
+  type MessageFilter,
+} from "../lib/message-filter-storage.js";
+import {
+  filterMessages as applyMessageFilter,
+  countMessagesByCategory,
+  isAllOn as isAllCategoriesOn,
+} from "../lib/message-filter-classifier.js";
+import { MessageFilterControls } from "./MessageFilterControls.js";
+import { PinnedMessagesSection } from "./PinnedMessagesSection.js";
+import { PinToggleButton } from "./PinToggleButton.js";
+import {
+  getPinnedEntryIds,
+  setPinnedEntryIds as persistPinnedEntryIds,
+  clearPinnedEntryIds,
+  togglePinned,
+  DEFAULT_PIN_CAP,
+} from "../lib/pinned-messages-storage.js";
 
 interface Props {
   sessionId?: string;
@@ -34,6 +57,14 @@ interface Props {
   onForkFromMessage?: (entryId: string) => void;
   onDismissError?: () => void;
   onRetryAfterError?: () => void;
+  /**
+   * Visibility of MessageFilterControls (Feature 2). Parent (App.tsx) owns
+   * the toggle so a header button in SessionHeader can flip it without a
+   * second copy of the controls. Controls render inline above the chat
+   * scroll area when true.
+   */
+  showFilterControls?: boolean;
+  onCloseFilterControls?: () => void;
 }
 
 function ImageAttachments({ images }: { images: ChatImage[] }) {
@@ -61,7 +92,7 @@ function ImageAttachments({ images }: { images: ChatImage[] }) {
   );
 }
 
-function MessageBubble({ content, className, timestamp, entryId, onFork }: { content: string; className: string; timestamp?: number; entryId?: string; onFork?: (entryId: string) => void }) {
+function MessageBubble({ content, className, timestamp, entryId, onFork, isPinned, onTogglePin }: { content: string; className: string; timestamp?: number; entryId?: string; onFork?: (entryId: string) => void; isPinned?: boolean; onTogglePin?: (entryId: string) => void }) {
   const contentRef = useRef<HTMLDivElement>(null);
 
   const getPlainText = useCallback(() => {
@@ -69,7 +100,10 @@ function MessageBubble({ content, className, timestamp, entryId, onFork }: { con
   }, [content]);
 
   return (
-    <div className={className}>
+    <div
+      className={className}
+      {...(entryId ? { "data-entry-id": entryId } : {})}
+    >
       <div ref={contentRef}>
         <MarkdownContent content={content} />
       </div>
@@ -87,6 +121,15 @@ function MessageBubble({ content, className, timestamp, entryId, onFork }: { con
           >
             <Icon path={mdiSourceFork} size={0.6} />
           </button>
+        )}
+        {entryId && onTogglePin && (
+          <PinToggleButton
+            entryId={entryId}
+            isPinned={!!isPinned}
+            onToggle={onTogglePin}
+            size={0.6}
+            dimWhenNotPinned
+          />
         )}
       </div>
     </div>
@@ -123,9 +166,17 @@ const scrollStateMap = new Map<string, { scrollTop: number; nearBottom: boolean 
 
 export interface ChatViewHandle {
   scrollToTurn: (turnIndex: number) => void;
+  /**
+   * Toggle the in-chat search overlay. Wired into SessionHeader's search
+   * button (App.tsx) AND the document-level Cmd/Ctrl+F listener installed
+   * below. Sister-shape to scrollToTurn — both are imperative entry points
+   * the parent triggers without lifting state.
+   * Cell: pi-agent-dashboard-ux-message-discoverability/v1 (W4.1 Feature 1).
+   */
+  toggleSearch: () => void;
 }
 
-export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ sessionId, state, toolContext, onCancelPending, onRespondToUi, onAbort, onForceKill, onForkFromMessage, onDismissError, onRetryAfterError }, ref) {
+export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ sessionId, state, toolContext, onCancelPending, onRespondToUi, onAbort, onForceKill, onForkFromMessage, onDismissError, onRetryAfterError, showFilterControls, onCloseFilterControls }, ref) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const isNearBottom = useRef(true);
   const programmaticScroll = useRef(false);
@@ -147,6 +198,12 @@ export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ se
     if (programmaticTimeout.current) clearTimeout(programmaticTimeout.current);
   }, []);
   const [showScrollButton, setShowScrollButton] = useState(false);
+  // Search overlay active-state. Owned by ChatView so a session switch (or
+  // an unmount) tears the overlay down with the parent — sister to the
+  // scrollStateMap discipline above. ChatSearch handles its own query +
+  // match-index state internally; we only track is-it-open here.
+  // Cell: pi-agent-dashboard-ux-message-discoverability/v1 (W4.1 Feature 1).
+  const [searchActive, setSearchActive] = useState(false);
   const [showDebugTools] = useState(() => {
     try { return localStorage.getItem("show-debug-tools") === "true"; } catch { return false; }
   });
@@ -242,6 +299,90 @@ export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ se
   const retriedErrorIds = useMemo(() => findRetriedErrorIds(filteredMessages), [filteredMessages]);
   const hiddenToolResultIds = useMemo(() => findActiveInteractiveToolResultIds(filteredMessages), [filteredMessages]);
 
+  // Feature 2: message-type filter. State owned here; persisted via
+  // setMessageFilter on every change. Resets to the persisted snapshot
+  // when sessionId changes so two open sessions keep independent filters.
+  // See cell pi-agent-dashboard-ux-message-discoverability/v1 W4.2.
+  const [messageFilter, setMessageFilterState] = useState<MessageFilter>(() =>
+    sessionId ? getMessageFilter(sessionId) : { ...DEFAULT_MESSAGE_FILTER }
+  );
+  useEffect(() => {
+    setMessageFilterState(sessionId ? getMessageFilter(sessionId) : { ...DEFAULT_MESSAGE_FILTER });
+  }, [sessionId]);
+  const handleFilterChange = useCallback((next: MessageFilter) => {
+    setMessageFilterState(next);
+    if (sessionId) setMessageFilter(sessionId, next);
+  }, [sessionId]);
+  const categoryCounts = useMemo(() => countMessagesByCategory(groupedMessages), [groupedMessages]);
+
+  // Feature 3 (W4.3) — pinned messages state. ChatView owns the canonical
+  // Set<entryId>; storage is per-session localStorage. State + storage are
+  // kept in lock-step via handleTogglePin / handleUnpinAll (one setState +
+  // one persistPinnedEntryIds per mutation). Loading the persisted set on
+  // sessionId change is sister-shape to the messageFilter pattern above.
+  // Cell: pi-agent-dashboard-ux-message-discoverability/v1.
+  const [pinnedEntryIds, setPinnedEntryIdsState] = useState<Set<string>>(() =>
+    sessionId ? getPinnedEntryIds(sessionId) : new Set()
+  );
+  // Transient cap-hit notification — fires when togglePinned returns
+  // "cap-hit" because the session is already at DEFAULT_PIN_CAP. Auto-
+  // dismisses after ~3s via the useEffect below. A boolean is sufficient
+  // since the message text is fixed.
+  const [pinCapHit, setPinCapHit] = useState(false);
+  useEffect(() => {
+    setPinnedEntryIdsState(sessionId ? getPinnedEntryIds(sessionId) : new Set());
+    setPinCapHit(false);
+  }, [sessionId]);
+  useEffect(() => {
+    if (!pinCapHit) return;
+    const timer = setTimeout(() => setPinCapHit(false), 3000);
+    return () => clearTimeout(timer);
+  }, [pinCapHit]);
+  const handleTogglePin = useCallback((entryId: string) => {
+    if (!sessionId) return;
+    const result = togglePinned(sessionId, entryId);
+    if (result.action === "cap-hit") {
+      setPinCapHit(true);
+      return;
+    }
+    setPinnedEntryIdsState(result.newSet);
+    persistPinnedEntryIds(sessionId, result.newSet);
+  }, [sessionId]);
+  const handleUnpinAll = useCallback(() => {
+    if (!sessionId) return;
+    setPinnedEntryIdsState(new Set());
+    clearPinnedEntryIds(sessionId);
+    setPinCapHit(false);
+  }, [sessionId]);
+  const handleScrollToMessage = useCallback((entryId: string) => {
+    const container = scrollRef.current;
+    if (!container) return;
+    const el = container.querySelector(`[data-entry-id="${entryId}"]`) as HTMLElement | null;
+    if (!el) return;
+    // Suppress auto-scroll during the programmatic scroll — sister-shape
+    // to scrollToTurn's discipline above. Without this the resulting
+    // onScroll could be misread as the operator scrolling away from the
+    // bottom and pop the scroll-to-bottom button.
+    markProgrammatic();
+    isNearBottom.current = false;
+    setShowScrollButton(true);
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    // Flash highlight — .pinned-message-flash keyframe @ ~1.5s. Remove the
+    // class slightly after the animation so consecutive jumps to the same
+    // message can re-trigger the animation by re-adding the class.
+    el.classList.add("pinned-message-flash");
+    setTimeout(() => {
+      el.classList.remove("pinned-message-flash");
+    }, 1600);
+  }, [markProgrammatic]);
+
+  const visibleMessages = useMemo(() => {
+    if (isAllCategoriesOn(messageFilter)) return groupedMessages;
+    return applyMessageFilter(groupedMessages, messageFilter, { alwaysVisibleEntryIds: pinnedEntryIds });
+  }, [groupedMessages, messageFilter, pinnedEntryIds]);
+  const isFilterActive = !isDefaultMessageFilter(messageFilter);
+  const hiddenCount = groupedMessages.length - visibleMessages.length;
+
   useImperativeHandle(ref, () => ({
     scrollToTurn(turnIndex: number) {
       const container = scrollRef.current;
@@ -260,10 +401,90 @@ export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ se
       // Re-enable auto-scroll after a delay
       setTimeout(() => { programmaticScroll.current = false; }, 200);
     },
+    toggleSearch() {
+      setSearchActive((prev) => !prev);
+    },
   }), []);
 
+  // Document-level Cmd/Ctrl+F intercept. We deliberately replace the browser
+  // find-in-page behavior with our chat-aware search because the browser's
+  // built-in find walks the entire DOM (including the sidebar, status bar,
+  // and floating composer-pill) and has no concept of which messages are
+  // visible vs collapsed in CollapsedToolGroup. ChatSearch indexes only the
+  // ChatView scroll container's rendered text. The listener is installed
+  // once at mount; ChatView is only mounted when a session is selected so
+  // the intercept is naturally scoped to session-detail views.
+  // Cell: pi-agent-dashboard-ux-message-discoverability/v1 (W4.1 Feature 1).
+  useEffect(() => {
+    const handleKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "f" && !e.shiftKey && !e.altKey) {
+        // Don't intercept when the user is editing an unrelated input/textarea
+        // (e.g., the composer or InlineRenameInput). The chat search input
+        // itself handles Cmd+F inside its own keydown — re-pressing while the
+        // search is open just re-focuses, which is fine.
+        const target = e.target as HTMLElement | null;
+        const tag = target?.tagName?.toLowerCase();
+        const isEditableTarget = tag === "input" || tag === "textarea" || target?.isContentEditable;
+        if (isEditableTarget && !target?.closest('[data-testid="chat-search"]')) return;
+        e.preventDefault();
+        setSearchActive((prev) => !prev);
+      }
+    };
+    document.addEventListener("keydown", handleKey);
+    return () => document.removeEventListener("keydown", handleKey);
+  }, []);
+
+  // Close search when the selected session changes — query state is
+  // session-scoped (no value in carrying "foo" over from a different
+  // transcript) and ChatSearch's own cleanup effect strips highlights from
+  // the prior scroll container.
+  useEffect(() => {
+    setSearchActive(false);
+  }, [sessionId]);
+
   return (
-    <div className="flex-1 relative overflow-hidden">
+    <div className="flex-1 relative overflow-hidden flex flex-col">
+    {showFilterControls && (
+      <MessageFilterControls
+        sessionId={sessionId ?? ""}
+        filter={messageFilter}
+        onFilterChange={handleFilterChange}
+        counts={categoryCounts}
+        onClose={onCloseFilterControls}
+      />
+    )}
+    {isFilterActive && hiddenCount > 0 && !showFilterControls && (
+      <div
+        className="px-3 py-1 border-b border-[var(--border-subtle)] bg-[var(--bg-secondary)] text-[10px] text-[var(--text-secondary)] flex items-center gap-2"
+        data-testid="message-filter-banner"
+      >
+        <span>Showing {visibleMessages.length} of {groupedMessages.length} messages — filter active</span>
+        <button
+          type="button"
+          onClick={() => handleFilterChange({ ...DEFAULT_MESSAGE_FILTER })}
+          className="underline hover:text-[var(--text-primary)]"
+          data-testid="message-filter-banner-reset"
+        >
+          Reset filters
+        </button>
+      </div>
+    )}
+    {pinCapHit && (
+      <div
+        className="px-3 py-1 border-b border-amber-500/40 bg-amber-500/15 text-[10px] text-amber-300 flex items-center gap-2"
+        data-testid="pin-cap-hit-banner"
+      >
+        <span>Pin cap reached ({DEFAULT_PIN_CAP}). Unpin a message to pin a new one.</span>
+        <button
+          type="button"
+          onClick={() => setPinCapHit(false)}
+          className="ml-auto px-1 py-0.5 rounded hover:bg-amber-500/20 text-amber-300/80 hover:text-amber-200"
+          aria-label="Dismiss pin cap notification"
+        >
+          ×
+        </button>
+      </div>
+    )}
     {/* W7 fade-mask + bottom-padding for floating-composer-pill overlap zone
         (Bert tenure-2 W3 Q4 verdict 2026-05-20 ~23:55 CEST RATIFY 80px mask-image).
         Cell: mobile-pwa-chatgpt-style-restructure/v1. Mobile only.
@@ -278,7 +499,7 @@ export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ se
     <div
       ref={scrollRef}
       onScroll={handleScroll}
-      className={`h-full overflow-y-auto ${isMobile ? "p-2" : "p-4"}`}
+      className={`flex-1 min-h-0 overflow-y-auto ${isMobile ? "p-2" : "p-4"}`}
       style={isMobile ? {
         paddingBottom: "100px",
         WebkitMaskImage: "linear-gradient(to bottom, black 0%, black calc(100% - 80px), transparent 100%)",
@@ -293,7 +514,24 @@ export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ se
           provides normal upward scrolling. `space-y-1` (formerly on the parent) moved here
           so the spacing utility composes with the new flex layout instead of fighting it. */}
       <div className="min-h-full flex flex-col justify-end space-y-1">
-      {groupedMessages.map((item, idx) => {
+      {/* Pinned messages section (Feature 3, W4.3) — lives inside the scroll
+          container per W4.3 brief (scrolls WITH messages, not sticky). The
+          flex-col + justify-end above bottom-anchors short sessions; adding
+          the section as the first child means it sits above the message
+          stream when content > viewport, and gets pushed visually up when
+          content < viewport. Returns null when nothing is pinned, so the
+          section never reserves space for an empty header. */}
+      {sessionId && pinnedEntryIds.size > 0 && (
+        <PinnedMessagesSection
+          sessionId={sessionId}
+          entries={state.messages}
+          pinnedEntryIds={pinnedEntryIds}
+          onUnpinAll={handleUnpinAll}
+          onScrollToMessage={handleScrollToMessage}
+          onTogglePin={handleTogglePin}
+        />
+      )}
+      {visibleMessages.map((item, idx) => {
         // Collapsed group of repeated tool calls
         if ((item as ToolCallGroup).type === "group") {
           const group = item as ToolCallGroup;
@@ -313,7 +551,12 @@ export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ se
           // See change: render-skill-invocations-collapsibly.
           if (msg.skill) {
             return (
-              <div key={msg.id} className="mt-4 mb-4 flex justify-end" {...(msg.turnIndex != null ? { "data-turn": msg.turnIndex } : {})}>
+              <div
+                key={msg.id}
+                className="mt-4 mb-4 flex justify-end"
+                {...(msg.turnIndex != null ? { "data-turn": msg.turnIndex } : {})}
+                {...(msg.entryId ? { "data-entry-id": msg.entryId } : {})}
+              >
                 <div className={bubbleMax}>
                   {msg.images && msg.images.length > 0 && (
                     <div className="mb-2">
@@ -332,7 +575,12 @@ export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ se
             );
           }
           return (
-            <div key={msg.id} className="mt-4 mb-4 flex justify-end" {...(msg.turnIndex != null ? { "data-turn": msg.turnIndex } : {})}>
+            <div
+              key={msg.id}
+              className="mt-4 mb-4 flex justify-end"
+              {...(msg.turnIndex != null ? { "data-turn": msg.turnIndex } : {})}
+              {...(msg.entryId ? { "data-entry-id": msg.entryId } : {})}
+            >
               <div className={`bg-blue-500/10 border border-blue-500/20 border-l-2 border-l-blue-400 rounded-xl shadow-md px-4 py-2 ${bubbleMax}`}>
                 {msg.images && msg.images.length > 0 && (
                   <ImageAttachments images={msg.images} />
@@ -344,6 +592,8 @@ export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ se
                     timestamp={msg.timestamp}
                     entryId={msg.entryId}
                     onFork={onForkFromMessage}
+                    isPinned={msg.entryId ? pinnedEntryIds.has(msg.entryId) : false}
+                    onTogglePin={handleTogglePin}
                   />
                 )}
               </div>
@@ -358,6 +608,11 @@ export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ se
               content={msg.content}
               startedAt={msg.startedAt}
               duration={msg.duration}
+              pinContext={msg.entryId ? {
+                entryId: msg.entryId,
+                isPinned: pinnedEntryIds.has(msg.entryId),
+                onTogglePin: handleTogglePin,
+              } : undefined}
             />
           );
         }
@@ -395,6 +650,11 @@ export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ se
               toolDetails={msg.toolDetails}
               onAbort={msg.toolStatus === "running" ? onAbort : undefined}
               onForceKill={msg.toolStatus === "running" ? onForceKill : undefined}
+              pinContext={msg.entryId ? {
+                entryId: msg.entryId,
+                isPinned: pinnedEntryIds.has(msg.entryId),
+                onTogglePin: handleTogglePin,
+              } : undefined}
             />
           );
         }
@@ -458,13 +718,19 @@ export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ se
         // assistant
         const bMax = hasMermaid(msg.content) ? bubbleWide : bubbleMax;
         return (
-          <div key={msg.id} className="mt-4 mb-4 flex justify-start">
+          <div
+            key={msg.id}
+            className="mt-4 mb-4 flex justify-start"
+            {...(msg.entryId ? { "data-entry-id": msg.entryId } : {})}
+          >
             <MessageBubble
               content={msg.content}
               className={`bg-[var(--bg-tertiary)] border border-[var(--border-subtle)] rounded-xl shadow-md px-4 py-2 ${bMax}`}
               timestamp={msg.timestamp}
               entryId={msg.entryId}
               onFork={onForkFromMessage}
+              isPinned={msg.entryId ? pinnedEntryIds.has(msg.entryId) : false}
+              onTogglePin={handleTogglePin}
             />
           </div>
         );
@@ -540,6 +806,22 @@ export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ se
       >
         <Icon path={mdiChevronDown} size={0.8} className="text-[var(--text-secondary)]" />
       </button>
+    )}
+    {/* Chat search overlay — sibling of scrollRef so it stays anchored to
+        the top-right of the chat view (doesn't scroll with content).
+        markProgrammatic() is passed as onBeforeScroll so search-driven
+        scrollIntoView calls don't trip the user-scroll detection in
+        handleScroll above. Sister-shape pattern to scrollToTurn's
+        programmatic-scroll guard discipline.
+        Cell: pi-agent-dashboard-ux-message-discoverability/v1 (W4.1 Feature 1). */}
+    {searchActive && (
+      <ChatSearch
+        containerRef={scrollRef}
+        entriesCount={state.messages.length}
+        sessionId={sessionId}
+        onClose={() => setSearchActive(false)}
+        onBeforeScroll={markProgrammatic}
+      />
     )}
     </div>
   );

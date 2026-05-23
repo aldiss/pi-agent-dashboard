@@ -6,6 +6,8 @@ import type { ChatImage } from "../lib/event-reducer.js";
 import { useMobile } from "../hooks/useMobile.js";
 import { ElapsedBadge } from "./ElapsedBadge.js";
 import { ErrorBoundary } from "./ErrorBoundary.js";
+import { PinToggleButton } from "./PinToggleButton.js";
+import type { PinContext } from "./ThinkingBlock.js";
 
 type StopState = "idle" | "aborting" | "killing";
 
@@ -22,6 +24,11 @@ interface Props {
   toolDetails?: Record<string, unknown>;
   onAbort?: () => void;
   onForceKill?: () => void;
+  /** Optional Feature 3 pin-context. When set + entryId resolvable, the
+   *  tool-call header renders a pin-toggle button before the chevron.
+   *  Operator may pin a long tool-result whose output they need later.
+   *  Cell: pi-agent-dashboard-ux-message-discoverability/v1 (W4.3). */
+  pinContext?: PinContext;
 }
 
 const toolSummaries: Record<string, (args?: Record<string, unknown>) => string> = {
@@ -50,7 +57,7 @@ const statusIcons: Record<string, ReactNode> = {
   error: <Icon path={mdiAlertCircle} size={0.55} />,
 };
 
-export function ToolCallStep({ toolName, toolCallId, args, status, result, images, context, startedAt, duration, toolDetails, onAbort, onForceKill }: Props) {
+export function ToolCallStep({ toolName, toolCallId, args, status, result, images, context, startedAt, duration, toolDetails, onAbort, onForceKill, pinContext }: Props) {
   const isMobile = useMobile();
   const hasImages = images && images.length > 0;
   const isAgentRunning = toolName === "Agent" && status === "running";
@@ -65,8 +72,13 @@ export function ToolCallStep({ toolName, toolCallId, args, status, result, image
     if (status !== "running") setStopState("idle");
   }, [status]);
 
+  const showPin = !!pinContext?.entryId && !!pinContext?.onTogglePin;
+
   return (
-    <div className={`${isMobile ? "mx-2" : "mx-4"} border-l-2 border-[var(--border-secondary)] pl-3`}>
+    <div
+      className={`${isMobile ? "mx-2" : "mx-4"} border-l-2 border-[var(--border-secondary)] pl-3`}
+      {...(pinContext?.entryId ? { "data-entry-id": pinContext.entryId } : {})}
+    >
       <button
         onClick={() => setExpanded(!expanded)}
         className={`flex items-center gap-1.5 text-xs text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] w-full text-left ${isMobile ? "min-h-[44px] py-2" : ""}`}
@@ -106,6 +118,17 @@ export function ToolCallStep({ toolName, toolCallId, args, status, result, image
             title="Force Stop — kill the process"
           >
             <Icon path={mdiAlert} size={0.45} />
+          </span>
+        )}
+        {showPin && (
+          <span className="ml-1 inline-flex">
+            <PinToggleButton
+              entryId={pinContext!.entryId!}
+              isPinned={pinContext!.isPinned}
+              onToggle={pinContext!.onTogglePin}
+              size={0.5}
+              dimWhenNotPinned
+            />
           </span>
         )}
         <span className="ml-auto text-[var(--text-muted)] inline-flex">

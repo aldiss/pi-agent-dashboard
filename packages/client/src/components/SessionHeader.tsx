@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import { Icon } from "@mdi/react";
-import { mdiPencilOutline, mdiArrowLeft, mdiPaperclip, mdiRefresh, mdiLinkOff, mdiPlay, mdiFileCompare, mdiHeadLightbulb, mdiViewGridOutline, mdiPlayCircleOutline, mdiSourceFork } from "@mdi/js";
+import { mdiPencilOutline, mdiArrowLeft, mdiPaperclip, mdiRefresh, mdiLinkOff, mdiPlay, mdiFileCompare, mdiHeadLightbulb, mdiViewGridOutline, mdiPlayCircleOutline, mdiSourceFork, mdiFilterVariant, mdiMagnify } from "@mdi/js";
 import type { DashboardSession, OpenSpecChange, CommandInfo, FlowInfo, ImageContent } from "@blackbelt-technology/pi-dashboard-shared/types.js";
 import type { SessionState } from "../lib/event-reducer.js";
 import type { DetectedEditor } from "../lib/editor-api.js";
@@ -39,6 +39,28 @@ interface Props {
    *  session.sessionFile is set. Mobile path uses mobileActions.onResume.
    *  See change: resume-button-in-session-header. */
   onResume?: (mode: "continue" | "fork") => void;
+  /**
+   * Feature 2 (message-type filter, cell
+   * pi-agent-dashboard-ux-message-discoverability/v1 W4.2): callback to
+   * toggle MessageFilterControls visibility below the header. When unset
+   * the filter icon is not rendered.
+   */
+  onFilterToggle?: () => void;
+  /**
+   * True when the operator's current filter differs from defaults; renders
+   * a small dot on the filter icon so the operator can tell at-a-glance
+   * that messages are being hidden somewhere off-screen.
+   */
+  isFilterActive?: boolean;
+  /**
+   * Feature 1 (in-chat search, cell
+   * pi-agent-dashboard-ux-message-discoverability/v1 W4.1): toggle the
+   * floating ChatSearch overlay rendered by ChatView. Wired in App.tsx to
+   * chatViewRef.current?.toggleSearch(); the same action is also bound to
+   * Cmd/Ctrl+F at the document level (handled inside ChatView). When unset
+   * the search icon is not rendered.
+   */
+  onSearchToggle?: () => void;
   /** Mobile action menu props (only used on mobile) */
   mobileActions?: {
     editors?: DetectedEditor[];
@@ -53,6 +75,16 @@ interface Props {
     onSendPrompt?: (text: string, images?: ImageContent[]) => void;
     onReadArtifact?: (changeName: string, artifactId: string) => void;
     onRefresh?: () => void;
+    /**
+     * Mobile-kebab session-status drill: context-usage + cost. Pass-through
+     * from App.tsx selectedState to MobileActionMenu (W4.4.1 scope-creep,
+     * cell pi-agent-dashboard-ux-message-discoverability/v1, per operator-
+     * direct verdict 2026-05-23 ~23:15 CEST closing sister-cell ccd79aa9
+     * broken-promise). Shapes match SessionState.contextUsage + .cost so
+     * no adapter is needed at the wiring site.
+     */
+    contextUsage?: { tokens: number | null; contextWindow: number };
+    cost?: number;
   };
 }
 
@@ -149,7 +181,7 @@ function MobileAttachButton({ session, openspecChanges, onAttach, onDetach }: {
  *  the bottom of this file renders the same model + thinkingLevel pair
  *  inline next to the session name.
  *  Cell: mobile-pwa-chatgpt-style-restructure/v1 (MintOwl). */
-function MobileHeader({ session, state, showBack, onBack, isRenaming, onConfirmRename, onCancelRename, canRename, onStartRename, mobileActions, onReadArtifact }: {
+function MobileHeader({ session, state, showBack, onBack, isRenaming, onConfirmRename, onCancelRename, canRename, onStartRename, mobileActions, onReadArtifact, onSearchToggle }: {
   session: DashboardSession;
   state?: SessionState;
   showBack?: boolean;
@@ -161,6 +193,7 @@ function MobileHeader({ session, state, showBack, onBack, isRenaming, onConfirmR
   onStartRename: () => void;
   mobileActions?: SessionHeaderMobileActions;
   onReadArtifact?: (changeName: string, artifactId: string) => void;
+  onSearchToggle?: () => void;
 }) {
   // Look up the attached change in the polled openspecChanges list. When
   // present, render the artifact-letters pill + task counter inside the
@@ -205,6 +238,17 @@ function MobileHeader({ session, state, showBack, onBack, isRenaming, onConfirmR
           onDetach={mobileActions.onDetachProposal}
         />
       )}
+      {onSearchToggle && (
+        <button
+          onClick={onSearchToggle}
+          className="p-2 min-w-[44px] min-h-[44px] flex items-center justify-center text-[var(--text-muted)] hover:text-[var(--text-secondary)]"
+          aria-label="Search in chat"
+          title="Search in chat (⌘F)"
+          data-testid="mobile-search-btn"
+        >
+          <Icon path={mdiMagnify} size={0.7} />
+        </button>
+      )}
       {mobileActions && (
         <MobileActionMenu
           session={session}
@@ -221,6 +265,8 @@ function MobileHeader({ session, state, showBack, onBack, isRenaming, onConfirmR
           onSendPrompt={mobileActions.onSendPrompt}
           onReadArtifact={mobileActions.onReadArtifact}
           onRefresh={mobileActions.onRefresh}
+          contextUsage={mobileActions.contextUsage}
+          cost={mobileActions.cost}
         />
       )}
     </div>
@@ -321,7 +367,7 @@ function formatDuration(ms: number): string {
   return `${seconds}s`;
 }
 
-export function SessionHeader({ session, state, onRename, showBack, onBack, mobileActions, commands, flows, onSendPrompt, openspecChanges, onAttachProposal, onDetachProposal, hasFileChanges, onOpenDiffView, onRefresh, onReadArtifact, onOpenExtensionModulePicker, onResume }: Props) {
+export function SessionHeader({ session, state, onRename, showBack, onBack, mobileActions, commands, flows, onSendPrompt, openspecChanges, onAttachProposal, onDetachProposal, hasFileChanges, onOpenDiffView, onRefresh, onReadArtifact, onOpenExtensionModulePicker, onResume, onFilterToggle, isFilterActive, onSearchToggle }: Props) {
   const [now, setNow] = useState(Date.now());
   const [isRenaming, setIsRenaming] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -388,6 +434,7 @@ export function SessionHeader({ session, state, onRename, showBack, onBack, mobi
         onStartRename={() => setIsRenaming(true)}
         mobileActions={mobileActions}
         onReadArtifact={onReadArtifact}
+        onSearchToggle={onSearchToggle}
       />
     );
   }
@@ -552,6 +599,35 @@ export function SessionHeader({ session, state, onRename, showBack, onBack, mobi
           title="Refresh chat"
         >
           <Icon path={mdiRefresh} size={0.6} className={refreshing ? "animate-spin" : ""} />
+        </button>
+      )}
+      {onSearchToggle && (
+        <button
+          onClick={onSearchToggle}
+          className="text-[var(--text-muted)] hover:text-[var(--text-secondary)] p-0.5"
+          title="Search in chat (⌘F)"
+          aria-label="Search in chat"
+          data-testid="header-search-btn"
+        >
+          <Icon path={mdiMagnify} size={0.65} />
+        </button>
+      )}
+      {onFilterToggle && (
+        <button
+          onClick={onFilterToggle}
+          className="text-[var(--text-muted)] hover:text-[var(--text-secondary)] p-0.5 relative"
+          title={isFilterActive ? "Toggle filter controls (filter active)" : "Toggle filter controls"}
+          data-testid="session-header-filter-toggle"
+          aria-pressed={isFilterActive ? true : undefined}
+        >
+          <Icon path={mdiFilterVariant} size={0.6} />
+          {isFilterActive && (
+            <span
+              className="absolute top-0 right-0 w-1.5 h-1.5 rounded-full bg-amber-400"
+              data-testid="session-header-filter-active-dot"
+              aria-hidden
+            />
+          )}
         </button>
       )}
       {openspecPickerOpen && onAttachProposal && (

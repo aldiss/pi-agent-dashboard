@@ -53,6 +53,7 @@ import { registerOpenSpecRoutes } from "./routes/openspec-routes.js";
 import { registerOpenSpecGroupRoutes } from "./routes/openspec-group-routes.js";
 import { createOpenSpecGroupStore, joinGroupIdsToOpenSpecData } from "./openspec-group-store.js";
 import { registerSystemRoutes } from "./routes/system-routes.js";
+import { registerSurfacesRoutes } from "./routes/surfaces-routes.js";
 import { registerDoctorRoutes } from "./routes/doctor-routes.js";
 import { registerPushRoutes, registerPushMisconfiguredMiddleware } from "./routes/push-routes.js";
 import { registerProviderAuthRoutes } from "./routes/provider-auth-routes.js";
@@ -821,6 +822,10 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
     store: openspecGroupStore,
   });
   registerSystemRoutes(fastify, { sessionManager, preferencesStore, metaPersistence, config, networkGuard, version: pkgVersion, directoryService, piGateway, bootstrapState });
+  // Path B sister-coupling primitive — operator-active-surfaces canonical index.
+  // See packages/server/src/routes/surfaces-routes.ts + cell:
+  // pi-agent-dashboard-ux-message-discoverability/v1 (W4.4 + W6 Feature 4).
+  registerSurfacesRoutes(fastify, { networkGuard });
   // GET /api/doctor — see change: doctor-rich-output (task 4.2). Auth-gated identically to /api/config.
   registerDoctorRoutes(fastify);
 
