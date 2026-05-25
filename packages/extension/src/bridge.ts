@@ -1370,7 +1370,28 @@ function initBridge(pi: ExtensionAPI) {
         spinnerTimer = null;
       }
       activeLoader = null;
-      ctx.ui.setWidget("pi-dashboard-launch", undefined);
+      // ===== PATCH F bridge-ts-stopSpinner-withSession start =====
+      // Defensive try-catch around ctx.ui.setWidget per Candidate C SOLO + regex
+      // discrimination (cell subagent-infra-tooling-cluster/v1 W4d-W6 2026-05-25;
+      // Bert tenure-7 W3 Q1 PASS-WITH-NOTES ratify + Q2 slot F + exit 14 ratify).
+      // Captured `ctx` may go stale after session-replacement (newSession/fork/
+      // switchSession) OR reload() per pi-coding-agent runner.js:289 canonical
+      // invalidate guidance. If we observe the canonical stale-ctx error message,
+      // suppress + log; rethrow others per Pattern 87 byte-identical re-throw
+      // discipline. Sister-precedent defensive-shape at line ~685 reload-handler
+      // .catch((err) => console.error).
+      try {
+        ctx.ui.setWidget("pi-dashboard-launch", undefined);
+      } catch (err) {
+        if (err instanceof Error && /extension ctx is stale/.test(err.message)) {
+          console.debug(
+            "[pi-dashboard:stopSpinner] suppressed stale-ctx setWidget after session-replacement (canonical per pi-coding-agent runner.js:289)",
+          );
+        } else {
+          throw err;
+        }
+      }
+      // ===== END PATCH F bridge-ts-stopSpinner-withSession =====
     };
     autoStartServer(config, {
       discoverDashboard,
