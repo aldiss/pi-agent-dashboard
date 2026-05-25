@@ -23,9 +23,13 @@ export type MessageCategory =
   | "toolCalls"
   | "systemNotifications";
 
-/** Roles that always classify as system-notifications (transparent / debug rows). */
+// System notifications — debug-shaped rows the operator can dim away when
+// scanning. `thinking` was previously classified here but is operator-visible
+// narrative reasoning content (see fix-thinking-block-streaming-state-loss-
+// 2026-05-25 + sister commit 22978a8). Reclassified to `tierB` so committed
+// thinking rows render under default filter (which has
+// systemNotifications: false but tierB: true).
 const SYSTEM_ROLES: ReadonlySet<ChatMessage["role"]> = new Set<ChatMessage["role"]>([
-  "thinking",
   "turnSeparator",
   "rawEvent",
 ]);
@@ -53,7 +57,13 @@ export function classifyMessage(msg: ChatMessage | ToolCallGroup): MessageCatego
   // Covers ask_user / select / batch / input / confirm / multiselect.
   if (m.role === "interactiveUi") return "tierA";
 
-  // System notifications — thinking / separator / raw debug events.
+  // Thinking — model reasoning content; narrative not system-notification.
+  // Explicit clause for readability + future-resilience against the
+  // defensive default at function-end being changed. See fix-thinking-block-
+  // streaming-state-loss-2026-05-25.
+  if (m.role === "thinking") return "tierB";
+
+  // System notifications — turnSeparator / raw debug events.
   if (SYSTEM_ROLES.has(m.role)) return "systemNotifications";
 
   // Tool calls — toolResult / bashOutput / commandFeedback rows.
