@@ -59,9 +59,35 @@ export function replayEntriesAsEvents(
 
       if (msg.role === "assistant") {
         const content = Array.isArray(msg.content) ? msg.content : [];
-        // Emit tool_execution_start for each tool call
-        for (const part of content) {
-          if (part.type === "toolCall") {
+        // Iterate content[] in order so synthetic block-events fire in
+        // canonical content-array order. message_end's reorder pass also
+        // enforces this order against the assembled messages[] window,
+        // so emit-order here is for clarity not correctness.
+        //
+        // Synthesize thinking_start + thinking_delta + thinking_end
+        // events for each persisted `{type:"thinking"}` block so the
+        // reducer creates `role:"thinking"` rows in messages[]. Without
+        // these synthetic events, persisted thinking content is silently
+        // dropped on cold-replay (browser reload / server restart /
+        // cold session load via directoryService.loadSessionEvents).
+        // pi emits these natively during live streaming; replay must
+        // mirror that contract.
+        // See investigation: pi-dashboard-thinking-block-streaming-
+        // state-loss-investigation-2026-05-25.
+        for (let idx = 0; idx < content.length; idx++) {
+          const part = content[idx];
+          if (part?.type === "thinking" && typeof part.thinking === "string" && part.thinking.length > 0) {
+            messages.push(makeEvent(sessionId, "message_update", ts, {
+              assistantMessageEvent: { type: "thinking_start", contentIndex: idx },
+            }));
+            messages.push(makeEvent(sessionId, "message_update", ts, {
+              assistantMessageEvent: { type: "thinking_delta", contentIndex: idx, delta: part.thinking },
+            }));
+            messages.push(makeEvent(sessionId, "message_update", ts, {
+              assistantMessageEvent: { type: "thinking_end", contentIndex: idx, signature: part.thinkingSignature },
+            }));
+          }
+          if (part?.type === "toolCall") {
             messages.push(makeEvent(sessionId, "tool_execution_start", ts, {
               toolCallId: part.id,
               toolName: part.name,

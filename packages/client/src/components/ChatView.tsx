@@ -324,10 +324,18 @@ export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ se
         }
 
         if (msg.role === "thinking") {
+          // Match the live-streaming block's `defaultExpanded` prop (see
+          // ~line 446 below). Without this, the live ThinkingBlock
+          // (defaultExpanded) unmounts on `thinking_end` and a new keyed
+          // committed-row instance mounts under fresh `useState(false)`
+          // — the thinking body visually disappears the moment final-
+          // message rendering begins. See investigation: pi-dashboard-
+          // thinking-block-streaming-state-loss-investigation-2026-05-25.
           return (
             <ThinkingBlock
               key={msg.id}
               content={msg.content}
+              defaultExpanded
               startedAt={msg.startedAt}
               duration={msg.duration}
             />
