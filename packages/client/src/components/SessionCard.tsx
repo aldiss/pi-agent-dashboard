@@ -411,8 +411,8 @@ export function SessionCard({
         )}
       </div>
 
-      {/* Row 3: activity (left) | context bar + cost (right) — desktop only */}
-      <div className="hidden md:flex items-center text-[11px] gap-2 mt-0.5">
+      {/* Row 3: activity (left) | context bar + cost (right) — context+activity always visible per operator-empirical mobile friction 2026-05-23 ~23:35 CEST; cost desktop-only since mobile shows it in Row 1 */}
+      <div className="flex items-center text-[11px] gap-2 mt-0.5">
         <ActivityIndicator session={session} />
         <span className="flex-1" />
         <ContextUsageBar
@@ -421,7 +421,7 @@ export function SessionCard({
           compact
         />
         {showCost && (
-          <span className="text-[var(--text-secondary)] w-9 text-right tabular-nums">
+          <span className="hidden md:inline text-[var(--text-secondary)] w-9 text-right tabular-nums">
             ${session.cost!.toFixed(2)}
           </span>
         )}

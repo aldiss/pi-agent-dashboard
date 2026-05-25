@@ -5,6 +5,13 @@ import type { CommandInfo, ImageContent, FileEntry } from "@blackbelt-technology
 import { useImagePaste } from "../hooks/useImagePaste.js";
 import { ImagePreviewStrip } from "./ImagePreviewStrip.js";
 import { useMobile } from "../hooks/useMobile.js";
+import { MobileComposer } from "./MobileComposer/index.js";
+import { isCapacitorNative, shouldUseMobileComposer } from "../utils/platform.js";
+// VOICE-INPUT-LOCAL-PATCH-START (W5-implementation per voice-input/v1 amended capsule-bundle Q3 ratified;
+//   v1.x migration: replace with chat-input-augment slot upstream PR per amended bundle Q3 v1.x roadmap.
+//   Marker block MUST be preserved verbatim — grep-discoverable for migration.)
+import { PushToTalkButton } from "@blackbelt-technology/pi-dashboard-voice-input-plugin/client";
+// VOICE-INPUT-LOCAL-PATCH-END
 
 /** Built-in pi commands available from the dashboard */
 const BUILTIN_COMMANDS: CommandInfo[] = [
@@ -50,6 +57,13 @@ interface Props {
   images?: ImageContent[];
   /** Parent callback for every images-array change (controlled mode). */
   onImagesChange?: (next: ImageContent[]) => void;
+  /**
+   * r27 Phase 1.1.1: optimistic count of messages queued for next-turn pickup.
+   * Forwarded to MobileComposer's queue-badge UI on mobile path.
+   * Desktop CommandInput already supports send-while-streaming via Enter (line 434);
+   * desktop queue-badge UI deferred to Phase 1.5 fuller.
+   */
+  queuedCount?: number;
 }
 
 /**
@@ -109,7 +123,7 @@ function extractAtQuery(text: string): string | null {
 
 type StopState = "idle" | "aborting" | "killing";
 
-export function CommandInput({ commands: externalCommands, onSend, onListFiles, fileResults, disabled, sessionStatus, retrying, onAbort, onForceKill, pendingPrompt, onCancelPending, sessionId, draft, onDraftChange, history, images, onImagesChange }: Props) {
+export function CommandInput({ commands: externalCommands, onSend, onListFiles, fileResults, disabled, sessionStatus, retrying, onAbort, onForceKill, pendingPrompt, onCancelPending, sessionId, draft, onDraftChange, history, images, onImagesChange, queuedCount }: Props) {
   // Treat retry-sleep as "still working" for Stop/Force-Stop visibility.
   const isWorking = sessionStatus === "streaming" || retrying === true;
   // Merge server commands with built-in commands, avoiding duplicates
@@ -180,6 +194,22 @@ export function CommandInput({ commands: externalCommands, onSend, onListFiles, 
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastFileQueryRef = useRef<string | null>(null);
+
+  // VOICE-INPUT-LOCAL-PATCH-START (W5-impl auto-grow bugfix per operator iPhone test 2026-05-15 ~22 CEST;
+  //   voice-transcript multi-line was hidden because PushToTalkButton's onTranscript fires from
+  //   an async fetch microtask — the rAF in the onTranscript callback raced React's commit cycle
+  //   when invoked from async-microtask context, leading to stale scrollHeight reads. useEffect
+  //   on text fires AFTER React commits per React docs guarantee, so scrollHeight is accurate.
+  //   Composes with manual typing onInput handler — both run on text change; manual typing also
+  //   benefits from this redundancy in controlled-mode scenarios where parent state-propagation
+  //   adds latency. Marker block MUST be preserved verbatim — grep-discoverable for migration.)
+  useEffect(() => {
+    const ta = inputRef.current;
+    if (!ta) return;
+    ta.style.height = "40px";
+    ta.style.height = Math.min(ta.scrollHeight, 120) + "px";
+  }, [text]);
+  // VOICE-INPUT-LOCAL-PATCH-END
 
   // --- Command autocomplete ---
   const isCommand = text.startsWith("/") && !text.includes("\n");
@@ -424,8 +454,63 @@ export function CommandInput({ commands: externalCommands, onSend, onListFiles, 
   // component (useImagePaste / ImagePreviewStrip) so the OpenSpec
   // Explore dialog can reuse the exact same behavior.
 
+  // W12: render MobileComposer on touch-primary devices OR Capacitor native shell
+  // (Q2 ratified-allow selective component fork; sleek dark palette + big circular send
+  // button + audio-wave during voice recording per scout 2026-05-16 + LIGHTER brand-
+  // emulation lean per QuickJaguar pre-resolution; desktop CommandInput unaffected).
+  // Phase 1 MVP cuts: command autocomplete + file autocomplete + history-recall remain
+  // desktop-only via the existing CommandInput body below (mobile defers these to Phase 1.1
+  // if operator empirical surfaces friction). All other CommandInput hooks above are still
+  // called every render per React Rules of Hooks; only the JSX output differs by mode.
+  //
+  // r16 BUGFIX (operator-direct architectural directive 2026-05-17 ~06 CEST):
+  // device-class detect via isMobileDevice() replaces both useMobile() (responsive-
+  // breakpoint) AND matchMedia("pointer: coarse") (capability-based). Operator framing:
+  // "behavior should NOT be regulated by viewport-width; iPhone = mobile, MacBook = desktop".
+  // isMobileDevice() uses 3-layer detect: UAData.mobile → UA regex → iPadOS-13+ Mac+touch.
+  // r20 BUGFIX (operator-direct empirical 2026-05-17: iPad+Magic-Keyboard friction):
+  // composer-routing now via shouldUseMobileComposer() which COMPOSES isMobileDevice() (r16
+  // device-class detect) with (any-pointer: fine) input-method-class detect. iPad+keyboard
+  // now routes to CommandInput desktop path for Enter-to-send; pure-touch mobile devices
+  // still route to MobileComposer. Operator framing: "for choice between enter vs shift
+  // enter.. - i hae a bit of a conudnrum - i have an ipad with magic keyboard - it is very
+  // unnerving to always click 'send' button instead of enter here.." (Pattern 87 typos preserved).
+  if (shouldUseMobileComposer() || isCapacitorNative()) {
+    return (
+      <MobileComposer
+        draft={draft}
+        onDraftChange={onDraftChange}
+        onSend={onSend}
+        isWorking={sessionStatus === "streaming" || pendingPrompt}
+        onAbort={onAbort}
+        disabled={disabled}
+        images={images}
+        onImagesChange={onImagesChange}
+        commands={commands}
+        onListFiles={onListFiles}
+        queuedCount={queuedCount}
+      />
+    );
+  }
+
   return (
     <div className="border-t border-[var(--border-primary)] p-3 relative" style={{ paddingBottom: keyboardUp ? '0.75rem' : 'calc(0.75rem + env(safe-area-inset-bottom, 0px))' }}>
+      {/* r27 Phase 1.1.1 desktop queue badge (operator-direct scope-correction 2026-05-18 ~09:35 CEST
+       *  via QuickKnight relay, Pattern 87 typos `messges`+`alrady` PRESERVED: "the queue visibility
+       *  should be both on desktop and on mobile. sending messges IN the queue alrady works on desktop").
+       *  Desktop CommandInput already accepts send-while-streaming via Enter keypress (line 434);
+       *  this badge surfaces the optimistic count from App.tsx shared state. Mobile parity preserved
+       *  via MobileComposer queue badge above. */}
+      {(queuedCount ?? 0) > 0 && (
+        <div
+          className="absolute -top-7 left-3 text-xs text-[var(--text-secondary)] flex items-center gap-1.5 bg-[var(--bg-tertiary)] rounded-full px-2.5 py-1 shadow-sm"
+          role="status"
+          data-testid="command-input-queue-badge"
+        >
+          <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" aria-hidden="true" />
+          <span>{queuedCount} queued</span>
+        </div>
+      )}
       {/* Autocomplete dropdown */}
       {dropdownMode === "command" && (
         <div className="absolute bottom-full left-3 right-3 mb-1 bg-[var(--bg-secondary)] border border-[var(--border-subtle)] rounded-xl max-h-64 overflow-y-auto shadow-lg z-10">
@@ -501,6 +586,31 @@ export function CommandInput({ commands: externalCommands, onSend, onListFiles, 
             target.style.height = Math.min(target.scrollHeight, 120) + "px";
           }}
         />
+        {/* VOICE-INPUT-LOCAL-PATCH-START (W5-implementation per voice-input/v1 amended capsule-bundle Q3 ratified;
+            Telegram-style push-to-talk button inline next to the typing area — "where I type" UX per
+            operator framing in voice-input/v1 substrate § Outcome contract. Review-first: transcript
+            appends to existing draft; operator confirms via the existing Send button.
+            v1.x migration: replace with chat-input-augment slot upstream PR + voice-input plugin
+            slot-claim. Marker block MUST be preserved verbatim — grep-discoverable for migration.) */}
+        {!pendingPrompt && (
+          <PushToTalkButton
+            disabled={disabled}
+            onTranscript={(transcript) => {
+              const sep = text && !text.endsWith(" ") && !text.endsWith("\n") ? " " : "";
+              setText(text + sep + transcript);
+              // Re-run the auto-resize logic so the (possibly multi-line) transcript shows fully.
+              requestAnimationFrame(() => {
+                const ta = inputRef.current;
+                if (ta) {
+                  ta.style.height = "40px";
+                  ta.style.height = Math.min(ta.scrollHeight, 120) + "px";
+                  ta.focus();
+                }
+              });
+            }}
+          />
+        )}
+        {/* VOICE-INPUT-LOCAL-PATCH-END */}
         <button
           onClick={handleSend}
           disabled={disabled || pendingPrompt || !text.trim()}
