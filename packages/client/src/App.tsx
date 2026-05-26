@@ -3,8 +3,8 @@ import { useRoute, useLocation, Redirect, Switch, Route } from "wouter";
 import { useWebSocket } from "./hooks/useWebSocket.js";
 import { useSidebarState } from "./hooks/useSidebarState.js";
 import { SessionList } from "./components/SessionList.js";
-import { ActiveOperatorSurfaces } from "./components/ActiveOperatorSurfaces.js";
 import { ResizableSidebar } from "./components/ResizableSidebar.js";
+import { DashboardPage } from "./components/DashboardPage.js";
 import { HamburgerButton, MobileOverlay } from "./components/MobileOverlay.js";
 import { MobileShell } from "./components/MobileShell.js";
 import { useMobile } from "./hooks/useMobile.js";
@@ -165,6 +165,13 @@ export default function App() {
   const [folderEditorMatch, folderEditorParams] = useRoute("/folder/:encodedCwd/editor");
   const [settingsMatch] = useRoute("/settings");
   const [tunnelSetupMatch] = useRoute("/tunnel-setup");
+  /* /dashboard route — Active Operator Surfaces split out of the
+   * session-list sidebar per operator ratification 2026-05-26 ~00:40
+   * CEST (defaults 1a + 2a + 3a). Sister-shape to settings/tunnel-setup
+   * top-level routes: gates the desktop content area, drives mobile
+   * depth=1, and propagates through useContentViews / useOpenSpecActions
+   * so content-view overlays close it before opening. */
+  const [dashboardMatch] = useRoute("/dashboard");
   const selectedId = match ? params?.id : undefined;
   const selectedSessionIdRef = useRef<string | undefined>(selectedId);
   selectedSessionIdRef.current = selectedId;
@@ -279,6 +286,7 @@ export default function App() {
     navigate,
     settingsMatch: !!settingsMatch,
     tunnelSetupMatch: !!tunnelSetupMatch,
+    dashboardMatch: !!dashboardMatch,
   });
 
   /** Clear every content view — App-level + useContentViews-owned. */
@@ -661,6 +669,7 @@ export default function App() {
     navigate,
     settingsMatch: !!settingsMatch,
     tunnelSetupMatch: !!tunnelSetupMatch,
+    dashboardMatch: !!dashboardMatch,
   });
 
   // Desktop back-arrow priority chain. See change: fix-desktop-back-navigation.
@@ -762,10 +771,12 @@ export default function App() {
 
   const sessionList = (
     <div className="flex flex-col h-full min-h-0">
-      {/* Active operator surfaces (Path B sister-coupling Feature 4) — mounted
-          at the top of the sidebar so it is visible across all session views.
-          Cell: pi-agent-dashboard-ux-message-discoverability/v1 (W4.4 + W6). */}
-      <ActiveOperatorSurfaces />
+      {/* Active operator surfaces was previously mounted here at the top
+          of the sidebar (cell pi-agent-dashboard-ux-message-discoverability/v1
+          W4.4 + W6). Split out 2026-05-26 to a dedicated `/dashboard` page
+          per operator-direct ratification 2026-05-26 ~00:40 CEST so the
+          sessions list page shows sessions only. The surfaces tile now
+          lives in <DashboardPage /> (see Route below). */}
       <div className="flex-1 flex flex-col min-h-0">
     <SessionList
       sessions={Array.from(sessions.values())}
@@ -1459,6 +1470,7 @@ export default function App() {
       folderEditorCwd,
       settingsMatch: !!settingsMatch,
       tunnelSetupMatch: !!tunnelSetupMatch,
+      dashboardMatch: !!dashboardMatch,
       hasPreview: !!previewState || !!piResourcesState || !!piResourceFilePreview || !!readmePreview || !!specsBrowserCwd || !!archiveBrowserCwd || !!diffViewSessionId || !!flowYamlPreview,
     });
     return apiProvider(
@@ -1503,7 +1515,9 @@ export default function App() {
             </div>
           }
           detailPanel={
-            settingsMatch ? (
+            dashboardMatch ? (
+              <DashboardPage />
+            ) : settingsMatch ? (
               <SettingsPanel />
             ) : tunnelSetupMatch ? (
               <ZrokInstallGuide onBack={() => navigate("/")} />
@@ -1641,7 +1655,7 @@ export default function App() {
           <div className="flex-1 flex flex-col min-w-0 min-h-0">{folderViewContent}</div>
         )}
         {/* Show session detail or landing page when no folder view is selected */}
-        {!folderTermCwd && !folderEditorCwd && !settingsMatch && !tunnelSetupMatch && (
+        {!folderTermCwd && !folderEditorCwd && !settingsMatch && !tunnelSetupMatch && !dashboardMatch && (
           archiveBrowserCwd ? (
             <ArchiveBrowserView
               cwd={archiveBrowserCwd}
@@ -1700,6 +1714,7 @@ export default function App() {
             )
           )
         )}
+        {dashboardMatch && <DashboardPage />}
         {settingsMatch && <SettingsPanel availableModels={(() => {
           const seen = new Set<string>();
           const models: Array<{ provider: string; id: string }> = [];

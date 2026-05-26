@@ -3,7 +3,7 @@ import { SpawnErrorBanner } from "./SpawnErrorBanner.js";
 import { getApiBase } from "../lib/api-context.js";
 import { useLocation } from "wouter";
 import { Icon } from "@mdi/react";
-import { mdiChevronRight, mdiChevronDown, mdiChevronUp, mdiPlus, mdiPin, mdiFolder, mdiFolderOpen, mdiConsoleLine, mdiCog, mdiPuzzleOutline, mdiFileDocumentOutline } from "@mdi/js";
+import { mdiChevronRight, mdiChevronDown, mdiChevronUp, mdiPlus, mdiPin, mdiFolder, mdiFolderOpen, mdiConsoleLine, mdiCog, mdiPuzzleOutline, mdiFileDocumentOutline, mdiViewDashboard } from "@mdi/js";
 import { PiLogo } from "./PiLogo.js";
 import { FolderActionBar } from "./FolderActionBar.js";
 import { encodeFolderPath } from "../lib/folder-encoding.js";
@@ -683,6 +683,15 @@ export function SessionList({ sessions, selectedId, onSelect, contextUsageMap, o
             <InstallButton canInstall={installPrompt.canInstall} isInstalled={installPrompt.isInstalled} prompt={installPrompt.prompt} />
             <TunnelButton />
             {headerExtra}
+            <button
+              onClick={() => navigate("/dashboard")}
+              className="text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]"
+              title="Dashboard"
+              aria-label="Dashboard"
+              data-testid="dashboard-btn"
+            >
+              <Icon path={mdiViewDashboard} size={0.6} />
+            </button>
             <button
               onClick={() => navigate("/settings")}
               className="text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]"
