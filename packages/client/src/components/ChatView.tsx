@@ -602,18 +602,44 @@ export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ se
         }
 
         if (msg.role === "thinking") {
-          // Match the live-streaming block's `defaultExpanded` prop (see
-          // ~line 446 below). Without this, the live ThinkingBlock
-          // (defaultExpanded) unmounts on `thinking_end` and a new keyed
-          // committed-row instance mounts under fresh `useState(false)`
-          // — the thinking body visually disappears the moment final-
-          // message rendering begins. See investigation: pi-dashboard-
-          // thinking-block-streaming-state-loss-investigation-2026-05-25.
+          // A committed thinking row stays expanded only while it is the
+          // latest committed message (model still actively reasoning OR
+          // thinking-just-finished-but-no-final-text-yet). Once the model
+          // moves on — any subsequent non-thinking, non-turnSeparator
+          // item exists in `visibleMessages` after this row — the row
+          // auto-collapses on next render. Turn separators are layout-
+          // only and don't count as "model moved on"; a collapsed tool-
+          // call group does count (it's downstream model output).
+          //
+          // The `-latest` | `-older` key suffix forces React to remount
+          // the ThinkingBlock when the latest→older transition occurs,
+          // so the new `defaultExpanded={false}` takes effect. Once a
+          // row is keyed `-older`, subsequent newer messages don't
+          // re-fire the key change (still `-older`), preserving the
+          // user's manual-toggle state if they expanded the older block
+          // by hand.
+          //
+          // The live-streaming branch below (~line 748) remains
+          // unconditional `defaultExpanded` — it renders
+          // `state.streamingThinking` directly and unmounts when the
+          // streaming block finishes.
+          //
+          // See investigations:
+          //   pi-dashboard-thinking-block-streaming-state-loss-
+          //   investigation-2026-05-25 (Bert commit 22978a8 first-pass
+          //   sticky-expanded fix) +
+          //   thinking-block-auto-collapse-cell-DONE-2026-05-25 (this
+          //   follow-up per operator chat 2026-05-25).
+          const isLatestThinking = !visibleMessages.slice(idx + 1).some((next) => {
+            if ((next as ToolCallGroup).type === "group") return true;
+            const nextRole = (next as import("../lib/event-reducer.js").ChatMessage).role;
+            return nextRole !== "thinking" && nextRole !== "turnSeparator";
+          });
           return (
             <ThinkingBlock
-              key={msg.id}
+              key={`${msg.id}-${isLatestThinking ? "latest" : "older"}`}
               content={msg.content}
-              defaultExpanded
+              defaultExpanded={isLatestThinking}
               startedAt={msg.startedAt}
               duration={msg.duration}
               pinContext={msg.entryId ? {

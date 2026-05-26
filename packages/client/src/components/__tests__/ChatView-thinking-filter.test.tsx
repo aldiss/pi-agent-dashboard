@@ -69,6 +69,49 @@ function stateWithThinkingRow(content: string = "model reasoning content") {
   return state;
 }
 
+function stateWithThinkingThenAssistant(
+  thinkingContent: string = "model reasoning content",
+  assistantContent: string = "final assistant text",
+) {
+  const state = createInitialState();
+  state.messages.push({
+    id: "thinking-1",
+    role: "thinking",
+    content: thinkingContent,
+    timestamp: Date.now() - 100,
+    startedAt: 1000,
+    duration: 500,
+  });
+  state.messages.push({
+    id: "msg-1",
+    role: "assistant",
+    content: assistantContent,
+    timestamp: Date.now(),
+  });
+  return state;
+}
+
+function stateWithThinkingThenTurnSeparator(
+  thinkingContent: string = "model reasoning content",
+) {
+  const state = createInitialState();
+  state.messages.push({
+    id: "thinking-1",
+    role: "thinking",
+    content: thinkingContent,
+    timestamp: Date.now() - 100,
+    startedAt: 1000,
+    duration: 500,
+  });
+  state.messages.push({
+    id: "sep-1",
+    role: "turnSeparator",
+    content: "",
+    timestamp: Date.now(),
+  });
+  return state;
+}
+
 describe("ChatView committed thinking-row filter visibility", () => {
   it("renders committed thinking row under the default MessageFilter (no localStorage override)", () => {
     const state = stateWithThinkingRow("first-pilot reasoning content");
@@ -133,5 +176,92 @@ describe("ChatView committed thinking-row filter visibility", () => {
 
     // Clean up localStorage so we don't pollute sibling tests.
     window.localStorage.removeItem(`dashboard:messageFilter:${sessionId}`);
+  });
+});
+
+/**
+ * Auto-collapse contract for committed thinking rows.
+ *
+ * Operator intent verbatim (chat 2026-05-25, typos preserved per AGENTS.md
+ * Pattern 87 byte-identical discipline): "the thinking block sgould fold
+ * once the next message to the user is rendered. right now it is always
+ * open".
+ *
+ * Mechanism (ChatView.tsx committed thinking branch): compute
+ * `isLatestThinking = (no subsequent non-thinking, non-turnSeparator item
+ * exists in visibleMessages after this row)`. Pass
+ * `defaultExpanded={isLatestThinking}` + key-suffix `-latest` | `-older`
+ * so the latest→older transition forces remount with the new
+ * `defaultExpanded=false`, auto-collapsing the block. Turn separators are
+ * layout-only and do not count as "model moved on".
+ *
+ * Sister to ChatView.tsx commit 22978a8 (Bert sticky-expanded fix) +
+ * commit 2283c20 (thinking-tierB reclassification) + Mega-Cluster M v2.0
+ * tier-(a) empirical-cycle-pass discipline.
+ */
+describe("ChatView committed thinking-row auto-collapse contract", () => {
+  it("keeps the thinking row expanded when it is the latest message", () => {
+    const content = "latest-thinking reasoning content";
+    const state = stateWithThinkingRow(content);
+    const { container } = render(
+      <ThemeProvider>
+        <ChatView state={state} toolContext={defaultToolContext} />
+      </ThemeProvider>,
+    );
+
+    // Reasoning button still in DOM (row not filtered out).
+    const reasoningButtons = Array.from(container.querySelectorAll("button"))
+      .filter((b) => /Reasoning/.test(b.textContent ?? ""));
+    expect(reasoningButtons.length).toBe(1);
+
+    // Body content visible — ThinkingBlock renders the content only inside
+    // the expanded branch (see ThinkingBlock.tsx). If `defaultExpanded`
+    // were false, the body wouldn't be in the DOM.
+    expect(container.textContent ?? "").toContain(content);
+  });
+
+  it("auto-collapses the thinking row when a subsequent assistant message exists", () => {
+    const thinkingContent = "older-thinking reasoning content";
+    const assistantContent = "final assistant message body";
+    const state = stateWithThinkingThenAssistant(thinkingContent, assistantContent);
+    const { container } = render(
+      <ThemeProvider>
+        <ChatView state={state} toolContext={defaultToolContext} />
+      </ThemeProvider>,
+    );
+
+    // Reasoning header button is still present (row not filtered out).
+    const reasoningButtons = Array.from(container.querySelectorAll("button"))
+      .filter((b) => /Reasoning/.test(b.textContent ?? ""));
+    expect(reasoningButtons.length).toBe(1);
+
+    // The collapsed-body discriminator: ThinkingBlock only renders
+    // `content` inside the `{expanded && (...)}` branch. With
+    // `defaultExpanded=false` the body MUST NOT appear in the DOM.
+    expect(container.textContent ?? "").not.toContain(thinkingContent);
+
+    // Sanity — the assistant message is rendered (proves the state
+    // shape reached the renderer; rules out the row being filtered
+    // away as a no-op success).
+    expect(container.textContent ?? "").toContain(assistantContent);
+  });
+
+  it("does NOT auto-collapse the thinking row when only a turnSeparator follows it", () => {
+    // Turn separators are layout-only borders; the model has not yet
+    // emitted text-to-user, so the thinking block should stay expanded.
+    const content = "separator-only reasoning content";
+    const state = stateWithThinkingThenTurnSeparator(content);
+    const { container } = render(
+      <ThemeProvider>
+        <ChatView state={state} toolContext={defaultToolContext} />
+      </ThemeProvider>,
+    );
+
+    const reasoningButtons = Array.from(container.querySelectorAll("button"))
+      .filter((b) => /Reasoning/.test(b.textContent ?? ""));
+    expect(reasoningButtons.length).toBe(1);
+
+    // Body is still in the DOM — the row remains expanded.
+    expect(container.textContent ?? "").toContain(content);
   });
 });
