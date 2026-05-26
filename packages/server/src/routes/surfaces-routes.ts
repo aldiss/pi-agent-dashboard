@@ -32,6 +32,15 @@ export type SurfaceTier = "A" | "B" | "C";
 /** Surface-type canonical enum (matches client icon mapping). */
 export type SurfaceType = "deck" | "spec" | "brief" | "substrate" | "session-log" | "other";
 
+/**
+ * Operator-action canonical enum per pi-config CLI extension 2026-05-26 + Joan
+ * tenure-27 operator-direct ratification verbatim per Pattern 87:
+ * *"we need to distinguish cleanly between the items where there are actions on me?"*.
+ * 5-value enum; default 'none' (informational surface; no operator action required);
+ * `ratify`/`push`/`review`/`decide` distinguish the four operator-action shapes.
+ */
+export type OperatorAction = "none" | "ratify" | "push" | "review" | "decide";
+
 export interface ActiveSurface {
   id: string;
   url: string | null;
@@ -43,6 +52,8 @@ export interface ActiveSurface {
   tier: SurfaceTier;
   expires_at: string | null;
   lifecycle_state: LifecycleState;
+  /** Default 'none' when not specified in canonical state-file (backward-compat). */
+  operator_action: OperatorAction;
 }
 
 export interface ActiveSurfacesResponse {
@@ -86,6 +97,7 @@ function resolveCanonicalPath(): string {
  *   - **Tier:** A|B|C
  *   - **Expires at:** <ISO-or-null>
  *   - **Lifecycle state:** active|expiring|expired|archived
+ *   - **Operator action:** none|ratify|push|review|decide  (optional; default 'none' for backward-compat)
  */
 export function parseActiveSurfacesMarkdown(content: string): ActiveSurfacesResponse {
   const result: ActiveSurfacesResponse = {
@@ -163,6 +175,12 @@ export function parseActiveSurfacesMarkdown(content: string): ActiveSurfacesResp
         ? lifecycleRaw
         : "active"
     ) as LifecycleState;
+    const operatorActionRaw = (fields["operator action"] ?? "none").toLowerCase();
+    const operator_action: OperatorAction = (
+      ["none", "ratify", "push", "review", "decide"].includes(operatorActionRaw)
+        ? operatorActionRaw
+        : "none"
+    ) as OperatorAction;
 
     result.surfaces.push({
       id,
@@ -175,6 +193,7 @@ export function parseActiveSurfacesMarkdown(content: string): ActiveSurfacesResp
       tier,
       expires_at: fields["expires at"] ?? null,
       lifecycle_state,
+      operator_action,
     });
   }
   return result;

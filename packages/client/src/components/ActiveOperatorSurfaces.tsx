@@ -39,6 +39,7 @@ import { formatRelativeTime } from "../lib/format.js";
 type LifecycleState = "active" | "expiring" | "expired" | "archived";
 type SurfaceTier = "A" | "B" | "C";
 type SurfaceType = "deck" | "spec" | "brief" | "substrate" | "session-log" | "other";
+type OperatorAction = "none" | "ratify" | "push" | "review" | "decide";
 
 interface ActiveSurface {
   id: string;
@@ -51,6 +52,7 @@ interface ActiveSurface {
   tier: SurfaceTier;
   expires_at: string | null;
   lifecycle_state: LifecycleState;
+  operator_action?: OperatorAction;
 }
 
 interface ActiveSurfacesResponse {
@@ -116,6 +118,32 @@ function tierClasses(tier: SurfaceTier): string {
   }
 }
 
+/** Operator-action visual distinction per Joan tenure-27 operator-direct
+ *  ratification 2026-05-26 ~00:30 CEST. Returns CSS classes for a small badge
+ *  + left-border accent on the row. Default 'none' returns empty (no visual
+ *  distinction; informational surface). */
+function operatorActionBadgeClasses(action: OperatorAction): string {
+  switch (action) {
+    case "ratify":
+      return "bg-amber-500/20 text-amber-300 border border-amber-500/40";
+    case "push":
+      return "bg-blue-500/20 text-blue-300 border border-blue-500/40";
+    case "review":
+      return "bg-violet-500/20 text-violet-300 border border-violet-500/40";
+    case "decide":
+      return "bg-red-500/20 text-red-300 border border-red-500/40";
+    case "none":
+    default:
+      return "";
+  }
+}
+
+/** Left-border accent for rows that require operator action (operator_action ≠ 'none'). */
+function operatorActionRowAccent(action: OperatorAction): string {
+  if (action === "none") return "";
+  return "border-l-2 border-l-amber-500/60";
+}
+
 function lifecycleDotClasses(state: LifecycleState): string {
   switch (state) {
     case "active":
@@ -158,9 +186,14 @@ function SurfaceRow({ surface }: { surface: ActiveSurface }): React.ReactElement
 
   const typeIcon = SURFACE_TYPE_ICONS[surface.surface_type];
   const hasHttp = !!surface.url && /^https?:\/\//i.test(surface.url);
+  const operatorAction: OperatorAction = surface.operator_action ?? "none";
+  const showActionBadge = operatorAction !== "none";
 
   return (
-    <li className="px-2 py-1.5 border-b border-[var(--border-color)] last:border-b-0 hover:bg-[var(--bg-surface)] transition-colors">
+    <li
+      className={`px-2 py-1.5 border-b border-[var(--border-color)] last:border-b-0 hover:bg-[var(--bg-surface)] transition-colors ${operatorActionRowAccent(operatorAction)}`}
+      data-operator-action={operatorAction}
+    >
       <div className="flex items-start gap-2">
         <div
           className={`w-1.5 h-1.5 rounded-full mt-1.5 flex-shrink-0 ${lifecycleDotClasses(surface.lifecycle_state)}`}
@@ -180,6 +213,15 @@ function SurfaceRow({ surface }: { surface: ActiveSurface }): React.ReactElement
             >
               {surface.tier}
             </span>
+            {showActionBadge && (
+              <span
+                className={`text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded ${operatorActionBadgeClasses(operatorAction)}`}
+                title={`operator action: ${operatorAction}`}
+                aria-label={`operator action ${operatorAction}`}
+              >
+                {operatorAction}
+              </span>
+            )}
             <span className="text-xs font-medium text-[var(--text-primary)] truncate">
               {surface.id}
             </span>
