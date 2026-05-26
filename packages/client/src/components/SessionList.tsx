@@ -685,20 +685,20 @@ export function SessionList({ sessions, selectedId, onSelect, contextUsageMap, o
             {headerExtra}
             <button
               onClick={() => navigate("/dashboard")}
-              className="text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]"
+              className="text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] p-2"
               title="Dashboard"
               aria-label="Dashboard"
               data-testid="dashboard-btn"
             >
-              <Icon path={mdiViewDashboard} size={0.6} />
+              <Icon path={mdiViewDashboard} size={0.9} />
             </button>
             <button
               onClick={() => navigate("/settings")}
-              className="text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]"
+              className="text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] p-2"
               title="Settings"
               data-testid="settings-btn"
             >
-              <Icon path={mdiCog} size={0.6} />
+              <Icon path={mdiCog} size={0.9} />
             </button>
           </div>
         </div>
