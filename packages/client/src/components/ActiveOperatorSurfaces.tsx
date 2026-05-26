@@ -393,7 +393,7 @@ export function ActiveOperatorSurfaces(): React.ReactElement | null {
         </button>
       </button>
       {!collapsed && (
-        <div id="active-operator-surfaces-list" className="max-h-64 overflow-y-auto">
+        <div id="active-operator-surfaces-list">
           {error ? (
             <div className="px-2 py-1.5 text-[11px] text-red-400">
               Failed to load: {error}
