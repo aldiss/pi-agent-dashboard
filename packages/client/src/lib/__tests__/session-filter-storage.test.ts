@@ -6,6 +6,10 @@ import {
   setCollapsedGroups,
   pruneStaleCollapsedGroups,
   removeLegacyHiddenSessions,
+  getStaleHoursThreshold,
+  setStaleHoursThreshold,
+  getHideStale,
+  setHideStale,
 } from "../session-filter-storage.js";
 
 // Node 25's built-in localStorage overrides jsdom's and lacks standard methods.
@@ -92,6 +96,48 @@ describe("session-filter-storage", () => {
     it("should handle empty collapsed set", () => {
       const result = pruneStaleCollapsedGroups(new Set(["/a"]));
       expect(result).toEqual(new Set());
+    });
+  });
+
+  describe("getStaleHoursThreshold / setStaleHoursThreshold", () => {
+    it("defaults to 24 when nothing stored", () => {
+      expect(getStaleHoursThreshold()).toBe(24);
+    });
+
+    it("round-trips a positive number", () => {
+      setStaleHoursThreshold(48);
+      expect(getStaleHoursThreshold()).toBe(48);
+    });
+
+    it("round-trips 0 (filter disabled)", () => {
+      setStaleHoursThreshold(0);
+      expect(getStaleHoursThreshold()).toBe(0);
+    });
+
+    it("falls back to default on malformed storage", () => {
+      store.set("dashboard:staleHours", "not-a-number");
+      expect(getStaleHoursThreshold()).toBe(24);
+    });
+
+    it("falls back to default on negative stored value", () => {
+      store.set("dashboard:staleHours", "-5");
+      expect(getStaleHoursThreshold()).toBe(24);
+    });
+  });
+
+  describe("getHideStale / setHideStale", () => {
+    it("defaults to true when nothing stored", () => {
+      expect(getHideStale()).toBe(true);
+    });
+
+    it("round-trips true", () => {
+      setHideStale(true);
+      expect(getHideStale()).toBe(true);
+    });
+
+    it("round-trips false", () => {
+      setHideStale(false);
+      expect(getHideStale()).toBe(false);
     });
   });
 });

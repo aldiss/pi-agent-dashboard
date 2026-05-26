@@ -195,6 +195,134 @@ export function filterSessions(
 }
 
 /**
+ * Hide "stale-active" sessions — those whose status is not `ended` but which
+ * haven't seen activity in {@link staleHoursThreshold} hours. Activity is
+ * judged from `max(lastActivityAt, startedAt)`, since cold-started sessions
+ * may lack `lastActivityAt` until the first server event arrives.
+ *
+ * The currently-selected session (if any) is always preserved so the user
+ * doesn't lose context when the filter sweeps. `staleHoursThreshold <= 0`
+ * OR `hideStale === false` disables the filter entirely (input passes through).
+ *
+ * Ended sessions are intentionally NOT filtered here — their visibility is
+ * governed by the existing per-folder "show ended" affordance.
+ */
+export function filterStaleSessions(
+  sessions: DashboardSession[],
+  staleHoursThreshold: number,
+  hideStale: boolean,
+  now: number,
+  selectedId?: string,
+): DashboardSession[] {
+  if (!hideStale) return sessions;
+  if (!Number.isFinite(staleHoursThreshold) || staleHoursThreshold <= 0) return sessions;
+  const cutoff = now - staleHoursThreshold * 3600 * 1000;
+  return sessions.filter((s) => {
+    if (s.id === selectedId) return true;
+    if (s.status === "ended") return true;
+    const lastActivity = Math.max(s.lastActivityAt ?? 0, s.startedAt);
+    return lastActivity >= cutoff;
+  });
+}
+
+/**
+ * Coarse-grained role tier the session belongs to, for sidebar primary
+ * grouping. Orthogonal to directory grouping (which becomes secondary).
+ *
+ * Tier order (when rendered): standing-crew → cell-executor →
+ * operator-chat-pane → worker → other. Empty tiers are omitted by
+ * {@link groupSessionsByTier}.
+ */
+export type SessionTier = "standing-crew" | "cell-executor" | "operator-chat-pane" | "worker" | "other";
+
+/**
+ * Canonical tier order used by {@link groupSessionsByTier}. Exported for
+ * call sites that need to iterate tiers in display order without
+ * reconstructing the list.
+ */
+export const SESSION_TIER_ORDER: ReadonlyArray<SessionTier> = [
+  "standing-crew",
+  "cell-executor",
+  "operator-chat-pane",
+  "worker",
+  "other",
+];
+
+/** Anchored at start-of-name so e.g. `"NotJoan"` does not match. */
+const STANDING_CREW_NAME_RE = /^(Bert|Joan|Peggy|Lane|Pete|Faye)(-|$)/i;
+
+/** Subagent worker by name (e.g. `subagent-worker-3f4a…`). */
+const SUBAGENT_WORKER_NAME_RE = /^subagent-worker-[0-9a-f]/i;
+
+/** Cell-internal worker subagent by session-file path (`…/run-<n>/session.jsonl`). */
+const WORKER_SESSION_FILE_RE = /\/run-\d+\/session\.jsonl$/;
+
+/** Themed-name pattern: PascalCase compound (`OakHawk`, `UltraMoon`, …). */
+const THEMED_NAME_RE = /^[A-Z][a-z]+[A-Z][a-z]+/;
+
+/**
+ * Classify a session into a {@link SessionTier} for sidebar grouping.
+ *
+ * Decision order (first match wins):
+ *   1. `name` matches `subagent-worker-…` → `worker`.
+ *   2. `sessionFile` path ends `/run-N/session.jsonl` (cell-internal worker) → `worker`.
+ *   3. `name` starts with a standing-crew canonical name (Bert / Joan / Peggy / Lane / Pete / Faye)
+ *      anchored at start-of-name → `standing-crew`.
+ *   4. `source === "tui"` → `operator-chat-pane`.
+ *   5. `source === "tmux"` AND (name contains `"cell-executor"` OR themed-PascalCase name
+ *      combined with a cell-pattern indicator — `"cell"` / `"ephemeral"` / `"l2"` substring
+ *      in name, or cwd containing `"/.pi/cells/"`) → `cell-executor`.
+ *   6. Else → `other`.
+ *
+ * Matches the AGENTS.md v1.3.1 standing-crew canonical-name discipline + the
+ * cell-pattern v0.4 cell-executor naming conventions; sessions that do not
+ * fit either fall to `other` so the sidebar still surfaces them.
+ */
+export function classifyTier(session: DashboardSession): SessionTier {
+  const name = session.name ?? "";
+  if (SUBAGENT_WORKER_NAME_RE.test(name)) return "worker";
+  if (session.sessionFile && WORKER_SESSION_FILE_RE.test(session.sessionFile)) return "worker";
+  if (STANDING_CREW_NAME_RE.test(name)) return "standing-crew";
+  if (session.source === "tui") return "operator-chat-pane";
+  if (session.source === "tmux") {
+    if (name.includes("cell-executor")) return "cell-executor";
+    if (THEMED_NAME_RE.test(name)) {
+      const lower = name.toLowerCase();
+      const inCellsCwd = (session.cwd ?? "").includes("/.pi/cells/");
+      const cellIndicatorInName =
+        lower.includes("cell") || lower.includes("ephemeral") || lower.includes("l2");
+      if (cellIndicatorInName || inCellsCwd) return "cell-executor";
+    }
+  }
+  return "other";
+}
+
+/**
+ * Group sessions by tier in canonical display order. Tiers with zero
+ * sessions are omitted from the returned Map; the Map's iteration order
+ * matches {@link SESSION_TIER_ORDER} so callers can render headers directly.
+ *
+ * Within each tier, sessions are returned in their original input order;
+ * call {@link groupSessionsByDirectory} on each tier's sessions for the
+ * secondary directory grouping.
+ */
+export function groupSessionsByTier(
+  sessions: DashboardSession[],
+): Map<SessionTier, DashboardSession[]> {
+  const buckets = new Map<SessionTier, DashboardSession[]>();
+  for (const tier of SESSION_TIER_ORDER) buckets.set(tier, []);
+  for (const s of sessions) {
+    buckets.get(classifyTier(s))!.push(s);
+  }
+  const result = new Map<SessionTier, DashboardSession[]>();
+  for (const tier of SESSION_TIER_ORDER) {
+    const arr = buckets.get(tier)!;
+    if (arr.length > 0) result.set(tier, arr);
+  }
+  return result;
+}
+
+/**
  * Case-insensitive substring search over a folder's session list.
  * Matches against the same string the user actually sees on the card:
  *   1. `name` (if non-empty)
