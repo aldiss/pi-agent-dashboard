@@ -180,6 +180,14 @@ export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ se
   const scrollRef = useRef<HTMLDivElement>(null);
   const isNearBottom = useRef(true);
   const programmaticScroll = useRef(false);
+  // viewportResizing — true during the iOS-rotation / keyboard-show / address-bar-collapse
+  // animation envelope (~350 ms). iOS Safari fires multiple onScroll events during a
+  // viewport-resize sequence as layout reflows; without this gate handleScroll would
+  // misread mid-flux geometry and flip isNearBottom to false, defeating the re-stick
+  // logic in the viewport-resize useEffect below.
+  // Sister-shape to programmaticScroll; see fix-mobile-chat-scroll-orientation-flip
+  // (operator empirical 2026-05-29 iPhone PWA orientation flip).
+  const viewportResizing = useRef(false);
   // Race-safe across multi-batch event_replay: when ChatView itself initiates a
   // scroll, the resulting onScroll can fire after another replay batch has grown
   // scrollHeight, making handleScroll misread the geometry as "user scrolled up".
@@ -218,7 +226,9 @@ export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ se
     // onScroll event lags scrollTo and can fire after the next replay batch has
     // grown scrollHeight; measuring then would falsely conclude the user scrolled
     // away from the bottom. Only real user gestures should reach this code path.
-    if (programmaticScroll.current) return;
+    // viewportResizing extends the same suppression to the iOS-rotation / keyboard
+    // / address-bar viewport-resize animation envelope (see useEffect below).
+    if (programmaticScroll.current || viewportResizing.current) return;
     const el = scrollRef.current;
     if (!el) return;
     const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < SCROLL_THRESHOLD;
@@ -289,6 +299,83 @@ export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ se
       });
     }
   }, [state.messages.length, state.streamingText, state.pendingPrompt, markProgrammatic]);
+
+  // Re-anchor scroll position to bottom after viewport resize (iOS-rotation,
+  // keyboard show/hide, address-bar collapse/expand).
+  //
+  // iOS Safari preserves scrollTop (not scrollBottom) across viewport changes.
+  // When iPhone rotates vertical→horizontal, the chat scroll container's
+  // clientHeight shrinks AND content reflows (lines wrap differently → different
+  // scrollHeight). A user who was at the bottom of a long chat lands mid-chat
+  // post-rotation with no auto-recovery: the auto-scroll effect above only
+  // re-runs on messages.length / streamingText change, neither of which fires
+  // on rotation.
+  //
+  // Operator empirical 2026-05-29 (Pattern 87 verbatim, typos preserved):
+  //   "when i flip the screen from bertical to horizonataæ and back i end up
+  //   in the midddle of the session and then has to scroll for a minite to
+  //   actialæy go to the bottom"
+  //
+  // Strategy:
+  //   1. Snapshot isNearBottom SYNCHRONOUSLY on first resize event of a sequence
+  //      (before handleScroll misreads mid-flux geometry and flips it to false).
+  //      Also raise viewportResizing so handleScroll ignores racing onScroll
+  //      events during the animation envelope.
+  //   2. Debounce settle: visualViewport.resize fires repeatedly during the
+  //      rotation animation; clear+reschedule the settle timer so only the final
+  //      geometry triggers the re-scroll.
+  //   3. On settle (~350 ms — iOS rotation animation ~300 ms + buffer for
+  //      safe-area-inset finalization), if was-near-bottom, scroll to new
+  //      scrollHeight. If operator scrolled up pre-rotation, preserve their
+  //      position (no snap-to-bottom).
+  //
+  // Composes with useKeyboardInsets (r29.1 baseline-subtraction) at sister
+  // layer: useKeyboardInsets owns the --keyboard-h CSS-var for paddingBottom
+  // accounting; THIS effect owns the chat-scroll-anchor restoration.
+  //
+  // See fix-mobile-chat-scroll-orientation-flip.
+  useEffect(() => {
+    let wasNearBottomAtResizeStart: boolean | null = null;
+    let settleTimer: ReturnType<typeof setTimeout> | null = null;
+    const handleViewportResize = () => {
+      if (wasNearBottomAtResizeStart === null) {
+        wasNearBottomAtResizeStart = isNearBottom.current;
+        viewportResizing.current = true;
+      }
+      if (settleTimer) clearTimeout(settleTimer);
+      settleTimer = setTimeout(() => {
+        const snapshot = wasNearBottomAtResizeStart;
+        wasNearBottomAtResizeStart = null;
+        settleTimer = null;
+        viewportResizing.current = false;
+        if (!snapshot) return; // operator scrolled up pre-resize — preserve their position
+        const el = scrollRef.current;
+        if (!el) return;
+        markProgrammatic();
+        el.scrollTo(0, el.scrollHeight);
+        isNearBottom.current = true;
+        setShowScrollButton(false);
+        if (sessionId) {
+          scrollStateMap.set(sessionId, { scrollTop: el.scrollHeight, nearBottom: true });
+        }
+      }, 350);
+    };
+    const vv = typeof window !== "undefined" ? window.visualViewport : null;
+    vv?.addEventListener("resize", handleViewportResize);
+    // orientationchange is deprecated but fires earlier than visualViewport.resize
+    // on some iOS versions; listening to both is harmless (debounce coalesces).
+    if (typeof window !== "undefined") {
+      window.addEventListener("orientationchange", handleViewportResize);
+    }
+    return () => {
+      vv?.removeEventListener("resize", handleViewportResize);
+      if (typeof window !== "undefined") {
+        window.removeEventListener("orientationchange", handleViewportResize);
+      }
+      if (settleTimer) clearTimeout(settleTimer);
+      viewportResizing.current = false;
+    };
+  }, [sessionId, markProgrammatic]);
 
   // Group consecutive repeated tool calls for cleaner display
   const filteredMessages = useMemo(() => {
