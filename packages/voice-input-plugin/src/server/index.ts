@@ -98,6 +98,19 @@ export async function register(
     clearInterval(pollTimer);
   });
 
+  // Register a content-type parser for multipart/form-data + audio/* binary
+  // bodies. Without this, Fastify 5.x rejects with HTTP 415
+  // FST_ERR_CTP_INVALID_MEDIA_TYPE before the route handler runs, which
+  // breaks the client's FormData POST. Buffer is exposed as request.body;
+  // the handler reads it directly instead of via readRawBody().
+  // Per SwiftViper voice-input-investigation /tmp/voice-input-investigation-report.md
+  // (cross-machine root cause; Option B recommended-fix; operator-pre-ratified 2026-05-29 ~17:45 CEST verbatim "voice input - defaults").
+  fastify.addContentTypeParser(
+    /^multipart\/form-data|^audio\//,
+    { parseAs: "buffer", bodyLimit: 50_000_000 },
+    (_req, body, done) => done(null, body)
+  );
+
   fastify.get("/api/plugins/voice-input/health", async (_request, reply) => {
     if (!state.sidecarHealthy) {
       void probeSidecar(state);
@@ -126,7 +139,10 @@ export async function register(
     }
 
     try {
-      const body = await readRawBody(request);
+      // request.body is the Buffer parsed by addContentTypeParser above;
+      // fall back to readRawBody for legacy content-types not matched by the
+      // parser regex (defense-in-depth).
+      const body = (request.body as Buffer | undefined) ?? (await readRawBody(request));
       const controller = new AbortController();
       const timer = setTimeout(
         () => controller.abort(),
