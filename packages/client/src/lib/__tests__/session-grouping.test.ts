@@ -150,6 +150,7 @@ describe("classifyTier", () => {
     expect(classifyTier(s({ name: "Lane" }))).toBe("standing-crew");
     expect(classifyTier(s({ name: "Pete-qa" }))).toBe("standing-crew");
     expect(classifyTier(s({ name: "Faye-tenure-2" }))).toBe("standing-crew");
+    expect(classifyTier(s({ name: "Don-tenure-1" }))).toBe("standing-crew");
   });
 
   it("is case-insensitive for standing-crew canonical names", () => {
