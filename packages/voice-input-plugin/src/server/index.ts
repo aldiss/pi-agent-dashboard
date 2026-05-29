@@ -174,4 +174,9 @@ async function readRawBody(request: FastifyRequest): Promise<Buffer> {
   });
 }
 
-export default register;
+// Plugin-runtime calls default(ctx) where ctx = { fastify, sessionManager, logger, ... }.
+// register() expects raw Fastify instance. Unwrap here.
+export default function(ctx: any) {
+  const fastify = ctx && ctx.fastify ? ctx.fastify : ctx;
+  return register(fastify);
+};
