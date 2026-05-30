@@ -57,5 +57,37 @@ export default defineConfig({
         browserName: "webkit",
       },
     },
+    {
+      name: "desktop-chromium",
+      use: {
+        ...devices["Desktop Chrome"],
+        // Desktop Chromium 1280x720 viewport per Playwright canonical default.
+        // Added 2026-05-29 ~22:00 CEST per operator-empirical SCOPE EXPANSION.
+        // EMPIRICAL FINDING 2026-05-29 ~22:15 CEST: desktop-chromium does NOT
+        // faithfully reproduce the operator-empirical bug on desktop — Chromium
+        // appears to handle scrollTop preservation differently than WebKit on
+        // viewport-resize. Sister-evidence: WITHOUT patch, desktop-chromium
+        // re-stick-to-bottom tests PASS unexpectedly. Hypothesis: operator's
+        // desktop browser IS Safari WebKit (Mac default); desktop-webkit
+        // project below provides faithful empirical-cycle coverage.
+        browserName: "chromium",
+      },
+    },
+    {
+      name: "desktop-webkit",
+      use: {
+        ...devices["Desktop Safari"],
+        // Desktop Safari WebKit (Mac canonical) at 1280x720.
+        // Sister to desktop-chromium per panel-diversity empirical-cycle coverage.
+        // Operator's Mac desktop browser canonical IS Safari WebKit; THIS project
+        // provides faithful empirical-cycle for the operator-empirical SCOPE
+        // EXPANSION 2026-05-29 ~22:00 CEST verbatim:
+        //   "UI scroll going to middle of history ALSO APPEARS ON DESKTOP"
+        // Per Mega-Cluster M v2.0 tier-(b) extension #2 v2 refinement #6 desktop
+        // empirical-cycle verification required when fix changes scroll behavior
+        // across viewport-change events.
+        browserName: "webkit",
+      },
+    },
   ],
 });
