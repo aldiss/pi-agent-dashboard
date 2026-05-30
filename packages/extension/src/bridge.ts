@@ -1265,8 +1265,13 @@ function initBridge(pi: ExtensionAPI) {
     const firstMessage = extractFirstMessage(ctx);
     lastFirstMessage = firstMessage;
 
-    // Register session with initial model/thinkingLevel
-    lastSessionName = pi.getSessionName() ?? "";
+    // Register session with initial model/thinkingLevel.
+    // PI_AGENT_NAME env-var fallback: same shape as session-sync.ts:66+136 sister
+    // (dashboard-session-naming-clarity-fix Bug B-1) — empirically B-1 was incomplete
+    // because this primary init-path bridge.ts:1269 was missed; session-sync.ts only
+    // fires on session change/fork while this fires on first bridge connect. Sister
+    // canonical to Bug B-1; canonical-required at-shape: B-1 part-2.
+    lastSessionName = pi.getSessionName() ?? process.env.PI_AGENT_NAME ?? "";
     const initialModel = getCurrentModelString(syncBc());
     const initialThinkingLevel = (pi as any).getThinkingLevel?.() ?? undefined;
     lastModel = initialModel;
