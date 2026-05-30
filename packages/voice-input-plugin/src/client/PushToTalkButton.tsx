@@ -265,7 +265,11 @@ export function PushToTalkButton({
     setPhase("uploading");
     try {
       const form = new FormData();
-      form.append("audio", blob, "recording.webm");
+      // Derive filename extension from blob.type so iPhone Safari (audio/mp4)
+      // doesn't get labeled "recording.webm" — sidecar reads the multipart
+      // part Content-Type + filename to hint ffmpeg's container detection.
+      const ext = (blob.type.split("/")[1]?.split(";")[0] || "webm").replace("x-", "");
+      form.append("audio", blob, `recording.${ext}`);
       const res = await fetch(endpoint, { method: "POST", body: form });
       if (!res.ok) {
         const body = await res.text();
@@ -327,7 +331,19 @@ export function PushToTalkButton({
         if (e.data && e.data.size > 0) chunksRef.current.push(e.data);
       };
       recorder.onstop = () => {
-        const blob = new Blob(chunksRef.current, { type: "audio/webm" });
+        // Use MediaRecorder's actual mimeType (iPhone Safari = audio/mp4;
+        // desktop browsers = audio/webm) instead of hardcoding "audio/webm".
+        // Filename extension derivation lives in uploadBlob() above.
+        //
+        // Normalize MIME type — strip non-standard `x-` prefix (iPhone Safari
+        // MAY emit "audio/x-m4a"; sidecar's audio_format derivation passes the
+        // suffix verbatim to ffmpeg as `-f x-m4a` which ffmpeg rejects with
+        // "Unknown input format"). Defense-in-depth: client normalizes here;
+        // sidecar also strips at audio_format derivation per voice-input/v1
+        // W5 amendment (Bug #9 dual-tier fix).
+        const rawMimeType = recorder.mimeType || "audio/webm";
+        const mimeType = rawMimeType.replace(/^audio\/x-/, "audio/");
+        const blob = new Blob(chunksRef.current, { type: mimeType });
         if (streamRef.current) {
           try {
             streamRef.current.getTracks().forEach((t) => t.stop());
