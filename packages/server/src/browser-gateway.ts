@@ -342,6 +342,15 @@ export function createBrowserGateway(
         };
 
         switch (msg.type) {
+          case "ping":
+            // Client keep-alive ping (added 2026-05-30 for iOS Safari background-tab
+            // WebSocket idle-kill mitigation; iOS Safari closes idle WS after
+            // ~30-60s without traffic, regardless of TCP-level keepalive).
+            // Server responds with pong; client tracks pong receipt as liveness
+            // signal. Sister-shape to pi-gateway.ts WS_PING_INTERVAL discipline
+            // (cell→server tier) extended to browser→server tier.
+            sendTo(ws, { type: "pong" } as any);
+            break;
           case "subscribe":
             handleSubscribe(msg, subs, ctx);
             break;

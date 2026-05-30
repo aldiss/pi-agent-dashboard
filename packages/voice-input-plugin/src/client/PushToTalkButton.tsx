@@ -327,7 +327,17 @@ export function PushToTalkButton({
         if (e.data && e.data.size > 0) chunksRef.current.push(e.data);
       };
       recorder.onstop = () => {
-        const blob = new Blob(chunksRef.current, { type: "audio/webm" });
+        // iOS 18.7+ Safari WebKit MediaRecorder produces audio/mp4 (ISO BMFF container
+        // starts with 0x00 0x00 0x00 NN ftyp...), not audio/webm. Hardcoding "audio/webm"
+        // here caused the sidecar's ffmpeg -f webm decoder to fail with "EBML header
+        // parsing failed 0x00 at pos 0" because the bytes are not actually webm/EBML.
+        // Sister-shape to _serve.py:122 x- prefix normalization (pre-existing iOS defense).
+        // recorder.mimeType returns the actual format MediaRecorder negotiated with the
+        // browser engine (e.g., "audio/mp4" on iOS Safari, "audio/webm;codecs=opus" on
+        // Chrome). Empirical root-cause traced via ~/.pi/logs/voice-sidecar.err 2026-05-30.
+        const blob = new Blob(chunksRef.current, {
+          type: recorder.mimeType || "audio/webm",
+        });
         if (streamRef.current) {
           try {
             streamRef.current.getTracks().forEach((t) => t.stop());
