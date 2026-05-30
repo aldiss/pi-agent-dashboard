@@ -98,6 +98,29 @@ export interface SubagentState {
 
 export interface SessionState {
   messages: ChatMessage[];
+  /**
+   * Lookup-table maintained alongside `messages[]`: maps `ChatMessage.id`
+   * → index into `messages`. Enables O(1) in-place updates by id
+   * (e.g. `resolveInteractiveRequest`, `dismissInteractiveRequest`)
+   * without an O(n) full-array `map(...)` allocation per call.
+   *
+   * Maintenance discipline: rebuilt at the end of `reduceEvent` whenever
+   * the `messages` array reference changes. Cost is O(n) per event
+   * — same complexity as the existing per-event walks — but enables
+   * O(1) consumer-side lookups by id at any subsequent reducer site.
+   *
+   * Honest disclosure (W4b): the existing hot-path lookups in this
+   * reducer are keyed by `toolCallId` / `nonce` / `role`, NOT by
+   * `msg.id`. A msg.id-keyed Map therefore does NOT eliminate those
+   * walks; replacing them would require additional indices keyed by
+   * the relevant predicate AND a behavior-equivalence audit (some
+   * predicates currently match multiple roles by accident — e.g.
+   * `findLastIndex(m => m.toolCallId === X)` could match an
+   * `interactiveUi` row pushed inside a tool's runtime). Out of W4b
+   * scope; banked for a follow-up cycle. See change: bug-3-messages-
+   * index-lookup-table.
+   */
+  messagesIndex: Map<string, number>;
   toolCalls: Map<string, ToolCallState>;
   streamingText: string;
   streamingThinking: string;
@@ -154,9 +177,32 @@ export interface SessionState {
   streamingTextFlushed?: boolean;
 }
 
+/**
+ * Rebuild the `messagesIndex` lookup-table from a `messages[]` array.
+ *
+ * Used at the end of `reduceEvent` whenever the `messages` array
+ * reference has changed (push / splice / reorder), and from
+ * `createInitialState` to seed an empty index.
+ *
+ * If multiple messages share the same id (which should never happen
+ * given id-generation discipline at every push site), the LAST
+ * occurrence wins — matching the semantics of `findLastIndex`-style
+ * lookups elsewhere in this reducer.
+ *
+ * See change: bug-3-messages-index-lookup-table.
+ */
+export function rebuildMessagesIndex(messages: readonly ChatMessage[]): Map<string, number> {
+  const idx = new Map<string, number>();
+  for (let i = 0; i < messages.length; i++) {
+    idx.set(messages[i].id, i);
+  }
+  return idx;
+}
+
 export function createInitialState(): SessionState {
   return {
     messages: [],
+    messagesIndex: new Map(),
     toolCalls: new Map(),
     streamingText: "",
     streamingThinking: "",
@@ -591,20 +637,29 @@ export function addInteractiveRequest(
     return state;
   }
   const request: InteractiveUiRequest = { requestId, method, params, status: "pending" };
+  // Bug #3 fix: maintain messagesIndex incrementally on push so the
+  // sister functions resolveInteractiveRequest / dismissInteractiveRequest
+  // can find this row by id without an O(n) walk. See change:
+  // bug-3-messages-index-lookup-table.
+  const newMsgId = `ui-${requestId}`;
+  const newMessages = [
+    ...state.messages,
+    {
+      id: newMsgId,
+      role: "interactiveUi" as const,
+      content: method,
+      timestamp: Date.now(),
+      toolCallId,
+      args: { requestId, method, params, status: "pending" } as any,
+    },
+  ];
+  const newMessagesIndex = new Map(state.messagesIndex);
+  newMessagesIndex.set(newMsgId, newMessages.length - 1);
   return {
     ...state,
     interactiveRequests: [...state.interactiveRequests, request],
-    messages: [
-      ...state.messages,
-      {
-        id: `ui-${requestId}`,
-        role: "interactiveUi",
-        content: method,
-        timestamp: Date.now(),
-        toolCallId,
-        args: { requestId, method, params, status: "pending" } as any,
-      },
-    ],
+    messages: newMessages,
+    messagesIndex: newMessagesIndex,
   };
 }
 
@@ -616,6 +671,25 @@ export function resolveInteractiveRequest(
   cancelled?: boolean,
 ): SessionState {
   const newStatus = cancelled ? "cancelled" as const : "resolved" as const;
+  // Bug #3 fix: O(1) index lookup + targeted splice in place of
+  // O(n) full-array map(). When the target row is absent (stale
+  // event / replay edge), preserve the existing messages reference
+  // so React reconciliation skips a no-op re-render. See change:
+  // bug-3-messages-index-lookup-table.
+  const targetId = `ui-${requestId}`;
+  const idx = state.messagesIndex.get(targetId);
+  let nextMessages = state.messages;
+  let nextMessagesIndex = state.messagesIndex;
+  if (idx !== undefined && state.messages[idx]?.id === targetId) {
+    const updated: ChatMessage = {
+      ...state.messages[idx],
+      args: { ...state.messages[idx].args as any, status: newStatus, result },
+    };
+    nextMessages = state.messages.slice();
+    nextMessages[idx] = updated;
+    // messagesIndex unchanged: in-place update preserves indices.
+    nextMessagesIndex = state.messagesIndex;
+  }
   return {
     ...state,
     interactiveRequests: state.interactiveRequests.map((req) =>
@@ -623,11 +697,8 @@ export function resolveInteractiveRequest(
         ? { ...req, status: newStatus, result }
         : req,
     ),
-    messages: state.messages.map((msg) =>
-      msg.id === `ui-${requestId}`
-        ? { ...msg, args: { ...msg.args as any, status: newStatus, result } }
-        : msg,
-    ),
+    messages: nextMessages,
+    messagesIndex: nextMessagesIndex,
   };
 }
 
@@ -640,6 +711,23 @@ export function dismissInteractiveRequest(
   const existing = state.interactiveRequests.find((r) => r.requestId === requestId);
   if (!existing || existing.status !== "pending") return state;
 
+  // Bug #3 fix: O(1) index lookup + targeted splice in place of
+  // O(n) full-array map(). See sister-comment in
+  // resolveInteractiveRequest above. Change:
+  // bug-3-messages-index-lookup-table.
+  const targetId = `ui-${requestId}`;
+  const idx = state.messagesIndex.get(targetId);
+  let nextMessages = state.messages;
+  let nextMessagesIndex = state.messagesIndex;
+  if (idx !== undefined && state.messages[idx]?.id === targetId) {
+    const updated: ChatMessage = {
+      ...state.messages[idx],
+      args: { ...state.messages[idx].args as any, status: "dismissed" },
+    };
+    nextMessages = state.messages.slice();
+    nextMessages[idx] = updated;
+    nextMessagesIndex = state.messagesIndex;
+  }
   return {
     ...state,
     interactiveRequests: state.interactiveRequests.map((req) =>
@@ -647,11 +735,8 @@ export function dismissInteractiveRequest(
         ? { ...req, status: "dismissed" as const }
         : req,
     ),
-    messages: state.messages.map((msg) =>
-      msg.id === `ui-${requestId}`
-        ? { ...msg, args: { ...msg.args as any, status: "dismissed" } }
-        : msg,
-    ),
+    messages: nextMessages,
+    messagesIndex: nextMessagesIndex,
   };
 }
 
@@ -1326,6 +1411,19 @@ export function reduceEvent(state: SessionState, event: DashboardEvent): Session
       }
       break;
     }
+  }
+
+  // Bug #3 fix: rebuild the messagesIndex lookup-table whenever the
+  // messages array reference has changed during this event. O(n) cost
+  // — same complexity as the existing per-event walks — but enables
+  // O(1) consumer-side lookups by id (see
+  // resolveInteractiveRequest / dismissInteractiveRequest above).
+  //
+  // Preserving the prior `messagesIndex` reference when messages did
+  // not change avoids spurious downstream Map-reference comparisons.
+  // See change: bug-3-messages-index-lookup-table.
+  if (next.messages !== state.messages) {
+    next.messagesIndex = rebuildMessagesIndex(next.messages);
   }
 
   return next;

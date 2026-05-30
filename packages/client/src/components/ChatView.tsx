@@ -1,4 +1,5 @@
 import React, { useRef, useEffect, useCallback, useState, useMemo, forwardRef, useImperativeHandle } from "react";
+
 import { Icon } from "@mdi/react";
 import { mdiContentCopy, mdiTextBox, mdiLoading, mdiChevronDown, mdiSourceFork } from "@mdi/js";
 import { ErrorBanner } from "./ErrorBanner";
@@ -67,7 +68,7 @@ interface Props {
   onCloseFilterControls?: () => void;
 }
 
-function ImageAttachments({ images }: { images: ChatImage[] }) {
+const ImageAttachments = React.memo(function ImageAttachments({ images }: { images: ChatImage[] }) {
   const [lightboxSrc, setLightboxSrc] = useState<{ src: string; alt: string } | null>(null);
   return (
     <>
@@ -90,9 +91,9 @@ function ImageAttachments({ images }: { images: ChatImage[] }) {
       )}
     </>
   );
-}
+});
 
-function MessageBubble({ content, className, timestamp, entryId, onFork, isPinned, onTogglePin }: { content: string; className: string; timestamp?: number; entryId?: string; onFork?: (entryId: string) => void; isPinned?: boolean; onTogglePin?: (entryId: string) => void }) {
+const MessageBubble = React.memo(function MessageBubble({ content, className, timestamp, entryId, onFork, isPinned, onTogglePin }: { content: string; className: string; timestamp?: number; entryId?: string; onFork?: (entryId: string) => void; isPinned?: boolean; onTogglePin?: (entryId: string) => void }) {
   const contentRef = useRef<HTMLDivElement>(null);
 
   const getPlainText = useCallback(() => {
@@ -134,9 +135,9 @@ function MessageBubble({ content, className, timestamp, entryId, onFork, isPinne
       </div>
     </div>
   );
-}
+});
 
-function InteractiveUiCard({ request, onRespondToUi }: {
+const InteractiveUiCard = React.memo(function InteractiveUiCard({ request, onRespondToUi }: {
   request: InteractiveUiRequest;
   onRespondToUi?: (requestId: string, result?: unknown, cancelled?: boolean) => void;
 }) {
@@ -152,7 +153,7 @@ function InteractiveUiCard({ request, onRespondToUi }: {
       onCancel={() => onRespondToUi?.(request.requestId, undefined, true)}
     />
   );
-}
+});
 
 /** Check if markdown content contains a mermaid code block */
 function hasMermaid(content: string): boolean {
