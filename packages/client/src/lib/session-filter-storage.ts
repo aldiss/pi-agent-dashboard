@@ -93,13 +93,27 @@ export function setCollapsedGroups(cwds: Set<string>): void {
 /**
  * Remove collapsed group keys that don't match any current session cwds.
  * Returns the pruned set.
+ *
+ * Tier-toggle keys (e.g. `tier:standing-crew`, `tier:worker`) share this same
+ * collapsed-groups Set per SessionList.tsx `handleToggleTierCollapse` design,
+ * but they are NOT cwd-derived and have no cwd-shaped lifetime; the prune
+ * pass MUST preserve them unconditionally so that operator-toggled tier state
+ * survives the next session-list update. Only cwd-keys are pruned against
+ * the live `knownCwds` set.
+ *
+ * See change: dashboard-session-naming-clarity-fix Bug A — sister to
+ * mobile-ux-audit/v1 W6-OperatorEmpirical-F1 state-persistence regression.
  */
 export function pruneStaleCollapsedGroups(knownCwds: Set<string>): Set<string> {
   const collapsed = getCollapsedGroups();
   const pruned = new Set<string>();
-  for (const cwd of collapsed) {
-    if (knownCwds.has(cwd)) {
-      pruned.add(cwd);
+  for (const key of collapsed) {
+    if (key.startsWith("tier:")) {
+      pruned.add(key);
+      continue;
+    }
+    if (knownCwds.has(key)) {
+      pruned.add(key);
     }
   }
   setCollapsedGroups(pruned);
