@@ -16,8 +16,8 @@
   ],
   "scripts": {
     "dev": "vite",
-    "build": "vite build && node scripts/precompress.mjs",
-    "prepare": "vite build && node scripts/precompress.mjs"
+    "build": "vite build && node scripts/inject-sw-precache-manifest.mjs && node scripts/precompress.mjs",
+    "prepare": "vite build && node scripts/inject-sw-precache-manifest.mjs && node scripts/precompress.mjs"
   },
   "dependencies": {
     "@blackbelt-technology/dashboard-plugin-runtime": "^0.5.1",

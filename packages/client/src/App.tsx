@@ -43,6 +43,7 @@ import { InstallBanner } from "./components/InstallBanner.js";
 import { BootstrapBanner } from "./components/BootstrapBanner.js";
 import { useBootstrapStatus } from "./hooks/useBootstrapStatus.js";
 import { useInstallPrompt } from "./hooks/useInstallPrompt.js";
+import { useSessionsBootstrap } from "./hooks/useSessionsBootstrap.js";
 import { TerminalsView } from "./components/TerminalsView.js";
 import { EditorView } from "./components/EditorView.js";
 import { decodeFolderPath, encodeFolderPath } from "./lib/folder-encoding.js";
@@ -200,6 +201,10 @@ export default function App() {
    * toggle wiring — both are W4.x discoverability features. */
   const [showMessageFilterControls, setShowMessageFilterControls] = useState(false);
   const [sessions, setSessions] = useState<Map<string, DashboardSession>>(new Map());
+  // Cold-load HTTP bootstrap — populates sessions immediately, before
+  // WebSocket sessions_snapshot arrives. Closes Cluster A n=6 cold-load
+  // empirical cluster (cell dashboard-pwa-cold-load-fix/v1 deliverable c).
+  useSessionsBootstrap({ setSessions, wsStatus: status });
   const [sessionStates, setSessionStates] = useState<Map<string, SessionState>>(new Map());
   // Per-session chat-input drafts. Hydrated once from localStorage on mount,
   // then persisted (debounced) whenever the map changes.
