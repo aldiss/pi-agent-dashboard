@@ -19,6 +19,11 @@
 //   - Max size: 10 MB of base64 (≈7.5 MB of raw bytes)
 //   - On unsupported/oversized paste: set `imageError` for 3 s, ignore the blob
 //   - On successful paste: append to `pendingImages`
+//   - `handleFiles(fileList)` is the file-picker sister to `handlePaste`:
+//     consumed by the mobile composer's `<input type="file">` change handler
+//     (iOS native photo-picker path). Same MIME / size / base64 rules apply
+//     to each File in the FileList.
+//   - On successful file-pick: append all valid Files to `pendingImages`
 //   - `clearImages()` is meant to be called by the consumer after sending
 //     so the UI resets.
 //
@@ -56,6 +61,10 @@ export interface UseImagePasteResult {
 	imageError: string | null;
 	/** Clipboard paste handler — attach to the textarea's onPaste. */
 	handlePaste: (e: React.ClipboardEvent) => void;
+	/** File-picker handler — attach to a hidden `<input type="file">` onChange.
+	 *  Iterates the FileList, applies the same MIME/size/base64 rules as
+	 *  `handlePaste`, and appends valid images to `pendingImages`. */
+	handleFiles: (files: FileList | null) => void;
 	/** Remove the image at index `i` from pendingImages. */
 	removeImage: (index: number) => void;
 	/** Clear everything — call after a successful send. */
@@ -127,6 +136,35 @@ export function useImagePaste(opts?: UseImagePasteOptions): UseImagePasteResult 
 		}
 	}, [writeImages]);
 
+	const handleFiles = useCallback((files: FileList | null) => {
+		if (!files || files.length === 0) return;
+		for (const file of Array.from(files)) {
+			const mimeType = file.type;
+
+			if (!SUPPORTED_IMAGE_TYPES.has(mimeType)) {
+				setImageError(`Unsupported image type: ${mimeType}. Use JPEG, PNG, GIF, or WebP.`);
+				setTimeout(() => setImageError(null), 3000);
+				continue;
+			}
+
+			const reader = new FileReader();
+			reader.onload = () => {
+				const dataUrl = reader.result as string;
+				const base64 = dataUrl.split(",")[1];
+				if (!base64) return;
+
+				if (base64.length > MAX_IMAGE_SIZE) {
+					setImageError("Image too large (max 10MB)");
+					setTimeout(() => setImageError(null), 3000);
+					return;
+				}
+
+				writeImages((prev) => [...prev, { type: "image", data: base64, mimeType }]);
+			};
+			reader.readAsDataURL(file);
+		}
+	}, [writeImages]);
+
 	const removeImage = useCallback((index: number) => {
 		writeImages((prev) => prev.filter((_, i) => i !== index));
 	}, [writeImages]);
@@ -136,5 +174,5 @@ export function useImagePaste(opts?: UseImagePasteOptions): UseImagePasteResult 
 		setImageError(null);
 	}, [writeImages]);
 
-	return { pendingImages, imageError, handlePaste, removeImage, clearImages };
+	return { pendingImages, imageError, handlePaste, handleFiles, removeImage, clearImages };
 }

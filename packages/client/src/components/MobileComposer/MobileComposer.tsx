@@ -134,10 +134,13 @@ export function MobileComposer({
   const analyserRef = useAudioWave(recordingStream);
   const isRecording = recordingStream !== null;
 
-  // Image paste hook (controlled when imagesProp + onImagesChange; uncontrolled fallback otherwise)
+  // Image paste hook (controlled when imagesProp + onImagesChange; uncontrolled fallback otherwise).
+  // Sister-precedent CommandInput.tsx:189-191 canonical opts-object call signature preserved
+  // (positional args produced uncontrolled-mode fallback + parent-state desync — Bug B per
+  // picture-input-hardening/v1 W2 deliverable). Pass undefined when imagesProp absent so the
+  // hook's `isControlled = opts?.images !== undefined` resolves to false (legacy uncontrolled).
   const { pendingImages, imageError, handlePaste, handleFiles, removeImage, clearImages } = useImagePaste(
-    imagesProp,
-    onImagesChange,
+    imagesProp !== undefined ? { images: imagesProp, onImagesChange } : undefined,
   );
 
   // r25 EMERGENCY BUGFIX continued: openImagePicker + onFileInputChange MOVED HERE (was above
@@ -265,9 +268,15 @@ export function MobileComposer({
         </div>
       )}
 
-      {/* Image paste preview strip — above textarea inside the composer */}
+      {/* Image paste preview strip — above textarea inside the composer.
+       *  error={null} (NOT imageError) is canonical here: MobileComposer renders its own
+       *  imageError banner below at lines 272-277 — passing imageError to ImagePreviewStrip
+       *  would produce a DOUBLE banner. Bug C per picture-input-hardening/v1 W2 deliverable
+       *  (TS-required prop satisfied without changing user-visible behavior). Sister-precedent
+       *  CommandInput.tsx uses error={imageError} because it does NOT render imageError
+       *  separately. */}
       {pendingImages.length > 0 && (
-        <ImagePreviewStrip images={pendingImages} onRemove={removeImage} />
+        <ImagePreviewStrip images={pendingImages} error={null} onRemove={removeImage} />
       )}
       {imageError && (
         <div className="mb-2 text-xs text-[var(--accent-red)] flex items-center gap-1.5" role="alert">

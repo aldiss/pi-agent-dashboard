@@ -10,6 +10,9 @@ import "./index.css";
 import "katex/dist/katex.min.css";
 
 // Register service worker for PWA installability
+// build-marker: 20260530T173323 (pwa-cache-eviction)
+console.log("[pi-dashboard] build 20260530T173323");
+
 if ("serviceWorker" in navigator) {
   navigator.serviceWorker.register("/sw.js").catch(() => {});
 }

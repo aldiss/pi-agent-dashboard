@@ -23,6 +23,14 @@ function makePasteEvent(files: File[]): React.ClipboardEvent {
 	return event as unknown as React.ClipboardEvent;
 }
 
+function makeFileList(files: File[]): FileList {
+	const arr = files as File[] & { item(i: number): File | null };
+	(arr as unknown as { item: (i: number) => File | null }).item = (i: number) =>
+		files[i] ?? null;
+	// Index-access already works on a normal array; cast preserves FileList shape for the hook.
+	return arr as unknown as FileList;
+}
+
 // FileReader.readAsDataURL is async — wait one microtask + onload tick.
 async function flushFileReader() {
 	await new Promise((r) => setTimeout(r, 0));
@@ -164,5 +172,106 @@ describe("useImagePaste — controlled mode", () => {
 		// Even after a write, pendingImages still points at the controlled array.
 		act(() => { result.current.clearImages(); });
 		expect(result.current.pendingImages).toBe(images);
+	});
+});
+
+// ---- handleFiles (file-picker path; sister to handlePaste) ---------------
+//
+// Bug A per picture-input-hardening/v1 W2 deliverable: useImagePaste hook
+// previously did NOT export handleFiles; MobileComposer destructured it as
+// undefined and invoked at file-input change → TypeError. W3 fix-ship adds
+// the canonical handleFiles(fileList) sister to handlePaste.
+
+describe("useImagePaste — handleFiles (file-picker path)", () => {
+	it("is a no-op for null FileList", () => {
+		const { result } = renderHook(() => useImagePaste());
+		act(() => { result.current.handleFiles(null); });
+		expect(result.current.pendingImages).toEqual([]);
+		expect(result.current.imageError).toBeNull();
+	});
+
+	it("is a no-op for empty FileList", () => {
+		const { result } = renderHook(() => useImagePaste());
+		act(() => { result.current.handleFiles(makeFileList([])); });
+		expect(result.current.pendingImages).toEqual([]);
+		expect(result.current.imageError).toBeNull();
+	});
+
+	it("appends a single picked PNG to pendingImages", async () => {
+		const { result } = renderHook(() => useImagePaste());
+		const fl = makeFileList([makeFile("image/png")]);
+
+		act(() => { result.current.handleFiles(fl); });
+		await act(async () => { await flushFileReader(); });
+
+		expect(result.current.pendingImages).toHaveLength(1);
+		expect(result.current.pendingImages[0].mimeType).toBe("image/png");
+		expect(result.current.pendingImages[0].type).toBe("image");
+	});
+
+	it("appends ALL valid Files when multiple picked", async () => {
+		const { result } = renderHook(() => useImagePaste());
+		const fl = makeFileList([
+			makeFile("image/png"),
+			makeFile("image/jpeg"),
+			makeFile("image/webp"),
+		]);
+
+		act(() => { result.current.handleFiles(fl); });
+		await act(async () => { await flushFileReader(); });
+
+		expect(result.current.pendingImages).toHaveLength(3);
+		expect(result.current.pendingImages.map((i) => i.mimeType)).toEqual([
+			"image/png",
+			"image/jpeg",
+			"image/webp",
+		]);
+	});
+
+	it("rejects unsupported MIME with a transient error and does NOT append", () => {
+		vi.useFakeTimers();
+		try {
+			const { result } = renderHook(() => useImagePaste());
+			const fl = makeFileList([makeFile("image/bmp")]);
+
+			act(() => { result.current.handleFiles(fl); });
+			expect(result.current.imageError).toMatch(/Unsupported/);
+			expect(result.current.pendingImages).toHaveLength(0);
+
+			act(() => { vi.advanceTimersByTime(3000); });
+			expect(result.current.imageError).toBeNull();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("rejects oversized File with imageError and does NOT append", async () => {
+		const { result } = renderHook(() => useImagePaste());
+		// 12MB raw → base64 length > MAX_IMAGE_SIZE (10MB).
+		const big = makeFile("image/png", 12 * 1024 * 1024);
+		const fl = makeFileList([big]);
+
+		act(() => { result.current.handleFiles(fl); });
+		await act(async () => { await flushFileReader(); });
+
+		expect(result.current.pendingImages).toHaveLength(0);
+		expect(result.current.imageError).toMatch(/too large/i);
+	});
+
+	it("routes pick through onImagesChange in controlled mode", async () => {
+		let images: ImageContent[] = [];
+		const onImagesChange = vi.fn((next: ImageContent[]) => { images = next; });
+
+		const { result } = renderHook(() =>
+			useImagePaste({ images, onImagesChange }),
+		);
+
+		const fl = makeFileList([makeFile("image/png")]);
+		act(() => { result.current.handleFiles(fl); });
+		await act(async () => { await flushFileReader(); });
+
+		expect(onImagesChange).toHaveBeenCalledTimes(1);
+		expect(onImagesChange.mock.calls[0][0]).toHaveLength(1);
+		expect(onImagesChange.mock.calls[0][0][0].mimeType).toBe("image/png");
 	});
 });
