@@ -227,11 +227,33 @@ export function createBrowserGateway(
   const MAX_WS_BUFFER = maxWsBufferBytes ?? 4 * 1024 * 1024; // 4MB default
 
   function sendTo(ws: WebSocket, msg: ServerToBrowserMessage) {
-    if (ws.readyState === WebSocket.OPEN) {
-      // Drop messages if the send buffer is full (browser not consuming)
-      if (MAX_WS_BUFFER > 0 && ws.bufferedAmount > MAX_WS_BUFFER) return;
-      ws.send(JSON.stringify(msg));
+    if (ws.readyState !== WebSocket.OPEN) return;
+    // Drop messages if the send buffer is full (browser not consuming)
+    if (MAX_WS_BUFFER > 0 && ws.bufferedAmount > MAX_WS_BUFFER) return;
+    // Guard against V8's hard string-length cap (~512MB on 64-bit) and
+    // structuredClone-style cycles, both of which throw from JSON.stringify.
+    // Prior to this guard, an oversized `event_replay` payload (e.g. catch-up
+    // batch for a multi-MB session) would throw `RangeError: Invalid string
+    // length`. The throw escaped sendTo, was swallowed by the dashboard's
+    // [crash-safety] uncaughtException handler, but left the per-WS replay
+    // bookkeeping in a half-cleared state — the next subscribe re-issued the
+    // same oversized replay, throwing again, in a tight reconnect loop that
+    // manifested to the operator as the sidebar "reloading history forever".
+    // We now drop the message + log a structured diagnostic so the operator
+    // can identify the offending session for downstream pagination work.
+    let payload: string;
+    try {
+      payload = JSON.stringify(msg);
+    } catch (err) {
+      const msgType = (msg as { type?: unknown } | null | undefined)?.type;
+      const sessionId = (msg as { sessionId?: unknown } | null | undefined)?.sessionId;
+      console.error(
+        `[browser-gw] sendTo: JSON.stringify failed (type=${String(msgType)} sessionId=${String(sessionId)}): ` +
+          `${err instanceof Error ? err.message : String(err)}`,
+      );
+      return;
     }
+    ws.send(payload);
   }
 
   function broadcast(msg: ServerToBrowserMessage) {
