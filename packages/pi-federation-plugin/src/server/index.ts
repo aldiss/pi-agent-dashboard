@@ -35,6 +35,7 @@ import { createLanDiscovery, preferredLanHost } from "./mdns-shortcut.js";
 import { registerFederationRoutes } from "./routes.js";
 
 interface FederationConfig {
+  enabled?: boolean;
   machineId?: string;
   peers?: PeerConfig[];
   discoverLan?: boolean;
@@ -46,6 +47,9 @@ interface FederationConfig {
 }
 
 const DEFAULTS: Required<FederationConfig> = {
+  // Default true preserves existing behavior for installations that never set
+  // the flag. Operators opt out by setting plugins.federation.enabled=false.
+  enabled: true,
   machineId: "",
   peers: [],
   discoverLan: true,
@@ -56,10 +60,11 @@ const DEFAULTS: Required<FederationConfig> = {
   watchdogTimeoutMs: 60_000,
 };
 
-const PLUGIN_VERSION = "0.4.6";
+const PLUGIN_VERSION = "0.4.7";
 
 function resolveConfig(raw: FederationConfig): Required<FederationConfig> {
   return {
+    enabled: raw.enabled ?? DEFAULTS.enabled,
     machineId: raw.machineId ?? DEFAULTS.machineId,
     peers: Array.isArray(raw.peers) ? raw.peers : DEFAULTS.peers,
     discoverLan: raw.discoverLan ?? DEFAULTS.discoverLan,
@@ -117,26 +122,51 @@ function rebroadcastWithPrefix(
  * Recursively prefix sessionId / session.id fields with `${machineId}:` so
  * the browser sees globally-unique federated ids. Non-id fields are
  * pass-through.
+ *
+ * Cycle + depth defense: the original implementation had no cycle detection
+ * and no depth limit, so a peer payload containing a circular reference (or
+ * a deeply-nested-but-acyclic graph) blew the V8 call stack with
+ * `RangeError: Maximum call stack size exceeded`. The crash was swallowed by
+ * the dashboard's [crash-safety] handler but corrupted in-flight state,
+ * causing browsers to disconnect/reconnect in a tight loop. The fix:
+ *   1. WeakSet `seen` aborts revisits of already-rewritten object/array
+ *      references (returns the value unchanged — id rewrite is idempotent
+ *      enough that the second visit being a no-op is safe).
+ *   2. Hard `PREFIX_IDS_MAX_DEPTH` floor catches non-circular but absurdly
+ *      deep graphs that a malicious or buggy peer could send.
  */
-function prefixIds<T>(value: T, machineId: string): T {
+/** Hard depth cap for {@link prefixIds} recursion (defense-in-depth). */
+export const PREFIX_IDS_MAX_DEPTH = 256;
+
+function prefixIds<T>(
+  value: T,
+  machineId: string,
+  seen?: WeakSet<object>,
+  depth = 0,
+): T {
   if (value === null || value === undefined) return value;
+  if (typeof value !== "object") return value;
+  if (depth >= PREFIX_IDS_MAX_DEPTH) return value;
+
+  const obj = value as unknown as object;
+  const visited = seen ?? new WeakSet<object>();
+  if (visited.has(obj)) return value;
+  visited.add(obj);
+
   if (Array.isArray(value)) {
-    return value.map(v => prefixIds(v, machineId)) as unknown as T;
+    return value.map(v => prefixIds(v, machineId, visited, depth + 1)) as unknown as T;
   }
-  if (typeof value === "object") {
-    const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      if (k === "sessionId" && typeof v === "string" && !v.includes(":")) {
-        out[k] = `${machineId}:${v}`;
-      } else if (k === "id" && typeof v === "string" && isLikelySessionId(v)) {
-        out[k] = `${machineId}:${v}`;
-      } else {
-        out[k] = prefixIds(v, machineId);
-      }
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    if (k === "sessionId" && typeof v === "string" && !v.includes(":")) {
+      out[k] = `${machineId}:${v}`;
+    } else if (k === "id" && typeof v === "string" && isLikelySessionId(v)) {
+      out[k] = `${machineId}:${v}`;
+    } else {
+      out[k] = prefixIds(v, machineId, visited, depth + 1);
     }
-    return out as T;
   }
-  return value;
+  return out as T;
 }
 
 /**
@@ -147,9 +177,36 @@ function isLikelySessionId(v: string): boolean {
   return /^[0-9a-f]{8}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{4}-?[0-9a-f]{12}$/i.test(v);
 }
 
+/**
+ * Internal helpers exported solely for unit testing the bug-fixes:
+ *   - prefixIds cycle-detect + depth-limit (regression for peer-payload
+ *     `RangeError: Maximum call stack size exceeded` crash-loop)
+ *   - resolveConfig defaulting (regression for `enabled` flag honor)
+ *
+ * Production code should not import these directly.
+ */
+export const __internal = {
+  prefixIds: <T>(value: T, machineId: string): T => prefixIds(value, machineId),
+  resolveConfig: (raw: Record<string, unknown>) => resolveConfig(raw as FederationConfig),
+};
+
 export default async function registerPlugin(ctx: ServerPluginContext): Promise<void> {
   const rawConfig = (ctx.getPluginConfig?.() as FederationConfig | undefined) ?? {};
   const cfg = resolveConfig(rawConfig);
+
+  // Honor the operator-config `enabled` flag. Prior versions of this plugin
+  // ignored the flag entirely: peer connections were opened, the mDNS
+  // discovery layer ran, and REST routes were registered regardless of the
+  // user's stated intent. Operators who set `plugins.federation.enabled=false`
+  // to silence a cross-machine peer storm correctly discovered the storm
+  // continued unabated. We now short-circuit cleanly when disabled.
+  if (cfg.enabled === false) {
+    ctx.logger.info(
+      `federation plugin v${PLUGIN_VERSION} disabled via config (plugins.federation.enabled=false); ` +
+        `skipping peer connections, mDNS discovery, and REST route registration`,
+    );
+    return;
+  }
 
   ctx.logger.info(
     `federation plugin v${PLUGIN_VERSION} activate; ` +
