@@ -244,6 +244,175 @@ describe("memory-event-store", () => {
     });
   });
 
+  describe("MAX_EVENT_DATA_SIZE cap-enforcement (invariant I4) [W5]", () => {
+    // Cell dashboard-memory-pressure-fix/v1 W5 test authoring per W2 design-pass
+    // doc § Axis 3 invariant I4. Asserts the post-walk total-serialized-cap gate
+    // at createTruncator() (memory-event-store.ts) replaces oversized events with
+    // summarizeOversizedEvent() shape preserving UI-required fields.
+
+    // The MAX_EVENT_DATA_SIZE module-level constant (30_000). Mirror here for
+    // assertion clarity; if memory-event-store.ts changes the cap, this
+    // mirror MUST be updated SAME-COMMIT per Schema 5 § 3.9.
+    const CAP = 30_000;
+
+    it("T1 (AFR-shape): nested MCP payload (multi-MB raw_content + deep content[0].text) → stored event ≤ cap", () => {
+      // Default ctor (maxStringFieldSize=4000); empirically reproduces the AFR
+      // JSONL line 130 shape per Pete-evidence-bundle § Concrete evidence.
+      const store = createMemoryEventStore(neverPinned);
+      const bigRaw = "R".repeat(108_208); // matches AFR raw_content[*] empirical shape
+      const bigText = "T".repeat(1_340_556); // matches AFR mcpResult.content[0].text empirical shape
+      const event: DashboardEvent = {
+        eventType: "tool_execution_end",
+        timestamp: Date.now(),
+        data: {
+          toolCallId: "t1",
+          toolName: "mcp_search",
+          isError: false,
+          message: {
+            role: "toolResult",
+            content: [{ type: "text", text: bigText }],
+            details: {
+              mcpResult: {
+                content: [{ type: "text", text: bigText }],
+                structuredContent: {
+                  results: [
+                    { url: "https://example.com/1", raw_content: bigRaw },
+                    { url: "https://example.com/2", raw_content: bigRaw },
+                    { url: "https://example.com/3", raw_content: bigRaw },
+                  ],
+                },
+              },
+            },
+          },
+        },
+      };
+      store.insertEvent("s1", event);
+      const stored = store.getEvent("s1", 1);
+      const serialized = JSON.stringify((stored as any).data).length;
+      expect(serialized).toBeLessThanOrEqual(CAP);
+      // raw_content carve-out 3 fired — strip-by-name annotation present.
+      const flat = JSON.stringify(stored);
+      expect(flat).toContain("raw_content stripped: 108208 bytes");
+      // content[0].text was truncated (string-cap fired at depth ≥ 4 since the
+      // depth>4 short-circuit was removed in W3).
+      expect(flat).toContain("[truncated]");
+    });
+
+    it("T2 (cap-gate via summarize): oversized event triggers __summary fallback preserving toolCallId/toolName/isError", () => {
+      // Use large maxStringFieldSize (100_000) so per-string truncation does
+      // NOT fire; this isolates the post-walk total-cap gate behavior.
+      const store = createMemoryEventStore(neverPinned, 100, 5000, 100_000);
+      const big = "X".repeat(60_000);
+      const event: DashboardEvent = {
+        eventType: "tool_execution_end",
+        timestamp: Date.now(),
+        data: {
+          toolCallId: "tool-call-42",
+          toolName: "bash",
+          isError: true,
+          result: big,
+          message: {
+            role: "toolResult",
+            content: [{ type: "text", text: big }],
+          },
+          type: "tool_execution_end",
+        },
+      };
+      store.insertEvent("s1", event);
+      const stored = store.getEvent("s1", 1);
+      const d = (stored as any).data;
+      // __summary marker present with originalSize > cap.
+      expect(d.__summary).toBeDefined();
+      expect(d.__summary.cap).toBe(CAP);
+      expect(d.__summary.originalSize).toBeGreaterThan(CAP);
+      // UI-required fields preserved verbatim.
+      expect(d.toolCallId).toBe("tool-call-42");
+      expect(d.toolName).toBe("bash");
+      expect(d.isError).toBe(true);
+      // result truncated to ≤ 1_500 + suffix; not full 60_000.
+      expect(typeof d.result).toBe("string");
+      expect(d.result.length).toBeLessThan(2_000);
+      expect(d.result).toContain("truncated");
+      // Total serialized ≤ cap (the WHOLE point).
+      expect(JSON.stringify(d).length).toBeLessThanOrEqual(CAP);
+    });
+
+    it("T3 (under-cap negative): small event has NO __summary marker", () => {
+      const store = createMemoryEventStore(neverPinned);
+      const event: DashboardEvent = {
+        eventType: "tool_execution_end",
+        timestamp: Date.now(),
+        data: {
+          toolCallId: "t1",
+          toolName: "bash",
+          isError: false,
+          result: "hello world",
+        },
+      };
+      store.insertEvent("s1", event);
+      const stored = store.getEvent("s1", 1);
+      const d = (stored as any).data;
+      expect(d.__summary).toBeUndefined();
+      expect(d.result).toBe("hello world"); // verbatim — no truncation
+      expect(d.toolCallId).toBe("t1");
+    });
+
+    it("T4 (I1×I4 composition): oversized event with images preserves images verbatim through summary fallback", () => {
+      // Image-preservation invariant (I1) MUST compose with cap-fallback (I4):
+      // when summary fires, summary.images = d.images (verbatim copy).
+      const store = createMemoryEventStore(neverPinned, 100, 5000, 100_000);
+      const big = "X".repeat(60_000);
+      const imageData = "BASE64IMAGE".repeat(50); // small image, NOT truncated
+      const event: DashboardEvent = {
+        eventType: "tool_execution_end",
+        timestamp: Date.now(),
+        data: {
+          toolCallId: "t1",
+          toolName: "screenshot",
+          isError: false,
+          result: big, // pushes total over cap
+          images: [{ data: imageData, mimeType: "image/png" }],
+        },
+      };
+      store.insertEvent("s1", event);
+      const stored = store.getEvent("s1", 1);
+      const d = (stored as any).data;
+      expect(d.__summary).toBeDefined();
+      // I1 composition: images preserved verbatim through summary path.
+      expect(d.images).toEqual([{ data: imageData, mimeType: "image/png" }]);
+      expect(d.images[0].data).toBe(imageData); // identity verbatim
+    });
+
+    it("T5 (I2×I4 composition): oversized event with entryId preserves entryId through summary fallback", () => {
+      // EntryId-fidelity invariant (I2) MUST compose with cap-fallback (I4):
+      // assistant message_end carrying multi-MB content survives cap-gate
+      // WITH entryId intact for client reducer reconstruction (W4 path).
+      const store = createMemoryEventStore(neverPinned, 100, 5000, 100_000);
+      const big = "Y".repeat(60_000);
+      const event: DashboardEvent = {
+        eventType: "message_end",
+        timestamp: Date.now(),
+        data: {
+          entryId: "entry-canonical-abc-123",
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: big }],
+          },
+        },
+      };
+      store.insertEvent("s1", event);
+      const stored = store.getEvent("s1", 1);
+      const d = (stored as any).data;
+      expect(d.__summary).toBeDefined();
+      expect(d.entryId).toBe("entry-canonical-abc-123"); // I2 preserved
+      expect(d.message.role).toBe("assistant");
+      // message.content text-summary slice — bounded by 2_000 + suffix.
+      expect(typeof d.message.content).toBe("string");
+      expect(d.message.content.length).toBeLessThan(2_100);
+      expect(d.message.content).toContain("truncated");
+    });
+  });
+
   it("trims oldest events when per-session limit exceeded", () => {
     const store = createMemoryEventStore(neverPinned, 100, 3);
     store.insertEvent("s1", makeEvent("a"));

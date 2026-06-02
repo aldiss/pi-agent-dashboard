@@ -178,4 +178,65 @@ describe("event-reducer replay idempotency", () => {
       s.messages.filter((m) => m.role === "assistant" && typeof m.id === "string" && m.id.startsWith("flush-")).length,
     ).toBe(flushRowsAfterFirstRun);
   });
+
+  it("T7 [W5]: reducer canonical-reconstructs from message_end alone (post-W4 replay shape; no message_update)", () => {
+    // Cell dashboard-memory-pressure-fix/v1 W5 test authoring per W2 design-pass
+    // § Axis 3 invariant I3 post-W4 shape gap. After W4 deletes the full-message
+    // `message_update` from state-replay.ts, the canonical replay-emitted
+    // sequence for an assistant turn is:
+    //   [message_start, tool_execution_start, tool_execution_end, message_end]
+    // — NO `message_update` at all. The client reducer MUST still produce
+    // canonical messages[] (assistant text + tool ordering).
+    const events: DashboardEvent[] = [
+      {
+        eventType: "message_start",
+        timestamp: 1000,
+        data: { message: { role: "assistant", content: [] } },
+      },
+      {
+        eventType: "tool_execution_start",
+        timestamp: 1100,
+        data: { toolCallId: "t1", toolName: "bash", args: { command: "ls" } },
+      },
+      {
+        eventType: "tool_execution_end",
+        timestamp: 1200,
+        data: { toolCallId: "t1", isError: false, result: "file1\nfile2" },
+      },
+      {
+        eventType: "message_end",
+        timestamp: 1300,
+        data: {
+          entryId: "a1",
+          message: {
+            role: "assistant",
+            content: [
+              { type: "text", text: "I'll list files." },
+              { type: "toolCall", id: "t1" },
+            ],
+          },
+        },
+      },
+    ];
+
+    const state = events.reduce(reduceEvent, createInitialState());
+
+    const assistants = state.messages.filter((m) => m.role === "assistant");
+    expect(assistants).toHaveLength(1);
+    expect(assistants[0].content).toBe("I'll list files.");
+    expect(assistants[0].entryId).toBe("a1");
+
+    const toolResults = state.messages.filter((m) => m.role === "toolResult");
+    expect(toolResults).toHaveLength(1);
+    expect(toolResults[0].toolCallId).toBe("t1");
+
+    // Idempotency preserved across replay (I3 + post-W4 shape).
+    const state2 = events.reduce(reduceEvent, createInitialState());
+    expect(state2.messages.length).toBe(state.messages.length);
+    for (let i = 0; i < state.messages.length; i++) {
+      expect(state2.messages[i].id).toBe(state.messages[i].id);
+      expect(state2.messages[i].role).toBe(state.messages[i].role);
+      expect(state2.messages[i].content).toBe(state.messages[i].content);
+    }
+  });
 });

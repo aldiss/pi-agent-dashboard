@@ -37,15 +37,27 @@ export const DEFAULT_MAX_EVENTS_PER_SESSION = 5000;
 
 /** Default max size for any string field within event data */
 const DEFAULT_MAX_STRING_SIZE = 4_000;
-/** Max total serialized size for an individual event's data */
-const MAX_EVENT_DATA_SIZE = 20_000;
+/**
+ * Max total serialized size for an individual event's data.
+ * Raised from dead 20_000 → 30_000 per cell dashboard-memory-pressure-fix/v1
+ * W2 design-pass (Pete-recommended 20–50KB middle). Now enforced via post-walk
+ * gate + summarizeOversizedEvent fallback (was previously a dead constant).
+ */
+const MAX_EVENT_DATA_SIZE = 30_000;
+/** Keys whose string values are stripped (with size annotation) when ≥ threshold. */
+const RAW_CONTENT_KEYS = new Set(["raw_content", "rawContent"]);
+const RAW_CONTENT_STRIP_THRESHOLD = 500;
 
 /**
  * Recursively truncate large string fields in an object.
  * Returns a new object if any truncation occurred, otherwise the original.
+ *
+ * Per cell dashboard-memory-pressure-fix/v1 W2 design-pass: depth-limit
+ * removed; walk bounded by createTruncator's post-walk total-cap gate. Adds
+ * key-aware raw_content/rawContent strip. Preserves invariants I1
+ * (image-preservation) + thinking carve-out verbatim.
  */
-function truncateStrings(obj: unknown, maxSize: number, depth = 0): unknown {
-  if (depth > 4) return obj;
+function truncateStrings(obj: unknown, maxSize: number): unknown {
   if (typeof obj === "string") {
     return obj.length > maxSize ? obj.slice(0, maxSize) + "\n…[truncated]" : obj;
   }
@@ -54,7 +66,7 @@ function truncateStrings(obj: unknown, maxSize: number, depth = 0): unknown {
     if (obj.length > 20) return "[array truncated]";
     let changed = false;
     const result = obj.map((item) => {
-      const t = truncateStrings(item, maxSize, depth + 1);
+      const t = truncateStrings(item, maxSize);
       if (t !== item) changed = true;
       return t;
     });
@@ -64,18 +76,31 @@ function truncateStrings(obj: unknown, maxSize: number, depth = 0): unknown {
     let changed = false;
     const result: Record<string, unknown> = {};
     for (const [key, val] of Object.entries(obj)) {
-      // Preserve base64 image data — skip truncation when sibling mimeType exists
+      // Carve-out 1 — image-preservation (invariant I1; UNCHANGED).
+      // Preserve base64 image data — skip truncation when sibling mimeType exists.
       if (key === "data" && typeof val === "string" && "mimeType" in obj) {
         result[key] = val;
         continue;
       }
-      // Skip 'thinking' blocks entirely — large and not shown in chat
+      // Carve-out 2 — thinking cap (UNCHANGED, 500 char).
       if (key === "thinking" && typeof val === "string" && val.length > maxSize) {
         result[key] = (val as string).slice(0, 500) + "\n…[truncated]";
         changed = true;
         continue;
       }
-      const t = truncateStrings(val, maxSize, depth + 1);
+      // Carve-out 3 (NEW) — strip-by-name raw_content / rawContent ≥ 500B.
+      // Targets the Tavily/MCP search-result payload pattern empirically
+      // observed in Pete-evidence-bundle AFR line 130 (~108KB × 6 results).
+      if (
+        RAW_CONTENT_KEYS.has(key) &&
+        typeof val === "string" &&
+        val.length >= RAW_CONTENT_STRIP_THRESHOLD
+      ) {
+        result[key] = `[raw_content stripped: ${val.length} bytes]`;
+        changed = true;
+        continue;
+      }
+      const t = truncateStrings(val, maxSize);
       if (t !== val) changed = true;
       result[key] = t;
     }
@@ -85,7 +110,53 @@ function truncateStrings(obj: unknown, maxSize: number, depth = 0): unknown {
 }
 
 /**
+ * Fallback shape when total-cap gate fires. Preserves UI-required fields per
+ * cell dashboard-memory-pressure-fix/v1 W2 design-pass invariant I4:
+ * toolCallId, toolName, isError, entryId, result (1.5KB slice), images (I1
+ * composition), message.role + message.content text-summary (2KB slice),
+ * type discriminant. Adds __summary marker with originalSize + cap.
+ */
+function summarizeOversizedEvent(
+  event: DashboardEvent,
+  truncated: Record<string, unknown>,
+  originalSize: number,
+): DashboardEvent {
+  const d = truncated as Record<string, unknown>;
+  const summary: Record<string, unknown> = {
+    type: d.type,
+    __summary: { originalSize, cap: MAX_EVENT_DATA_SIZE },
+  };
+  for (const k of ["toolCallId", "toolName", "isError", "entryId"]) {
+    if (k in d) summary[k] = d[k];
+  }
+  if (typeof d.result === "string") {
+    summary.result = (d.result as string).slice(0, 1_500) + "\n…[truncated]";
+  }
+  if (d.images) summary.images = d.images; // I1 composition
+  if (d.message && typeof d.message === "object") {
+    const m = d.message as { role?: unknown; content?: unknown };
+    let text = "";
+    if (Array.isArray(m.content)) {
+      text = (m.content as Array<{ type?: string; text?: string }>)
+        .filter((c) => c?.type === "text")
+        .map((c) => c.text ?? "")
+        .join("");
+    } else if (typeof m.content === "string") {
+      text = m.content;
+    }
+    summary.message = {
+      role: m.role,
+      content:
+        text.slice(0, 2_000) + (text.length > 2_000 ? "\n…[truncated]" : ""),
+    };
+  }
+  return { ...event, data: summary } as DashboardEvent;
+}
+
+/**
  * Truncate large event data to bound memory usage per event.
+ * Post-walk total-cap gate enforces MAX_EVENT_DATA_SIZE; on cap-exceed,
+ * event is replaced with summarizeOversizedEvent shape (invariant I4).
  */
 function createTruncator(maxStringSize: number) {
   if (maxStringSize <= 0) return (event: DashboardEvent) => event; // disabled
@@ -93,7 +164,13 @@ function createTruncator(maxStringSize: number) {
     const data = event.data;
     if (!data || typeof data !== "object") return event;
     const truncated = truncateStrings(data, maxStringSize) as Record<string, unknown>;
-    return truncated !== data ? { ...event, data: truncated } : event;
+    const out = truncated !== data ? { ...event, data: truncated } : event;
+    // Post-walk total-cap gate (invariant I4).
+    const size = JSON.stringify(out.data).length;
+    if (size > MAX_EVENT_DATA_SIZE) {
+      return summarizeOversizedEvent(out, truncated, size);
+    }
+    return out;
   };
 }
 

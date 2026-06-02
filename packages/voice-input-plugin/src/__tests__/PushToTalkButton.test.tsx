@@ -4,14 +4,17 @@
  * Covers (per voice-input-ux-option-b execution brief 2026-05-14, gate G3):
  *   - idle  --click--> recording state transition
  *   - recording  --click--> uploading state transition
- *   - 60s safety-net auto-stops recording when no second click arrives
+ *   - 20-min safety-net auto-stops recording when no second click arrives
  *   - aria-pressed reflects state correctly (false in idle, true in recording)
  *   - title / aria-label updates per phase
  *
  * Operator-direct ratification 2026-05-14 ~12:55 CEST: Option B
- * (click-to-toggle) replaces press-and-hold. Risk #12 60s safety-net
- * preserved (and arguably more important now — a forgotten second click
- * would otherwise leave the mic hot indefinitely).
+ * (click-to-toggle) replaces press-and-hold. Risk #12 safety-net cap raised
+ * to 20 min per cell voice-input-20min-reliability/v1 W5 (operator-direct
+ * 2026-05-31 ~15:30 CEST: 20-min talk-cycle canonical). Safety-net is
+ * arguably more important under click-to-toggle than under press-and-hold
+ * because a forgotten second click would otherwise leave the mic hot
+ * indefinitely.
  *
  * jsdom does not implement MediaRecorder or navigator.mediaDevices.getUserMedia,
  * so both are mocked. The mock MediaRecorder synchronously emits a 1500-byte
@@ -28,6 +31,7 @@ import { PushToTalkButton } from "../client/PushToTalkButton.js";
 
 class MockMediaRecorder {
   static instances: MockMediaRecorder[] = [];
+  static lastStartTimeslice: number | undefined = undefined;
   state: "inactive" | "recording" | "paused" = "inactive";
   ondataavailable: ((e: { data: Blob }) => void) | null = null;
   onstop: (() => void) | null = null;
@@ -38,8 +42,9 @@ class MockMediaRecorder {
     MockMediaRecorder.instances.push(this);
   }
 
-  start(): void {
+  start(timeslice?: number): void {
     this.state = "recording";
+    MockMediaRecorder.lastStartTimeslice = timeslice;
   }
 
   stop(): void {
@@ -91,6 +96,7 @@ function buildOkFetch(transcript: string): typeof fetch {
 
 beforeEach(() => {
   MockMediaRecorder.instances = [];
+  MockMediaRecorder.lastStartTimeslice = undefined;
   // @ts-expect-error jsdom does not provide MediaRecorder
   globalThis.MediaRecorder = MockMediaRecorder;
   Object.defineProperty(globalThis.navigator, "mediaDevices", {
@@ -170,8 +176,8 @@ describe("PushToTalkButton — click-to-toggle (Option B, 2026-05-14)", () => {
     expect(button.getAttribute("aria-pressed")).toBe("false");
   });
 
-  it("60s safety-net auto-stops recording when no second click arrives", async () => {
-    // Fake timers from the start so the safety-net setTimeout(60_000)
+  it("20-min safety-net auto-stops recording when no second click arrives", async () => {
+    // Fake timers from the start so the safety-net setTimeout(1_200_000)
     // scheduled inside startRecording is captured by the fake-timer system.
     // Use ONLY Promise.resolve() to drain microtasks (no setTimeout(0) which
     // would never fire under fake timers).
@@ -189,12 +195,25 @@ describe("PushToTalkButton — click-to-toggle (Option B, 2026-05-14)", () => {
     expect(button.getAttribute("data-phase")).toBe("recording");
     expect(button.getAttribute("aria-pressed")).toBe("true");
 
-    // Phase 2: advance past 60s safety-net cap. The fired callback invokes
-    // stopRecordingRef.current(false) synchronously; the rest of the
+    // Mech-6 mitigation regression-guard: recorder.start was called with the
+    // canonical 30_000 ms timeslice (cell voice-input-20min-reliability/v1 W3
+    // retro-test PASS evidence; WebKit bugs 276536 + 279432 canonical-justify).
+    expect(MockMediaRecorder.lastStartTimeslice).toBe(30_000);
+
+    // Phase 2: advance past 20-min safety-net cap. Recording must NOT stop
+    // before the cap (regression-guard against the prior 60s baseline).
+    await act(async () => {
+      vi.advanceTimersByTime(60_001);
+      for (let i = 0; i < 5; i++) await Promise.resolve();
+    });
+    expect(button.getAttribute("data-phase")).toBe("recording");
+
+    // Advance past the 20-min cap (1_200_000 ms total). The fired callback
+    // invokes stopRecordingRef.current(false) synchronously; the rest of the
     // stopRecording chain (recorder.stop → chunks → fetch → setPhase) drains
     // via microtasks.
     await act(async () => {
-      vi.advanceTimersByTime(60_001);
+      vi.advanceTimersByTime(1_200_000);
       for (let i = 0; i < 20; i++) await Promise.resolve();
     });
     // Restore real timers BEFORE waitFor (waitFor schedules via setTimeout).

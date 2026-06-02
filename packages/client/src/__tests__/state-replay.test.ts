@@ -23,7 +23,9 @@ describe("replayEntriesAsEvents", () => {
     expect((events[0].event.data as any).message.role).toBe("user");
   });
 
-  it("should convert assistant message entry to message_update + message_end events", () => {
+  it("should convert assistant message entry to message_end event (post-W4 replay-dup reduction)", () => {
+    // Cell dashboard-memory-pressure-fix/v1 W4 amendment: full-message
+    // `message_update` removed; `message_end` is canonically-sufficient.
     const entries = [
       {
         type: "message",
@@ -38,9 +40,8 @@ describe("replayEntriesAsEvents", () => {
     ];
 
     const events = replayEntriesAsEvents("sess-1", entries);
-    expect(events).toHaveLength(2);
-    expect(events[0].event.eventType).toBe("message_update");
-    expect(events[1].event.eventType).toBe("message_end");
+    expect(events).toHaveLength(1);
+    expect(events[0].event.eventType).toBe("message_end");
   });
 
   it("should convert assistant tool calls to tool_execution_start events", () => {
@@ -61,12 +62,15 @@ describe("replayEntriesAsEvents", () => {
     ];
 
     const events = replayEntriesAsEvents("sess-1", entries);
-    // tool_execution_start + message_update + message_end + tool_execution_end (orphaned)
-    expect(events).toHaveLength(4);
+    // Post-W4 (dashboard-memory-pressure-fix/v1): tool_execution_start +
+    // message_end + tool_execution_end (orphaned). The full-message
+    // message_update was removed to halve in-memory event-store footprint.
+    expect(events).toHaveLength(3);
     expect(events[0].event.eventType).toBe("tool_execution_start");
     expect((events[0].event.data as any).toolName).toBe("bash");
     expect((events[0].event.data as any).args).toEqual({ command: "ls" });
-    expect(events[3].event.eventType).toBe("tool_execution_end");
+    expect(events[1].event.eventType).toBe("message_end");
+    expect(events[2].event.eventType).toBe("tool_execution_end");
   });
 
   it("should convert tool result message to tool_execution_end", () => {
@@ -130,10 +134,12 @@ describe("replayEntriesAsEvents", () => {
     ];
 
     const events = replayEntriesAsEvents("sess-1", entries);
-    // message_update + message_end + stats_update
-    expect(events).toHaveLength(3);
-    expect(events[2].event.eventType).toBe("stats_update");
-    const data = events[2].event.data as any;
+    // Post-W4 (dashboard-memory-pressure-fix/v1): message_end + stats_update
+    // (full-message message_update removed for replay-dup reduction).
+    expect(events).toHaveLength(2);
+    expect(events[0].event.eventType).toBe("message_end");
+    expect(events[1].event.eventType).toBe("stats_update");
+    const data = events[1].event.data as any;
     expect(data.tokensIn).toBe(100);
     expect(data.tokensOut).toBe(50);
     expect(data.cost).toBe(0.005);
@@ -207,8 +213,10 @@ describe("replayEntriesAsEvents", () => {
     ];
 
     const events = replayEntriesAsEvents("sess-1", entries);
-    // Only message_update + message_end, no stats_update
-    expect(events).toHaveLength(2);
+    // Post-W4 (dashboard-memory-pressure-fix/v1): only message_end (full-message
+    // message_update removed for replay-dup reduction); no stats_update.
+    expect(events).toHaveLength(1);
+    expect(events[0].event.eventType).toBe("message_end");
     expect(events.every(e => e.event.eventType !== "stats_update")).toBe(true);
   });
 
@@ -279,13 +287,13 @@ describe("replayEntriesAsEvents", () => {
 
     const events = replayEntriesAsEvents("sess-1", entries);
     const types = events.map((e) => e.event.eventType);
+    // Post-W4 (dashboard-memory-pressure-fix/v1): full-message message_update
+    // removed for replay-dup reduction. message_end canonical-sufficient.
     expect(types).toEqual([
       "message_start",        // user message
       "tool_execution_start", // tool call from assistant
-      "message_update",       // assistant message (streaming)
       "message_end",          // assistant message (finalize)
       "tool_execution_end",   // tool result
-      "message_update",       // final assistant message (streaming)
       "message_end",          // final assistant message (finalize)
     ]);
   });

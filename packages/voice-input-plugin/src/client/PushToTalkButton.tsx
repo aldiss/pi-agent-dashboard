@@ -29,7 +29,7 @@
  *
  * Risk-mitigation discipline (load-bearing; do NOT remove without surfacing):
  *
- *   - Risk #12 60s/5min safety-net (`MAX_RECORDING_MS = 300_000`): auto-stop
+ *   - Risk #12 20-min safety-net (`MAX_RECORDING_MS = 1_200_000`): auto-stop
  *     after the configured timeout even if user forgets to click again.
  *     Under click-to-toggle this is more load-bearing than under
  *     press-and-hold, because there is no `pointerup` natural-cancel path.
@@ -71,19 +71,31 @@ const DEFAULT_ENDPOINT = "/api/plugins/voice-input/transcribe";
 const DEFAULT_HEALTH = "/api/plugins/voice-input/health";
 
 /**
- * 60s safety-net auto-stop (Risk #12 per voice-input-substrate-r1 ship). This
- * matches the canonical PushToTalkButton.test.tsx expectation; under
- * click-to-toggle it is more load-bearing than under press-and-hold because
- * there is no `pointerup` natural-cancel path.
+ * 20-min safety-net auto-stop (Risk #12 per voice-input-substrate-r1 ship).
+ * Under click-to-toggle this safety-net is load-bearing because there is no
+ * `pointerup` natural-cancel path; a forgotten second click would otherwise
+ * leave the mic hot indefinitely.
  *
- * Recovery honest-disclosure: a later (post-substrate-r1-ship) FastUnion
- * edit (2026-05-17T15:34Z) raised this to `300_000` for longer-dictation
- * empirical-cycle, but did not update the test. We restore the
- * 60_000 baseline to keep the test deliverable PASS-able; if longer-
- * dictation empirical-pacing is desired, follow-up cell can re-raise +
- * update the test in the same change.
+ * Cap raised from 60_000 (1 min) to 1_200_000 (20 min) per cell
+ * voice-input-20min-reliability/v1 W5 (operator-direct 2026-05-31 ~15:30 CEST:
+ * "I want to be able to post for like, or to talk for 20 minutes at a time,
+ * and it should work reliably"). The previous 1-min cap was a substrate-r1
+ * recovery baseline (FastUnion edit 2026-05-17 had raised to 300_000 without
+ * updating the test); this change raises the cap and updates the test in the
+ * same commit per Schema 5 § 3.9 4-point anti-recurrence rule.
+ *
+ * History (lineage): 60_000 (substrate-r1 baseline) → 300_000 (FastUnion
+ * 2026-05-17, test-not-updated) → 60_000 (FastUnion-recovery restore) →
+ * 1_200_000 (THIS change; W5 cell-DONE SAME-COMMIT with test + comment).
+ *
+ * Sister-mitigation: `recorder.start(30_000)` timeslice below at start-call
+ * site mitigates Mech-6 (chunksRef Blob accumulation without timeslice) per
+ * W3 retro-test PASS evidence (cell voice-input-20min-reliability/v1 W3
+ * result; WebKit bugs 276536 + 279432 canonical-justify timeslice canonical).
+ * 21min30s raw-MediaRecorder canary completed full duration with no upstream
+ * cap fired (W3 _w3-playwright-ios-reliability-result.md § Mechanism 2).
  */
-const MAX_RECORDING_MS = 60_000;
+const MAX_RECORDING_MS = 1_200_000;
 
 const SIDECAR_HEALTH_POLL_INTERVAL_MS = 5_000;
 const ERROR_AUTO_CLEAR_MS = 6_000;
@@ -359,10 +371,14 @@ export function PushToTalkButton({
           void uploadBlob(blob);
         }
       };
-      recorder.start();
+      // Timeslice 30_000 ms: emit `ondataavailable` chunks every 30 s rather
+      // than buffering a single Blob for the full 20-min recording. Mitigates
+      // Mech-6 (chunksRef Blob accumulation without timeslice) per W3 retro-
+      // test (WebKit bugs 276536 + 279432 canonical-justify timeslice).
+      recorder.start(30_000);
       setPhase("recording");
 
-      // 60s safety-net.
+      // 20-min safety-net (see MAX_RECORDING_MS comment above).
       safetyNetRef.current = setTimeout(() => {
         const fn = stopRecordingRef.current;
         if (fn) fn(false);

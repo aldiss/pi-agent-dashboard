@@ -25,6 +25,10 @@ export function useWebSocket(url: string) {
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const backoffRef = useRef(1000);
   const failCountRef = useRef(0);
+  // Track the latest connect() closure so the visibilitychange handler at
+  // module-tier can fire it after the React closure-binding cycle. Sister to
+  // pingTimer closure capture in connect() itself.
+  const connectRef = useRef<(() => void) | null>(null);
 
   const connect = useCallback(() => {
     try {
@@ -116,6 +120,7 @@ export function useWebSocket(url: string) {
   }, [url]);
 
   useEffect(() => {
+    connectRef.current = connect;
     connect();
     return () => {
       if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
@@ -123,8 +128,47 @@ export function useWebSocket(url: string) {
         wsRef.current.onclose = null;
         wsRef.current.close();
       }
+      connectRef.current = null;
     };
   }, [connect]);
+
+  // Visibility-change reconnect handler — addresses iOS Safari PWA stale-view
+  // symptom per operator-direct empirical 2026-05-31 ~22:18 CEST verbatim
+  // («вотъ онъ до сихъ поръ мнѣ рендеритъ собщеяни за пять минутъ назадъ») +
+  // «ну я переубилъ pwa - всё равно медленно». The keepalive ping (25s) +
+  // miss-counter mitigation per d03c6cc is necessary-but-insufficient because
+  // iOS Safari throttles/pauses setInterval when the tab is backgrounded OR
+  // the device is screen-locked; by the time the PWA is foregrounded the
+  // socket is OS-killed but onclose may not have fired yet (or reconnect is
+  // mid-backoff with stale state). On visibilitychange→visible, proactively:
+  // (i) cancel any pending reconnect-backoff timer; (ii) if the socket is
+  // not OPEN OR we've missed any pongs, close + reconnect immediately so
+  // event stream resumes within ~1s instead of minutes. Sister-shape to
+  // PushToTalkButton.tsx L411-422 visibility-handler discipline.
+  useEffect(() => {
+    const onVisibilityChange = () => {
+      if (document.visibilityState !== "visible") return;
+      const ws = wsRef.current;
+      const sockNotOpen = !ws || ws.readyState !== WebSocket.OPEN;
+      if (!sockNotOpen) return; // Healthy socket; let keepalive cycle continue.
+      // Cancel pending reconnect-backoff so we reconnect immediately.
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
+      // Reset backoff so the post-foreground reconnect doesn't inherit a long
+      // backoff from prior failures (operator-foreground signal trumps backoff).
+      backoffRef.current = 1000;
+      if (ws) {
+        ws.onclose = null; // Suppress duplicate reconnect from the explicit close.
+        try { ws.close(); } catch { /* defensive */ }
+      }
+      const fn = connectRef.current;
+      if (fn) fn();
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", onVisibilityChange);
+  }, []);
 
   const send = useCallback((msg: BrowserToServerMessage) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {

@@ -98,8 +98,13 @@ export function replayEntriesAsEvents(
             openToolCalls.add(part.id);
           }
         }
-        // Emit message_update (sets streamingText) then message_end (finalizes)
-        messages.push(makeEvent(sessionId, "message_update", ts, { message: msg }));
+        // Replay-duplication reduction (cell dashboard-memory-pressure-fix/v1 W4):
+        // The full-message `message_update` previously emitted here doubled in-memory
+        // event-store footprint for assistant replays carrying multi-MB tool-call payloads
+        // (Pete-evidence-bundle § Why current code retains too much). Client reducer
+        // canonically reconstructs from `message_end` alone — verified by
+        // event-reducer-streaming-text-flush.test.ts Task 5.3 and
+        // event-reducer.replay-idempotency.test.ts. LIVE pi forwarding path UNCHANGED.
         messages.push(makeEvent(sessionId, "message_end", ts, { message: msg, entryId: entry.id }));
 
         // Emit stats_update if usage data is present
