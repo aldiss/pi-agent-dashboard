@@ -52,11 +52,21 @@ export class ConnectionManager {
     this.watchdogTimeout = options.watchdogTimeout ?? ConnectionManager.DEFAULT_WATCHDOG_TIMEOUT;
     this.onMessage = options.onMessage;
     this.onReconnect = options.onReconnect;
+    // Patch B (drift-fix v1): arm the watchdog at construction so the
+    // stuck-disconnected recovery guard (see startWatchdog) is active even
+    // for ConnectionManager incarnations whose connect() was never called
+    // (e.g. bridge re-init that disconnect()s the previous manager and
+    // creates a fresh one but the subsequent session_start that would
+    // call connect() never re-fires on long-running sessions).
+    this.startWatchdog();
   }
 
   connect(): void {
     this.intentionalClose = false;
     this.createConnection();
+    // Patch B (drift-fix v1): watchdog is now armed in the constructor;
+    // re-arm here is harmless (startWatchdog stops any prior interval first)
+    // but kept for explicitness and to re-enable after disconnect().
     this.startWatchdog();
   }
 
@@ -204,9 +214,25 @@ export class ConnectionManager {
     this.stopWatchdog();
     if (this.watchdogTimeout <= 0) return;
     this.watchdogTimer = setInterval(() => {
+      // Stuck-LIVE detection: socket exists but server has gone silent.
+      // Force-close to trigger the normal reconnect path.
       if (this.ws && this.lastMessageAt > 0 && Date.now() - this.lastMessageAt >= this.watchdogTimeout) {
-        // Server has gone silent — force close to trigger reconnect
         this.handleDisconnect();
+        return;
+      }
+      // Patch A (drift-fix v1): stuck-DISCONNECTED detection — we have no
+      // socket, no pending reconnect timer, and disconnect() was not called.
+      // This recovers from the failure mode where handleDisconnect's
+      // scheduleReconnect() setTimeout was lost (event-loop stall during
+      // heavy LLM streaming concurrent with a dashboard-server restart,
+      // unhandled rejection that nuked the timer, host process pause/SIGSTOP,
+      // etc). Without this guard the bridge sits forever with ws=null,
+      // intentionalClose=false, reconnectTimer=null — the exact state
+      // observed for 4/6 standing-crew bridges after the 2026-06-02 11:26
+      // dashboard restart. Recovery latency: at most one watchdog tick
+      // (WATCHDOG_CHECK_INTERVAL = 15s).
+      if (!this.ws && !this.intentionalClose && this.reconnectTimer === null) {
+        this.scheduleReconnect();
       }
     }, ConnectionManager.WATCHDOG_CHECK_INTERVAL);
   }
@@ -219,6 +245,15 @@ export class ConnectionManager {
   }
 
   private scheduleReconnect(): void {
+    // Patch C (drift-fix v1): idempotent single-owner timer. If a caller
+    // re-enters scheduleReconnect() without going through handleDisconnect()
+    // first (e.g. the new Patch A watchdog guard), the previous setTimeout
+    // would have been orphaned, doubling work and racing two reconnects.
+    // Strictly single-armed via explicit clearTimeout on entry.
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     if (this.backoff === 0) {
       this.backoff = ConnectionManager.INITIAL_BACKOFF;
     } else {
