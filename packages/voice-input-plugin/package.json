@@ -1,0 +1,52 @@
+{
+  "name": "@blackbelt-technology/pi-dashboard-voice-input-plugin",
+  "version": "0.5.1",
+  "description": "Voice-input plugin for pi-dashboard — push-to-talk button + HTTP-proxy-to-sidecar transcription endpoint (whisper-local + parakeet fallback).",
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/BlackBeltTechnology/pi-agent-dashboard",
+    "directory": "packages/voice-input-plugin"
+  },
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./client": {
+      "types": "./src/client/index.tsx",
+      "default": "./src/client/index.tsx"
+    },
+    "./server": {
+      "types": "./src/server/index.ts",
+      "default": "./src/server/index.ts"
+    }
+  },
+  "files": [
+    "src/"
+  ],
+  "pi-dashboard-plugin": {
+    "id": "voice-input",
+    "displayName": "Voice Input",
+    "priority": 100,
+    "server": "./src/server/index.ts",
+    "claims": []
+  },
+  "peerDependencies": {
+    "react": ">=18.0.0",
+    "react-dom": ">=18.0.0"
+  },
+  "dependencies": {
+    "@blackbelt-technology/pi-dashboard-shared": "^0.5.1"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  }
+}

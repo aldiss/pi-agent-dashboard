@@ -49,11 +49,21 @@ export function sendStateSync(
   // See change: spawn-correlation-token (Decision 3).
   const spawnToken = isFirstRegister ? process.env.PI_DASHBOARD_SPAWN_TOKEN : undefined;
 
+  // pi-runtime `getSessionName()` only returns names set via `/name`
+  // slash-command or extension `setSessionName()` API; it does NOT read
+  // `PI_AGENT_NAME` env-var. For standing-crew + cell-executor sessions
+  // spawned via tmux+`PI_AGENT_NAME=...` canonical injection (per AGENTS.md
+  // § Graceful-restart discipline v0.2 Fix 4 + AGENTS.md § Standing-crew
+  // canonical-name discipline v1.3.1), this fallback makes the canonical-
+  // meaningful-name visible to the dashboard sidebar without requiring the
+  // operator to manually `/name` every session.
+  //
+  // See change: dashboard-session-naming-clarity-fix Bug B-1.
   bc.connection.send({
     type: "session_register",
     sessionId: bc.sessionId,
     cwd: process.cwd(),
-    name: bc.pi.getSessionName() ?? undefined,
+    name: bc.pi.getSessionName() ?? process.env.PI_AGENT_NAME ?? undefined,
     source: detectSessionSource(bc.cachedHasUI, sessionFile),
     model,
     thinkingLevel,
@@ -121,7 +131,9 @@ export function handleSessionChange(
   bc.lastFirstMessage = firstMessage;
   bc.lastGitBranch = undefined;
   bc.lastGitPrNumber = undefined;
-  bc.lastSessionName = bc.pi.getSessionName() ?? "";
+  // Mirror sendStateSync fallback: PI_AGENT_NAME env-var when getSessionName()
+  // is unset. See change: dashboard-session-naming-clarity-fix Bug B-1.
+  bc.lastSessionName = bc.pi.getSessionName() ?? process.env.PI_AGENT_NAME ?? "";
   bc.lastModel = getCurrentModelString(bc);
   bc.lastThinkingLevel = (bc.pi as any).getThinkingLevel?.() ?? undefined;
 

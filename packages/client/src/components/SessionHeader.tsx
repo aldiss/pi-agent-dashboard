@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import { Icon } from "@mdi/react";
-import { mdiPencilOutline, mdiArrowLeft, mdiPaperclip, mdiRefresh, mdiLinkOff, mdiPlay, mdiFileCompare, mdiHeadLightbulb, mdiViewGridOutline, mdiPlayCircleOutline, mdiSourceFork } from "@mdi/js";
+import { mdiPencilOutline, mdiArrowLeft, mdiPaperclip, mdiRefresh, mdiLinkOff, mdiPlay, mdiFileCompare, mdiHeadLightbulb, mdiViewGridOutline, mdiPlayCircleOutline, mdiSourceFork, mdiFilterVariant, mdiMagnify } from "@mdi/js";
 import type { DashboardSession, OpenSpecChange, CommandInfo, FlowInfo, ImageContent } from "@blackbelt-technology/pi-dashboard-shared/types.js";
 import type { SessionState } from "../lib/event-reducer.js";
 import type { DetectedEditor } from "../lib/editor-api.js";
@@ -39,6 +39,28 @@ interface Props {
    *  session.sessionFile is set. Mobile path uses mobileActions.onResume.
    *  See change: resume-button-in-session-header. */
   onResume?: (mode: "continue" | "fork") => void;
+  /**
+   * Feature 2 (message-type filter, cell
+   * pi-agent-dashboard-ux-message-discoverability/v1 W4.2): callback to
+   * toggle MessageFilterControls visibility below the header. When unset
+   * the filter icon is not rendered.
+   */
+  onFilterToggle?: () => void;
+  /**
+   * True when the operator's current filter differs from defaults; renders
+   * a small dot on the filter icon so the operator can tell at-a-glance
+   * that messages are being hidden somewhere off-screen.
+   */
+  isFilterActive?: boolean;
+  /**
+   * Feature 1 (in-chat search, cell
+   * pi-agent-dashboard-ux-message-discoverability/v1 W4.1): toggle the
+   * floating ChatSearch overlay rendered by ChatView. Wired in App.tsx to
+   * chatViewRef.current?.toggleSearch(); the same action is also bound to
+   * Cmd/Ctrl+F at the document level (handled inside ChatView). When unset
+   * the search icon is not rendered.
+   */
+  onSearchToggle?: () => void;
   /** Mobile action menu props (only used on mobile) */
   mobileActions?: {
     editors?: DetectedEditor[];
@@ -53,6 +75,16 @@ interface Props {
     onSendPrompt?: (text: string, images?: ImageContent[]) => void;
     onReadArtifact?: (changeName: string, artifactId: string) => void;
     onRefresh?: () => void;
+    /**
+     * Mobile-kebab session-status drill: context-usage + cost. Pass-through
+     * from App.tsx selectedState to MobileActionMenu (W4.4.1 scope-creep,
+     * cell pi-agent-dashboard-ux-message-discoverability/v1, per operator-
+     * direct verdict 2026-05-23 ~23:15 CEST closing sister-cell ccd79aa9
+     * broken-promise). Shapes match SessionState.contextUsage + .cost so
+     * no adapter is needed at the wiring site.
+     */
+    contextUsage?: { tokens: number | null; contextWindow: number };
+    cost?: number;
   };
 }
 
@@ -135,9 +167,23 @@ function MobileAttachButton({ session, openspecChanges, onAttach, onDetach }: {
   );
 }
 
-/** Mobile header: back + name + attach icon + kebab */
-function MobileHeader({ session, showBack, onBack, isRenaming, onConfirmRename, onCancelRename, canRename, onStartRename, mobileActions, onReadArtifact }: {
+/** Mobile header: back + name + attach icon + kebab.
+ *
+ *  Per Bert tenure-2 Q1 W3 verdict 2026-05-20 ~23:55 CEST (AMEND (c)→(a)):
+ *  absorb a minimal model + thinking-level indicator into MobileHeader so
+ *  operator can see (and via the desktop StatusBar / mobile kebab still
+ *  switch) model mid-work without back-navigating to the session list.
+ *  Operator-verbatim per Pattern 87 byte-identical (typo `unncessay`
+ *  preserved): "space should be for the chat, not for unncessay info".
+ *  The indicator is read-only here (mobile picker affordance lives in the
+ *  desktop StatusBar reachable from session-list view and in the existing
+ *  MobileActionMenu kebab on row 1). Sister-precedent: desktop header at
+ *  the bottom of this file renders the same model + thinkingLevel pair
+ *  inline next to the session name.
+ *  Cell: mobile-pwa-chatgpt-style-restructure/v1 (MintOwl). */
+function MobileHeader({ session, state, showBack, onBack, isRenaming, onConfirmRename, onCancelRename, canRename, onStartRename, mobileActions, onReadArtifact, onSearchToggle }: {
   session: DashboardSession;
+  state?: SessionState;
   showBack?: boolean;
   onBack?: () => void;
   isRenaming: boolean;
@@ -147,6 +193,7 @@ function MobileHeader({ session, showBack, onBack, isRenaming, onConfirmRename, 
   onStartRename: () => void;
   mobileActions?: SessionHeaderMobileActions;
   onReadArtifact?: (changeName: string, artifactId: string) => void;
+  onSearchToggle?: () => void;
 }) {
   // Look up the attached change in the polled openspecChanges list. When
   // present, render the artifact-letters pill + task counter inside the
@@ -191,6 +238,17 @@ function MobileHeader({ session, showBack, onBack, isRenaming, onConfirmRename, 
           onDetach={mobileActions.onDetachProposal}
         />
       )}
+      {onSearchToggle && (
+        <button
+          onClick={onSearchToggle}
+          className="p-2 min-w-[44px] min-h-[44px] flex items-center justify-center text-[var(--text-muted)] hover:text-[var(--text-secondary)]"
+          aria-label="Search in chat"
+          title="Search in chat (⌘F)"
+          data-testid="mobile-search-btn"
+        >
+          <Icon path={mdiMagnify} size={0.7} />
+        </button>
+      )}
       {mobileActions && (
         <MobileActionMenu
           session={session}
@@ -207,12 +265,44 @@ function MobileHeader({ session, showBack, onBack, isRenaming, onConfirmRename, 
           onSendPrompt={mobileActions.onSendPrompt}
           onReadArtifact={mobileActions.onReadArtifact}
           onRefresh={mobileActions.onRefresh}
+          contextUsage={mobileActions.contextUsage}
+          cost={mobileActions.cost}
         />
       )}
     </div>
   );
 
-  // Row 2: attached-proposal chip. Read-only (action affordances stay in the
+  // Row 2a: minimal model + thinking-level indicator (per Bert Q1 W3 verdict
+  // AMEND (c)→(a) 2026-05-20 ~23:55 CEST). Read-only compact pill at ~14-16px
+  // total row-height; rendered iff a model OR thinkingLevel is known for the
+  // session. Composes with chipRow (row 2b) cleanly: both are flex-col
+  // siblings of row1, so the modelRow appears between the title row and the
+  // attached-proposal chip when both are present, OR alone above the chip,
+  // OR alone below row1 when no attached proposal. When neither model nor
+  // thinkingLevel are known yet (cold session pre-stream), modelRow returns
+  // null and the header collapses back to the previous single/double-row
+  // layout per fix-mobile-header-and-orientation precedent.
+  // Cell: mobile-pwa-chatgpt-style-restructure/v1 (MintOwl).
+  const displayModel = state?.model || session.model;
+  const displayThinking = state?.thinkingLevel || session.thinkingLevel;
+  const modelRow = (displayModel || displayThinking) ? (
+    <div
+      className="flex items-center gap-1.5 min-h-[16px] pl-1 text-[10px] text-[var(--text-tertiary)]"
+      data-testid="mobile-header-model-indicator"
+    >
+      {displayModel && (
+        <span className="truncate min-w-0" title={displayModel}>{displayModel}</span>
+      )}
+      {displayThinking && (
+        <span className="inline-flex items-center gap-0.5 flex-shrink-0" title={`Thinking level: ${displayThinking}`}>
+          <Icon path={mdiHeadLightbulb} size={0.4} />
+          {displayThinking}
+        </span>
+      )}
+    </div>
+  ) : null;
+
+  // Row 2b: attached-proposal chip. Read-only (action affordances stay in the
   // MobileAttachButton popover on row 1). The chip's data-testid, content,
   // tooltip, and reactivity are unchanged from fix-mobile-attach-proposal-display
   // — only its parent moved from row-1 sibling to row-2 sibling.
@@ -250,12 +340,15 @@ function MobileHeader({ session, showBack, onBack, isRenaming, onConfirmRename, 
     </div>
   ) : null;
 
-  // When there's an attached proposal, render two rows. When there isn't, the
-  // header stays a single-row container exactly as before — no empty row 2 is
-  // reserved. See change: fix-mobile-header-and-orientation.
+  // When there's an attached proposal OR a model/thinking indicator, render
+  // additional rows below row1. When neither is present, the header stays a
+  // single-row container exactly as before — no empty row is reserved. See
+  // change: fix-mobile-header-and-orientation + Bert Q1 W3 verdict
+  // (mobile-pwa-chatgpt-style-restructure/v1).
   return (
     <div className="px-2 py-1 border-b border-[var(--border-primary)] flex flex-col text-sm">
       {row1}
+      {modelRow}
       {chipRow}
     </div>
   );
@@ -274,7 +367,7 @@ function formatDuration(ms: number): string {
   return `${seconds}s`;
 }
 
-export function SessionHeader({ session, state, onRename, showBack, onBack, mobileActions, commands, flows, onSendPrompt, openspecChanges, onAttachProposal, onDetachProposal, hasFileChanges, onOpenDiffView, onRefresh, onReadArtifact, onOpenExtensionModulePicker, onResume }: Props) {
+export function SessionHeader({ session, state, onRename, showBack, onBack, mobileActions, commands, flows, onSendPrompt, openspecChanges, onAttachProposal, onDetachProposal, hasFileChanges, onOpenDiffView, onRefresh, onReadArtifact, onOpenExtensionModulePicker, onResume, onFilterToggle, isFilterActive, onSearchToggle }: Props) {
   const [now, setNow] = useState(Date.now());
   const [isRenaming, setIsRenaming] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -325,11 +418,13 @@ export function SessionHeader({ session, state, onRename, showBack, onBack, mobi
 
   const isMobile = useMobile();
 
-  // Mobile: compact header with back + name + attach icon + kebab
+  // Mobile: compact header with back + name + attach icon + kebab + model
+  // indicator absorbed (Bert Q1 W3 verdict; mobile-pwa-chatgpt-style-restructure/v1).
   if (isMobile) {
     return (
       <MobileHeader
         session={session}
+        state={state}
         showBack={showBack}
         onBack={onBack}
         isRenaming={isRenaming}
@@ -339,6 +434,7 @@ export function SessionHeader({ session, state, onRename, showBack, onBack, mobi
         onStartRename={() => setIsRenaming(true)}
         mobileActions={mobileActions}
         onReadArtifact={onReadArtifact}
+        onSearchToggle={onSearchToggle}
       />
     );
   }
@@ -503,6 +599,35 @@ export function SessionHeader({ session, state, onRename, showBack, onBack, mobi
           title="Refresh chat"
         >
           <Icon path={mdiRefresh} size={0.6} className={refreshing ? "animate-spin" : ""} />
+        </button>
+      )}
+      {onSearchToggle && (
+        <button
+          onClick={onSearchToggle}
+          className="text-[var(--text-muted)] hover:text-[var(--text-secondary)] p-0.5"
+          title="Search in chat (⌘F)"
+          aria-label="Search in chat"
+          data-testid="header-search-btn"
+        >
+          <Icon path={mdiMagnify} size={0.65} />
+        </button>
+      )}
+      {onFilterToggle && (
+        <button
+          onClick={onFilterToggle}
+          className="text-[var(--text-muted)] hover:text-[var(--text-secondary)] p-0.5 relative"
+          title={isFilterActive ? "Toggle filter controls (filter active)" : "Toggle filter controls"}
+          data-testid="session-header-filter-toggle"
+          aria-pressed={isFilterActive ? true : undefined}
+        >
+          <Icon path={mdiFilterVariant} size={0.6} />
+          {isFilterActive && (
+            <span
+              className="absolute top-0 right-0 w-1.5 h-1.5 rounded-full bg-amber-400"
+              data-testid="session-header-filter-active-dot"
+              aria-hidden
+            />
+          )}
         </button>
       )}
       {openspecPickerOpen && onAttachProposal && (

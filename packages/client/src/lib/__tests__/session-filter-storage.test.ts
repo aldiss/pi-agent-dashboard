@@ -6,6 +6,10 @@ import {
   setCollapsedGroups,
   pruneStaleCollapsedGroups,
   removeLegacyHiddenSessions,
+  getStaleHoursThreshold,
+  setStaleHoursThreshold,
+  getHideStale,
+  setHideStale,
 } from "../session-filter-storage.js";
 
 // Node 25's built-in localStorage overrides jsdom's and lacks standard methods.
@@ -92,6 +96,87 @@ describe("session-filter-storage", () => {
     it("should handle empty collapsed set", () => {
       const result = pruneStaleCollapsedGroups(new Set(["/a"]));
       expect(result).toEqual(new Set());
+    });
+
+    // ── dashboard-session-naming-clarity-fix Bug A ──
+    // Tier-toggle keys (`tier:*`) share the same collapsed-groups Set as
+    // cwd-keys per SessionList `handleToggleTierCollapse` design but have
+    // no cwd-shaped lifetime; the prune pass MUST preserve them unconditionally.
+    // Sister to mobile-ux-audit/v1 W6-OperatorEmpirical-F1.
+
+    it("preserves tier:* keys even when knownCwds is empty", () => {
+      setCollapsedGroups(new Set(["tier:worker", "tier:standing-crew", "tier:cell-executor"]));
+      const result = pruneStaleCollapsedGroups(new Set());
+      expect(result).toEqual(new Set(["tier:worker", "tier:standing-crew", "tier:cell-executor"]));
+      expect(getCollapsedGroups()).toEqual(new Set(["tier:worker", "tier:standing-crew", "tier:cell-executor"]));
+    });
+
+    it("preserves cwd-keys present in knownCwds and tier:* keys together", () => {
+      setCollapsedGroups(new Set(["/a", "/b", "tier:worker"]));
+      const result = pruneStaleCollapsedGroups(new Set(["/a", "/b"]));
+      expect(result).toEqual(new Set(["/a", "/b", "tier:worker"]));
+    });
+
+    it("drops cwd-keys NOT in knownCwds while preserving tier:* keys", () => {
+      setCollapsedGroups(new Set(["/a", "/stale", "tier:worker", "tier:standing-crew"]));
+      const result = pruneStaleCollapsedGroups(new Set(["/a"]));
+      expect(result).toEqual(new Set(["/a", "tier:worker", "tier:standing-crew"]));
+      expect(result.has("/stale")).toBe(false);
+    });
+
+    it("preserves mixed (tier:* + cwd) Set across multiple prune passes", () => {
+      setCollapsedGroups(new Set(["/a", "tier:worker"]));
+      // First prune: /a still known.
+      pruneStaleCollapsedGroups(new Set(["/a"]));
+      expect(getCollapsedGroups()).toEqual(new Set(["/a", "tier:worker"]));
+      // Second prune: /a no longer known; tier:* must still survive.
+      pruneStaleCollapsedGroups(new Set(["/b"]));
+      expect(getCollapsedGroups()).toEqual(new Set(["tier:worker"]));
+      // Third prune: nothing known; tier:* still survives.
+      pruneStaleCollapsedGroups(new Set());
+      expect(getCollapsedGroups()).toEqual(new Set(["tier:worker"]));
+    });
+  });
+
+  describe("getStaleHoursThreshold / setStaleHoursThreshold", () => {
+    it("defaults to 24 when nothing stored", () => {
+      expect(getStaleHoursThreshold()).toBe(24);
+    });
+
+    it("round-trips a positive number", () => {
+      setStaleHoursThreshold(48);
+      expect(getStaleHoursThreshold()).toBe(48);
+    });
+
+    it("round-trips 0 (filter disabled)", () => {
+      setStaleHoursThreshold(0);
+      expect(getStaleHoursThreshold()).toBe(0);
+    });
+
+    it("falls back to default on malformed storage", () => {
+      store.set("dashboard:staleHours", "not-a-number");
+      expect(getStaleHoursThreshold()).toBe(24);
+    });
+
+    it("falls back to default on negative stored value", () => {
+      store.set("dashboard:staleHours", "-5");
+      expect(getStaleHoursThreshold()).toBe(24);
+    });
+  });
+
+  describe("getHideStale / setHideStale", () => {
+    it("defaults to true when nothing stored", () => {
+      expect(getHideStale()).toBe(true);
+    });
+
+    it("round-trips true", () => {
+      setHideStale(true);
+      expect(getHideStale()).toBe(true);
+    });
+
+    it("round-trips false", () => {
+      setHideStale(false);
+      expect(getHideStale()).toBe(false);
     });
   });
 });

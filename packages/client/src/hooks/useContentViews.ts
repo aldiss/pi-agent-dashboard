@@ -41,15 +41,17 @@ export interface UseContentViewsOptions {
   onBeforeOpen?: () => void;
   /**
    * When set, `handleOpenPiResources` / `handleViewPiResourceFile` /
-   * `handleViewReadme` will call `navigate("/")` if `settingsMatch` or
-   * `tunnelSetupMatch` is currently true. Closes the URL-route view
-   * (Settings / Tunnel) BEFORE the overlay state is set so the overlay
-   * isn't masked by the JSX gate.
+   * `handleViewReadme` will call `navigate("/")` if `settingsMatch` /
+   * `tunnelSetupMatch` / `dashboardMatch` is currently true. Closes the
+   * URL-route view (Settings / Tunnel / Dashboard) BEFORE the overlay
+   * state is set so the overlay isn't masked by the JSX gate.
    * See change: fix-desktop-back-navigation.
    */
   navigate?: (to: string) => void;
   settingsMatch?: boolean;
   tunnelSetupMatch?: boolean;
+  /** `/dashboard` route active — sister-shape to settings/tunnel. */
+  dashboardMatch?: boolean;
 }
 
 export function useContentViews(options?: UseContentViewsOptions) {
@@ -65,16 +67,16 @@ export function useContentViews(options?: UseContentViewsOptions) {
 
   const handleOpenPiResources = useCallback((cwd: string) => {
     options?.onBeforeOpen?.();
-    if ((options?.settingsMatch || options?.tunnelSetupMatch) && options?.navigate) {
+    if ((options?.settingsMatch || options?.tunnelSetupMatch || options?.dashboardMatch) && options?.navigate) {
       options.navigate("/");
     }
     setPiResourcesState({ cwd });
     setPiResourceFilePreview(null);
     setReadmePreview(null);
-  }, [options?.onBeforeOpen, options?.settingsMatch, options?.tunnelSetupMatch, options?.navigate]);
+  }, [options?.onBeforeOpen, options?.settingsMatch, options?.tunnelSetupMatch, options?.dashboardMatch, options?.navigate]);
 
   const handleViewPiResourceFile = useCallback(async (filePath: string, title: string) => {
-    if ((options?.settingsMatch || options?.tunnelSetupMatch) && options?.navigate) {
+    if ((options?.settingsMatch || options?.tunnelSetupMatch || options?.dashboardMatch) && options?.navigate) {
       options.navigate("/");
     }
     setPiResourceFilePreview({ filePath, title, isLoading: true });
@@ -93,11 +95,11 @@ export function useContentViews(options?: UseContentViewsOptions) {
     } catch (err: any) {
       setPiResourceFilePreview({ filePath, title, isLoading: false, error: err.message });
     }
-  }, [options?.settingsMatch, options?.tunnelSetupMatch, options?.navigate]);
+  }, [options?.settingsMatch, options?.tunnelSetupMatch, options?.dashboardMatch, options?.navigate]);
 
   const handleViewReadme = useCallback(async (cwd: string) => {
     options?.onBeforeOpen?.();
-    if ((options?.settingsMatch || options?.tunnelSetupMatch) && options?.navigate) {
+    if ((options?.settingsMatch || options?.tunnelSetupMatch || options?.dashboardMatch) && options?.navigate) {
       options.navigate("/");
     }
     setPiResourcesState(null);
@@ -114,7 +116,7 @@ export function useContentViews(options?: UseContentViewsOptions) {
     } catch (err: any) {
       setReadmePreview({ cwd, isLoading: false, error: err.message });
     }
-  }, [options?.onBeforeOpen, options?.settingsMatch, options?.tunnelSetupMatch, options?.navigate]);
+  }, [options?.onBeforeOpen, options?.settingsMatch, options?.tunnelSetupMatch, options?.dashboardMatch, options?.navigate]);
 
   return {
     piResourcesState, setPiResourcesState,

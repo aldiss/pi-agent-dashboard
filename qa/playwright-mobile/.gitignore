@@ -1,0 +1,5 @@
+# Playwright transient artifacts — do not commit
+playwright-report/
+test-results/
+node_modules/
+.tmp/

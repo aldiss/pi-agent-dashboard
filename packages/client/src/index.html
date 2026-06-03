@@ -8,9 +8,67 @@
     <link rel="apple-touch-icon" href="/icon-192.png" />
     <link rel="manifest" href="/manifest.json" />
     <title>PI Dashboard</title>
+    <style>
+      /* App-shell skeleton — paints before React hydrates.
+         React 19 createRoot().render() replaces #root children atomically
+         on hydration (no race; no flicker if hydration < 500ms).
+         See cell dashboard-pwa-cold-load-fix/v1 outcome contract clause (a). */
+      html, body {
+        margin: 0;
+        padding: 0;
+        background: #0f172a; /* manifest.json background_color */
+        color: #e2e8f0;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        min-height: 100vh;
+        min-height: 100dvh; /* iOS Safari dynamic-viewport */
+      }
+      .pi-skeleton {
+        position: fixed;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 1.25rem;
+        padding-top: env(safe-area-inset-top);
+        padding-bottom: env(safe-area-inset-bottom);
+      }
+      .pi-skeleton__logo {
+        width: 96px;
+        height: 96px;
+        border-radius: 20px;
+        opacity: 0.95;
+      }
+      .pi-skeleton__text {
+        font-size: 0.95rem;
+        font-weight: 500;
+        color: #94a3b8;
+        letter-spacing: 0.01em;
+      }
+      .pi-skeleton__spinner {
+        width: 28px;
+        height: 28px;
+        border: 3px solid rgba(59, 130, 246, 0.25);
+        border-top-color: #3b82f6;
+        border-radius: 50%;
+        animation: pi-spin 0.9s linear infinite;
+      }
+      @keyframes pi-spin {
+        to { transform: rotate(360deg); }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .pi-skeleton__spinner { animation-duration: 2.4s; }
+      }
+    </style>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <div class="pi-skeleton" aria-busy="true" aria-live="polite" role="status">
+        <img class="pi-skeleton__logo" src="/icon-192.png" alt="PI Dashboard" />
+        <div class="pi-skeleton__spinner" aria-hidden="true"></div>
+        <div class="pi-skeleton__text">Loading PI Dashboard…</div>
+      </div>
+    </div>
     <script type="module" src="./main.tsx"></script>
   </body>
 </html>

@@ -1265,8 +1265,13 @@ function initBridge(pi: ExtensionAPI) {
     const firstMessage = extractFirstMessage(ctx);
     lastFirstMessage = firstMessage;
 
-    // Register session with initial model/thinkingLevel
-    lastSessionName = pi.getSessionName() ?? "";
+    // Register session with initial model/thinkingLevel.
+    // PI_AGENT_NAME env-var fallback: same shape as session-sync.ts:66+136 sister
+    // (dashboard-session-naming-clarity-fix Bug B-1) — empirically B-1 was incomplete
+    // because this primary init-path bridge.ts:1269 was missed; session-sync.ts only
+    // fires on session change/fork while this fires on first bridge connect. Sister
+    // canonical to Bug B-1; canonical-required at-shape: B-1 part-2.
+    lastSessionName = pi.getSessionName() ?? process.env.PI_AGENT_NAME ?? "";
     const initialModel = getCurrentModelString(syncBc());
     const initialThinkingLevel = (pi as any).getThinkingLevel?.() ?? undefined;
     lastModel = initialModel;
@@ -1370,7 +1375,26 @@ function initBridge(pi: ExtensionAPI) {
         spinnerTimer = null;
       }
       activeLoader = null;
-      ctx.ui.setWidget("pi-dashboard-launch", undefined);
+      // Defensive try-catch around ctx.ui.setWidget per Patch F canonical-shape
+      // (subagent-infra-tooling-cluster/v1 GoldHawk2 / Bert tenure-7 d22 RATIFY
+      // 2026-05-25 — never landed on main upstream). stopSpinner fires from
+      // .then() + .catch() handlers that may run long after the original
+      // session ctx was replaced (subagent fork inherits parent ctx capture;
+      // session-replacement events fire ctx.invalidate() per runner.js:289).
+      // When subagent's ctx is stale, calling ctx.ui.setWidget throws the
+      // canonical "extension ctx is stale" Error from runner.js:297 →
+      // kills the subagent process entirely. Sister-shape pi-coding-agent
+      // runner.js:289 canonical invalidate-guidance discriminate via regex.
+      try {
+        ctx.ui.setWidget("pi-dashboard-launch", undefined);
+      } catch (err) {
+        if (err instanceof Error && /extension ctx is stale/.test(err.message)) {
+          // Silent — stale ctx means session has moved on; spinner cleanup
+          // unnecessary (widget will be GC'd with the dead session anyway).
+          return;
+        }
+        throw err;
+      }
     };
     autoStartServer(config, {
       discoverDashboard,

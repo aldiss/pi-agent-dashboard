@@ -39,7 +39,7 @@ export function MobileShell({ depth, listPanel, detailPanel, onBack }: Props) {
   const transitionClass = swipeState.swiping ? "" : "transition-transform duration-300 ease-out";
 
   return (
-    <div ref={containerRef} className="relative w-screen h-[100dvh] overflow-hidden bg-[var(--bg-primary)]">
+    <div ref={containerRef} className="fixed inset-0 overflow-hidden overflow-hidden bg-[var(--bg-primary)]">
       {/* Panel 0: Session list */}
       <div
         className={`absolute inset-0 ${transitionClass} overflow-y-auto`}

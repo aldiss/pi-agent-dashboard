@@ -3,7 +3,7 @@ import { SpawnErrorBanner } from "./SpawnErrorBanner.js";
 import { getApiBase } from "../lib/api-context.js";
 import { useLocation } from "wouter";
 import { Icon } from "@mdi/react";
-import { mdiChevronRight, mdiChevronDown, mdiChevronUp, mdiPlus, mdiPin, mdiFolder, mdiFolderOpen, mdiConsoleLine, mdiCog, mdiPuzzleOutline, mdiFileDocumentOutline } from "@mdi/js";
+import { mdiChevronRight, mdiChevronDown, mdiChevronUp, mdiPlus, mdiPin, mdiFolder, mdiFolderOpen, mdiConsoleLine, mdiCog, mdiPuzzleOutline, mdiFileDocumentOutline, mdiViewDashboard, mdiAccountGroup, mdiCube, mdiHelpCircle } from "@mdi/js";
 import { PiLogo } from "./PiLogo.js";
 import { FolderActionBar } from "./FolderActionBar.js";
 import { encodeFolderPath } from "../lib/folder-encoding.js";
@@ -14,10 +14,15 @@ import type { DashboardSession, OpenSpecData, CommandInfo, FlowInfo, ImageConten
 import type { TerminalSession } from "@blackbelt-technology/pi-dashboard-shared/terminal-types.js";
 import {
   groupSessionsByDirectory,
+  groupSessionsByTier,
+  classifyTier,
   filterSessions,
+  filterStaleSessions,
   filterByQuery,
   sortSessionsByOrder,
+  SESSION_TIER_ORDER,
   type DirectoryGroup,
+  type SessionTier,
 } from "../lib/session-grouping.js";
 // TerminalCard removed — terminals now in TerminalsView
 import {
@@ -25,6 +30,9 @@ import {
   setCollapsedGroups,
   pruneStaleCollapsedGroups,
   removeLegacyHiddenSessions,
+  getStaleHoursThreshold,
+  getHideStale,
+  setHideStale,
 } from "../lib/session-filter-storage.js";
 import { SessionCard, GroupGitInfo, EditorButtons, branchCache } from "./SessionCard.js";
 import { PlaceholderSessionCard } from "./PlaceholderSessionCard.js";
@@ -117,6 +125,55 @@ interface Props {
 
 // Re-export for backwards compatibility
 export { groupSessionsByDirectory, filterSessions, type DirectoryGroup } from "../lib/session-grouping.js";
+
+/**
+ * Per-tier UI metadata: label shown in the section header + icon used to
+ * the left of the label. Kept alongside SessionList because these are
+ * presentation-layer choices, not classification semantics.
+ */
+const TIER_LABEL: Record<SessionTier, string> = {
+  "standing-crew": "Standing crew",
+  "cell-executor": "Cell-executors",
+  "operator-chat-pane": "Operator chat-panes",
+  worker: "Workers",
+  other: "Other",
+};
+
+const TIER_ICON: Record<SessionTier, string> = {
+  "standing-crew": mdiAccountGroup,
+  "cell-executor": mdiCube,
+  "operator-chat-pane": mdiConsoleLine,
+  worker: mdiCog,
+  other: mdiHelpCircle,
+};
+
+/**
+ * Tiers whose section is expanded by default. Tiers NOT listed here
+ * (operator-chat-pane, worker, other) default to collapsed; the user's
+ * explicit toggle inverts the default and is persisted by flipping the
+ * presence of `tier:<name>` in the shared collapsed-groups set.
+ */
+const DEFAULT_EXPANDED_TIERS: ReadonlySet<SessionTier> = new Set<SessionTier>([
+  "standing-crew",
+  "cell-executor",
+]);
+
+function tierStorageKey(tier: SessionTier): string {
+  return `tier:${tier}`;
+}
+
+/**
+ * Resolve a tier's effective collapsed state from the shared collapsed set.
+ * Default-expanded tiers are collapsed iff the key is present; default-collapsed
+ * tiers are collapsed iff the key is ABSENT — so a single boolean flip via
+ * `toggleTierCollapsed` produces the user-expected behavior regardless of
+ * which side of the default they started on.
+ */
+function isTierCollapsedDefault(tier: SessionTier, collapsed: Set<string>): boolean {
+  const key = tierStorageKey(tier);
+  const defaultExpanded = DEFAULT_EXPANDED_TIERS.has(tier);
+  return defaultExpanded ? collapsed.has(key) : !collapsed.has(key);
+}
 
 function ToggleButton({
   active,
@@ -224,6 +281,13 @@ export function SessionList({ sessions, selectedId, onSelect, contextUsageMap, o
   // are off by default and surfaced via this single toggle.
   // See change: pin-and-search-sessions (design D1 revised).
   const [showHidden, setShowHidden] = useState(false);
+  // Stale-active filter state. When `hideStale` is on (default ON), sessions whose
+  // `status` is not `ended` but which have seen no activity in the last
+  // `staleHoursThreshold` hours are hidden. The currently-selected session is
+  // always preserved by `filterStaleSessions` so the user does not lose context.
+  // Persisted via dashboard:hideStale / dashboard:staleHours.
+  const [hideStale, setHideStaleState] = useState(() => getHideStale());
+  const staleHoursThreshold = useMemo(() => getStaleHoursThreshold(), []);
   // Sidebar-level search/filter.
   //   - workspaceFilter: substring match against the folder path.
   //     Narrows the folder list. Matching folders auto-expand.
@@ -250,6 +314,17 @@ export function SessionList({ sessions, selectedId, onSelect, contextUsageMap, o
 
   // Collapsed groups state
   const [collapsedGroups, setCollapsedGroupsState] = useState(() => getCollapsedGroups());
+
+  const handleToggleTierCollapse = useCallback((tier: SessionTier) => {
+    setCollapsedGroupsState((prev) => {
+      const key = `tier:${tier}`;
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      setCollapsedGroups(next);
+      return next;
+    });
+  }, []);
 
   // Prune stale collapsed groups when sessions change
   useEffect(() => {
@@ -285,9 +360,20 @@ export function SessionList({ sessions, selectedId, onSelect, contextUsageMap, o
   // `filterSessions` is called with `activeOnly: false` permanently —
   // active-first ranking now happens per-folder via `rankActiveFirst`,
   // so the global "hide ended" pre-filter is unnecessary.
+  //
+  // The stale-active filter runs in the same pipeline step: it sweeps
+  // out non-ended sessions older than `staleHoursThreshold` hours, but
+  // explicitly preserves `selectedId` so the user never loses what they
+  // are looking at to a background filter.
   const filteredSessions = useMemo(
-    () => filterSessions(sessions, false, showHidden),
-    [sessions, showHidden],
+    () => filterStaleSessions(
+      filterSessions(sessions, false, showHidden),
+      staleHoursThreshold,
+      hideStale,
+      now,
+      selectedId,
+    ),
+    [sessions, showHidden, staleHoursThreshold, hideStale, now, selectedId],
   );
 
   const hiddenCount = useMemo(
@@ -310,7 +396,30 @@ export function SessionList({ sessions, selectedId, onSelect, contextUsageMap, o
     () => groupSessionsByDirectory(filteredSessions, sessionOrderMap, pinnedDirectories),
     [filteredSessions, sessionOrderMap, pinnedDirectories],
   );
-  const allGroups = useMemo(() => [...pinnedGroups, ...unpinnedGroups], [pinnedGroups, unpinnedGroups]);
+  // Tier-grouped view of the UNPINNED sessions only. Pinned directories stay
+  // in their dedicated section above the tier list (preserves drag-to-reorder
+  // semantics + the explicit operator pinning intent regardless of role).
+  //
+  // Within each tier the existing directory grouping logic applies (sessions
+  // group by cwd; cwd ordering matches `sortSessionsByOrder` for stability).
+  // A directory containing sessions across multiple tiers naturally appears
+  // in each tier with only that tier's sessions visible inside it.
+  const tierGroups = useMemo<Array<{ tier: SessionTier; dirGroups: DirectoryGroup[] }>>(() => {
+    const unpinnedSessions = unpinnedGroups.flatMap((g) => g.sessions);
+    const byTier = groupSessionsByTier(unpinnedSessions);
+    const out: Array<{ tier: SessionTier; dirGroups: DirectoryGroup[] }> = [];
+    for (const tier of SESSION_TIER_ORDER) {
+      const tierSessions = byTier.get(tier);
+      if (!tierSessions || tierSessions.length === 0) continue;
+      const { unpinned } = groupSessionsByDirectory(tierSessions, sessionOrderMap, []);
+      out.push({ tier, dirGroups: unpinned });
+    }
+    return out;
+  }, [unpinnedGroups, sessionOrderMap]);
+  const allGroups = useMemo(
+    () => [...pinnedGroups, ...tierGroups.flatMap((tg) => tg.dirGroups)],
+    [pinnedGroups, tierGroups],
+  );
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
@@ -684,12 +793,21 @@ export function SessionList({ sessions, selectedId, onSelect, contextUsageMap, o
             <TunnelButton />
             {headerExtra}
             <button
+              onClick={() => navigate("/dashboard")}
+              className="text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] p-2"
+              title="Dashboard"
+              aria-label="Dashboard"
+              data-testid="dashboard-btn"
+            >
+              <Icon path={mdiViewDashboard} size={0.9} />
+            </button>
+            <button
               onClick={() => navigate("/settings")}
-              className="text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]"
+              className="text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] p-2"
               title="Settings"
               data-testid="settings-btn"
             >
-              <Icon path={mdiCog} size={0.6} />
+              <Icon path={mdiCog} size={0.9} />
             </button>
           </div>
         </div>
@@ -714,6 +832,18 @@ export function SessionList({ sessions, selectedId, onSelect, contextUsageMap, o
           />
           <ToggleButton active={showHidden} onClick={() => setShowHidden((p) => !p)}>
             Hidden
+          </ToggleButton>
+          <ToggleButton
+            active={hideStale}
+            onClick={() => {
+              setHideStaleState((p) => {
+                const next = !p;
+                setHideStale(next);
+                return next;
+              });
+            }}
+          >
+            {`Hide stale (${staleHoursThreshold}h+)`}
           </ToggleButton>
           {onPinDirectory && (
             <button
@@ -745,20 +875,53 @@ export function SessionList({ sessions, selectedId, onSelect, contextUsageMap, o
             </SortableContext>
           )}
           {/* Gap between pinned and unpinned is handled by flex gap */}
-          {/* Unpinned directory groups: rendered when the user is
-              actively filtering folders, OR when the folder contains
-              at least one alive session (active / idle / streaming).
-              Folders with only ended sessions stay hidden by default to
-              keep the sidebar focused on workspaces the user is
-              currently working in.
-              See change: pin-and-search-sessions. */}
-          {unpinnedGroups
-            .filter((g) =>
+          {/* Tier sections — each tier renders the unpinned directory groups whose
+              sessions classify into that tier. Empty tiers (post-filter) are
+              omitted. Tier headers are collapsible; default-expanded for
+              standing-crew + cell-executor, default-collapsed for the rest.
+              Tier order matches SESSION_TIER_ORDER. */}
+          {tierGroups.map(({ tier, dirGroups }) => {
+            const visibleDirGroups = dirGroups.filter((g) =>
               workspaceFilter.length > 0
                 ? folderMatchesFilters(g)
                 : g.sessions.some((s) => s.status !== "ended")
-            )
-            .map((group) => renderGroup(group, false))}
+            );
+            if (visibleDirGroups.length === 0) return null;
+            const filterActive = workspaceFilter.length > 0 || sessionSearch.length > 0;
+            // Auto-expand when only a single tier is present — collapsing the
+            // only tier would hide all sidebar content, which is confusing
+            // when the operator has a small mesh (e.g. a single TUI session).
+            const isOnlyTier = tierGroups.length === 1;
+            const tierCollapsed = filterActive || isOnlyTier
+              ? false
+              : isTierCollapsedDefault(tier, collapsedGroups);
+            return (
+              <div key={`tier-${tier}`} className="flex flex-col gap-2" data-testid={`tier-section-${tier}`}>
+                <button
+                  onClick={() => handleToggleTierCollapse(tier)}
+                  className="flex items-center gap-1.5 px-2 py-1 text-[11px] font-semibold uppercase tracking-wide text-[var(--text-secondary)] hover:text-[var(--text-primary)] select-none"
+                  aria-expanded={!tierCollapsed}
+                  data-testid={`tier-header-${tier}`}
+                >
+                  <span className="inline-flex text-[var(--text-tertiary)]">
+                    <Icon path={tierCollapsed ? mdiChevronRight : mdiChevronDown} size={0.55} />
+                  </span>
+                  <span className="inline-flex text-[var(--text-tertiary)]">
+                    <Icon path={TIER_ICON[tier]} size={0.55} />
+                  </span>
+                  <span>{TIER_LABEL[tier]}</span>
+                  <span className="text-[10px] font-normal text-[var(--text-muted)] normal-case tracking-normal">
+                    ({visibleDirGroups.length})
+                  </span>
+                </button>
+                {!tierCollapsed && (
+                  <div className="flex flex-col gap-2">
+                    {visibleDirGroups.map((group) => renderGroup(group, false))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </ul>
         </DndContext>
       )}

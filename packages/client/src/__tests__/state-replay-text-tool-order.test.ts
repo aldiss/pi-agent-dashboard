@@ -124,13 +124,141 @@ describe("state-replay text+toolCall order", () => {
 
     const state = replayAndReduce(entries);
     const tail = state.messages.slice(-3);
-    // state-replay does not currently emit thinking_end events for replay,
-    // so the thinking row may not be in the suffix. The critical assertion
-    // is that text precedes toolResult.
+    // After fix-thinking-block-streaming-state-loss-2026-05-25:
+    // state-replay synthesizes thinking_* events for persisted
+    // {type:"thinking"} content blocks, so the thinking row IS in the
+    // suffix and precedes the assistant text + tool result.
+    const thinkingIdx = tail.findIndex((m) => m.role === "thinking");
     const assistantIdx = tail.findIndex((m) => m.role === "assistant");
     const toolIdx = tail.findIndex((m) => m.role === "toolResult");
+    expect(thinkingIdx).toBeGreaterThanOrEqual(0);
     expect(assistantIdx).toBeGreaterThanOrEqual(0);
     expect(toolIdx).toBeGreaterThanOrEqual(0);
+    expect(thinkingIdx).toBeLessThan(assistantIdx);
     expect(assistantIdx).toBeLessThan(toolIdx);
+  });
+
+  // Regression suite for change: fix-thinking-block-streaming-state-
+  // loss-2026-05-25. state-replay synthesizes message_update events
+  // with assistantMessageEvent: { type: "thinking_start" | thinking_delta
+  // | thinking_end } for every persisted {type:"thinking"} content
+  // block so the reducer can rebuild role:"thinking" rows on cold-replay.
+
+  it("[thinking] assistant message replays as a thinking row in messages[]", () => {
+    const entries = [
+      {
+        type: "message",
+        id: "a1",
+        timestamp: "2026-04-29T06:31:21.000Z",
+        message: {
+          role: "assistant",
+          content: [
+            { type: "thinking", thinking: "Reasoning content here.", thinkingSignature: "sig-1" },
+          ],
+        },
+      },
+    ];
+
+    // Assert at synth-events level
+    const events = replayEntriesAsEvents("sess-1", entries).map((m) => m.event);
+    const startIdx = events.findIndex(
+      (e) => e.eventType === "message_update"
+        && (e.data as any).assistantMessageEvent?.type === "thinking_start",
+    );
+    const deltaIdx = events.findIndex(
+      (e) => e.eventType === "message_update"
+        && (e.data as any).assistantMessageEvent?.type === "thinking_delta",
+    );
+    const endIdx = events.findIndex(
+      (e) => e.eventType === "message_update"
+        && (e.data as any).assistantMessageEvent?.type === "thinking_end",
+    );
+    expect(startIdx).toBeGreaterThanOrEqual(0);
+    expect(deltaIdx).toBeGreaterThan(startIdx);
+    expect(endIdx).toBeGreaterThan(deltaIdx);
+    expect((events[deltaIdx].data as any).assistantMessageEvent.delta).toBe("Reasoning content here.");
+    expect((events[endIdx].data as any).assistantMessageEvent.signature).toBe("sig-1");
+
+    // Assert at reduced-state level: the thinking row is in messages[].
+    const state = replayAndReduce(entries);
+    const thinkingRows = state.messages.filter((m) => m.role === "thinking");
+    expect(thinkingRows).toHaveLength(1);
+    expect(thinkingRows[0].content).toBe("Reasoning content here.");
+  });
+
+  it("empty thinking content does NOT synthesize events", () => {
+    const entries = [
+      {
+        type: "message",
+        id: "a1",
+        timestamp: "2026-04-29T06:31:21.000Z",
+        message: {
+          role: "assistant",
+          content: [
+            { type: "thinking", thinking: "" },
+            { type: "text", text: "hello" },
+          ],
+        },
+      },
+    ];
+
+    const events = replayEntriesAsEvents("sess-1", entries).map((m) => m.event);
+    const hasThinkingStart = events.some(
+      (e) => e.eventType === "message_update"
+        && (e.data as any).assistantMessageEvent?.type === "thinking_start",
+    );
+    expect(hasThinkingStart).toBe(false);
+
+    // And no thinking row in messages[]
+    const state = replayAndReduce(entries);
+    expect(state.messages.some((m) => m.role === "thinking")).toBe(false);
+  });
+
+  it("multiple thinking blocks in one assistant message both produce synthesized events", () => {
+    // Empirical note: this scenario has not been observed in 2636 real
+    // assistant messages sampled across 30 recent sessions (all have
+    // n=0 or n=1 thinking blocks per message). Test is defensive only.
+    //
+    // The reorder pass at message_end pairs thinking rows by walking
+    // suffix backwards (findLastUnclaimed), which preserves correct
+    // pairing for the dominant n=1 case but reverses the pairing when
+    // n>=2 within a single message. We assert at the synth-events
+    // level (always correct) rather than the reduced-state level
+    // (subject to the reorder-helper limitation). The multi-thinking-
+    // reorder N-to-N pairing limitation is a v0.5+ candidate sister-
+    // cluster signal for the reorder helper at event-reducer.ts:~388
+    // findLastUnclaimed.
+    const entries = [
+      {
+        type: "message",
+        id: "a1",
+        timestamp: "2026-04-29T06:31:21.000Z",
+        message: {
+          role: "assistant",
+          content: [
+            { type: "thinking", thinking: "first thought" },
+            { type: "toolCall", id: "t1", name: "edit", arguments: {} },
+            { type: "thinking", thinking: "second thought after tool" },
+            { type: "text", text: "final answer" },
+          ],
+        },
+      },
+    ];
+
+    const events = replayEntriesAsEvents("sess-1", entries).map((m) => m.event);
+    const thinkingEndDeltas = events
+      .filter((e) =>
+        e.eventType === "message_update"
+        && (e.data as any).assistantMessageEvent?.type === "thinking_delta",
+      )
+      .map((e) => (e.data as any).assistantMessageEvent.delta as string);
+    expect(thinkingEndDeltas).toEqual(["first thought", "second thought after tool"]);
+
+    // At reduced-state level, the reorder pass produces two thinking
+    // rows (count is correct); pairing-order is a known pre-existing
+    // limitation banked as v0.5+ candidate.
+    const state = replayAndReduce(entries);
+    const thinkingRows = state.messages.filter((m) => m.role === "thinking");
+    expect(thinkingRows).toHaveLength(2);
   });
 });
