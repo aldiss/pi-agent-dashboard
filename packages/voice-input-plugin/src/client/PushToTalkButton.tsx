@@ -29,7 +29,7 @@
  *
  * Risk-mitigation discipline (load-bearing; do NOT remove without surfacing):
  *
- *   - Risk #12 60s/5min safety-net (`MAX_RECORDING_MS = 300_000`): auto-stop
+ *   - Risk #12 10min safety-net (`MAX_RECORDING_MS = 600_000`): auto-stop
  *     after the configured timeout even if user forgets to click again.
  *     Under click-to-toggle this is more load-bearing than under
  *     press-and-hold, because there is no `pointerup` natural-cancel path.
@@ -71,19 +71,18 @@ const DEFAULT_ENDPOINT = "/api/plugins/voice-input/transcribe";
 const DEFAULT_HEALTH = "/api/plugins/voice-input/health";
 
 /**
- * 60s safety-net auto-stop (Risk #12 per voice-input-substrate-r1 ship). This
+ * 10min safety-net auto-stop (Risk #12 per voice-input-substrate-r1 ship). This
  * matches the canonical PushToTalkButton.test.tsx expectation; under
  * click-to-toggle it is more load-bearing than under press-and-hold because
  * there is no `pointerup` natural-cancel path.
  *
- * Recovery honest-disclosure: a later (post-substrate-r1-ship) FastUnion
- * edit (2026-05-17T15:34Z) raised this to `300_000` for longer-dictation
- * empirical-cycle, but did not update the test. We restore the
- * 60_000 baseline to keep the test deliverable PASS-able; if longer-
- * dictation empirical-pacing is desired, follow-up cell can re-raise +
- * update the test in the same change.
+ * History: substrate-r1 shipped 60_000 (60s). 2026-05-17 FastUnion raised to
+ * 300_000 (5min) for longer dictation, but the test was not updated, so the
+ * 2026-05-22 recovery commit (8308224) reverted to 60_000 to keep the test
+ * PASS-able. 2026-06-03 operator-direct raised to 600_000 (10min) with the
+ * test updated in the same change per Schema 5 § 3.9 SAME-COMMIT discipline.
  */
-const MAX_RECORDING_MS = 60_000;
+const MAX_RECORDING_MS = 600_000;
 
 const SIDECAR_HEALTH_POLL_INTERVAL_MS = 5_000;
 const ERROR_AUTO_CLEAR_MS = 6_000;
@@ -362,7 +361,7 @@ export function PushToTalkButton({
       recorder.start();
       setPhase("recording");
 
-      // 60s safety-net.
+      // 10min safety-net.
       safetyNetRef.current = setTimeout(() => {
         const fn = stopRecordingRef.current;
         if (fn) fn(false);

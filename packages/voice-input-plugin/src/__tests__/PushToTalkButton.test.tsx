@@ -4,12 +4,12 @@
  * Covers (per voice-input-ux-option-b execution brief 2026-05-14, gate G3):
  *   - idle  --click--> recording state transition
  *   - recording  --click--> uploading state transition
- *   - 60s safety-net auto-stops recording when no second click arrives
+ *   - 10min safety-net auto-stops recording when no second click arrives
  *   - aria-pressed reflects state correctly (false in idle, true in recording)
  *   - title / aria-label updates per phase
  *
  * Operator-direct ratification 2026-05-14 ~12:55 CEST: Option B
- * (click-to-toggle) replaces press-and-hold. Risk #12 60s safety-net
+ * (click-to-toggle) replaces press-and-hold. Risk #12 10min safety-net
  * preserved (and arguably more important now — a forgotten second click
  * would otherwise leave the mic hot indefinitely).
  *
@@ -170,8 +170,8 @@ describe("PushToTalkButton — click-to-toggle (Option B, 2026-05-14)", () => {
     expect(button.getAttribute("aria-pressed")).toBe("false");
   });
 
-  it("60s safety-net auto-stops recording when no second click arrives", async () => {
-    // Fake timers from the start so the safety-net setTimeout(60_000)
+  it("10min safety-net auto-stops recording when no second click arrives", async () => {
+    // Fake timers from the start so the safety-net setTimeout(600_000)
     // scheduled inside startRecording is captured by the fake-timer system.
     // Use ONLY Promise.resolve() to drain microtasks (no setTimeout(0) which
     // would never fire under fake timers).
@@ -189,12 +189,12 @@ describe("PushToTalkButton — click-to-toggle (Option B, 2026-05-14)", () => {
     expect(button.getAttribute("data-phase")).toBe("recording");
     expect(button.getAttribute("aria-pressed")).toBe("true");
 
-    // Phase 2: advance past 60s safety-net cap. The fired callback invokes
+    // Phase 2: advance past 10min safety-net cap. The fired callback invokes
     // stopRecordingRef.current(false) synchronously; the rest of the
     // stopRecording chain (recorder.stop → chunks → fetch → setPhase) drains
     // via microtasks.
     await act(async () => {
-      vi.advanceTimersByTime(60_001);
+      vi.advanceTimersByTime(600_001);
       for (let i = 0; i < 20; i++) await Promise.resolve();
     });
     // Restore real timers BEFORE waitFor (waitFor schedules via setTimeout).
