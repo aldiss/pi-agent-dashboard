@@ -292,6 +292,12 @@ export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ se
   // The flag is only consulted inside handleScroll to ignore the spurious onScroll
   // events that follow each scrollTo. scrollToTurn opts out by setting
   // isNearBottom.current = false, which still gates this effect.
+  //
+  // queuedPrompts.length included in deps so that pushing a queued message
+  // (operator multi-send while pi is busy) auto-scrolls the new queued card
+  // into view — without this, queued cards render below pendingPrompt and stay
+  // hidden under the bottom composer surface (operator-empirical 2026-06-04
+  // «в мобильном интерфейсе висит в статусе...»).
   useEffect(() => {
     if (isNearBottom.current) {
       requestAnimationFrame(() => {
@@ -299,7 +305,7 @@ export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ se
         scrollRef.current?.scrollTo(0, scrollRef.current!.scrollHeight);
       });
     }
-  }, [state.messages.length, state.streamingText, state.pendingPrompt, markProgrammatic]);
+  }, [state.messages.length, state.streamingText, state.pendingPrompt, state.queuedPrompts?.length, markProgrammatic]);
 
   // Re-anchor scroll position to bottom after viewport resize (iOS-rotation,
   // keyboard show/hide, address-bar collapse/expand).
