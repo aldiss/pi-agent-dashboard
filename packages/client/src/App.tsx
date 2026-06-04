@@ -1225,7 +1225,6 @@ export default function App() {
             onForceKill={handleForceKill}
             pendingPrompt={!!selectedState.pendingPrompt}
             onCancelPending={handleCancelPending}
-            queuedCount={selectedState.queuedPrompts?.length ?? 0}
             sessionId={selectedId}
             draft={selectedDraft}
             onDraftChange={setDraftForSelected}

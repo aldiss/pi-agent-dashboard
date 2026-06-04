@@ -139,33 +139,6 @@ export interface SessionState {
   turnStats: TurnStat[];
   contextUsage?: { tokens: number | null; contextWindow: number };
   pendingPrompt?: PendingPrompt;
-  /**
-   * Optimistic queue of prompts sent AFTER `pendingPrompt` was already set.
-   *
-   * Backend pi binary already queues these via `pi.sendUserMessage(text, { deliverAs: "followUp" })`
-   * — they are guaranteed delivery after the current assistant turn. This
-   * field is the CLIENT-SIDE mirror so the operator sees their queued
-   * messages immediately, instead of "falling into the void" until pi
-   * picks them up turn-by-turn.
-   *
-   * Lifecycle:
-   * - `handleSend` pushes here if `pendingPrompt` is already set OR
-   *   `isStreaming === true` (see useSessionActions.ts).
-   * - Each event that clears `pendingPrompt = undefined` (agent_start /
-   *   agent_end / message_start(user) / bash_output / command_feedback)
-   *   instead promotes `queuedPrompts[0]` into `pendingPrompt` and shifts
-   *   the queue forward when the queue is non-empty.
-   * - Rendered by `ChatView` as dimmer cards behind the current
-   *   `pendingPrompt` card. `queuedPrompts.length` feeds the existing
-   *   `queuedCount` badge in `CommandInput` / `MobileComposer` (r27
-   *   Phase 1.1.1 QuickKnight relay infrastructure).
-   *
-   * Backward compat: optional / defaults to empty array; existing
-   * single-`pendingPrompt` semantics unchanged when no queueing happens.
-   *
-   * See change: queued-prompts-visibility (operator-direct 2026-06-04).
-   */
-  queuedPrompts?: PendingPrompt[];
   interactiveRequests: InteractiveUiRequest[];
   flowState: FlowState | null;
   /** All flow states seen during execution (main + subflows), keyed by flowName */
@@ -248,7 +221,6 @@ export function createInitialState(): SessionState {
     hasFileChanges: false,
     subagents: new Map(),
     turnCount: 0,
-    queuedPrompts: [],
   };
 }
 
@@ -781,36 +753,6 @@ export function dismissInteractiveRequest(
  *
  * See change: fix-retry-resends-last-user-message.
  */
-/**
- * Clear the optimistic `pendingPrompt` on a session-state and, if any
- * client-side queued prompts exist, promote the head of `queuedPrompts`
- * into `pendingPrompt` (and shift the queue forward).
- *
- * Called by every reducer site that previously did
- * `next.pendingPrompt = undefined` — the semantic is now "this prompt
- * was acknowledged by pi; if the operator queued more behind it, show
- * the next one as the new pending".
- *
- * Backend pi binary already queues these via `pi.sendUserMessage(text,
- * { deliverAs: "followUp" })` (see docs/extensions.md); this helper is
- * the client-side mirror that keeps the operator's view consistent with
- * the backend queue depth.
- *
- * Mutates `state` in place — callers are expected to have already done
- * the `{ ...state, toolCalls: new Map(state.toolCalls) }` shallow clone
- * at the top of `reduceEvent`.
- *
- * See change: queued-prompts-visibility (operator-direct 2026-06-04).
- */
-function clearAndPromoteQueue(state: SessionState): void {
-  if (state.queuedPrompts && state.queuedPrompts.length > 0) {
-    state.pendingPrompt = state.queuedPrompts[0];
-    state.queuedPrompts = state.queuedPrompts.slice(1);
-  } else {
-    state.pendingPrompt = undefined;
-  }
-}
-
 export function findLastUserPrompt(
   messages: readonly ChatMessage[],
 ): { text: string; images?: { type: "image"; data: string; mimeType: string }[] } | null {
@@ -845,7 +787,7 @@ export function reduceEvent(state: SessionState, event: DashboardEvent): Session
       next.isStreaming = true;
       next.status = "streaming";
       next.streamingText = "";
-      clearAndPromoteQueue(next);
+      next.pendingPrompt = undefined;
       next.lastError = undefined;
       next.retryState = undefined;
       break;
@@ -855,7 +797,7 @@ export function reduceEvent(state: SessionState, event: DashboardEvent): Session
       next.status = "idle";
       next.streamingText = "";
       next.currentTool = undefined;
-      clearAndPromoteQueue(next);
+      next.pendingPrompt = undefined;
       const errorMsg = extractAgentEndError(data);
       if (errorMsg) {
         next.lastError = { message: errorMsg, timestamp: event.timestamp };
@@ -894,7 +836,7 @@ export function reduceEvent(state: SessionState, event: DashboardEvent): Session
         next.streamingTextFlushed = false;
       }
       if (msg?.role === "user") {
-        clearAndPromoteQueue(next);
+        next.pendingPrompt = undefined;
         let text = "";
         let images: ChatImage[] | undefined;
         if (Array.isArray(msg.content)) {
@@ -1319,7 +1261,7 @@ export function reduceEvent(state: SessionState, event: DashboardEvent): Session
       const output = data.output as string;
       const exitCode = data.exitCode as number;
       const excludeFromContext = data.excludeFromContext as boolean;
-      clearAndPromoteQueue(next);
+      next.pendingPrompt = undefined;
       next.messages = [
         ...next.messages,
         {
@@ -1337,7 +1279,7 @@ export function reduceEvent(state: SessionState, event: DashboardEvent): Session
       const command = data.command as string;
       const status = data.status as string;
       const message = data.message as string | undefined;
-      clearAndPromoteQueue(next);
+      next.pendingPrompt = undefined;
       // Upsert: a terminal status (completed/error) for the same command
       // transitions the most recent matching started row in place, instead of
       // appending a duplicate. Keeps chat clean for started → terminal pairs.
