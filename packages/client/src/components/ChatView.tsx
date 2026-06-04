@@ -912,7 +912,41 @@ export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ se
         </div>
       )}
 
-      {state.messages.length === 0 && !state.streamingText && !state.pendingPrompt && (
+      {/*
+        Queued-behind-pending prompts (optimistic client-side mirror of
+        pi-binary's internal queue via `deliverAs: "followUp"`). Rendered
+        as dimmer cards stacked below the current `pendingPrompt`, so the
+        operator sees their queued sends immediately instead of having
+        them "fall into the void" until pi picks them up turn-by-turn.
+        Each card carries `queued` label + position. See change:
+        queued-prompts-visibility (operator-direct 2026-06-04).
+      */}
+      {(state.queuedPrompts ?? []).map((q, idx) => (
+        <div
+          key={`queued-${idx}`}
+          data-testid={`queued-prompt-card-${idx}`}
+          className="mb-2 flex justify-end"
+        >
+          <div
+            className={`bg-blue-500/5 border border-blue-500/15 border-l-2 border-l-blue-400/40 rounded-xl shadow-sm px-4 py-2 opacity-70 ${bubbleMax}`}
+            title={`Queued behind ${idx + 1} prior message${idx === 0 ? "" : "s"} — pi will pick this up after the current turn finishes`}
+          >
+            {q.images && q.images.length > 0 && (
+              <ImageAttachments images={q.images} />
+            )}
+            <div className="flex items-start gap-2">
+              <div className="flex-1">
+                <MarkdownContent content={q.text} />
+              </div>
+              <span className="text-[10px] uppercase tracking-wide text-blue-400/70 shrink-0 mt-1 font-medium">
+                queued #{idx + 1}
+              </span>
+            </div>
+          </div>
+        </div>
+      ))}
+
+      {state.messages.length === 0 && !state.streamingText && !state.pendingPrompt && (state.queuedPrompts?.length ?? 0) === 0 && (
         <div className="flex items-center justify-center h-full text-[var(--text-tertiary)]">
           <p>No messages yet</p>
         </div>

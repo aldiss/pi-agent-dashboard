@@ -984,6 +984,167 @@ describe("pendingPrompt", () => {
   });
 });
 
+/**
+ * Queue-promotion tests — verifies that when `pendingPrompt` is cleared
+ * by an event AND `queuedPrompts` has entries, the head of the queue is
+ * promoted into `pendingPrompt` and the queue shifts forward. This is
+ * the client-side mirror of pi-binary's internal queue via
+ * `deliverAs: "followUp"`. See change: queued-prompts-visibility.
+ */
+describe("queuedPrompts promotion", () => {
+  it("initial state has empty queuedPrompts", () => {
+    const state = createInitialState();
+    expect(state.queuedPrompts).toEqual([]);
+  });
+
+  it("promotes head of queue to pendingPrompt on agent_start when queue non-empty", () => {
+    const pending: PendingPrompt = { text: "msg1" };
+    const q1: PendingPrompt = { text: "msg2" };
+    const q2: PendingPrompt = { text: "msg3" };
+    let state = createInitialState();
+    state = { ...state, pendingPrompt: pending, queuedPrompts: [q1, q2] };
+
+    state = reduceEvent(state, {
+      eventType: "agent_start",
+      timestamp: Date.now(),
+      data: {},
+    });
+    expect(state.pendingPrompt).toEqual(q1);
+    expect(state.queuedPrompts).toEqual([q2]);
+  });
+
+  it("promotes head of queue on message_start(user) when queue non-empty", () => {
+    const pending: PendingPrompt = { text: "msg1" };
+    const q1: PendingPrompt = { text: "msg2" };
+    let state = createInitialState();
+    state = { ...state, pendingPrompt: pending, queuedPrompts: [q1] };
+
+    state = reduceEvent(state, {
+      eventType: "message_start",
+      timestamp: Date.now(),
+      data: {
+        message: {
+          role: "user",
+          content: [{ type: "text", text: "msg1" }],
+        },
+      },
+    });
+    expect(state.pendingPrompt).toEqual(q1);
+    expect(state.queuedPrompts).toEqual([]);
+  });
+
+  it("promotes on bash_output event", () => {
+    const pending: PendingPrompt = { text: "!!ls" };
+    const q1: PendingPrompt = { text: "after-bash" };
+    let state = createInitialState();
+    state = { ...state, pendingPrompt: pending, queuedPrompts: [q1] };
+
+    state = reduceEvent(state, {
+      eventType: "bash_output",
+      timestamp: Date.now(),
+      data: { command: "ls", output: "file.txt", exitCode: 0, excludeFromContext: true },
+    });
+    expect(state.pendingPrompt).toEqual(q1);
+    expect(state.queuedPrompts).toEqual([]);
+  });
+
+  it("promotes on command_feedback event", () => {
+    const pending: PendingPrompt = { text: "/compact" };
+    const q1: PendingPrompt = { text: "after-compact" };
+    let state = createInitialState();
+    state = { ...state, pendingPrompt: pending, queuedPrompts: [q1] };
+
+    state = reduceEvent(state, {
+      eventType: "command_feedback",
+      timestamp: Date.now(),
+      data: { command: "/compact", status: "started" },
+    });
+    expect(state.pendingPrompt).toEqual(q1);
+    expect(state.queuedPrompts).toEqual([]);
+  });
+
+  it("promotes on agent_end (idle transition)", () => {
+    const pending: PendingPrompt = { text: "msg1" };
+    const q1: PendingPrompt = { text: "msg2" };
+    let state = createInitialState();
+    state = { ...state, pendingPrompt: pending, queuedPrompts: [q1] };
+
+    state = reduceEvent(state, {
+      eventType: "agent_end",
+      timestamp: Date.now(),
+      data: { messages: [] },
+    });
+    expect(state.pendingPrompt).toEqual(q1);
+    expect(state.queuedPrompts).toEqual([]);
+  });
+
+  it("clears pendingPrompt to undefined when queue is empty", () => {
+    const pending: PendingPrompt = { text: "only" };
+    let state = createInitialState();
+    state = { ...state, pendingPrompt: pending, queuedPrompts: [] };
+
+    state = reduceEvent(state, {
+      eventType: "agent_start",
+      timestamp: Date.now(),
+      data: {},
+    });
+    expect(state.pendingPrompt).toBeUndefined();
+    expect(state.queuedPrompts).toEqual([]);
+  });
+
+  it("chains promotions through successive clear events", () => {
+    const pending: PendingPrompt = { text: "a" };
+    const q1: PendingPrompt = { text: "b" };
+    const q2: PendingPrompt = { text: "c" };
+    let state = createInitialState();
+    state = { ...state, pendingPrompt: pending, queuedPrompts: [q1, q2] };
+
+    // first clear — promotes b
+    state = reduceEvent(state, {
+      eventType: "agent_start",
+      timestamp: Date.now(),
+      data: {},
+    });
+    expect(state.pendingPrompt).toEqual(q1);
+    expect(state.queuedPrompts).toEqual([q2]);
+
+    // second clear — promotes c
+    state = reduceEvent(state, {
+      eventType: "message_start",
+      timestamp: Date.now(),
+      data: {
+        message: { role: "user", content: [{ type: "text", text: "b" }] },
+      },
+    });
+    expect(state.pendingPrompt).toEqual(q2);
+    expect(state.queuedPrompts).toEqual([]);
+
+    // third clear — nothing to promote
+    state = reduceEvent(state, {
+      eventType: "agent_end",
+      timestamp: Date.now(),
+      data: { messages: [] },
+    });
+    expect(state.pendingPrompt).toBeUndefined();
+    expect(state.queuedPrompts).toEqual([]);
+  });
+
+  it("preserves queuedPrompts through unrelated events", () => {
+    const q1: PendingPrompt = { text: "queued" };
+    let state = createInitialState();
+    state = { ...state, pendingPrompt: { text: "current" }, queuedPrompts: [q1] };
+
+    // stats_update should not touch queuedPrompts
+    state = reduceEvent(state, {
+      eventType: "stats_update",
+      timestamp: Date.now(),
+      data: { tokensIn: 100, tokensOut: 50, cost: 0.001 },
+    });
+    expect(state.queuedPrompts).toEqual([q1]);
+    expect(state.pendingPrompt).toEqual({ text: "current" });
+  });
+});
+
 describe("toDisplayString", () => {
   it("returns empty string for null/undefined", () => {
     expect(toDisplayString(null)).toBe("");
