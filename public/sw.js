@@ -7,7 +7,7 @@
 // Bump CACHE_VERSION on every deploy that changes precached assets.
 // The build script auto-injects deploy hash into PRECACHE_MANIFEST,
 // but CACHE_VERSION is the human-readable invalidation handle.
-const CACHE_VERSION = "v5";
+const CACHE_VERSION = "v4";
 const PRECACHE_NAME = `pi-dashboard-precache-${CACHE_VERSION}`;
 const RUNTIME_API_CACHE = `pi-dashboard-api-${CACHE_VERSION}`;
 
