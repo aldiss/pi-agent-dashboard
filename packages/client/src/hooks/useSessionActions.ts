@@ -115,13 +115,27 @@ export function useSessionActions(deps: SessionActionDeps) {
       setSessionStates((prev) => {
         const next = new Map(prev);
         const current = next.get(selectedId) ?? createInitialState();
-        next.set(selectedId, {
-          ...current,
-          pendingPrompt: {
-            text,
-            images: images?.map((img) => ({ data: img.data, mimeType: img.mimeType })),
-          },
-        });
+        const newPrompt = {
+          text,
+          images: images?.map((img) => ({ data: img.data, mimeType: img.mimeType })),
+        };
+        // If pi is already busy (current pendingPrompt set OR streaming),
+        // push this new prompt onto the optimistic client-side queue.
+        // Backend pi binary queues these via deliverAs:"followUp"; this
+        // mirror keeps the operator's view consistent with backend queue
+        // depth instead of letting subsequent sends "fall into the void"
+        // until pi picks them up. See change: queued-prompts-visibility.
+        if (current.pendingPrompt || current.isStreaming) {
+          next.set(selectedId, {
+            ...current,
+            queuedPrompts: [...(current.queuedPrompts ?? []), newPrompt],
+          });
+        } else {
+          next.set(selectedId, {
+            ...current,
+            pendingPrompt: newPrompt,
+          });
+        }
         return next;
       });
     }
