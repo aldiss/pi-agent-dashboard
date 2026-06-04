@@ -576,7 +576,7 @@ export function CommandInput({ commands: externalCommands, onSend, onListFiles, 
           onKeyDown={handleKeyDown}
           onPaste={handlePaste}
           placeholder="Message, /command, !shell, or @file..."
-          disabled={disabled}
+          disabled={disabled || pendingPrompt}
           rows={1}
           className="flex-1 bg-[var(--bg-tertiary)] rounded-lg px-4 py-1.5 text-base text-[var(--text-primary)] placeholder-gray-500 border border-[var(--border-secondary)] focus:border-blue-500 focus:outline-none disabled:opacity-50 resize-none"
           style={{ minHeight: "40px", maxHeight: "120px" }}
@@ -592,41 +592,30 @@ export function CommandInput({ commands: externalCommands, onSend, onListFiles, 
             appends to existing draft; operator confirms via the existing Send button.
             v1.x migration: replace with chat-input-augment slot upstream PR + voice-input plugin
             slot-claim. Marker block MUST be preserved verbatim — grep-discoverable for migration.) */}
-        {/* VOICE-INPUT-LOCAL-PATCH-START (W5-implementation per voice-input/v1 amended capsule-bundle Q3 ratified;
-            Telegram-style push-to-talk button inline next to the typing area — "where I type" UX per
-            operator framing in voice-input/v1 substrate § Outcome contract. Review-first: transcript
-            appends to existing draft; operator confirms via the existing Send button.
-            v1.x migration: replace with chat-input-augment slot upstream PR + voice-input plugin
-            slot-claim. Marker block MUST be preserved verbatim — grep-discoverable for migration.
-
-            r28 (operator-direct 2026-06-04 ~18:30 CEST): push-to-talk SHALL remain visible during
-            pendingPrompt to match mobile parity — operator can dictate the NEXT queued message while
-            pi is processing the previous one. Sister-shape r27 Phase 1.1.1 mobile canSend-not-gated-
-            on-isWorking. Desktop input also unblocked at line 579 (same change) + send button at line
-            616 (sends to backend queue via deliverAs:"followUp" + client-side queuedPrompts mirror per
-            commit 72381c3 + 97044e3). */}
-        <PushToTalkButton
-          disabled={disabled}
-          onTranscript={(transcript) => {
-            const sep = text && !text.endsWith(" ") && !text.endsWith("\n") ? " " : "";
-            setText(text + sep + transcript);
-            // Re-run the auto-resize logic so the (possibly multi-line) transcript shows fully.
-            requestAnimationFrame(() => {
-              const ta = inputRef.current;
-              if (ta) {
-                ta.style.height = "40px";
-                ta.style.height = Math.min(ta.scrollHeight, 120) + "px";
-                ta.focus();
-              }
-            });
-          }}
-        />
+        {!pendingPrompt && (
+          <PushToTalkButton
+            disabled={disabled}
+            onTranscript={(transcript) => {
+              const sep = text && !text.endsWith(" ") && !text.endsWith("\n") ? " " : "";
+              setText(text + sep + transcript);
+              // Re-run the auto-resize logic so the (possibly multi-line) transcript shows fully.
+              requestAnimationFrame(() => {
+                const ta = inputRef.current;
+                if (ta) {
+                  ta.style.height = "40px";
+                  ta.style.height = Math.min(ta.scrollHeight, 120) + "px";
+                  ta.focus();
+                }
+              });
+            }}
+          />
+        )}
         {/* VOICE-INPUT-LOCAL-PATCH-END */}
         <button
           onClick={handleSend}
-          disabled={disabled || !text.trim()}
+          disabled={disabled || pendingPrompt || !text.trim()}
           className="p-2 text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-hover)] active:bg-[var(--bg-tertiary)] active:scale-95 rounded-lg disabled:opacity-30 disabled:cursor-not-allowed self-center transition-all"
-          title={pendingPrompt || isWorking ? "Queue message for next turn" : "Send"}
+          title="Send"
           data-testid="send-button"
         >
           <Icon path={mdiSend} size={0.65} />
