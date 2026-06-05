@@ -1,6 +1,6 @@
 # File Index — Infrastructure (seed, sandbox, skills)
 
-Covers: `seed/`, `sandbox/`, `.pi/skills/sandbox-designer/`. Read this split when locating an infrastructure file or understanding its responsibilities.
+Covers: `seed/`, `sandbox/`, `qa/playwright-mobile/`, `.pi/skills/sandbox-designer/`. Read this split when locating an infrastructure file or understanding its responsibilities.
 
 > **Update protocol**: see `AGENTS.md` → "Documentation Update Protocol". Rows included here are ≤ 200 characters for AGENTS.md consumption; full annotations live here.
 
@@ -16,6 +16,11 @@ Covers: `seed/`, `sandbox/`, `.pi/skills/sandbox-designer/`. Read this split whe
 | `sandbox/Dockerfile` | Docker image: node:22-bookworm-slim + pi + openspec + dashboard deps |
 | `sandbox/docker-compose.yml` | Two-service composition: dashboard (:8000) + headless Chromium (:9222) |
 | `sandbox/entrypoint.sh` | Dashboard container entrypoint: start pi-dashboard → poll /api/health → tail logs |
+| `qa/playwright-mobile/playwright.config.ts` | Playwright config. 3 projects: iphone-14-pro-max-portrait (webkit), desktop-chromium, desktop-webkit. Targets `PI_DASHBOARD_BASE_URL` (default `http://127.0.0.1:8000`). `fullyParallel: false`. |
+| `qa/playwright-mobile/specs/_helpers/measure.ts` | Session-history load-time primitives: `getChatScrollGeometry`, `waitForChatFirstPaint`, `waitForChatScrollStable`, `attachWsReplayCounter`, `clearServiceWorkerAndCaches`, `primeServiceWorker`. |
+| `qa/playwright-mobile/specs/chatview-desktop-resize.spec.ts` | Desktop window-resize empirical-cycle test. Asserts ChatView visualViewport.resize patch re-anchors scroll-to-bottom across DESKTOP_LARGE/NARROW/SHORT (chromium + webkit). |
+| `qa/playwright-mobile/specs/chatview-rotation-scroll.spec.ts` | iOS WebKit rotation test. Asserts 350ms-debounced re-anchor on portrait↔landscape (430x932 ↔ 932x430) preserves bottom-anchor or scroll-position per pre-rotation state. |
+| `qa/playwright-mobile/specs/session-history-load-time.spec.ts` | dashboard-dev/v1 W1 baseline harness. Fresh-SW + primed-SW × 3 projects = 6 tests. PRIMARY: click-to-first-paint. SECONDARY: ws-replay-frames + scroll-stable. Override via `TEST_SESSION_ID`. |
 | `.pi/skills/sandbox-designer/SKILL.md` | Vision-capable design agent: before-screenshots + user story → Tailwind HTML mockup |
 
 ## Seed workspace format
