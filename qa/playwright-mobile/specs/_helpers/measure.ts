@@ -49,17 +49,21 @@ export async function getChatScrollGeometry(page: Page): Promise<{
 }
 
 /**
- * Wait for ChatView to render with substantive history (scrollHeight > clientHeight + minDelta).
+ * Wait for ChatView to render (chat-container present + optionally substantive scroll-overflow).
  * Returns elapsed-ms from invocation moment to first-paint canonical.
  *
  * PRIMARY measurement: this captures the operator-felt latency from session-card click
  * through to chat-history first-visible-paint.
+ *
+ * `minScrollDelta` default = 0 (wait only for chat-container existence; works with small
+ * seed-fixtures AND substantive operator-actual sessions). Set higher IFF need to gate on
+ * substantive-overflow canonical for empirical-cycle-pass tier.
  */
 export async function waitForChatFirstPaint(
   page: Page,
   opts: { minScrollDelta?: number; timeoutMs?: number } = {},
 ): Promise<number> {
-  const minDelta = opts.minScrollDelta ?? 200;
+  const minDelta = opts.minScrollDelta ?? 0;
   const timeoutMs = opts.timeoutMs ?? 30_000;
   const t0 = performance.now();
   await page.waitForFunction(
@@ -70,7 +74,9 @@ export async function waitForChatFirstPaint(
       const el = candidates.find((c) =>
         c.querySelector(":scope > .min-h-full.flex.flex-col.justify-end"),
       );
-      return el !== undefined && el.scrollHeight > el.clientHeight + minDelta_;
+      if (!el) return false;
+      // Default minDelta=0: just chat-container existence. Higher minDelta: gate on substantive overflow.
+      return minDelta_ === 0 ? true : el.scrollHeight > el.clientHeight + minDelta_;
     },
     minDelta,
     { timeout: timeoutMs },
@@ -86,13 +92,16 @@ export async function waitForChatFirstPaint(
  * which is where operator "slowly" perception lives if backlog is large.
  *
  * Returns elapsed-ms from invocation moment to stable-scrollHeight canonical.
+ *
+ * `minScrollHeight` default = 0 (works with small seed-fixtures). Set higher IFF need to gate on
+ * substantive-overflow canonical for empirical-cycle-pass tier.
  */
 export async function waitForChatScrollStable(
   page: Page,
   opts: { pollIntervalMs?: number; minScrollHeight?: number; timeoutMs?: number } = {},
 ): Promise<number> {
   const pollMs = opts.pollIntervalMs ?? 1500;
-  const minHeight = opts.minScrollHeight ?? 1000;
+  const minHeight = opts.minScrollHeight ?? 0;
   const timeoutMs = opts.timeoutMs ?? 60_000;
   const t0 = performance.now();
   await page.waitForFunction(
@@ -107,7 +116,7 @@ export async function waitForChatScrollStable(
       const w = window as unknown as { __dashboardDevPrevScrollH?: number };
       const prev = w.__dashboardDevPrevScrollH ?? 0;
       w.__dashboardDevPrevScrollH = el.scrollHeight;
-      return prev === el.scrollHeight && el.scrollHeight > minHeight_;
+      return prev === el.scrollHeight && el.scrollHeight >= minHeight_;
     },
     { pollMs_: pollMs, minHeight_: minHeight },
     { timeout: timeoutMs, polling: pollMs },

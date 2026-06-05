@@ -17,6 +17,10 @@ Covers: `seed/`, `sandbox/`, `qa/playwright-mobile/`, `.pi/skills/sandbox-design
 | `sandbox/docker-compose.yml` | Two-service composition: dashboard (:8000) + headless Chromium (:9222) |
 | `sandbox/entrypoint.sh` | Dashboard container entrypoint: start pi-dashboard → poll /api/health → tail logs |
 | `qa/playwright-mobile/playwright.config.ts` | Playwright config. 3 projects: iphone-14-pro-max-portrait (webkit), desktop-chromium, desktop-webkit. Targets `PI_DASHBOARD_BASE_URL` (default `http://127.0.0.1:8000`). `fullyParallel: false`. |
+| `qa/playwright-mobile/scripts/compare-cycle.mjs` | Compare baseline-vs-candidate Playwright JSON. Emit verdict markdown + JSON. PASS/FAIL/NEEDS-MORE-DATA per project. Regression threshold candidate/baseline > 1.20x = FAIL. |
+| `qa/playwright-mobile/scripts/run-commit-cycle.sh` | Orchestrate full per-commit-cycle: spawn → baseline → cherry-pick → rebuild → restart → candidate → teardown → compare. Usage: `run-commit-cycle.sh <commit-sha> [<test-session-id>]`. |
+| `qa/playwright-mobile/scripts/spawn-test-dashboard.sh` | Spawn isolated pi-dashboard test-instance via git worktree + isolated HOME + port 8001. Production :8000 untouched. State at `/tmp/dashboard-dev-test-instance-state.json`. |
+| `qa/playwright-mobile/scripts/teardown-test-dashboard.sh` | Tear down test-instance: stop pi-dashboard, remove worktree, clean isolated HOME. Idempotent. Reads state file. |
 | `qa/playwright-mobile/specs/_helpers/measure.ts` | Session-history load-time primitives: `getChatScrollGeometry`, `waitForChatFirstPaint`, `waitForChatScrollStable`, `attachWsReplayCounter`, `clearServiceWorkerAndCaches`, `primeServiceWorker`. |
 | `qa/playwright-mobile/specs/chatview-desktop-resize.spec.ts` | Desktop window-resize empirical-cycle test. Asserts ChatView visualViewport.resize patch re-anchors scroll-to-bottom across DESKTOP_LARGE/NARROW/SHORT (chromium + webkit). |
 | `qa/playwright-mobile/specs/chatview-rotation-scroll.spec.ts` | iOS WebKit rotation test. Asserts 350ms-debounced re-anchor on portrait↔landscape (430x932 ↔ 932x430) preserves bottom-anchor or scroll-position per pre-rotation state. |
