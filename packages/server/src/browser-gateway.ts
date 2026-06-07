@@ -123,7 +123,16 @@ export function createBrowserGateway(
   pushPrefsMap?: Map<string, import("./push/push-types.js").PushPrefs>,
   getPushDefaults?: () => import("@blackbelt-technology/pi-dashboard-shared/config.js").PushDefaults | undefined,
 ): BrowserGateway {
-  const wss = new WebSocketServer({ noServer: true });
+  // perMessageDeflate enabled: the sessions_snapshot frame is ~345 KB uncompressed
+  // at ~380 sessions and re-ships on every (re)connect; gzip of the identical payload
+  // is ~46 KB (7.4× smaller). Compression cost is on the server CPU, not the mobile
+  // client. Diagnostic 2026-06-07 perMessageDeflate lever (§4.3/§5.2).
+  const wss = new WebSocketServer({
+    noServer: true,
+    perMessageDeflate: {
+      threshold: 1024, // only compress frames >1 KB (skip tiny control frames)
+    },
+  });
 
   // Track subscriptions: ws → Set<sessionId>
   const subscriptions = new Map<WebSocket, Set<string>>();
