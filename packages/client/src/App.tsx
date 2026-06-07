@@ -774,6 +774,14 @@ export default function App() {
     return ids;
   }, [sessionStates]);
 
+  // Stabilize the array identity handed to <SessionList>. `sessions`/`terminals`
+  // are `useState<Map>` (new ref only on real mutation), so memoizing by the Map
+  // ref means unrelated App re-renders (e.g. openspec_update, which touches zero
+  // sessions) no longer mint a fresh array prop and storm the memoized
+  // SessionCard list. See change: fix-session-list-rerender-storm.
+  const sessionsArr = useMemo(() => Array.from(sessions.values()), [sessions]);
+  const terminalsArr = useMemo(() => Array.from(terminals.values()), [terminals]);
+
   const sessionList = (
     <div className="flex flex-col h-full min-h-0">
       {/* Active operator surfaces was previously mounted here at the top
@@ -784,8 +792,8 @@ export default function App() {
           lives in <DashboardPage /> (see Route below). */}
       <div className="flex-1 flex flex-col min-h-0">
     <SessionList
-      sessions={Array.from(sessions.values())}
-      terminals={Array.from(terminals.values())}
+      sessions={sessionsArr}
+      terminals={terminalsArr}
       selectedId={selectedId}
       onSelect={handleSelect}
       contextUsageMap={contextUsageMap}

@@ -259,7 +259,7 @@ function MetaChip({ icon, label, colorClass, maxWidth }: { icon: ReactNode; labe
   );
 }
 
-export function SessionCard({
+export const SessionCard = React.memo(function SessionCard({
   session,
   selectedId,
   onSelect,
@@ -283,9 +283,9 @@ export function SessionCard({
   onUnhide: (id: string) => void;
   contextUsage?: ContextUsageInfo;
   openspecChanges?: OpenSpecChange[];
-  onRename?: (name: string) => void;
+  onRename?: (id: string, name: string) => void;
   onShutdown?: (id: string) => void;
-  onResume?: (mode: "continue" | "fork") => void;
+  onResume?: (id: string, mode: "continue" | "fork") => void;
   hasError?: boolean;
 }) {
   const isSelected = selectedId === session.id;
@@ -391,7 +391,7 @@ export function SessionCard({
           <span className="hidden md:flex items-center gap-1.5 shrink-0 pl-3">
             {(!isAlive || isHidden) && (
               <button
-                onClick={(e) => { e.stopPropagation(); onResume("continue"); }}
+                onClick={(e) => { e.stopPropagation(); onResume(session.id, "continue"); }}
                 disabled={session.resuming}
                 className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--bg-surface)] border border-[var(--border-subtle)] hover:bg-[var(--bg-hover)] text-[var(--text-primary)] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                 title="Resume session"
@@ -400,7 +400,7 @@ export function SessionCard({
               </button>
             )}
             <button
-              onClick={(e) => { e.stopPropagation(); onResume("fork"); }}
+              onClick={(e) => { e.stopPropagation(); onResume(session.id, "fork"); }}
               disabled={session.resuming}
               className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--bg-surface)] border border-[var(--border-subtle)] hover:bg-[var(--bg-hover)] text-[var(--text-primary)] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
               title="Fork session"
@@ -474,4 +474,4 @@ export function SessionCard({
       )}
     </li>
   );
-}
+});

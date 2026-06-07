@@ -199,7 +199,19 @@ function ToggleButton({
 }
 
 export function SessionList({ sessions, selectedId, onSelect, contextUsageMap, openspecMap, sessionOrderMap, onReorderSessions, onSendPrompt, onFlowAction, onOpenSpecRefresh, onAttachProposal, onDetachProposal, onBulkArchive, onReadArtifact, onOpenPiResources, onRename, onShutdown, onResume, onResumeKeepPosition, onHideSession, onUnhideSession, onSpawnSession, onSpawnWorktree, spawningCwds, spawnResult, onSpawnResultSeen, pinnedDirectories, onPinDirectory, onOpenPinDialog, onUnpinDirectory, onReorderPinnedDirs, terminals, onKillTerminal, onRenameTerminal, onCollapseSidebar, commandsMap, flowsMap, onKillProcess, onOpenSpecs, onOpenArchive, onOpenTerminals, onOpenEditor, editorStatuses, editorAvailable, headerExtra, errorSessionIds, spawnErrors, onDismissSpawnError, resumeErrors, onDismissResumeError }: Props) {
-  const now = Date.now();
+  // Coarse, interval-updated wall clock. Used only by the relative-time badge
+  // (`now - selectBadgeTimestamp(session)`, class `hidden md:inline`) and the
+  // stale-active filter (≤30s staleness is irrelevant to either). Computing
+  // `Date.now()` inline on every render minted a fresh `now` each pass, which
+  // poisoned the `filteredSessions` useMemo dep chain AND defeated
+  // React.memo(SessionCard) via a fresh `now` prop. Refresh on a 30s interval
+  // instead so identity stays stable across unrelated re-renders.
+  // See change: fix-session-list-rerender-storm.
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(id);
+  }, []);
   const [, navigate] = useLocation();
   const { messages, showToast, dismissToast } = useToast();
   const installPrompt = useInstallPrompt();
@@ -716,9 +728,9 @@ export function SessionList({ sessions, selectedId, onSelect, contextUsageMap, o
                         onUnhide={handleUnhide}
                         contextUsage={contextUsageMap?.get(session.id)}
                         openspecChanges={openspecMap?.get(session.cwd)?.changes}
-                        onRename={onRename ? (name) => onRename(session.id, name) : undefined}
+                        onRename={onRename}
                         onShutdown={onShutdown}
-                        onResume={onResume ? (mode) => onResume(session.id, mode) : undefined}
+                        onResume={onResume}
                         hasError={errorSessionIds?.has(session.id)}
                       />
                       {resumeErrors?.get(session.id) && (
