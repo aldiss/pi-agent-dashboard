@@ -1,7 +1,12 @@
-import React, { useState, useCallback, useEffect } from "react";
+import React, { useState, useCallback, useEffect, Suspense } from "react";
 import { Icon } from "@mdi/react";
 import { mdiPlus, mdiClose, mdiConsoleLine } from "@mdi/js";
-import { TerminalView } from "./TerminalView.js";
+// TerminalView pulls in the @xterm terminal-emulator graph (~336KB decoded).
+// It is only mounted once a terminal tab actually exists, so React.lazy keeps
+// xterm out of the eager home bundle. See change: lazy-split-heavy-client-chunks.
+const TerminalView = React.lazy(() =>
+  import("./TerminalView.js").then((m) => ({ default: m.TerminalView })),
+);
 import { InlineRenameInput } from "./InlineRenameInput.js";
 import type { TerminalSession } from "@blackbelt-technology/pi-dashboard-shared/terminal-types.js";
 
@@ -139,16 +144,24 @@ export function TerminalsView({
           intrinsic height — the actual cause of the half-height
           rendering bug. See change: fix-terminal-half-height-dual-mount. */}
       <div className="flex-1 flex flex-col min-h-0">
-        {terminals.map((t) => (
-          <TerminalView
-            key={t.id}
-            terminalId={t.id}
-            visible={t.id === activeTabId}
-            terminalName={t.title || t.shell?.split("/").pop()}
-            onTitle={onTerminalTitle}
-            onClose={onKillTerminal}
-          />
-        ))}
+        <Suspense
+          fallback={
+            <div className="flex-1 flex items-center justify-center text-xs text-[var(--text-muted)]">
+              Loading terminal…
+            </div>
+          }
+        >
+          {terminals.map((t) => (
+            <TerminalView
+              key={t.id}
+              terminalId={t.id}
+              visible={t.id === activeTabId}
+              terminalName={t.title || t.shell?.split("/").pop()}
+              onTitle={onTerminalTitle}
+              onClose={onKillTerminal}
+            />
+          ))}
+        </Suspense>
       </div>
     </div>
   );

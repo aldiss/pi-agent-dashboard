@@ -2,12 +2,33 @@
  * FileDiffView — split-pane view showing changed files (tree) and diffs (panel).
  * Replaces ChatView in the content area when activated.
  */
-import React, { useState, useCallback, useRef, useEffect } from "react";
+import React, { useState, useCallback, useRef, useEffect, Suspense } from "react";
 import { Icon } from "@mdi/react";
 import { mdiArrowLeft, mdiRefresh, mdiFileTreeOutline } from "@mdi/js";
 import { useSessionDiff } from "../hooks/useSessionDiff.js";
 import { DiffFileTree, type FileSelection } from "./DiffFileTree.js";
-import { DiffPanel } from "./DiffPanel.js";
+// DiffPanel statically imports the @git-diff-view rich-diff graph (~1.1MB) and
+// react-syntax-highlighter. It only renders inside the file-diff view (never on
+// the home session-list), so React.lazy keeps those out of the eager bundle.
+// See change: lazy-split-heavy-client-chunks.
+import type { DiffPanelProps } from "./DiffPanel.js";
+const DiffPanel = React.lazy(() =>
+  import("./DiffPanel.js").then((m) => ({ default: m.DiffPanel })),
+);
+
+function LazyDiffPanel(props: DiffPanelProps) {
+  return (
+    <Suspense
+      fallback={
+        <div className="flex items-center justify-center h-full text-xs text-[var(--text-muted)] italic">
+          Loading diff…
+        </div>
+      }
+    >
+      <DiffPanel {...props} />
+    </Suspense>
+  );
+}
 import { useMobile } from "../hooks/useMobile.js";
 
 interface FileDiffViewProps {
@@ -108,7 +129,7 @@ export function FileDiffView({ sessionId, onBack }: FileDiffViewProps) {
                 onSelect={handleSelect}
               />
             ) : selectedFile && selection ? (
-              <DiffPanel file={selectedFile} selection={selection} sessionId={sessionId} />
+              <LazyDiffPanel file={selectedFile} selection={selection} sessionId={sessionId} />
             ) : (
               <div className="flex items-center justify-center h-full text-[var(--text-tertiary)]">
                 Select a file
@@ -127,7 +148,7 @@ export function FileDiffView({ sessionId, onBack }: FileDiffViewProps) {
             </ResizableTreePanel>
             <div className="flex-1 min-w-0 overflow-hidden">
               {selectedFile && selection ? (
-                <DiffPanel file={selectedFile} selection={selection} sessionId={sessionId} />
+                <LazyDiffPanel file={selectedFile} selection={selection} sessionId={sessionId} />
               ) : (
                 <div className="flex items-center justify-center h-full text-[var(--text-tertiary)]">
                   Select a file to view changes

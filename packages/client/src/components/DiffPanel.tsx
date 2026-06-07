@@ -34,7 +34,7 @@ function getPrismLang(filePath: string): string {
   return EXT_PRISM_MAP[ext] ?? "text";
 }
 
-interface DiffPanelProps {
+export interface DiffPanelProps {
   file: FileDiffEntry;
   selection: FileSelection;
   sessionId: string;

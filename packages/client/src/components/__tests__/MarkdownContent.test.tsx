@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeAll, afterEach } from "vitest";
-import { render, screen, act, fireEvent, cleanup } from "@testing-library/react";
+import { render, screen, act, fireEvent, cleanup, waitFor } from "@testing-library/react";
 import React, { useState } from "react";
 import { MarkdownContent, tableToMarkdown, tableToTsv } from "../MarkdownContent.js";
 import { ThemeProvider } from "../ThemeProvider.js";
@@ -45,12 +45,15 @@ describe("MarkdownContent", () => {
     expect(code?.className).toContain("font-mono");
   });
 
-  it("renders fenced code block with syntax highlighter", () => {
+  it("renders fenced code block with syntax highlighter", async () => {
     const content = "```javascript\nconst x = 42;\n```";
     const { container } = render(<ThemeProvider><MarkdownContent content={content} /></ThemeProvider>);
-    // SyntaxHighlighter renders with language class
-    const highlighted = container.querySelector('[class*="language-"]');
-    expect(highlighted).not.toBeNull();
+    // SyntaxHighlighter is now lazy (HighlightedCode Suspense): the highlighted
+    // markup with the language- class appears once the dynamic import resolves.
+    await waitFor(() => {
+      const highlighted = container.querySelector('[class*="language-"]');
+      expect(highlighted).not.toBeNull();
+    });
     expect(container.textContent).toContain("const x = 42;");
   });
 

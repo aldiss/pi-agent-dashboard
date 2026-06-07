@@ -1,14 +1,12 @@
 import React from "react";
-import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
-import { useThemeContext } from "../ThemeProvider.js";
-import { getSyntaxTheme } from "../../lib/syntax-theme.js";
+// HighlightedCode lazy-loads react-syntax-highlighter + syntax-theme so the
+// Prism graph stays out of the eager bundle. See change: lazy-split-heavy-client-chunks.
+import { HighlightedCode } from "../HighlightedCode.js";
 import type { ToolRendererProps } from "./types.js";
 import { OpenFileButton } from "./OpenFileButton.js";
 import { detectLanguage } from "./lang-detect.js";
 
 export function WriteToolRenderer({ args, status, result, context }: ToolRendererProps) {
-  const { resolved: theme, themeName } = useThemeContext();
-  const syntaxStyle = getSyntaxTheme(theme, themeName);
   const filePath = args?.path as string | undefined;
   const content = args?.content as string | undefined;
   const language = detectLanguage(filePath);
@@ -27,15 +25,12 @@ export function WriteToolRenderer({ args, status, result, context }: ToolRendere
       {content && (
         <div className="max-h-80 overflow-auto rounded text-xs">
           {language ? (
-            <SyntaxHighlighter
-              style={syntaxStyle}
+            <HighlightedCode
+              code={content}
               language={language}
-              PreTag="div"
               showLineNumbers={true}
               customStyle={{ margin: 0, padding: "0.5rem", fontSize: "0.7rem", background: 'var(--bg-code)' }}
-            >
-              {content}
-            </SyntaxHighlighter>
+            />
           ) : (
             <pre className="whitespace-pre-wrap text-[var(--text-secondary)] p-2 bg-[var(--bg-code)] rounded">{content}</pre>
           )}

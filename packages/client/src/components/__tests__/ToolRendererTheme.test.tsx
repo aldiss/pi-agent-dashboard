@@ -35,8 +35,10 @@ function renderWithTheme(ui: React.ReactElement) {
 }
 
 describe("ReadToolRenderer theme integration", () => {
-  it("passes background var(--bg-code) via customStyle", () => {
-    const { getByTestId } = renderWithTheme(
+  // HighlightedCode lazy-loads the (mocked) Prism highlighter, so the testid
+  // appears after the dynamic import resolves — await it via findByTestId.
+  it("passes background var(--bg-code) via customStyle", async () => {
+    const { findByTestId } = renderWithTheme(
       <ReadToolRenderer
         toolName="read"
         args={{ path: "test.ts" }}
@@ -45,15 +47,15 @@ describe("ReadToolRenderer theme integration", () => {
         context={ctx}
       />,
     );
-    const highlighter = getByTestId("syntax-highlighter");
+    const highlighter = await findByTestId("syntax-highlighter");
     const customStyle = JSON.parse(highlighter.getAttribute("data-custom-style")!);
     expect(customStyle.background).toBe("var(--bg-code)");
   });
 });
 
 describe("WriteToolRenderer theme integration", () => {
-  it("passes background var(--bg-code) via customStyle", () => {
-    const { getAllByTestId } = renderWithTheme(
+  it("passes background var(--bg-code) via customStyle", async () => {
+    const { findAllByTestId } = renderWithTheme(
       <WriteToolRenderer
         toolName="write"
         args={{ path: "test.ts", content: "const x = 1;" }}
@@ -61,7 +63,7 @@ describe("WriteToolRenderer theme integration", () => {
         context={ctx}
       />,
     );
-    const highlighters = getAllByTestId("syntax-highlighter");
+    const highlighters = await findAllByTestId("syntax-highlighter");
     const customStyle = JSON.parse(highlighters[0].getAttribute("data-custom-style")!);
     expect(customStyle.background).toBe("var(--bg-code)");
   });

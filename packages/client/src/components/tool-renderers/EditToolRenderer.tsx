@@ -1,9 +1,27 @@
-import React from "react";
+import React, { Suspense } from "react";
 import { createTwoFilesPatch } from "diff";
 import type { ToolRendererProps } from "./types.js";
 import { OpenFileButton } from "./OpenFileButton.js";
 import { useMobile } from "../../hooks/useMobile.js";
-import { RichDiff } from "../RichDiff.js";
+// RichDiff pulls in the @git-diff-view rich-diff graph (~1.1MB decoded). It is
+// only rendered inline for the DESKTOP edit-diff path (mobile uses the cheap
+// jsdiff <DiffView> below), so React.lazy keeps @git-diff-view out of the eager
+// home bundle. See change: lazy-split-heavy-client-chunks.
+const RichDiff = React.lazy(() =>
+  import("../RichDiff.js").then((m) => ({ default: m.RichDiff })),
+);
+
+function LazyRichDiff(props: { oldText: string; newText: string; filePath: string; maxHeight?: string }) {
+  return (
+    <Suspense
+      fallback={
+        <div className="px-2 py-3 text-xs text-[var(--text-muted)] italic">Loading diff…</div>
+      }
+    >
+      <RichDiff {...props} />
+    </Suspense>
+  );
+}
 
 function DiffView({ oldText, newText, filePath }: { oldText: string; newText: string; filePath: string }) {
   const patch = createTwoFilesPatch(filePath, filePath, oldText, newText, "before", "after", { context: 3 });
@@ -45,7 +63,7 @@ export function EditToolRenderer({ args, status, result, context }: ToolRenderer
         <div className="rounded bg-[var(--bg-code)] overflow-hidden">
           {isMobile
             ? <DiffView oldText={oldText} newText={newText} filePath={filePath ?? "file"} />
-            : <RichDiff oldText={oldText} newText={newText} filePath={filePath ?? "file"} maxHeight="20rem" />}
+            : <LazyRichDiff oldText={oldText} newText={newText} filePath={filePath ?? "file"} maxHeight="20rem" />}
         </div>
       );
     }

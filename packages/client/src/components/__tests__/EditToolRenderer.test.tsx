@@ -46,9 +46,11 @@ afterEach(() => cleanup());
 
 describe("EditToolRenderer — viewport branching", () => {
   // 5.2: desktop + oldText/newText → <RichDiff>, no homegrown DiffView
-  it("desktop: renders <RichDiff> for oldText/newText args", () => {
+  // RichDiff is now React.lazy (LazyRichDiff Suspense) so it mounts after the
+  // dynamic import resolves — await it via findAllByTestId.
+  it("desktop: renders <RichDiff> for oldText/newText args", async () => {
     mockIsMobile = false;
-    const { getAllByTestId, container } = render(
+    const { findAllByTestId, container } = render(
       <EditToolRenderer
         toolName="edit"
         args={{ path: "file.ts", oldText: "const a = 1;", newText: "const a = 2;" }}
@@ -56,7 +58,7 @@ describe("EditToolRenderer — viewport branching", () => {
         context={ctx}
       />,
     );
-    expect(getAllByTestId("rich-diff").length).toBe(1);
+    expect((await findAllByTestId("rich-diff")).length).toBe(1);
     // homegrown DiffView renders .font-mono; should be absent on desktop
     expect(container.querySelectorAll("div.font-mono").length).toBe(0);
   });
@@ -78,9 +80,9 @@ describe("EditToolRenderer — viewport branching", () => {
   });
 
   // 5.4: desktop + edits[] length 3 → exactly 3 <RichDiff>
-  it("desktop: renders exactly 3 <RichDiff> for edits[] of length 3", () => {
+  it("desktop: renders exactly 3 <RichDiff> for edits[] of length 3", async () => {
     mockIsMobile = false;
-    const { getAllByTestId } = render(
+    const { findAllByTestId } = render(
       <EditToolRenderer
         toolName="edit"
         args={{
@@ -95,7 +97,7 @@ describe("EditToolRenderer — viewport branching", () => {
         context={ctx}
       />,
     );
-    expect(getAllByTestId("rich-diff").length).toBe(3);
+    expect((await findAllByTestId("rich-diff")).length).toBe(3);
   });
 
   // 5.5: mobile + edits[] length 3 → exactly 3 homegrown DiffViews

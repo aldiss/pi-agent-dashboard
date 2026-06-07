@@ -276,9 +276,9 @@ describe("ToolCallStep lazy-mount — <RichDiff> only mounts when expanded", () 
   });
 
   // 6.2: After clicking the chevron, <RichDiff> appears in DOM
-  it("6.2 Clicking expand chevron mounts <RichDiff>", () => {
+  it("6.2 Clicking expand chevron mounts <RichDiff>", async () => {
     mockIsMobileForToolCallStep = false; // desktop
-    const { container } = render(
+    const { container, findByTestId } = render(
       <ThemeProvider>
         <ToolCallStep
           toolName="edit"
@@ -292,8 +292,10 @@ describe("ToolCallStep lazy-mount — <RichDiff> only mounts when expanded", () 
 
     expect(container.querySelector('[data-testid="rich-diff"]')).toBeNull();
 
-    // Click the summary button to expand
+    // Click the summary button to expand. RichDiff is now React.lazy
+    // (LazyRichDiff Suspense), so it mounts after the dynamic import resolves —
+    // await it via findByTestId.
     fireEvent.click(container.querySelector("button")!);
-    expect(container.querySelector('[data-testid="rich-diff"]')).not.toBeNull();
+    expect(await findByTestId("rich-diff")).not.toBeNull();
   });
 });

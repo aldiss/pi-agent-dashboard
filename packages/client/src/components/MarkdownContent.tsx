@@ -4,9 +4,11 @@ import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import rehypeRaw from "rehype-raw";
 import rehypeKatex from "rehype-katex";
-import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
-import { useThemeContext } from "./ThemeProvider.js";
-import { getSyntaxTheme } from "../lib/syntax-theme.js";
+// HighlightedCode is a lazy boundary around react-syntax-highlighter + the
+// 10-theme syntax-theme graph (~662KB decoded). Importing it here (instead of
+// SyntaxHighlighter directly) keeps the Prism highlighter out of the eager
+// home bundle. See change: lazy-split-heavy-client-chunks.
+import { HighlightedCode } from "./HighlightedCode.js";
 import { Icon } from "@mdi/react";
 import { mdiContentCopy, mdiTable } from "@mdi/js";
 import { CopyButton } from "./CopyButton.js";
@@ -299,8 +301,6 @@ export const MarkdownContent = React.memo(function MarkdownContent({ content }: 
   // const processedContent = useMemo(() => wrapAsciiTables(content), [content]);
   const processedContent = content;
   const containerRef = useRef<HTMLDivElement>(null);
-  const { resolved: theme, themeName } = useThemeContext();
-  const syntaxStyle = getSyntaxTheme(theme, themeName);
 
   // Wide char width fixer — disabled pending further refinement
   // useEffect(() => {
@@ -341,14 +341,11 @@ export const MarkdownContent = React.memo(function MarkdownContent({ content }: 
             if (match) {
               return (
                 <CodeBlockWrapper codeString={codeString}>
-                  <SyntaxHighlighter
-                    style={syntaxStyle}
+                  <HighlightedCode
+                    code={codeString}
                     language={match[1]}
-                    PreTag="div"
                     customStyle={{ background: 'var(--bg-code)' }}
-                  >
-                    {codeString}
-                  </SyntaxHighlighter>
+                  />
                 </CodeBlockWrapper>
               );
             }
