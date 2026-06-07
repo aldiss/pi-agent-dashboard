@@ -1170,9 +1170,25 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
       // some HTTP/2 proxy chains (notably zrok free-tier) occasionally
       // stream-reset as ERR_ABORTED 500 in browsers.
       preCompressed: true,
+      // @fastify/static (via @fastify/send) computes its own Cache-Control from
+      // `cacheControl`/`maxAge` and applies it via reply.headers() AFTER the
+      // setHeaders callback — so a setHeaders override of Cache-Control is silently
+      // clobbered on the preCompressed path. We therefore disable send's own
+      // cacheControl and set the header ourselves in setHeaders for BOTH branches.
+      // Asset filenames are content-hashed (index-23ovaYTA.js) ⇒ immutable bytes
+      // per URL ⇒ safe to cache for a year; this removes the per-chunk conditional
+      // GET revalidation chain that dominates cold/post-eviction mobile reopen.
+      // Diagnostic 2026-06-07 candidate-B fix (corrected: setHeaders alone is
+      // insufficient with preCompressed; cacheControl:false is required).
+      cacheControl: false,
       setHeaders: (res, filePath) => {
-        if (filePath.endsWith(".html")) {
+        if (filePath.endsWith(".html") || filePath.endsWith(".html.gz") || filePath.endsWith(".html.br")) {
           res.setHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+        } else if (filePath.includes("/assets/")) {
+          res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+        } else {
+          // non-hashed root files (manifest.json, icons, sw.js): short cache.
+          res.setHeader("Cache-Control", "public, max-age=300");
         }
       },
     });
