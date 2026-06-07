@@ -91,6 +91,84 @@ describe("useImagePaste — uncontrolled mode (legacy)", () => {
 		expect(result.current.pendingImages).toEqual([]);
 		expect(result.current.imageError).toBeNull();
 	});
+
+	// ---- handleFiles path (mobile attach-button + photo-picker) ----
+
+	function makeFileList(files: File[]): FileList {
+		return {
+			length: files.length,
+			item: (i: number) => files[i] ?? null,
+			...files,
+			[Symbol.iterator]: function* () { for (const f of files) yield f; },
+		} as unknown as FileList;
+	}
+
+	it("handleFiles appends a selected PNG to pendingImages", async () => {
+		const { result } = renderHook(() => useImagePaste());
+		const files = makeFileList([makeFile("image/png")]);
+
+		act(() => { result.current.handleFiles(files); });
+		await act(async () => { await flushFileReader(); });
+
+		expect(result.current.pendingImages).toHaveLength(1);
+		expect(result.current.pendingImages[0].mimeType).toBe("image/png");
+		expect(result.current.pendingImages[0].type).toBe("image");
+	});
+
+	it("handleFiles appends MULTIPLE selected images in one call", async () => {
+		const { result } = renderHook(() => useImagePaste());
+		const files = makeFileList([makeFile("image/png"), makeFile("image/jpeg"), makeFile("image/webp")]);
+
+		act(() => { result.current.handleFiles(files); });
+		await act(async () => { await flushFileReader(); });
+
+		expect(result.current.pendingImages).toHaveLength(3);
+		expect(result.current.pendingImages.map((i) => i.mimeType)).toEqual([
+			"image/png", "image/jpeg", "image/webp",
+		]);
+	});
+
+	it("handleFiles rejects unsupported image mime with transient error", async () => {
+		vi.useFakeTimers();
+		try {
+			const { result } = renderHook(() => useImagePaste());
+			const files = makeFileList([makeFile("image/bmp")]);
+
+			act(() => { result.current.handleFiles(files); });
+			expect(result.current.imageError).toMatch(/Unsupported/);
+			expect(result.current.pendingImages).toHaveLength(0);
+
+			act(() => { vi.advanceTimersByTime(3000); });
+			expect(result.current.imageError).toBeNull();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("handleFiles rejects non-image mime types (text/csv etc.) with transient error", async () => {
+		vi.useFakeTimers();
+		try {
+			const { result } = renderHook(() => useImagePaste());
+			const files = makeFileList([makeFile("text/csv")]);
+
+			act(() => { result.current.handleFiles(files); });
+			expect(result.current.imageError).toMatch(/Not an image/);
+			expect(result.current.pendingImages).toHaveLength(0);
+
+			act(() => { vi.advanceTimersByTime(3000); });
+			expect(result.current.imageError).toBeNull();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("handleFiles is a no-op for null or empty FileList", () => {
+		const { result } = renderHook(() => useImagePaste());
+		act(() => { result.current.handleFiles(null); });
+		act(() => { result.current.handleFiles(makeFileList([])); });
+		expect(result.current.pendingImages).toEqual([]);
+		expect(result.current.imageError).toBeNull();
+	});
 });
 
 describe("useImagePaste — controlled mode", () => {

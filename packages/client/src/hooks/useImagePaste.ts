@@ -56,6 +56,8 @@ export interface UseImagePasteResult {
 	imageError: string | null;
 	/** Clipboard paste handler — attach to the textarea's onPaste. */
 	handlePaste: (e: React.ClipboardEvent) => void;
+	/** File-input change handler — attach to a hidden <input type="file" multiple> for the mobile attach-button path. */
+	handleFiles: (files: FileList | null) => void;
 	/** Remove the image at index `i` from pendingImages. */
 	removeImage: (index: number) => void;
 	/** Clear everything — call after a successful send. */
@@ -127,6 +129,41 @@ export function useImagePaste(opts?: UseImagePasteOptions): UseImagePasteResult 
 		}
 	}, [writeImages]);
 
+	const handleFiles = useCallback((files: FileList | null) => {
+		if (!files || files.length === 0) return;
+		for (const blob of Array.from(files)) {
+			const mimeType = blob.type;
+
+			if (!mimeType.startsWith("image/")) {
+				setImageError(`Not an image: ${mimeType || "unknown type"}`);
+				setTimeout(() => setImageError(null), 3000);
+				continue;
+			}
+
+			if (!SUPPORTED_IMAGE_TYPES.has(mimeType)) {
+				setImageError(`Unsupported image type: ${mimeType}. Use JPEG, PNG, GIF, or WebP.`);
+				setTimeout(() => setImageError(null), 3000);
+				continue;
+			}
+
+			const reader = new FileReader();
+			reader.onload = () => {
+				const dataUrl = reader.result as string;
+				const base64 = dataUrl.split(",")[1];
+				if (!base64) return;
+
+				if (base64.length > MAX_IMAGE_SIZE) {
+					setImageError("Image too large (max 10MB)");
+					setTimeout(() => setImageError(null), 3000);
+					return;
+				}
+
+				writeImages((prev) => [...prev, { type: "image", data: base64, mimeType }]);
+			};
+			reader.readAsDataURL(blob);
+		}
+	}, [writeImages]);
+
 	const removeImage = useCallback((index: number) => {
 		writeImages((prev) => prev.filter((_, i) => i !== index));
 	}, [writeImages]);
@@ -136,5 +173,5 @@ export function useImagePaste(opts?: UseImagePasteOptions): UseImagePasteResult 
 		setImageError(null);
 	}, [writeImages]);
 
-	return { pendingImages, imageError, handlePaste, removeImage, clearImages };
+	return { pendingImages, imageError, handlePaste, handleFiles, removeImage, clearImages };
 }
