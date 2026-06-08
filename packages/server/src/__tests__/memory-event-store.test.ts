@@ -370,6 +370,121 @@ describe("memory-event-store", () => {
     });
   });
 
+  describe("image preservation across the byte cap (regression)", () => {
+    // A realistic screenshot: base64 well over the 64KB MAX_EVENT_DATA_SIZE.
+    // Image bytes are exempt from the cap, so it must survive INTACT — not be
+    // routed into the over-cap summary (which would destroy it).
+    it("preserves a >64KB inline image in message.content (not summarized away)", () => {
+      const store = createMemoryEventStore(neverPinned);
+      const bigImage = "A".repeat(300_000); // ~300KB base64, > 64KB cap
+      store.insertEvent("s1", {
+        eventType: "message_start",
+        timestamp: Date.now(),
+        data: {
+          message: {
+            role: "user",
+            content: [
+              { type: "text", text: "look at this" },
+              { type: "image", data: bigImage, mimeType: "image/png" },
+            ],
+          },
+        },
+      });
+      const stored = store.getEvent("s1", 1) as any;
+      // NOT summarized: original structure intact, image byte-identical.
+      expect(stored.data.__truncated).toBeUndefined();
+      expect(Array.isArray(stored.data.message.content)).toBe(true);
+      const img = stored.data.message.content.find((b: any) => b.type === "image");
+      expect(img.data).toBe(bigImage);
+      expect(img.data).toHaveLength(300_000);
+    });
+
+    it("preserves a >64KB inline tool-result image (live result.content shape)", () => {
+      const store = createMemoryEventStore(neverPinned);
+      const bigImage = "B".repeat(250_000);
+      store.insertEvent("s1", {
+        eventType: "tool_execution_end",
+        timestamp: Date.now(),
+        data: {
+          toolName: "screenshot",
+          result: { content: [{ type: "image", data: bigImage, mimeType: "image/png" }] },
+        },
+      });
+      const stored = store.getEvent("s1", 1) as any;
+      expect(stored.data.__truncated).toBeUndefined();
+      const img = stored.data.result.content.find((b: any) => b.type === "image");
+      expect(img.data).toBe(bigImage);
+    });
+
+    it("carries images through the over-cap summary when paired with huge TEXT", () => {
+      const store = createMemoryEventStore(neverPinned);
+      const bigImage = "C".repeat(200_000);
+      // Many medium strings, each UNDER the 4000 per-field cap (so field-level
+      // truncation does not shrink them away), aggregating over 64KB of
+      // non-image text → forces the total-byte summary WITH an image present.
+      const extra: Record<string, unknown> = {};
+      for (let i = 0; i < 40; i++) extra[`note_${i}`] = "n".repeat(3_500);
+      store.insertEvent("s1", {
+        eventType: "message_start",
+        timestamp: Date.now(),
+        data: {
+          ...extra,
+          message: {
+            role: "user",
+            content: [
+              { type: "text", text: "see attached" },
+              { type: "image", data: bigImage, mimeType: "image/png" },
+            ],
+          },
+        },
+      });
+      const stored = store.getEvent("s1", 1) as any;
+      // Summary fired (aggregate text was huge) BUT the image survived in the rebuilt content.
+      expect(stored.data.__truncated).toBe(true);
+      const img = stored.data.message.content.find((b: any) => b.type === "image");
+      expect(img.data).toBe(bigImage);
+    });
+
+    it("carries replayed data.images[] through the over-cap summary", () => {
+      const store = createMemoryEventStore(neverPinned);
+      const bigImage = "D".repeat(150_000);
+      const data: Record<string, unknown> = {
+        toolName: "t",
+        images: [{ data: bigImage, mimeType: "image/png" }],
+      };
+      // Pad with many sub-cap strings to force the total-byte summary.
+      for (let i = 0; i < 40; i++) data[`f${i}`] = "z".repeat(3_500);
+      store.insertEvent("s1", { eventType: "tool_execution_end", timestamp: Date.now(), data });
+      const stored = store.getEvent("s1", 1) as any;
+      expect(stored.data.__truncated).toBe(true);
+      expect(stored.data.images[0].data).toBe(bigImage);
+    });
+
+    it("bounds a pathological >4MB image with a visible marker (not silent loss)", () => {
+      const store = createMemoryEventStore(neverPinned);
+      const huge = "E".repeat(5_000_000); // 5MB single image — over MAX_EVENT_IMAGE_BYTES
+      store.insertEvent("s1", {
+        eventType: "message_start",
+        timestamp: Date.now(),
+        data: { message: { role: "user", content: [{ type: "image", data: huge, mimeType: "image/png" }] } },
+      });
+      const stored = store.getEvent("s1", 1) as any;
+      const img = stored.data.message.content[0];
+      expect(img.data).toMatch(/^\[stripped \d+kb image\]$/); // marked, not vanished
+      expect(store.sessionBytes("s1")).toBeLessThan(64_000);
+    });
+
+    it("caps a non-object oversized top-level data (backstop is total)", () => {
+      const store = createMemoryEventStore(neverPinned);
+      const event = { eventType: "weird", timestamp: Date.now(), data: "X".repeat(500_000) as any };
+      store.insertEvent("s1", event);
+      const stored = store.getEvent("s1", 1) as any;
+      expect(stored.data.__truncated).toBe(true);
+      expect(stored.data.__reason).toBe("non-object-data");
+      expect(store.sessionBytes("s1")).toBeLessThan(64_000);
+    });
+  });
+
   describe("byte accounting", () => {
     it("tracks total + per-session bytes and releases on trim", () => {
       const store = createMemoryEventStore(neverPinned, 100, 2);

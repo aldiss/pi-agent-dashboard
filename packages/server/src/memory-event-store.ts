@@ -64,6 +64,20 @@ const MAX_EVENT_DATA_SIZE = 64_000;
 const MAX_SANITIZE_DEPTH = 100;
 /** Arrays longer than this are elided to a marker (only when truncation is enabled). */
 const MAX_ARRAY_LENGTH = 50;
+/**
+ * Per-image ceiling for preserved inline base64 `data` (with a sibling
+ * `mimeType`). Preserved image bytes are EXEMPT from MAX_EVENT_DATA_SIZE — they
+ * were retained inline before this change and the load-bearing leak is text
+ * `raw_content`, not images — but a single pathological paste is still bounded
+ * here so it cannot blow the heap on its own. A real screenshot/photo
+ * (~100 KB–2.7 MB raw → ~133 KB–3.6 MB base64) stays well under this.
+ */
+const MAX_EVENT_IMAGE_BYTES = 4_000_000;
+
+/** Mutable walk context — accumulates preserved-image bytes so the byte cap can exempt them. */
+interface SanitizeCtx {
+  imageBytes: number;
+}
 
 /** Serialize defensively; returns null on cycle / unserializable value. */
 function safeStringify(value: unknown): string | null {
@@ -107,11 +121,13 @@ function previewContent(content: unknown, max = 200): string | undefined {
  *    holds even if `maxSize` is mis-configured back to 0.
  *  - When `maxSize > 0`: truncate over-long strings, elide oversized arrays,
  *    and shrink `thinking` blocks.
- *  - Preserve base64 image `data` when a sibling `mimeType` is present.
+ *  - Preserve base64 image `data` when a sibling `mimeType` is present (bounded
+ *    per-image by MAX_EVENT_IMAGE_BYTES); accumulate preserved bytes into `ctx`
+ *    so the total-byte cap can exempt them.
  *
  * Returns a new object/array if anything changed, otherwise the original.
  */
-function deepSanitize(obj: unknown, maxSize: number, depth: number): unknown {
+function deepSanitize(obj: unknown, maxSize: number, depth: number, ctx: SanitizeCtx): unknown {
   if (depth > MAX_SANITIZE_DEPTH) return obj;
 
   if (typeof obj === "string") {
@@ -123,7 +139,7 @@ function deepSanitize(obj: unknown, maxSize: number, depth: number): unknown {
     if (maxSize > 0 && obj.length > MAX_ARRAY_LENGTH) return `[array truncated: ${obj.length} items]`;
     let changed = false;
     const result = obj.map((item) => {
-      const t = deepSanitize(item, maxSize, depth + 1);
+      const t = deepSanitize(item, maxSize, depth + 1, ctx);
       if (t !== item) changed = true;
       return t;
     });
@@ -140,9 +156,17 @@ function deepSanitize(obj: unknown, maxSize: number, depth: number): unknown {
         changed = true;
         continue;
       }
-      // Preserve base64 image data — skip truncation when a sibling mimeType exists.
+      // Preserve base64 image data — skip truncation when a sibling mimeType
+      // exists — but bound a pathological single image and tally the bytes so
+      // the total-byte cap can exempt legitimate images.
       if (key === "data" && typeof val === "string" && "mimeType" in obj) {
-        result[key] = val;
+        if (val.length > MAX_EVENT_IMAGE_BYTES) {
+          result[key] = `[stripped ${Math.round(val.length / 1024)}kb image]`;
+          changed = true;
+        } else {
+          result[key] = val;
+          ctx.imageBytes += val.length;
+        }
         continue;
       }
       // Shrink 'thinking' blocks — large and not shown in chat.
@@ -151,7 +175,7 @@ function deepSanitize(obj: unknown, maxSize: number, depth: number): unknown {
         changed = true;
         continue;
       }
-      const t = deepSanitize(val, maxSize, depth + 1);
+      const t = deepSanitize(val, maxSize, depth + 1, ctx);
       if (t !== val) changed = true;
       result[key] = t;
     }
@@ -162,10 +186,34 @@ function deepSanitize(obj: unknown, maxSize: number, depth: number): unknown {
 }
 
 /**
+ * Extract preserved image blocks from a content/images array. Handles both
+ * shapes the client reads: `message.content[]`/`result.content[]` blocks
+ * ({type:"image", data, mimeType}) and the pre-extracted `data.images[]`
+ * entries ({data, mimeType}, no `type` field — see state-replay.ts).
+ */
+function extractImageBlocks(content: unknown): Array<{ type: "image"; data: string; mimeType: string }> {
+  if (!Array.isArray(content)) return [];
+  const out: Array<{ type: "image"; data: string; mimeType: string }> = [];
+  for (const block of content) {
+    if (!block || typeof block !== "object") continue;
+    const b = block as Record<string, unknown>;
+    // Require base64 data + mimeType. Accept either an explicit type:"image"
+    // (content-block shape) or no type at all (pre-extracted images[] shape);
+    // reject blocks that declare a non-image type.
+    if (typeof b.data !== "string" || typeof b.mimeType !== "string") continue;
+    if ("type" in b && b.type !== "image") continue;
+    out.push({ type: "image", data: b.data, mimeType: b.mimeType });
+  }
+  return out;
+}
+
+/**
  * Build a compact summary of an over-cap event's data, preserving the fields
  * the UI needs to render a row (tool identity, message role + a short text
- * preview). Used only when an event still exceeds MAX_EVENT_DATA_SIZE after
- * field-level sanitization.
+ * preview) AND any inline image blocks (so a screenshot is never silently lost
+ * — image bytes are exempt from the cap, so this path only fires when the
+ * NON-image text exceeds the cap). Used only when an event still exceeds
+ * MAX_EVENT_DATA_SIZE after field-level sanitization.
  */
 function summarizeOverCap(data: Record<string, unknown>, bytes: number): Record<string, unknown> {
   const summary: Record<string, unknown> = { __truncated: true, __bytes: bytes };
@@ -178,8 +226,28 @@ function summarizeOverCap(data: Record<string, unknown>, bytes: number): Record<
     const msgSummary: Record<string, unknown> = {};
     if ("role" in m) msgSummary.role = m.role;
     const preview = previewContent(m.content);
-    if (preview !== undefined) msgSummary.content = preview;
+    const imgs = extractImageBlocks(m.content);
+    if (imgs.length > 0) {
+      // Rebuild a minimal content array: a text preview block (if any) + the
+      // images. Matches the {type:"image",data,mimeType} shape the reducer reads
+      // from message.content (event-reducer message_start path).
+      const content: unknown[] = [];
+      if (preview !== undefined) content.push({ type: "text", text: preview });
+      content.push(...imgs);
+      msgSummary.content = content;
+    } else if (preview !== undefined) {
+      msgSummary.content = preview;
+    }
     summary.message = msgSummary;
+  }
+  // Tool-result images: live events carry data.result.content[], replayed
+  // events carry data.images[] (state-replay pre-extracts). Preserve both so
+  // extractToolResultImages still resolves them after summarization.
+  const replayImgs = extractImageBlocks(data.images);
+  const liveImgs = extractImageBlocks((data.result as Record<string, unknown> | undefined)?.content);
+  const toolImgs = replayImgs.length > 0 ? replayImgs : liveImgs;
+  if (toolImgs.length > 0) {
+    summary.images = toolImgs.map((i) => ({ data: i.data, mimeType: i.mimeType }));
   }
   return summary;
 }
@@ -188,7 +256,9 @@ function summarizeOverCap(data: Record<string, unknown>, bytes: number): Record<
  * Sanitize an event and measure its retained serialized size.
  * Pipeline: deep field-level sanitize → hard total-byte cap backstop.
  * Always runs (raw_content strip + byte cap are unconditional); per-string
- * truncation is active only when `maxStringSize > 0`.
+ * truncation is active only when `maxStringSize > 0`. Preserved inline image
+ * bytes are exempt from the cap (bounded per-image during the walk) so a
+ * real screenshot is never routed into the over-cap summary path.
  */
 function sanitizeEvent(
   event: DashboardEvent,
@@ -196,11 +266,19 @@ function sanitizeEvent(
 ): { event: DashboardEvent; bytes: number } {
   const data = event.data;
   if (!data || typeof data !== "object") {
+    // Non-object top-level data: still enforce the byte cap as the final
+    // backstop (a forged/oversized primitive must not bypass it).
     const s = safeStringify(data);
-    return { event, bytes: s ? s.length : 0 };
+    const len = s ? s.length : 0;
+    if (len > MAX_EVENT_DATA_SIZE) {
+      const marker = { __truncated: true, __bytes: len, __reason: "non-object-data" };
+      return { event: { ...event, data: marker }, bytes: safeStringify(marker)?.length ?? 0 };
+    }
+    return { event, bytes: len };
   }
 
-  const walked = deepSanitize(data, maxStringSize, 0) as Record<string, unknown>;
+  const ctx: SanitizeCtx = { imageBytes: 0 };
+  const walked = deepSanitize(data, maxStringSize, 0, ctx) as Record<string, unknown>;
   const afterWalk = walked !== data ? { ...event, data: walked } : event;
 
   const serialized = safeStringify(afterWalk.data);
@@ -209,7 +287,10 @@ function sanitizeEvent(
     const marker = { __truncated: true, __reason: "unserializable" };
     return { event: { ...afterWalk, data: marker }, bytes: safeStringify(marker)?.length ?? 0 };
   }
-  if (serialized.length > MAX_EVENT_DATA_SIZE) {
+  // Exempt preserved-image bytes from the cap decision so a large screenshot
+  // does not force text-summarization (and image destruction).
+  const effectiveSize = serialized.length - ctx.imageBytes;
+  if (effectiveSize > MAX_EVENT_DATA_SIZE) {
     const summary = summarizeOverCap(afterWalk.data as Record<string, unknown>, serialized.length);
     return { event: { ...afterWalk, data: summary }, bytes: safeStringify(summary)?.length ?? 0 };
   }

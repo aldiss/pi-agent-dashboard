@@ -94,7 +94,7 @@ export function createHeapWatchdog(options: HeapWatchdogOptions = {}): HeapWatch
     if (getContext) {
       try {
         const ctx = getContext();
-        const parts = Object.entries(ctx).map(([k, v]) => `${k}=${typeof v === "number" ? v : v}`);
+        const parts = Object.entries(ctx).map(([k, v]) => `${k}=${v}`);
         if (parts.length) line += ` · ${parts.join(" ")}`;
       } catch { /* context is best-effort; never let it break the watchdog */ }
     }
@@ -103,13 +103,12 @@ export function createHeapWatchdog(options: HeapWatchdogOptions = {}): HeapWatch
 
   function check(): HeapWatchdogStatus {
     const status = classifyHeap(readHeap(), warnRatio, errorRatio);
-    // Log on entering a higher band, or re-log periodically while in error.
+    // Log on entering the warn band (from ok OR de-escalating from error), or
+    // re-log every check while in the error band (urgent). Descents to ok are
+    // silent. Staying in warn logs once, not every interval (no spam).
     if (status.level === "error") {
       error(format(status));
     } else if (status.level === "warn" && lastLevel !== "warn") {
-      warn(format(status));
-    } else if (status.level === "warn" && lastLevel === "error") {
-      // de-escalation back into the warn band — note it once
       warn(format(status));
     }
     lastLevel = status.level;
