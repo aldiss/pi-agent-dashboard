@@ -64,7 +64,7 @@ export interface AuthConfig {
 export interface MemoryLimitsConfig {
   /** Max events stored per session (0 = unlimited). Default: 200 */
   maxEventsPerSession: number;
-  /** Max chars before truncating string fields in events (0 = no truncation). Default: 0 (disabled) */
+  /** Max chars before truncating string fields in events (0 = no truncation). Default: 4000 */
   maxStringFieldSize: number;
   /** Max bytes in browser WebSocket send buffer before dropping messages (0 = no limit). Default: 4194304 (4MB) */
   maxWsBufferBytes: number;
@@ -74,7 +74,7 @@ export interface MemoryLimitsConfig {
 
 export const DEFAULT_MEMORY_LIMITS: MemoryLimitsConfig = {
   maxEventsPerSession: 5000,
-  maxStringFieldSize: 0,
+  maxStringFieldSize: 4000,
   maxWsBufferBytes: 4 * 1024 * 1024,
   maxHeapSizeMb: 0,
 };

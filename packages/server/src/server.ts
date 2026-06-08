@@ -11,6 +11,7 @@ import os from "node:os";
 import { createRequire } from "node:module";
 import { existsSync } from "node:fs";
 import { createMemoryEventStore, type EventStore } from "./memory-event-store.js";
+import { createHeapWatchdog } from "./heap-watchdog.js";
 import { createMemorySessionManager, type SessionManager } from "./memory-session-manager.js";
 import { createPiGateway, type PiGateway } from "./pi-gateway.js";
 import { createBrowserGateway, type BrowserGateway } from "./browser-gateway.js";
@@ -540,6 +541,16 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
     config.maxEventsPerSession,
     config.maxStringFieldSize,
   );
+
+  // Heap watchdog — early WARN/ERROR signal as V8 heap nears its hard cap,
+  // before a FATAL OOM orphans bridges. Reads the live V8 cap, folds in the
+  // event-store byte floor for context. Log-only; restart stays operator-ratified.
+  const heapWatchdog = createHeapWatchdog({
+    getContext: () => ({
+      eventStoreBytes: eventStore.bytesRetained(),
+      eventStoreSessions: eventStore.sessionCount(),
+    }),
+  });
 
   // Create terminal manager with exit callback
   const terminalManager = createTerminalManager({
@@ -1474,6 +1485,7 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
       } // end if (!isFixture)
 
       idleTimer.start();
+      heapWatchdog.start();
     },
 
     async stop() {
@@ -1484,6 +1496,7 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
       } catch { /* ignore mDNS cleanup errors */ }
       removePid();
       idleTimer.cancel();
+      heapWatchdog.stop();
       directoryService.stopPolling();
       browserGateway.shutdownHeadlessProcesses();
       metaPersistence.flushAll();

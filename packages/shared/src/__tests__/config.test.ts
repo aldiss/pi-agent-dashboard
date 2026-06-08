@@ -519,3 +519,53 @@ describe("loadConfig spawnRegisterTimeoutMs", () => {
     expect(loadConfig().spawnRegisterTimeoutMs).toBe(30000);
   });
 });
+
+describe("memoryLimits", () => {
+  let testDir: string;
+  let configFile: string;
+  let origHome: string;
+
+  beforeEach(() => {
+    testDir = path.join(os.tmpdir(), `test-config-mem-${Date.now()}`);
+    fs.mkdirSync(path.join(testDir, ".pi", "dashboard"), { recursive: true });
+    configFile = path.join(testDir, ".pi", "dashboard", "config.json");
+    origHome = process.env.HOME!;
+    process.env.HOME = testDir;
+  });
+
+  afterEach(() => {
+    process.env.HOME = origHome;
+    if (fs.existsSync(testDir)) fs.rmSync(testDir, { recursive: true });
+  });
+
+  // REGRESSION GUARD: the per-string truncator was disabled in prod for months
+  // because this default was 0. The dead default re-opens the byte-unbounded
+  // heap leak silently. Pin it so a revert/merge-conflict/overwrite trips CI.
+  it("defaults maxStringFieldSize to 4000 (truncator ON), not 0", () => {
+    expect(loadConfig().memoryLimits.maxStringFieldSize).toBe(4000);
+  });
+
+  it("defaults maxStringFieldSize to 4000 when memoryLimits key is ABSENT (prod config shape)", () => {
+    // Prod's config.json has no memoryLimits key at all — exactly the shape
+    // that selected the dead 0 default. Must now resolve to the live 4000.
+    fs.writeFileSync(configFile, JSON.stringify({ port: 8000, piPort: 9999 }));
+    expect(loadConfig().memoryLimits.maxStringFieldSize).toBe(4000);
+  });
+
+  it("honors an explicit override", () => {
+    fs.writeFileSync(configFile, JSON.stringify({ memoryLimits: { maxStringFieldSize: 8000 } }));
+    expect(loadConfig().memoryLimits.maxStringFieldSize).toBe(8000);
+  });
+
+  it("allows an explicit 0 to disable truncation (opt-out still possible)", () => {
+    fs.writeFileSync(configFile, JSON.stringify({ memoryLimits: { maxStringFieldSize: 0 } }));
+    expect(loadConfig().memoryLimits.maxStringFieldSize).toBe(0);
+  });
+
+  it("keeps the other memory-limit defaults intact", () => {
+    const limits = loadConfig().memoryLimits;
+    expect(limits.maxEventsPerSession).toBe(5000);
+    expect(limits.maxWsBufferBytes).toBe(4 * 1024 * 1024);
+    expect(limits.maxHeapSizeMb).toBe(0);
+  });
+});
