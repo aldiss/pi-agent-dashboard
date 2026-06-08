@@ -822,7 +822,7 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
     networkGuard,
     store: openspecGroupStore,
   });
-  registerSystemRoutes(fastify, { sessionManager, preferencesStore, metaPersistence, config, networkGuard, version: pkgVersion, directoryService, piGateway, bootstrapState });
+  registerSystemRoutes(fastify, { sessionManager, preferencesStore, metaPersistence, config, networkGuard, version: pkgVersion, directoryService, piGateway, bootstrapState, eventStore });
   // Path B sister-coupling primitive — operator-active-surfaces canonical index.
   // See packages/server/src/routes/surfaces-routes.ts + cell:
   // pi-agent-dashboard-ux-message-discoverability/v1 (W4.4 + W6 Feature 4).

@@ -7,6 +7,7 @@ import type { PreferencesStore } from "../preferences-store.js";
 import type { MetaPersistence } from "../meta-persistence.js";
 import type { DirectoryService } from "../directory-service.js";
 import type { PiGateway } from "../pi-gateway.js";
+import type { EventStore } from "../memory-event-store.js";
 import type { ServerConfig } from "../server.js";
 import type { ApiResponse } from "@blackbelt-technology/pi-dashboard-shared/types.js";
 import type { NetworkGuard } from "./route-deps.js";
@@ -37,9 +38,10 @@ export function registerSystemRoutes(
     directoryService?: DirectoryService;
     piGateway?: PiGateway;
     bootstrapState?: BootstrapStateStore;
+    eventStore?: EventStore;
   },
 ) {
-  const { sessionManager, preferencesStore, metaPersistence, config, networkGuard, version, directoryService, piGateway, bootstrapState } = deps;
+  const { sessionManager, preferencesStore, metaPersistence, config, networkGuard, version, directoryService, piGateway, bootstrapState, eventStore } = deps;
 
   // Quiesce windows for the bridge `server_restarting` broadcast. See change
   // `fix-restart-bridge-auto-start-race`. Bridges that receive this message
@@ -207,6 +209,10 @@ export function registerSystemRoutes(
         heapTotal: mem.heapTotal,
         activeSessions: activeSessions.length,
         totalSessions: sessionManager.listAll().length,
+        // Serialized bytes retained in the in-memory event store — the byte
+        // tier the count-only LRU never bounded. Surfaced for leak tracking.
+        eventStoreBytes: eventStore?.bytesRetained() ?? 0,
+        eventStoreSessions: eventStore?.sessionCount() ?? 0,
       },
       agents: agentMetrics,
       plugins: getPluginStatusStore().listAll(),
