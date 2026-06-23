@@ -1,5 +1,5 @@
 /** Source environment where a pi session is running */
-export type SessionSource = "tui" | "zed" | "tmux" | "dashboard" | "terminal" | "unknown";
+export type SessionSource = "tui" | "zed" | "tmux" | "dashboard" | "terminal" | "claude-code" | "unknown";
 
 /** Current status of a session */
 export type SessionStatus = "active" | "idle" | "streaming" | "ended";

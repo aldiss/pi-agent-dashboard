@@ -24,6 +24,8 @@ import {
 import { DEFAULT_OPENSPEC_POLL, type OpenSpecPollConfig } from "@blackbelt-technology/pi-dashboard-shared/config.js";
 import { createSemaphore, type Semaphore } from "@blackbelt-technology/pi-dashboard-shared/semaphore.js";
 import { discoverSessionsForCwd } from "./session-discovery.js";
+import { discoverClaudeSessionsForCwd } from "./claude-session-discovery.js";
+import { isClaudeSessionFile, loadClaudeSessionEntries } from "./claude-transcript-reader.js";
 import { replayEntriesAsEvents } from "@blackbelt-technology/pi-dashboard-shared/state-replay.js";
 import { scanPiResources } from "./pi-resource-scanner.js";
 import type { OpenSpecData, OpenSpecChange } from "@blackbelt-technology/pi-dashboard-shared/types.js";
@@ -240,7 +242,13 @@ export function createDirectoryService(
   }
 
   function discoverSessions(cwd: string): DiscoveredSession[] {
-    return discoverSessionsForCwd(cwd);
+    // Merge pi sessions (under ~/.pi/agent/sessions) with Claude-Code sessions
+    // (under ~/.claude/projects) into one unified, newest-first list so the
+    // dashboard shows both side by side. See change: add-claude-code-session-viewing.
+    const pi = discoverSessionsForCwd(cwd);
+    const cc = discoverClaudeSessionsForCwd(cwd);
+    if (cc.length === 0) return pi;
+    return [...pi, ...cc].sort((a, b) => b.modifiedAt - a.modifiedAt);
   }
 
   async function loadSessionEvents(sessionId: string, sessionFile: string, knownContextWindow?: number): Promise<LoadResult> {
@@ -249,8 +257,14 @@ export function createDirectoryService(
     }
     loadingSet.add(sessionId);
     try {
-      const { loadSessionEntries } = await import("./session-file-reader.js");
-      const entries = loadSessionEntries(sessionFile);
+      // Claude-Code session logs live under ~/.claude/projects and use the
+      // Anthropic Messages schema, not pi's. Route them through the byte-bounded
+      // CC reader, which adapts CC records into the pi entry shape that
+      // replayEntriesAsEvents already understands. See change:
+      // add-claude-code-session-viewing.
+      const entries = isClaudeSessionFile(sessionFile)
+        ? loadClaudeSessionEntries(sessionFile)
+        : (await import("./session-file-reader.js")).loadSessionEntries(sessionFile);
       // Pass persisted contextWindow so replay's stats_update events use the
       // real value instead of inferContextWindow(modelId)'s 200k Claude default.
       const eventMessages = replayEntriesAsEvents(sessionId, entries, knownContextWindow);
