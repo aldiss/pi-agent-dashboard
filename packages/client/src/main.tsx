@@ -1,6 +1,7 @@
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { Router } from "wouter";
+import { LazyMotion, domAnimation } from "motion/react";
 import App from "./App.js";
 import { ThemeProvider } from "./components/ThemeProvider.js";
 import { SkinProvider } from "./components/SkinProvider.js";
@@ -21,7 +22,13 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
       <ThemeProvider>
         <SkinProvider>
           <MobileProvider>
-            <App />
+            {/* LazyMotion + domAnimation: load only the lighter motion feature
+                bundle (animations + press/hover gestures) and resolve `m.*`
+                components against it, so the motion system never drags the heavy
+                feature set into the eager cold-load chunk. */}
+            <LazyMotion features={domAnimation} strict>
+              <App />
+            </LazyMotion>
           </MobileProvider>
         </SkinProvider>
       </ThemeProvider>

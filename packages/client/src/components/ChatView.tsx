@@ -1,7 +1,9 @@
 import React, { useRef, useEffect, useCallback, useState, useMemo, forwardRef, useImperativeHandle } from "react";
 
 import { Icon } from "@mdi/react";
-import { mdiContentCopy, mdiTextBox, mdiLoading, mdiChevronDown, mdiSourceFork } from "@mdi/js";
+import { mdiContentCopy, mdiTextBox, mdiChevronDown, mdiSourceFork } from "@mdi/js";
+import { m, useReducedMotion } from "motion/react";
+import { spring } from "../motion/index.js";
 import { ErrorBanner } from "./ErrorBanner";
 import { RetryBanner } from "./RetryBanner";
 import type { SessionState, ChatImage, InteractiveUiRequest } from "../lib/event-reducer.js";
@@ -180,6 +182,7 @@ export interface ChatViewHandle {
 export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ sessionId, state, toolContext, onCancelPending, onRespondToUi, onAbort, onForceKill, onForkFromMessage, onDismissError, onRetryAfterError, showFilterControls, onCloseFilterControls }, ref) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const isNearBottom = useRef(true);
+  const reducedMotion = useReducedMotion() ?? false;
   const programmaticScroll = useRef(false);
   // viewportResizing — true during the iOS-rotation / keyboard-show / address-bar-collapse
   // animation envelope (~350 ms). iOS Safari fires multiple onScroll events during a
@@ -895,21 +898,26 @@ export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ se
         />
       )}
 
-      {/* Optimistic pending prompt card */}
+      {/* Optimistic pending prompt card — lifts into place the instant you send
+          (smooth spring, translateY→0 + fade). The lift IS the feedback, so
+          there's no spinner; the card reconciles into the committed user bubble
+          when the server acks (pendingPrompt clears, the real bubble renders in
+          its place). Reduced-motion: appears in place, no travel. */}
       {state.pendingPrompt && (
-        <div data-testid="pending-prompt-card" className="mt-4 mb-4 flex justify-end">
+        <m.div
+          data-testid="pending-prompt-card"
+          className="mt-4 mb-4 flex justify-end"
+          initial={reducedMotion ? false : { opacity: 0, y: 22 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={spring.smooth}
+        >
           <div className={`editorial-userbubble bg-blue-500/10 border border-blue-500/20 border-l-2 border-l-blue-400 rounded-xl shadow-md px-4 py-2 ${bubbleMax}`}>
             {state.pendingPrompt.images && state.pendingPrompt.images.length > 0 && (
               <ImageAttachments images={state.pendingPrompt.images} />
             )}
-            <div className="flex items-start gap-2">
-              <div className="flex-1">
-                <MarkdownContent content={state.pendingPrompt.text} />
-              </div>
-              <Icon path={mdiLoading} size={0.7} className="animate-spin text-blue-400 shrink-0 mt-0.5" />
-            </div>
+            <MarkdownContent content={state.pendingPrompt.text} />
           </div>
-        </div>
+        </m.div>
       )}
 
       {state.messages.length === 0 && !state.streamingText && !state.pendingPrompt && (

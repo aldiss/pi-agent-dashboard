@@ -7,6 +7,7 @@ import { ImagePreviewStrip } from "../ImagePreviewStrip.js";
 import { PushToTalkButton } from "@blackbelt-technology/pi-dashboard-voice-input-plugin/client";
 import { useAudioWave } from "./useAudioWave.js";
 import { AudioWaveCanvas } from "./AudioWaveCanvas.js";
+import { haptic, Pressable } from "../../motion/index.js";
 
 /**
  * W12 (Phase 1 MVP): MobileComposer — ChatGPT-iOS-style mobile composer card with
@@ -157,6 +158,10 @@ export function MobileComposer({
   const handleSend = useCallback(() => {
     const trimmed = text.trim();
     if (!trimmed && pendingImages.length === 0) return;
+    // Success haptic on send (real on Capacitor/Android; silent no-op on iOS
+    // Safari). The optimistic bubble lift in ChatView is the visual half of the
+    // same beat — together they make send feel acknowledged, instantly.
+    haptic("success");
     onSend(trimmed, pendingImages.length > 0 ? pendingImages : undefined);
     setText("");
     clearImages();
@@ -298,17 +303,17 @@ export function MobileComposer({
           tabIndex={-1}
           data-testid="mobile-composer-file-input"
         />
-        <button
+        <Pressable
           type="button"
           onClick={openImagePicker}
           disabled={disabled}
           aria-label="Attach image"
           title="Attach image"
-          className="w-9 h-9 rounded-full bg-[var(--bg-tertiary)] hover:bg-[var(--bg-hover)] active:scale-95 transition-all flex items-center justify-center self-end disabled:opacity-50 disabled:cursor-not-allowed"
+          className="w-9 h-9 rounded-full bg-[var(--bg-tertiary)] hover:bg-[var(--bg-hover)] transition-colors flex items-center justify-center self-end disabled:opacity-50 disabled:cursor-not-allowed"
           data-testid="mobile-composer-attach"
         >
           <Icon path={mdiPlus} size={0.85} />
-        </button>
+        </Pressable>
 
         {/* Text area OR audio wave (when recording, wave replaces textarea visually) */}
         <div className="flex-1 relative">
@@ -352,21 +357,23 @@ export function MobileComposer({
          *  Stop button renders ADDITIONALLY when isWorking && onAbort (preserves abort affordance).
          *  Backend handles queue via deliverAs: "followUp" in pi-bridge command-handler.ts. */}
         {isWorking && onAbort && (
-          <button
+          <Pressable
             type="button"
             onClick={onAbort}
-            className="w-10 h-10 rounded-full bg-[var(--accent-red)] hover:opacity-90 active:scale-95 transition-all flex items-center justify-center self-end"
+            haptic="warning"
+            className="w-10 h-10 rounded-full bg-[var(--accent-red)] hover:opacity-90 transition-opacity flex items-center justify-center self-end"
             title="Stop"
             data-testid="mobile-composer-stop"
           >
             <Icon path={mdiStop} size={0.7} color="#fff" />
-          </button>
+          </Pressable>
         )}
-        <button
+        <Pressable
           type="button"
           onClick={handleSend}
           disabled={!canSend}
-          className={`w-10 h-10 rounded-full flex items-center justify-center self-end transition-all active:scale-95 ${
+          haptic={false}
+          className={`w-10 h-10 rounded-full flex items-center justify-center self-end transition-colors ${
             canSend
               ? "bg-white hover:opacity-90"
               : "bg-[var(--bg-tertiary)] cursor-not-allowed"
@@ -379,7 +386,7 @@ export function MobileComposer({
             size={0.85}
             color={canSend ? "#000" : "var(--text-tertiary)"}
           />
-        </button>
+        </Pressable>
       </div>
     </div>
   );

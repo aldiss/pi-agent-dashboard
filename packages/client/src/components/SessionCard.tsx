@@ -9,6 +9,7 @@ import { ContextUsageBar } from "./ContextUsageBar.js";
 import type { ContextUsageInfo } from "./SessionList.js";
 import type { OpenSpecChange } from "@blackbelt-technology/pi-dashboard-shared/types.js";
 import { OpenSpecActivityBadge } from "./OpenSpecActivityBadge.js";
+import { Pressable } from "../motion/index.js";
 
 export const statusColors: Record<string, string> = {
   active: "bg-green-500",
@@ -325,11 +326,13 @@ export const SessionCard = React.memo(function SessionCard({
   const hasMetaChips = !!(session.gitBranch || session.worktree || session.attachedProposal);
 
   return (
-    <li
+    <Pressable
+      as="li"
+      pressScale={0.985}
       data-session-id={session.id}
       data-activity={getActivityKind(session, hasError)}
       onClick={() => onSelect(session.id)}
-      className={`editorial-card group relative px-3 py-2.5 md:px-3.5 md:py-2.5 cursor-pointer rounded-xl border shadow-sm shadow-[var(--shadow-card)] hover:shadow-md hover:-translate-y-0.5 transition-all duration-200 flex flex-col gap-1 md:gap-2 ${
+      className={`editorial-card group relative px-3 py-2.5 md:px-3.5 md:py-2.5 cursor-pointer rounded-xl border shadow-sm shadow-[var(--shadow-card)] hover:shadow-md transition-shadow duration-200 flex flex-col gap-1 md:gap-2 ${
         selectedRing
       } ${isHidden ? "opacity-40" : ""} ${getCardPulseClass(session)}`}
     >
@@ -494,6 +497,6 @@ export const SessionCard = React.memo(function SessionCard({
           )}
         </div>
       )}
-    </li>
+    </Pressable>
   );
 });

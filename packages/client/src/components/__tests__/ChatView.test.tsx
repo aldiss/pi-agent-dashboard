@@ -165,16 +165,18 @@ describe("ChatView", () => {
     expect(mdBtns.length).toBe(0);
   });
 
-  it("renders optimistic pending prompt card with spinner", () => {
+  it("renders optimistic pending prompt card (lifts in, no spinner)", () => {
     const state = createInitialState();
     state.pendingPrompt = { text: "Fix the bug" };
-    const { getByTestId, container } = render(<ThemeProvider><ChatView state={state} toolContext={defaultToolContext} /></ThemeProvider>);
+    const { getByTestId } = render(<ThemeProvider><ChatView state={state} toolContext={defaultToolContext} /></ThemeProvider>);
     const card = getByTestId("pending-prompt-card");
     expect(card).not.toBeNull();
     expect(card.textContent).toContain("Fix the bug");
-    // Should have animate-spin spinner
+    // Deep-slickness motion (Wave 1): the optimistic bubble now LIFTS into place
+    // (smooth spring, translateY→0 + fade) instead of showing a spinner — the
+    // motion IS the feedback. The old `.animate-spin` spinner was removed.
     const spinner = card.querySelector(".animate-spin");
-    expect(spinner).not.toBeNull();
+    expect(spinner).toBeNull();
   });
 
   it("does not render pending prompt card when pendingPrompt is undefined", () => {

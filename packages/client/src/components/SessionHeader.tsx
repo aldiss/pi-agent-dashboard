@@ -12,6 +12,7 @@ import { FlowLaunchDialog } from "@blackbelt-technology/pi-dashboard-flows-plugi
 import { SearchableSelectDialog, type SelectOption } from "./SearchableSelectDialog.js";
 import { FooterSegmentSlot } from "./extension-ui/FooterSegmentSlot.js";
 import { ArtifactLettersButton } from "./openspec-helpers.js";
+import { Pressable } from "../motion/index.js";
 
 interface Props {
   session?: DashboardSession;
@@ -214,14 +215,14 @@ function MobileHeader({ session, state, showBack, onBack, isRenaming, onConfirmR
   const row1 = (
     <div className="flex items-center gap-1 min-h-[44px]">
       {showBack && onBack && (
-        <button
+        <Pressable
           onClick={onBack}
           className="p-2 min-w-[44px] min-h-[44px] flex items-center justify-center text-[var(--text-muted)] hover:text-[var(--text-secondary)]"
           title="Go back"
           data-testid="back-button"
         >
           <Icon path={mdiArrowLeft} size={0.7} />
-        </button>
+        </Pressable>
       )}
       {isRenaming ? (
         <InlineRenameInput
@@ -242,7 +243,7 @@ function MobileHeader({ session, state, showBack, onBack, isRenaming, onConfirmR
         />
       )}
       {onSearchToggle && (
-        <button
+        <Pressable
           onClick={onSearchToggle}
           className="p-2 min-w-[44px] min-h-[44px] flex items-center justify-center text-[var(--text-muted)] hover:text-[var(--text-secondary)]"
           aria-label="Search in chat"
@@ -250,7 +251,7 @@ function MobileHeader({ session, state, showBack, onBack, isRenaming, onConfirmR
           data-testid="mobile-search-btn"
         >
           <Icon path={mdiMagnify} size={0.7} />
-        </button>
+        </Pressable>
       )}
       {mobileActions && (
         <MobileActionMenu
@@ -307,10 +308,11 @@ function MobileHeader({ session, state, showBack, onBack, isRenaming, onConfirmR
   // read-only indicator it was before. Adds a "tap" affordance + chevron.
   const modelRow = (displayModel || displayThinking) ? (
     onOpenModelSheet ? (
-      <button
+      <Pressable
         type="button"
         onClick={onOpenModelSheet}
-        className="flex items-center gap-1.5 min-h-[28px] pl-1 pr-1 -ml-1 rounded-md text-[10px] text-[var(--text-tertiary)] hover:bg-[var(--bg-hover)] active:bg-[var(--bg-hover)] transition-colors w-full text-left"
+        pressScale={0.98}
+        className="flex items-center gap-1.5 min-h-[28px] pl-1 pr-1 -ml-1 rounded-md text-[10px] text-[var(--text-tertiary)] hover:bg-[var(--bg-hover)] transition-colors w-full text-left"
         data-testid="mobile-header-model-row"
         aria-label="Switch model and reasoning"
       >
@@ -319,7 +321,7 @@ function MobileHeader({ session, state, showBack, onBack, isRenaming, onConfirmR
           <span className="text-[9px] uppercase tracking-wide">tap to switch</span>
           <Icon path={mdiChevronRight} size={0.5} />
         </span>
-      </button>
+      </Pressable>
     ) : (
       <div
         className="flex items-center gap-1.5 min-h-[16px] pl-1 text-[10px] text-[var(--text-tertiary)]"

@@ -147,4 +147,18 @@ export default defineConfig({
       },
     },
   },
+  // `vite preview` serves the built dist/ (production assets — incl. the
+  // SW precache manifest injected by the build, which the dev server can't
+  // serve). It needs the SAME backend proxy as the dev server so a full
+  // production-parity e2e run (motion + SW) can point at it. Mirrors server.proxy.
+  preview: {
+    port: 4173,
+    proxy: {
+      "/api": "http://localhost:8000",
+      "/ws": {
+        target: "ws://localhost:8000",
+        ws: true,
+      },
+    },
+  },
 });
