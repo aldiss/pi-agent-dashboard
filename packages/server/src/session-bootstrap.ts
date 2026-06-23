@@ -29,7 +29,11 @@ export async function discoverAndBroadcastSessions(deps: SessionBootstrapDeps): 
           let contextTokens: number | undefined;
           let contextWindow: number | undefined;
           let model: string | undefined;
-          if (hist.sessionFile) {
+          // Only the pi stats reader is whole-file (readFileSync). CC logs can be
+          // 20 MB+ with 7 MB+ single lines, so NEVER run it on a CC session —
+          // that would OOM the bootstrap path. CC stats are byte-bounded-derived
+          // lazily on transcript load instead. See change: add-claude-code-session-viewing.
+          if (hist.sessionFile && hist.source !== "claude-code") {
             try {
               const stats = extractSessionStats(hist.sessionFile);
               if (stats) {
@@ -43,7 +47,7 @@ export async function discoverAndBroadcastSessions(deps: SessionBootstrapDeps): 
             id: hist.id,
             cwd: hist.cwd,
             name: hist.name,
-            source: "tui",
+            source: hist.source === "claude-code" ? "claude-code" : "tui",
             status: "ended",
             startedAt: hist.startedAt,
             sessionFile: hist.sessionFile,

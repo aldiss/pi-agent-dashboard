@@ -86,6 +86,8 @@ async function loadResults(filepath) {
 function extractByProject(results, label) {
   // Playwright JSON reporter v1.59+ shape: { suites: [{ specs: [{ tests: [{ projectName, results, attachments }]}]}]}
   // Extract per-project click-to-first-paint from attachments (baseline-fresh-sw.json / baseline-primed-sw.json names)
+  // With --repeat-each=N, each test produces N attachments per name; collect ALL samples canonical-of-record
+  // for median/min/max canonical-of-record computation (noise-vs-real-regression disambiguation canonical).
   const byProject = {};
   if (!results || !Array.isArray(results.suites)) {
     return byProject;
@@ -94,7 +96,7 @@ function extractByProject(results, label) {
     walkSuites(suite, (test) => {
       const project = test.projectName || "unknown-project";
       if (!byProject[project]) {
-        byProject[project] = { freshSwMs: null, primedSwMs: null, wsFrames: null, scrollStableMs: null, errors: [] };
+        byProject[project] = { freshSwSamples: [], primedSwSamples: [], wsFramesSamples: [], scrollStableSamples: [], errors: [] };
       }
       for (const run of test.results || []) {
         // status not in ["passed", "skipped"] = failure canonical
@@ -107,12 +109,12 @@ function extractByProject(results, label) {
               const decoded = JSON.parse(Buffer.from(att.body, "base64").toString("utf-8"));
               if (decoded.primary?.clickToFirstPaintMs != null) {
                 if (decoded.label === "fresh-SW") {
-                  byProject[project].freshSwMs = decoded.primary.clickToFirstPaintMs;
+                  byProject[project].freshSwSamples.push(decoded.primary.clickToFirstPaintMs);
                 } else if (decoded.label === "primed-SW") {
-                  byProject[project].primedSwMs = decoded.primary.clickToFirstPaintMs;
+                  byProject[project].primedSwSamples.push(decoded.primary.clickToFirstPaintMs);
                 }
-                byProject[project].wsFrames = decoded.secondary?.wsReplayFrames ?? byProject[project].wsFrames;
-                byProject[project].scrollStableMs = decoded.secondary?.scrollStableMs ?? byProject[project].scrollStableMs;
+                if (decoded.secondary?.wsReplayFrames != null) byProject[project].wsFramesSamples.push(decoded.secondary.wsReplayFrames);
+                if (decoded.secondary?.scrollStableMs != null) byProject[project].scrollStableSamples.push(decoded.secondary.scrollStableMs);
               }
             } catch (err) {
               // ignore non-JSON attachments
@@ -122,7 +124,28 @@ function extractByProject(results, label) {
       }
     });
   }
+  // Compute median canonical + min + max per project canonical-of-record
+  for (const project of Object.keys(byProject)) {
+    const p = byProject[project];
+    p.freshSwMs = median(p.freshSwSamples);
+    p.freshSwMin = p.freshSwSamples.length > 0 ? Math.min(...p.freshSwSamples) : null;
+    p.freshSwMax = p.freshSwSamples.length > 0 ? Math.max(...p.freshSwSamples) : null;
+    p.freshSwN = p.freshSwSamples.length;
+    p.primedSwMs = median(p.primedSwSamples);
+    p.primedSwMin = p.primedSwSamples.length > 0 ? Math.min(...p.primedSwSamples) : null;
+    p.primedSwMax = p.primedSwSamples.length > 0 ? Math.max(...p.primedSwSamples) : null;
+    p.primedSwN = p.primedSwSamples.length;
+    p.wsFrames = median(p.wsFramesSamples);
+    p.scrollStableMs = median(p.scrollStableSamples);
+  }
   return byProject;
+}
+
+function median(arr) {
+  if (!arr || arr.length === 0) return null;
+  const sorted = [...arr].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
 }
 
 function walkSuites(suite, visit) {
@@ -212,18 +235,41 @@ function renderMarkdownVerdict(comparison) {
   lines.push(`**Regression threshold:** candidate / baseline > ${comparison.regressionThreshold}x = FAIL`);
   lines.push("");
 
-  lines.push("## Per-project click-to-first-paint comparison");
+  lines.push("## Per-project click-to-first-paint comparison (median canonical; min/max canonical for noise-canonical-of-record)");
   lines.push("");
-  lines.push("| Project | fresh-SW baseline (ms) | fresh-SW candidate (ms) | fresh-SW ratio | primed-SW baseline (ms) | primed-SW candidate (ms) | primed-SW ratio | Verdict |");
+  lines.push("| Project | fresh-SW baseline median (ms; n) | fresh-SW candidate median (ms; n) | fresh-SW ratio | primed-SW baseline median (ms; n) | primed-SW candidate median (ms; n) | primed-SW ratio | Verdict |");
   lines.push("|---|---|---|---|---|---|---|---|");
   for (const [project, result] of Object.entries(comparison.perProject)) {
     const b = result.baseline || {};
     const c = result.candidate || {};
     const freshRatio = b.freshSwMs && c.freshSwMs ? (c.freshSwMs / b.freshSwMs).toFixed(2) + "x" : "—";
     const primedRatio = b.primedSwMs && c.primedSwMs ? (c.primedSwMs / b.primedSwMs).toFixed(2) + "x" : "—";
-    lines.push(`| \`${project}\` | ${fmt(b.freshSwMs)} | ${fmt(c.freshSwMs)} | ${freshRatio} | ${fmt(b.primedSwMs)} | ${fmt(c.primedSwMs)} | ${primedRatio} | **${result.verdict}** |`);
+    const bFreshLabel = b.freshSwMs != null ? `${b.freshSwMs.toFixed(0)} (n=${b.freshSwN ?? 1})` : "—";
+    const cFreshLabel = c.freshSwMs != null ? `${c.freshSwMs.toFixed(0)} (n=${c.freshSwN ?? 1})` : "—";
+    const bPrimedLabel = b.primedSwMs != null ? `${b.primedSwMs.toFixed(0)} (n=${b.primedSwN ?? 1})` : "—";
+    const cPrimedLabel = c.primedSwMs != null ? `${c.primedSwMs.toFixed(0)} (n=${c.primedSwN ?? 1})` : "—";
+    lines.push(`| \`${project}\` | ${bFreshLabel} | ${cFreshLabel} | ${freshRatio} | ${bPrimedLabel} | ${cPrimedLabel} | ${primedRatio} | **${result.verdict}** |`);
   }
   lines.push("");
+
+  // Add noise-canonical-canonical min/max range table IFF samples > 1
+  const hasMultiSample = Object.values(comparison.perProject).some((r) => (r.baseline?.freshSwN > 1) || (r.candidate?.freshSwN > 1));
+  if (hasMultiSample) {
+    lines.push("## Noise-canonical-of-record range (min-max per sample-set)");
+    lines.push("");
+    lines.push("| Project | fresh-SW baseline range | fresh-SW candidate range | primed-SW baseline range | primed-SW candidate range |");
+    lines.push("|---|---|---|---|---|");
+    for (const [project, result] of Object.entries(comparison.perProject)) {
+      const b = result.baseline || {};
+      const c = result.candidate || {};
+      const bFreshRange = b.freshSwMin != null ? `${b.freshSwMin.toFixed(0)}-${b.freshSwMax.toFixed(0)}` : "—";
+      const cFreshRange = c.freshSwMin != null ? `${c.freshSwMin.toFixed(0)}-${c.freshSwMax.toFixed(0)}` : "—";
+      const bPrimedRange = b.primedSwMin != null ? `${b.primedSwMin.toFixed(0)}-${b.primedSwMax.toFixed(0)}` : "—";
+      const cPrimedRange = c.primedSwMin != null ? `${c.primedSwMin.toFixed(0)}-${c.primedSwMax.toFixed(0)}` : "—";
+      lines.push(`| \`${project}\` | ${bFreshRange}ms | ${cFreshRange}ms | ${bPrimedRange}ms | ${cPrimedRange}ms |`);
+    }
+    lines.push("");
+  }
 
   if (comparison.blockingFindings.length > 0) {
     lines.push("## Blocking findings");

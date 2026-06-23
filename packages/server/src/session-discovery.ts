@@ -17,6 +17,14 @@ export interface DiscoveredSession {
   firstMessage?: string;
   sessionFile: string;
   sessionDir: string;
+  /**
+   * Which agent wrote the session log. `pi` (default) = a pi session under
+   * ~/.pi/agent/sessions; `claude-code` = a Claude-Code session under
+   * ~/.claude/projects. Lets the unified session list badge + route the
+   * transcript read to the correct (byte-bounded) parser.
+   * See change: add-claude-code-session-viewing.
+   */
+  source?: "pi" | "claude-code";
 }
 
 /** Encode cwd to the safe directory name pi uses */

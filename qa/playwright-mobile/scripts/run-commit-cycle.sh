@@ -27,7 +27,11 @@
 set -euo pipefail
 
 COMMIT="${1:?usage: run-commit-cycle.sh <commit-sha> [<test-session-id>]}"
-TEST_SESSION_ID="${2:-dddd3333-4444-5555-6666-777777777777}"
+# TEST_SESSION_ID canonical: per substrate r9 spec-canonical-default = Joan-tenure-42 9.3MB session
+# (construct-validity canonical per GkprOpus A1 + Joan-43 operator-ratify (α) 14:55 CEST 2026-06-05).
+# Override at-cycle-invocation-canonical via 2nd positional argument.
+# Seed-fixture `dddd3333...` available IFF explicit seed-fixture canonical-of-record-test needed.
+TEST_SESSION_ID="${2:-019e8d9c-ef67-7f8b-936e-494a01f01eb1}"
 
 REPO_ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 cd "$REPO_ROOT"
@@ -65,6 +69,8 @@ STATE_FILE="/tmp/dashboard-dev-test-instance-state.json"
 WORKTREE_DIR=$(grep -o '"worktreeDir": *"[^"]*"' "$STATE_FILE" | head -1 | sed 's/.*"worktreeDir": *"\([^"]*\)".*/\1/')
 TEST_HOME=$(grep -o '"testHome": *"[^"]*"' "$STATE_FILE" | head -1 | sed 's/.*"testHome": *"\([^"]*\)".*/\1/')
 TEST_PORT=$(grep -o '"testPort": *[0-9]*' "$STATE_FILE" | head -1 | sed 's/.*"testPort": *\([0-9]*\).*/\1/')
+TEST_PI_PORT=$(grep -o '"testPiPort": *[0-9]*' "$STATE_FILE" | head -1 | sed 's/.*"testPiPort": *\([0-9]*\).*/\1/')
+HEALTH_URL="http://127.0.0.1:$TEST_PORT/api/health"
 echo ""
 
 # Step 2: Baseline Playwright measurement
@@ -73,11 +79,24 @@ echo "= STEP 2/8: Baseline Playwright measurement (pre-cherry-pick)"
 echo "============================================"
 cd "$REPO_ROOT"
 mkdir -p "$CYCLE_DIR/baseline"
+# REPEAT_EACH env-var canonical: per operator-pick (Σ) HYBRID 16:15 CEST 2026-06-05 ratify-canonical;
+# pass to Playwright as `--repeat-each=N` for noise-disambiguation canonical-of-record
+# (WizardCc + GkprOpus skeptic-flag canonical canonical-preserved at-n=1-millisecond-variance-noise-canonical).
+# Default empty = single-sample canonical; set REPEAT_EACH=5 for noise-disambiguation cycle canonical-of-record.
+if [ -n "${REPEAT_EACH:-}" ]; then
+  REPEAT_EACH_FLAG="--repeat-each=$REPEAT_EACH"
+  echo "  REPEAT_EACH=$REPEAT_EACH canonical-active (60-measurement-canonical canonical-of-record canonical)"
+else
+  REPEAT_EACH_FLAG=""
+fi
+
 PI_DASHBOARD_BASE_URL="http://127.0.0.1:$TEST_PORT" \
 TEST_SESSION_ID="$TEST_SESSION_ID" \
 PLAYWRIGHT_JSON_OUTPUT_FILE="$CYCLE_DIR/baseline/playwright-results.json" \
   npx playwright test \
   --config qa/playwright-mobile/playwright.config.ts \
+  --workers=1 \
+  $REPEAT_EACH_FLAG \
   --reporter=json \
   qa/playwright-mobile/specs/session-history-load-time.spec.ts \
   > "$CYCLE_DIR/baseline/playwright-stdout.json" 2>&1 || {
@@ -122,17 +141,50 @@ echo "============================================"
 npm run build 2>&1 | tee "$CYCLE_DIR/build.log" | tail -10
 echo ""
 
-# Step 5: Restart test-dashboard (pi-dashboard restart canonical reads new dist/client/)
+# Step 5: Restart test-dashboard via explicit stop+start (more deterministic than `pi-dashboard restart`
+# which delegates to /api/restart async-orchestrator that exits CLI before restart completes)
 echo "============================================"
-echo "= STEP 5/8: Restart test-dashboard to pick up new client"
+echo "= STEP 5/8: Restart test-dashboard to pick up new client (explicit stop+start)"
 echo "============================================"
 cd "$REPO_ROOT"
-HOME="$TEST_HOME" "$REPO_ROOT/node_modules/.bin/pi-dashboard" restart 2>&1 | tee "$CYCLE_DIR/restart.log" | tail -10
+
+# Stop
+echo "5a/8 Stopping test-dashboard at port $TEST_PORT..."
+HOME="$TEST_HOME" "$REPO_ROOT/node_modules/.bin/pi-dashboard" stop 2>&1 | tee "$CYCLE_DIR/restart.log" | tail -5 || true
 sleep 3
-# Verify health post-restart
-HEALTH_URL="http://127.0.0.1:$TEST_PORT/api/health"
-if ! curl -sS -m 5 "$HEALTH_URL" > /dev/null 2>&1; then
-  echo "ERROR: test-dashboard FAILED to restart cleanly post-cherry-pick."
+
+# Verify stopped (health-check should fail)
+for i in 1 2 3 4 5; do
+  if ! curl -sS -m 1 "$HEALTH_URL" > /dev/null 2>&1; then
+    break
+  fi
+  echo "  waiting for dashboard to fully stop ($i/5)..."
+  sleep 2
+done
+
+# Start fresh
+echo "5b/8 Starting test-dashboard from worktree cwd (HOME=$TEST_HOME, port=$TEST_PORT)..."
+(
+  cd "$WORKTREE_DIR"
+  HOME="$TEST_HOME" nohup "$REPO_ROOT/node_modules/.bin/pi-dashboard" start --port "$TEST_PORT" --pi-port "$TEST_PI_PORT" --no-tunnel >> "$TEST_HOME/dashboard.log" 2>&1 &
+  echo $! > "$TEST_HOME/dashboard.pid"
+) | tee -a "$CYCLE_DIR/restart.log" || true
+
+# Wait for health-OK (30s retry loop canonical)
+echo "5c/8 Waiting for test-dashboard health post-restart (timeout 30s)..."
+RESTART_OK=false
+for i in $(seq 1 30); do
+  if curl -sS -m 1 "$HEALTH_URL" > /dev/null 2>&1; then
+    RESTART_OK=true
+    echo "  health-OK after ${i}s"
+    break
+  fi
+  sleep 1
+done
+if [ "$RESTART_OK" = "false" ]; then
+  echo "ERROR: test-dashboard FAILED to restart cleanly post-cherry-pick (30s timeout)."
+  echo "--- last 30 lines of dashboard.log ---"
+  tail -30 "$TEST_HOME/dashboard.log" 2>&1 || true
   "$REPO_ROOT/qa/playwright-mobile/scripts/teardown-test-dashboard.sh"
   exit 5
 fi
@@ -149,6 +201,8 @@ TEST_SESSION_ID="$TEST_SESSION_ID" \
 PLAYWRIGHT_JSON_OUTPUT_FILE="$CYCLE_DIR/candidate/playwright-results.json" \
   npx playwright test \
   --config qa/playwright-mobile/playwright.config.ts \
+  --workers=1 \
+  $REPEAT_EACH_FLAG \
   --reporter=json \
   qa/playwright-mobile/specs/session-history-load-time.spec.ts \
   > "$CYCLE_DIR/candidate/playwright-stdout.json" 2>&1 || {

@@ -64,6 +64,25 @@ mkdir -p "$TEST_HOME/.pi/agent/sessions"
 # Copy seed sessions (per seed/active-project canonical; 3 sessions covering UI-state diversity)
 cp -r "$REPO_ROOT/seed/active-project/--Users-dev-my-project--" "$TEST_HOME/.pi/agent/sessions/"
 
+# Copy operator-actual Joan-tenure-42 session canonical per substrate r9 spec-canonical default
+# (cycle-#1 commit-72381c3 construct-validity-canonical-of-record-AMENDMENT per Joan-43
+# operator-ratify (α) 14:55 CEST 2026-06-05; substrate r15 canonical-of-record-LANDED).
+# Source path = canonical operator-machine /Users/vdrobkov/.pi/orchestration-state cwd-encoded.
+JOAN_SESSION_DIR="$HOME/.pi/agent/sessions/--Users-vdrobkov-.pi-orchestration-state--"
+JOAN_SESSION_FILE="2026-06-03T13-12-12-903Z_019e8d9c-ef67-7f8b-936e-494a01f01eb1.jsonl"
+JOAN_SESSION_META="2026-06-03T13-12-12-903Z_019e8d9c-ef67-7f8b-936e-494a01f01eb1.meta.json"
+if [ -f "$JOAN_SESSION_DIR/$JOAN_SESSION_FILE" ]; then
+  mkdir -p "$TEST_HOME/.pi/agent/sessions/--Users-vdrobkov-.pi-orchestration-state--"
+  cp "$JOAN_SESSION_DIR/$JOAN_SESSION_FILE" "$TEST_HOME/.pi/agent/sessions/--Users-vdrobkov-.pi-orchestration-state--/" 2>&1 || true
+  if [ -f "$JOAN_SESSION_DIR/$JOAN_SESSION_META" ]; then
+    cp "$JOAN_SESSION_DIR/$JOAN_SESSION_META" "$TEST_HOME/.pi/agent/sessions/--Users-vdrobkov-.pi-orchestration-state--/" 2>&1 || true
+  fi
+  JOAN_BYTES=$(wc -c < "$JOAN_SESSION_DIR/$JOAN_SESSION_FILE" | tr -d ' ')
+  echo "  + Joan-tenure-42 session copied canonical ($JOAN_BYTES bytes; 019e8d9c... canonical)"
+else
+  echo "  WARN: Joan-tenure-42 session not present at $JOAN_SESSION_DIR/$JOAN_SESSION_FILE"
+fi
+
 # Test-instance config: port 8001, no auto-start, loopback-only auth, no plugins, no openspec
 cat > "$TEST_HOME/.pi/dashboard/config.json" <<EOF
 {
