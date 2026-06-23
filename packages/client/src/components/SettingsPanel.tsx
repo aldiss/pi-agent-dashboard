@@ -14,6 +14,7 @@ import { ToolsSection, SpawnFailuresSection } from "./ToolsSection.js";
 import { DiagnosticsSection } from "./DiagnosticsSection.js";
 import { ModelProxySection } from "./ModelProxySection.js";
 import { PushNotificationsSection } from "./PushNotificationsSection.js";
+import { AppearanceSection } from "./AppearanceSection.js";
 import { PackageInstallConfirmDialog } from "./PackageInstallConfirmDialog.js";
 import { PackageReadmeDialog } from "./PackageReadmeDialog.js";
 import { useInstalledPackages } from "../hooks/useInstalledPackages.js";
@@ -375,12 +376,12 @@ export function SettingsPanel({ availableModels }: { availableModels?: Array<{ p
       </div>
 
       {/* Tab Bar */}
-      <div data-testid="settings-tab-bar" className="flex gap-0 border-b border-[var(--border-primary)] shrink-0 px-4">
+      <div data-testid="settings-tab-bar" className="flex gap-0 border-b border-[var(--border-primary)] shrink-0 px-4 overflow-x-auto scroll-smooth [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden" style={{ scrollSnapType: "x proximity" }}>
         {tabs.map((tab) => (
           <button
             key={tab.id}
             onClick={() => setActiveTab(tab.id)}
-            className={`px-4 py-2 text-sm font-medium transition-colors relative cursor-pointer ${
+            className={`px-4 py-2 text-sm font-medium transition-colors relative cursor-pointer shrink-0 whitespace-nowrap [scroll-snap-align:start] ${
               activeTab === tab.id
                 ? "text-[var(--text-primary)]"
                 : "text-[var(--text-muted)] hover:text-[var(--text-secondary)]"
@@ -413,6 +414,10 @@ export function SettingsPanel({ availableModels }: { availableModels?: Array<{ p
           {/* General Tab */}
           {activeTab === "general" && (
             <>
+              <Section title="Appearance">
+                <AppearanceSection />
+              </Section>
+
               <Section title="Server">
                 <NumberField label="HTTP Port" value={config.port} onChange={(v) => update((c) => { c.port = v; })} />
                 <NumberField label="Pi Gateway Port" value={config.piPort} onChange={(v) => update((c) => { c.piPort = v; })} />

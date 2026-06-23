@@ -9,6 +9,7 @@ import { HamburgerButton, MobileOverlay } from "./components/MobileOverlay.js";
 import { MobileShell } from "./components/MobileShell.js";
 import { useMobile } from "./hooks/useMobile.js";
 import { getMobileDepth } from "./lib/mobile-depth.js";
+import { getSessionDisplayName } from "./lib/session-display-name.js";
 import { ChatView, type ChatViewHandle } from "./components/ChatView.js";
 import { ConfirmDialog } from "./components/ConfirmDialog.js";
 import {
@@ -24,7 +25,7 @@ import { ArchiveBrowserView } from "./components/ArchiveBrowserView.js";
 import { useOpenSpecReader } from "./hooks/useOpenSpecReader.js";
 import type { OpenSpecArtifact } from "@blackbelt-technology/pi-dashboard-shared/types.js";
 import { SessionHeader } from "./components/SessionHeader.js";
-import { ServerSelector } from "./components/ServerSelector.js";
+import { ModelReasoningSheet } from "./components/ModelReasoningSheet.js";import { ServerSelector } from "./components/ServerSelector.js";
 import { Toast, useToast } from "./components/Toast.js";
 import { ConnectionStatusBanner } from "./components/ConnectionStatusBanner.js";
 import { performServerSwitch } from "./lib/server-switch.js";
@@ -564,6 +565,36 @@ export default function App() {
 
   const selectedSession = selectedId ? sessions.get(selectedId) : undefined;
   const selectedCwd = selectedSession?.cwd;
+
+  // Mobile model/reasoning sheet (parity MVP — surfaces the desktop-only
+  // StatusBar controls on touch). Open-state lives here so the sheet can read
+  // the same selectedState/modelsMap the desktop StatusBar uses.
+  const [modelSheetOpen, setModelSheetOpen] = useState(false);
+
+  // Shared model/thinking/bell handlers — used by BOTH the desktop StatusBar
+  // and the mobile sheet (DRY; the message shapes were previously inline-only
+  // in the StatusBar JSX). selectedId is captured per-render; the gates that
+  // render these are inside the `selectedId ?` scope so it's always defined.
+  const handleSelectModel = useCallback((modelStr: string) => {
+    const slashIdx = modelStr.indexOf("/");
+    if (slashIdx > 0) {
+      const provider = modelStr.slice(0, slashIdx);
+      const modelId = modelStr.slice(slashIdx + 1);
+      send({ type: "set_model", sessionId: selectedId, provider, modelId });
+    }
+  }, [send, selectedId]);
+
+  const handleSelectThinkingLevel = useCallback((level: string) => {
+    send({ type: "set_thinking_level", sessionId: selectedId, level });
+  }, [send, selectedId]);
+
+  const handleCycleBell = useCallback(() => {
+    const states = ["off", "on", "auto"] as const;
+    const current = selectedSession?.pushPrefs?.notifyCompletion ?? "off";
+    const nextIdx = (states.indexOf(current) + 1) % states.length;
+    send({ type: "set_push_prefs", sessionId: selectedId, prefs: { notifyCompletion: states[nextIdx] } });
+  }, [send, selectedId, selectedSession?.pushPrefs?.notifyCompletion]);
+
   const editorCwds = useMemo(() => selectedCwd ? [selectedCwd] : [], [selectedCwd]);
   const editorMap = useEditors(editorCwds);
   const toolContext: ToolContext = useMemo(() => ({
@@ -942,6 +973,7 @@ export default function App() {
           // mirrors the desktop TokenStatsBar wiring below (line 952+).
           contextUsage: selectedState.contextUsage,
           cost: selectedState.cost,
+          onOpenModelSheet: () => setModelSheetOpen(true),
         } : undefined}
         commands={selectedCommands}
         flows={selectedFlows}
@@ -1188,17 +1220,8 @@ export default function App() {
               status={selectedState.status}
               currentTool={selectedState.currentTool}
               streamingText={selectedState.streamingText || undefined}
-              onSelectModel={(modelStr) => {
-                const slashIdx = modelStr.indexOf("/");
-                if (slashIdx > 0) {
-                  const provider = modelStr.slice(0, slashIdx);
-                  const modelId = modelStr.slice(slashIdx + 1);
-                  send({ type: "set_model", sessionId: selectedId, provider, modelId });
-                }
-              }}
-              onSelectThinkingLevel={(level) => {
-                send({ type: "set_thinking_level", sessionId: selectedId, level });
-              }}
+              onSelectModel={handleSelectModel}
+              onSelectThinkingLevel={handleSelectThinkingLevel}
               onRoleSet={(role, modelId) => {
                 send({ type: "role_set", sessionId: selectedId, role, modelId });
               }}
@@ -1212,13 +1235,22 @@ export default function App() {
                 send({ type: "role_preset_delete", sessionId: selectedId, presetName });
               }}
               bellState={selectedSession?.pushPrefs?.notifyCompletion ?? "off"}
-              onBellClick={() => {
-                const states = ["off", "on", "auto"] as const;
-                const current = selectedSession?.pushPrefs?.notifyCompletion ?? "off";
-                const nextIdx = (states.indexOf(current) + 1) % states.length;
-                send({ type: "set_push_prefs", sessionId: selectedId, prefs: { notifyCompletion: states[nextIdx] } });
-              }}
+              onBellClick={handleCycleBell}
               pushEnabled={true}
+            />
+          )}
+          {isMobile && modelSheetOpen && (
+            <ModelReasoningSheet
+              sessionName={selectedSession ? getSessionDisplayName(selectedSession) : undefined}
+              currentModel={selectedState.model ?? selectedSession?.model}
+              models={modelsMap.get(selectedId)}
+              thinkingLevel={selectedState.thinkingLevel ?? selectedSession?.thinkingLevel}
+              bellState={selectedSession?.pushPrefs?.notifyCompletion ?? "off"}
+              pushEnabled={true}
+              onSelectModel={handleSelectModel}
+              onSelectThinkingLevel={handleSelectThinkingLevel}
+              onCycleBell={handleCycleBell}
+              onClose={() => setModelSheetOpen(false)}
             />
           )}
           <CommandInput

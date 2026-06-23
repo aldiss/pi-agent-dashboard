@@ -72,8 +72,301 @@
   --shadow-card: rgba(0, 0, 0, 0.08);
 }
 
+/* ── Editorial Craft skin ─────────────────────────────────────────
+   A warm, characterful skin selectable independently of light/dark.
+   It REDEFINES the existing semantic tokens (--bg-*, --text-*, --accent-*)
+   with espresso/paper values, so every component that already reads
+   var(--bg-primary) etc. re-skins for free — desktop included. New
+   structural tokens (--font-*, --raised-2, --status-*, --accent-soft)
+   power the editorial-only signatures (status rail, masthead, sheet).
+
+   These blocks only ADD rules under [data-skin="editorial"]; the legacy
+   :root / [data-theme="light"] / body rules above are untouched, so the
+   Legacy skin renders byte-for-byte as before.
+
+   Cascade: [data-skin="editorial"] (0,1,0) sits after [data-theme="light"]
+   (0,1,0) in source order so it wins for the editorial skin; the
+   editorial-light block carries an extra attribute (0,2,0) so it wins over
+   editorial-dark when light mode is on. The editorial-light block restates
+   the FULL token set so nothing leaks the dark value. */
+
+/* Editorial — espresso-dark (the hero) */
+[data-skin="editorial"] {
+  --bg-primary:    #17120e;   /* deep warm-black canvas */
+  --bg-secondary:  #1e1813;   /* panels, sidebar */
+  --bg-tertiary:   #251d16;   /* cards, inputs, selected */
+  --bg-surface:    #2e251c;   /* badges, buttons, elevated/hover */
+  --bg-hover:      rgba(242, 233, 222, 0.06);
+  --bg-selected:   #2e251c;
+  --bg-code:       #1a130d;
+  --bg-overlay:    rgba(10, 7, 5, 0.55);
+
+  --text-primary:   #f3ebe0;  /* warm bone */
+  --text-secondary: #c9bbab;
+  --text-tertiary:  #9b8b78;
+  --text-muted:     #897a67;
+  --text-faint:     #5a4d3f;
+
+  --border-primary:   #2c2219;
+  --border-secondary: #3a2f24;  /* warm hairline */
+  --border-subtle:    rgba(242, 233, 222, 0.07);
+
+  /* Terracotta remaps the blue UI accent; status colors warmed */
+  --accent-blue:    #cf6238;
+  --accent-green:   #7fae5a;
+  --accent-yellow:  #e0a23c;
+  --accent-red:     #d65440;
+  --accent-purple:  #b283d6;
+  --accent-orange:  #d98a3e;
+  --accent-primary: #cf6238;
+  --accent:         #cf6238;   /* satisfies ThinkingLevelSelector's var(--accent) */
+  --link:           #d2693f;
+  --link-hover:     #e6926a;
+
+  --shadow-card: rgba(0, 0, 0, 0.5);
+
+  /* Editorial-only structural tokens */
+  --raised:        #251d16;
+  --raised-2:      #2e251c;
+  --overlay-solid: #322820;
+  --accent-soft:   rgba(207, 98, 56, 0.15);
+  --status-live:   #7fae5a;
+  --status-think:  #b283d6;
+  --status-wait:   #e0a23c;
+  --status-idle:   #8c7d6c;
+  --status-fresh:  #5ba9a0;
+  --shadow-strong: 0 18px 40px -16px rgba(0, 0, 0, 0.7), 0 2px 8px -2px rgba(0, 0, 0, 0.5);
+
+  --font-sans:  "Hanken Grotesk", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-serif: "Fraunces", Georgia, "Times New Roman", serif;
+  --font-mono:  "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+/* Editorial — warm-paper light (the alternate; not cold white) */
+[data-skin="editorial"][data-theme="light"] {
+  --bg-primary:    #f4ece1;   /* warm stock */
+  --bg-secondary:  #efe5d7;
+  --bg-tertiary:   #fbf5ec;
+  --bg-surface:    #ffffff;
+  --bg-hover:      rgba(40, 28, 16, 0.05);
+  --bg-selected:   #f3e8d8;
+  --bg-code:       #f0e6d6;
+  --bg-overlay:    rgba(60, 40, 20, 0.35);
+
+  --text-primary:   #2a211a;
+  --text-secondary: #5e5042;
+  --text-tertiary:  #80715e;
+  --text-muted:     #927f69;
+  --text-faint:     #b6a48c;
+
+  --border-primary:   #e2d4c2;
+  --border-secondary: #d8c7b1;
+  --border-subtle:    rgba(40, 28, 16, 0.08);
+
+  --accent-blue:    #bb5630;   /* deepened terracotta for paper contrast */
+  --accent-green:   #5f8c3e;
+  --accent-yellow:  #bf7d1d;
+  --accent-red:     #bb4329;
+  --accent-purple:  #8a52bd;
+  --accent-orange:  #b5701f;
+  --accent-primary: #bb5630;
+  --accent:         #bb5630;
+  --link:           #bb5630;
+  --link-hover:     #8f3f20;
+
+  --shadow-card: rgba(70, 45, 20, 0.12);
+
+  --raised:        #fbf5ec;
+  --raised-2:      #ffffff;
+  --overlay-solid: #ffffff;
+  --accent-soft:   rgba(187, 86, 48, 0.12);
+  --status-live:   #5f8c3e;
+  --status-think:  #8a52bd;
+  --status-wait:   #bf7d1d;
+  --status-idle:   #9a8a76;
+  --status-fresh:  #3f8079;
+  --shadow-strong: 0 14px 30px -16px rgba(70, 45, 20, 0.3);
+}
+
+/* Editorial body — Hanken Grotesk + a faint warm corner glow. The opaque app
+   container covers most of the glow; the espresso solid carries the canvas,
+   and the grain overlay below adds the atmosphere. */
+[data-skin="editorial"] body {
+  font-family: var(--font-sans);
+  background:
+    radial-gradient(1200px 700px at 16% -8%, #241a12 0%, transparent 55%),
+    radial-gradient(900px 600px at 92% 4%, #1f1712 0%, transparent 50%),
+    var(--bg-primary);
+}
+[data-skin="editorial"][data-theme="light"] body {
+  background:
+    radial-gradient(1100px 650px at 14% -10%, #efe2cf 0%, transparent 55%),
+    radial-gradient(820px 560px at 94% 2%, #f1e7d6 0%, transparent 50%),
+    var(--bg-primary);
+}
+
+/* Editorial paper-grain overlay — subtle SVG fractal noise for atmosphere.
+   pointer-events:none so it never intercepts taps/clicks. Legacy: absent. */
+[data-skin="editorial"] body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 9999;
+  opacity: 0.045;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+[data-skin="editorial"][data-theme="light"] body::before {
+  opacity: 0.06;
+  mix-blend-mode: multiply;
+}
+
+/* Editorial — chat/markdown code blocks in IBM Plex Mono (machine-truth).
+   Overrides the skin-agnostic SF-Mono rule above with higher specificity +
+   !important so it wins only under the editorial skin. */
+[data-skin="editorial"] .markdown-content pre,
+[data-skin="editorial"] .markdown-content pre *,
+[data-skin="editorial"] .markdown-content pre code,
+[data-skin="editorial"] .markdown-content pre span {
+  font-family: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace !important;
+}
+
 html, body {
   overscroll-behavior: none;
+}
+
+/* ── Editorial structural signatures ──────────────────────────────
+   CSS-only, gated by [data-skin="editorial"]. Driven by marker classes
+   (editorial-card / editorial-name / editorial-dot / editorial-activity)
+   and the data-activity attribute that SessionCard sets. Legacy has none of
+   these selectors, so it renders exactly as before. */
+
+/* Crew names in Fraunces — the masthead voice. opsz auto = optical sizing on. */
+[data-skin="editorial"] .editorial-name {
+  font-family: var(--font-serif);
+  font-optical-sizing: auto;
+  font-weight: 600;
+  font-size: 1.06rem;
+  letter-spacing: -0.012em;
+  line-height: 1.15;
+}
+
+/* Status RAIL — a 4px colored left edge keyed to the semantic activity. The
+   card already has rounded corners + overflow context; the rail is an inset
+   pseudo-element so it follows the radius. */
+[data-skin="editorial"] .editorial-card {
+  position: relative;
+}
+[data-skin="editorial"] .editorial-card::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  border-radius: 12px 0 0 12px;
+  background: var(--status-idle);
+  opacity: 0.95;
+}
+[data-skin="editorial"] .editorial-card[data-activity="live"]::before   { background: var(--status-live); }
+[data-skin="editorial"] .editorial-card[data-activity="think"]::before  { background: var(--status-think); }
+[data-skin="editorial"] .editorial-card[data-activity="wait"]::before   { background: var(--status-wait); }
+[data-skin="editorial"] .editorial-card[data-activity="idle"]::before   { background: var(--status-idle); }
+[data-skin="editorial"] .editorial-card[data-activity="unread"]::before { background: var(--status-fresh); }
+[data-skin="editorial"] .editorial-card[data-activity="error"]::before  { background: var(--accent-red); }
+/* Give the card body breathing room from the rail. */
+[data-skin="editorial"] .editorial-card { padding-left: 1.1rem; }
+
+/* Status DOT shares the rail hue (override the Tailwind bg-*-500 utilities). */
+[data-skin="editorial"] .editorial-card[data-activity="live"]   .editorial-dot { background: var(--status-live) !important;  box-shadow: 0 0 8px var(--status-live); }
+[data-skin="editorial"] .editorial-card[data-activity="think"]  .editorial-dot { background: var(--status-think) !important; box-shadow: 0 0 8px var(--status-think); }
+[data-skin="editorial"] .editorial-card[data-activity="wait"]   .editorial-dot { background: var(--status-wait) !important; }
+[data-skin="editorial"] .editorial-card[data-activity="idle"]   .editorial-dot { background: var(--status-idle) !important; }
+[data-skin="editorial"] .editorial-card[data-activity="unread"] .editorial-dot { background: var(--status-fresh) !important; }
+[data-skin="editorial"] .editorial-card[data-activity="error"]  .editorial-dot { background: var(--accent-red) !important; }
+
+/* Status TEXT solid in the semantic hue — kills the dim "Waiting for input"
+   that dissolves into the background (the explicit anti-pattern to retire).
+   Overrides the Tailwind text-*-400 / text-[var(--text-tertiary)] utilities. */
+[data-skin="editorial"] .editorial-card[data-activity="live"]   .editorial-activity { color: var(--status-live) !important;  font-weight: 600; }
+[data-skin="editorial"] .editorial-card[data-activity="think"]  .editorial-activity { color: var(--status-think) !important; font-weight: 600; }
+[data-skin="editorial"] .editorial-card[data-activity="wait"]   .editorial-activity { color: var(--status-wait) !important;  font-weight: 600; }
+[data-skin="editorial"] .editorial-card[data-activity="idle"]   .editorial-activity { color: var(--text-tertiary) !important; }
+[data-skin="editorial"] .editorial-card[data-activity="error"]  .editorial-activity { color: var(--accent-red) !important;   font-weight: 600; }
+
+/* Section / group headings + brand in Fraunces. Applied via marker classes
+   added in SessionList. */
+[data-skin="editorial"] .editorial-heading {
+  font-family: var(--font-serif);
+  font-optical-sizing: auto;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+[data-skin="editorial"] .editorial-brand {
+  font-family: var(--font-serif);
+  font-optical-sizing: auto;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+/* Brand-mark + onboarding accents wear terracotta, never the stray blue. The
+   PI logo (SVG fill:currentColor) + the giant π glyphs use editorial-accent-ink;
+   the first-run wizard CTA ("Add folder…") uses editorial-accent-cta. Overrides
+   the text-blue-500/400 + border-blue-500/50 Tailwind utilities under editorial
+   so the literal first screen reads on-brand. The disabled CTA keeps its muted
+   look (the :not(:disabled) gate). */
+[data-skin="editorial"] .editorial-accent-ink {
+  color: var(--accent-primary) !important;
+}
+[data-skin="editorial"] .editorial-accent-ink:hover {
+  color: var(--link-hover) !important;
+}
+[data-skin="editorial"] .editorial-accent-cta:not(:disabled) {
+  color: var(--accent-primary) !important;
+  border-color: color-mix(in srgb, var(--accent-primary) 50%, transparent) !important;
+}
+[data-skin="editorial"] .editorial-accent-cta:not(:disabled):hover {
+  background: var(--accent-soft) !important;
+}
+
+/* Machine-truth metadata (model id, thinking level) in IBM Plex Mono. */
+[data-skin="editorial"] .editorial-meta {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  letter-spacing: -0.01em;
+}
+
+/* Operator's own chat turns wear the warm terracotta. The blue Tailwind
+   utilities (bg-blue-500/10, border-blue-*) are overridden under editorial;
+   tint kept calm (per brief: cool ~5% from the mockup's hot solid). */
+[data-skin="editorial"] .editorial-userbubble {
+  background: var(--accent-soft) !important;
+  border-color: color-mix(in srgb, var(--accent-primary) 35%, transparent) !important;
+  border-left-color: var(--accent-primary) !important;
+}
+
+/* Model & reasoning sheet — restrained spring on present (both skins). The
+   scrim fades; the sheet slides up with a soft overshoot. Reduced-motion
+   collapses both to an instant appearance. */
+@keyframes editorial-sheet-rise {
+  0%   { transform: translateY(100%); }
+  72%  { transform: translateY(-0.5%); }
+  100% { transform: translateY(0); }
+}
+@keyframes editorial-scrim-fade {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+.editorial-sheet {
+  animation: editorial-sheet-rise 360ms cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: transform;
+}
+.editorial-sheet-scrim {
+  animation: editorial-scrim-fade 240ms ease-out;
+}
+@media (prefers-reduced-motion: reduce) {
+  .editorial-sheet { animation: none; }
+  .editorial-sheet-scrim { animation: none; }
 }
 
 body {

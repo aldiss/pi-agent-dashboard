@@ -3,6 +3,7 @@ import ReactDOM from "react-dom/client";
 import { Router } from "wouter";
 import App from "./App.js";
 import { ThemeProvider } from "./components/ThemeProvider.js";
+import { SkinProvider } from "./components/SkinProvider.js";
 import { MobileProvider } from "./hooks/useMobile.js";
 import "./index.css";
 // KaTeX styles for LaTeX math rendering in MarkdownContent.
@@ -18,9 +19,11 @@ ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <Router>
       <ThemeProvider>
-        <MobileProvider>
-          <App />
-        </MobileProvider>
+        <SkinProvider>
+          <MobileProvider>
+            <App />
+          </MobileProvider>
+        </SkinProvider>
       </ThemeProvider>
     </Router>
   </React.StrictMode>

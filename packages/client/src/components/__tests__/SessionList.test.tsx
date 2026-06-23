@@ -5,6 +5,7 @@ import { Router } from "wouter";
 import { memoryLocation } from "wouter/memory-location";
 import { SessionList, groupSessionsByDirectory } from "../SessionList.js";
 import { ThemeProvider } from "../ThemeProvider.js";
+import { SkinProvider } from "../SkinProvider.js";
 import type { DashboardSession } from "@blackbelt-technology/pi-dashboard-shared/types.js";
 
 function TestRouter({ children }: { children: React.ReactNode }) {
@@ -210,20 +211,24 @@ describe("SessionList header layout", () => {
   });
 
   it("places theme controls in app-bar row", () => {
+    // The theme toggle is always in the app-bar. The named-theme palette
+    // picker is skin-conditional: shown in the Legacy skin, hidden in
+    // Editorial (which owns its own committed palette). Render Legacy here so
+    // both controls are present and we verify their app-bar placement.
     render(
       <TestRouter>
         <ThemeProvider>
-          <SessionList
-            sessions={[makeSession()]}
-            onSelect={() => {}}
-          />
+          <SkinProvider>
+            <SessionList
+              sessions={[makeSession()]}
+              onSelect={() => {}}
+            />
+          </SkinProvider>
         </ThemeProvider>
       </TestRouter>,
     );
     const appBar = screen.getByTestId("header-app-bar");
-    const themePicker = appBar.querySelector('[data-testid="theme-picker"]');
     const themeToggle = appBar.querySelector('[data-testid="theme-toggle"]');
-    expect(themePicker).toBeTruthy();
     expect(themeToggle).toBeTruthy();
   });
 

@@ -1,0 +1,8 @@
+# Playwright run artifacts — generated, never committed.
+playwright-report/
+test-results/
+playwright/.cache/
+
+# Visual-regression BASELINES are committed (they're the gallery + the
+# guardrail). They live in specs/__screenshots__/ and are intentionally NOT
+# ignored.

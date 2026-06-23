@@ -49,6 +49,7 @@ import { selectedCardScrollFingerprint } from "../lib/session-list-scroll.js";
 import { TunnelButton } from "./TunnelButton.js";
 import { InstallButton } from "./InstallButton.js";
 import { useInstallPrompt } from "../hooks/useInstallPrompt.js";
+import { useSkinContext } from "./SkinProvider.js";
 
 
 export interface ContextUsageInfo {
@@ -215,6 +216,7 @@ export function SessionList({ sessions, selectedId, onSelect, contextUsageMap, o
   const [, navigate] = useLocation();
   const { messages, showToast, dismissToast } = useToast();
   const installPrompt = useInstallPrompt();
+  const { skin } = useSkinContext();
 
   // Scroll-to-selected-card wiring.
   // See change: auto-scroll-selected-session-card.
@@ -794,10 +796,10 @@ export function SessionList({ sessions, selectedId, onSelect, contextUsageMap, o
       <div className="border-b border-[var(--border-primary)]">
         <div className="flex items-center justify-between px-3 py-1.5" data-testid="header-app-bar">
           <div className="flex gap-1.5 items-center">
-            <button onClick={() => navigate("/")} className="flex items-center leading-none text-blue-500 hover:text-blue-400 transition-colors" title="Home">
+            <button onClick={() => navigate("/")} className="editorial-accent-ink flex items-center leading-none text-blue-500 hover:text-blue-400 transition-colors" title="Home">
               <PiLogo size={24} />
             </button>
-            <ThemePicker />
+            {skin !== "editorial" && <ThemePicker />}
             <ThemeToggle />
           </div>
           <div className="flex gap-1 items-center">
@@ -921,7 +923,7 @@ export function SessionList({ sessions, selectedId, onSelect, contextUsageMap, o
                   <span className="inline-flex text-[var(--text-tertiary)]">
                     <Icon path={TIER_ICON[tier]} size={0.55} />
                   </span>
-                  <span>{TIER_LABEL[tier]}</span>
+                  <span className="editorial-heading">{TIER_LABEL[tier]}</span>
                   <span className="text-[10px] font-normal text-[var(--text-muted)] normal-case tracking-normal">
                     ({visibleDirGroups.length})
                   </span>
