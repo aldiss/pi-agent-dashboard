@@ -5,7 +5,7 @@ lists what is deliberately OUT of scope for that build — the next launches, ea
 independently shippable. Taste call holds throughout: **gentle + smooth, NO bounce**.
 
 ## Shipped (this build)
-- `springs.ts` — the one vocabulary: `smooth` (400/42), `gentle` (240/30), `snappy` (520/34). No `bouncy`.
+- `springs.ts` — the one vocabulary: `smooth` (400/42), `gentle` (240/30), `snappy` (520/34, **reserved/unused — see guard below**). No `bouncy`.
 - `haptic.ts` — Capacitor-aware → `navigator.vibrate` → silent no-op.
 - `reduced-motion.ts` — single `useMotionTransition()` gate; every spring collapses to instant under `prefers-reduced-motion`.
 - `Pressable.tsx` — universal press primitive (whileTap scale + spring-back + optional selection haptic, polymorphic, ref-forwarding, disabled-aware).
@@ -38,6 +38,13 @@ independently shippable. Taste call holds throughout: **gentle + smooth, NO boun
 ---
 
 ## Cross-cutting follow-ons (noted, not scheduled)
+- **⚠️ `snappy` token is GUARDED (Bert d20 dl-1754 N2).** It is the one under-damped
+  token (ζ≈0.745, ~3% overshoot), intentionally UNUSED. The live springs are
+  no-bounce **by construction** — smooth (0% overshoot) + gentle (~5e-4%, sub-perceptual)
+  carry every wired interaction. Any Wave that wires `snappy` to an interaction MUST get
+  a fresh operator no-bounce feel-confirm FIRST, or it silently reintroduces visible
+  bounce against the taste. Equivalent-safe alternative: prune now, re-add with the gate
+  when a Wave genuinely needs a quicker micro-spring.
 - **Legacy motion-freeze flag.** Motion is behavior, not visual identity, so it
   currently applies in BOTH skins (Legacy keeps byte-identical visuals, gains the
   better feel). If the operator later wants Legacy frozen to its old instant feel,

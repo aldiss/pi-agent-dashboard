@@ -13,7 +13,7 @@ import type { Transition } from "motion/react";
  *
  *   smooth  ζ ≈ 1.05  — critically-to-slightly-overdamped, no overshoot
  *   gentle  ζ ≈ 0.97  — effectively critically damped, ~no overshoot
- *   snappy  ζ ≈ 0.75  — quick settle for micro press-backs (still no visible bounce)
+ *   snappy  ζ ≈ 0.75  — UNDER-DAMPED (~3% overshoot); intentionally UNUSED (see GUARD at the token)
  *
  * (ζ = damping / (2·√(stiffness·mass)); mass defaults to 1.)
  */
@@ -22,7 +22,13 @@ export const spring = {
   smooth: { type: "spring", stiffness: 400, damping: 42 },
   /** Large/soft moves — sheet enter, shared-element, page slide. */
   gentle: { type: "spring", stiffness: 240, damping: 30 },
-  /** RARE — micro press-back only where extra quickness is needed. */
+  /**
+   * ⚠️ GUARD (Bert d20 dl-1754 N2): `snappy` is the ONE under-damped token
+   * (ζ≈0.745 → ~3% overshoot) and is intentionally UNUSED. Wiring it to ANY
+   * interaction (press-back / transition / sheet / nav) reintroduces visible
+   * bounce and REQUIRES a fresh operator no-bounce feel-confirm FIRST. Do not
+   * wire snappy without that gate. Reserved as a Waves 2-3 vocabulary slot.
+   */
   snappy: { type: "spring", stiffness: 520, damping: 34 },
 } as const satisfies Record<string, Transition>;
 
@@ -36,5 +42,6 @@ export type SpringName = keyof typeof spring;
 export const springOptions: Record<SpringName, { type: "spring"; stiffness: number; damping: number }> = {
   smooth: { type: "spring", stiffness: 400, damping: 42 },
   gentle: { type: "spring", stiffness: 240, damping: 30 },
+  // ⚠️ snappy: see the GUARD on `spring.snappy` above — unused; a fresh operator no-bounce feel-confirm is required before wiring it to any interaction.
   snappy: { type: "spring", stiffness: 520, damping: 34 },
 };
