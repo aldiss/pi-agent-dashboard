@@ -16,15 +16,53 @@ import { wrapAsciiTables } from "../lib/wrap-ascii-tables.js";
 import { MermaidBlock } from "./MermaidBlock.js";
 import { useSessionAssets } from "../lib/SessionAssetsContext.js";
 import { ImageLightbox } from "./ImageLightbox.js";
+import { SnapshotUnfurlCard } from "./SnapshotUnfurlCard.js";
+import { parseUnfurlDirective } from "../lib/unfurl-directive.js";
 
 interface Props {
   content: string;
 }
 
 type HastNode = {
+  type?: string;
+  tagName?: string;
   properties?: Record<string, unknown>;
   children?: HastNode[];
 };
+
+/**
+ * If `node` is an anchor whose only meaningful child is a single `<img>`,
+ * return that image's `src` + `alt`. Whitespace-only text children are
+ * ignored so `[ ![alt](src) ](href)` still matches. Returns null for anchors
+ * that wrap text, multiple images, or anything else — those must NOT become
+ * snapshot cards (zero-regression: plain/text links are untouched).
+ *
+ * Reads straight off the hast AST (react-markdown passes `node` to component
+ * overrides — `passNode: true`), which is more robust than introspecting the
+ * already-rendered React children.
+ */
+export function imageChildOf(node: HastNode | undefined): { src: string; alt: string } | null {
+  const children = node?.children ?? [];
+  let img: HastNode | null = null;
+  for (const child of children) {
+    if (child.type === "text" && typeof (child as { value?: string }).value === "string") {
+      if ((child as { value: string }).value.trim() === "") continue; // skip whitespace
+      return null; // real text alongside the image → not a pure image link
+    }
+    if (child.type === "element" && child.tagName === "img") {
+      if (img) return null; // more than one image → not a snapshot card
+      img = child;
+      continue;
+    }
+    // Any other element (span, code, etc.) → not a pure image link.
+    if (child.type === "element") return null;
+  }
+  if (!img) return null;
+  const src = img.properties?.src;
+  const alt = img.properties?.alt;
+  if (typeof src !== "string" || !src) return null;
+  return { src, alt: typeof alt === "string" ? alt : "" };
+}
 
 function stripReactRefAttributes() {
   return function transformer(tree: HastNode) {
@@ -384,18 +422,44 @@ export const MarkdownContent = React.memo(function MarkdownContent({ content }: 
           // protection so clicking a URL in chat content never strands the
           // dashboard view. Same-origin and fragment links stay in-document.
           // See issue #13.
-          a({ href, children, ...props }) {
+          //
+          // Snapshot-unfurl (opt-in, render-only): when an anchor (1) carries
+          // a `snapshot`/`unfurl` title directive, (2) is external, and (3)
+          // wraps a single image, it renders as a SnapshotUnfurlCard instead
+          // of a plain anchor. ALL THREE gates must hold — absent the
+          // directive, every existing link (text links, plain linked images)
+          // renders byte-identically to before. See change: dashboard-link-unfurl.
+          a({ href, children, node, title, ...props }: any) {
             const external = isExternalHref(href);
-            return (
+            const renderPlainAnchor = () => (
               <a
                 href={href}
                 className="text-blue-400 hover:underline"
+                {...(title ? { title } : {})}
                 {...(external ? { target: "_blank", rel: "noopener noreferrer" } : {})}
                 {...props}
               >
                 {children}
               </a>
             );
+
+            const directive = parseUnfurlDirective(typeof title === "string" ? title : undefined);
+            if (directive && external && href) {
+              const image = imageChildOf(node);
+              if (image) {
+                return (
+                  <SnapshotUnfurlCard
+                    href={href}
+                    imageSrc={image.src}
+                    alt={image.alt}
+                    directive={directive}
+                    renderFallback={renderPlainAnchor}
+                  />
+                );
+              }
+            }
+
+            return renderPlainAnchor();
           },
           img: PiAssetImg,
         }}
