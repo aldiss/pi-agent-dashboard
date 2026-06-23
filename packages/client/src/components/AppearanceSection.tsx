@@ -25,7 +25,7 @@ export function AppearanceSection() {
   const { preference, setPreference } = useThemeContext();
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-4" data-testid="appearance-section">
       {/* Skin selector — two large tappable cards */}
       <div>
         <label className="block text-sm text-[var(--text-secondary)] mb-2">Skin</label>
