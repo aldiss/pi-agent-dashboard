@@ -49,22 +49,43 @@ export function getCardPulseClass(session: DashboardSession): string {
   return "";
 }
 
+/** Semantic activity kind for the editorial status-as-color system. Drives the
+ *  status rail, dot, and status-text color (all share one semantic hue) via
+ *  CSS gated by [data-skin="editorial"][data-activity="…"]. Legacy ignores the
+ *  resulting data-activity attribute entirely. Mirrors the branch order in
+ *  ActivityIndicator so rail color and status text always agree.
+ *    live  = green  (running a tool / resuming — work happening now)
+ *    think = violet (streaming without a tool — reasoning)
+ *    wait  = amber  (alive, awaiting operator input — incl. ask_user)
+ *    unread= teal   (ended but has unviewed activity)
+ *    idle  = grey   (ended/dormant) · error = red */
+export function getActivityKind(session: DashboardSession, hasError?: boolean): string {
+  if (hasError) return "error";
+  if (session.resuming) return "live";
+  if (session.status === "ended") return session.unread ? "unread" : "idle";
+  if (session.currentTool === "ask_user") return "wait";
+  if (session.currentTool) return "live";
+  if (session.status === "streaming") return "think";
+  if (session.status === "idle" || session.status === "active") return "wait";
+  return "idle";
+}
+
 export function ActivityIndicator({ session }: { session: DashboardSession }) {
   if (session.resuming) {
-    return <span className="text-yellow-400">Resuming…</span>;
+    return <span className="editorial-activity text-yellow-400">Resuming…</span>;
   }
   if (session.status === "ended") return null;
   if (session.currentTool === "ask_user") {
-    return <span className="text-purple-400 truncate inline-flex items-center gap-0.5"><Icon path={mdiFlash} size={0.5} /> Waiting for input</span>;
+    return <span className="editorial-activity text-purple-400 truncate inline-flex items-center gap-0.5"><Icon path={mdiFlash} size={0.5} /> Waiting for input</span>;
   }
   if (session.currentTool) {
-    return <span className="text-yellow-400 truncate inline-flex items-center gap-0.5"><Icon path={mdiFlash} size={0.5} /> {session.currentTool}</span>;
+    return <span className="editorial-activity text-yellow-400 truncate inline-flex items-center gap-0.5"><Icon path={mdiFlash} size={0.5} /> {session.currentTool}</span>;
   }
   if (session.status === "streaming") {
-    return <span className="text-yellow-400 truncate inline-flex items-center gap-0.5"><Icon path={mdiFlash} size={0.5} /> Thinking…</span>;
+    return <span className="editorial-activity text-yellow-400 truncate inline-flex items-center gap-0.5"><Icon path={mdiFlash} size={0.5} /> Thinking…</span>;
   }
   if (session.status === "idle" || session.status === "active") {
-    return <span className="text-[var(--text-tertiary)] truncate inline-flex items-center gap-0.5"><Icon path={mdiFlash} size={0.5} /> Waiting for input</span>;
+    return <span className="editorial-activity text-[var(--text-tertiary)] truncate inline-flex items-center gap-0.5"><Icon path={mdiFlash} size={0.5} /> Waiting for input</span>;
   }
   return null;
 }
@@ -306,14 +327,15 @@ export const SessionCard = React.memo(function SessionCard({
   return (
     <li
       data-session-id={session.id}
+      data-activity={getActivityKind(session, hasError)}
       onClick={() => onSelect(session.id)}
-      className={`group relative px-3 py-2.5 md:px-3.5 md:py-2.5 cursor-pointer rounded-xl border shadow-sm shadow-[var(--shadow-card)] hover:shadow-md hover:-translate-y-0.5 transition-all duration-200 flex flex-col gap-1 md:gap-2 ${
+      className={`editorial-card group relative px-3 py-2.5 md:px-3.5 md:py-2.5 cursor-pointer rounded-xl border shadow-sm shadow-[var(--shadow-card)] hover:shadow-md hover:-translate-y-0.5 transition-all duration-200 flex flex-col gap-1 md:gap-2 ${
         selectedRing
       } ${isHidden ? "opacity-40" : ""} ${getCardPulseClass(session)}`}
     >
       {/* Row 1: status dot + source icon (desktop) + name + action buttons (desktop) + time (desktop) + cost (mobile) */}
       <div className="flex items-center gap-2 min-w-0">
-        <span className={`w-2 h-2 md:w-2.5 md:h-2.5 rounded-full shrink-0 ${dotColor}`} />
+        <span className={`editorial-dot w-2 h-2 md:w-2.5 md:h-2.5 rounded-full shrink-0 ${dotColor}`} />
         {/* Source icon — desktop only */}
         <span
           className={`hidden md:inline-flex shrink-0 ${sourceBadgeColors[session.source] ?? "text-[var(--text-tertiary)]"}`}
@@ -322,7 +344,7 @@ export const SessionCard = React.memo(function SessionCard({
           <Icon path={sourceIcons[session.source] ?? mdiConsoleLine} size={0.55} />
         </span>
         {/* Session name */}
-        <span className="text-sm md:text-sm font-medium text-[var(--text-primary)] truncate flex-1">
+        <span className="editorial-name text-sm md:text-sm font-medium text-[var(--text-primary)] truncate flex-1">
           {getSessionDisplayName(session)}
         </span>
         {/* Action buttons — desktop only, visible on hover */}
@@ -381,7 +403,7 @@ export const SessionCard = React.memo(function SessionCard({
       {/* Row 2: model + thinking level (left) | resume/fork (desktop right) */}
       <div className="flex items-center text-[11px] md:text-xs text-[var(--text-secondary)]">
         {session.model && (
-          <span className="truncate">
+          <span className="editorial-meta truncate">
             {session.model}{session.thinkingLevel ? ` (${session.thinkingLevel})` : ""}
           </span>
         )}

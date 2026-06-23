@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import { Icon } from "@mdi/react";
-import { mdiPencilOutline, mdiArrowLeft, mdiPaperclip, mdiRefresh, mdiLinkOff, mdiPlay, mdiFileCompare, mdiHeadLightbulb, mdiViewGridOutline, mdiPlayCircleOutline, mdiSourceFork, mdiFilterVariant, mdiMagnify } from "@mdi/js";
+import { mdiPencilOutline, mdiArrowLeft, mdiPaperclip, mdiRefresh, mdiLinkOff, mdiPlay, mdiFileCompare, mdiHeadLightbulb, mdiViewGridOutline, mdiPlayCircleOutline, mdiSourceFork, mdiFilterVariant, mdiMagnify, mdiChevronRight } from "@mdi/js";
 import type { DashboardSession, OpenSpecChange, CommandInfo, FlowInfo, ImageContent } from "@blackbelt-technology/pi-dashboard-shared/types.js";
 import type { SessionState } from "../lib/event-reducer.js";
 import type { DetectedEditor } from "../lib/editor-api.js";
@@ -85,6 +85,9 @@ interface Props {
      */
     contextUsage?: { tokens: number | null; contextWindow: number };
     cost?: number;
+    /** Open the mobile Model & reasoning sheet (parity MVP). When set, the
+     *  mobile header's model row becomes a tappable button. */
+    onOpenModelSheet?: () => void;
   };
 }
 
@@ -285,21 +288,46 @@ function MobileHeader({ session, state, showBack, onBack, isRenaming, onConfirmR
   // Cell: mobile-pwa-chatgpt-style-restructure/v1 (MintOwl).
   const displayModel = state?.model || session.model;
   const displayThinking = state?.thinkingLevel || session.thinkingLevel;
-  const modelRow = (displayModel || displayThinking) ? (
-    <div
-      className="flex items-center gap-1.5 min-h-[16px] pl-1 text-[10px] text-[var(--text-tertiary)]"
-      data-testid="mobile-header-model-indicator"
-    >
+  const onOpenModelSheet = mobileActions?.onOpenModelSheet;
+  const modelRowInner = (
+    <>
       {displayModel && (
-        <span className="truncate min-w-0" title={displayModel}>{displayModel}</span>
+        <span className="editorial-meta truncate min-w-0" title={displayModel}>{displayModel}</span>
       )}
       {displayThinking && (
-        <span className="inline-flex items-center gap-0.5 flex-shrink-0" title={`Thinking level: ${displayThinking}`}>
+        <span className="editorial-meta inline-flex items-center gap-0.5 flex-shrink-0" title={`Thinking level: ${displayThinking}`}>
           <Icon path={mdiHeadLightbulb} size={0.4} />
           {displayThinking}
         </span>
       )}
-    </div>
+    </>
+  );
+  // When onOpenModelSheet is wired (mobile parity MVP), the row is a tappable
+  // button that springs up the Model & reasoning sheet; otherwise it stays the
+  // read-only indicator it was before. Adds a "tap" affordance + chevron.
+  const modelRow = (displayModel || displayThinking) ? (
+    onOpenModelSheet ? (
+      <button
+        type="button"
+        onClick={onOpenModelSheet}
+        className="flex items-center gap-1.5 min-h-[28px] pl-1 pr-1 -ml-1 rounded-md text-[10px] text-[var(--text-tertiary)] hover:bg-[var(--bg-hover)] active:bg-[var(--bg-hover)] transition-colors w-full text-left"
+        data-testid="mobile-header-model-row"
+        aria-label="Switch model and reasoning"
+      >
+        {modelRowInner}
+        <span className="ml-auto flex items-center gap-0.5 text-[var(--accent-primary)] flex-shrink-0 pl-1">
+          <span className="text-[9px] uppercase tracking-wide">tap to switch</span>
+          <Icon path={mdiChevronRight} size={0.5} />
+        </span>
+      </button>
+    ) : (
+      <div
+        className="flex items-center gap-1.5 min-h-[16px] pl-1 text-[10px] text-[var(--text-tertiary)]"
+        data-testid="mobile-header-model-indicator"
+      >
+        {modelRowInner}
+      </div>
+    )
   ) : null;
 
   // Row 2b: attached-proposal chip. Read-only (action affordances stay in the

@@ -73,7 +73,7 @@ function Card({
         disabled={disabled}
         title={titleAttr}
         className={
-          "text-sm px-3 py-1.5 rounded border transition-colors " +
+          "editorial-accent-cta text-sm px-3 py-1.5 rounded border transition-colors " +
           (disabled
             ? "border-[var(--border-secondary)] text-[var(--text-muted)] opacity-50 cursor-not-allowed"
             : "border-blue-500/50 text-blue-400 hover:bg-blue-500/10")
@@ -105,7 +105,7 @@ export function LandingPage({
     return (
       <div className="flex-1 flex items-center justify-center text-[var(--text-tertiary)]">
         <div className="text-center">
-          <div className="text-6xl mb-4 text-blue-500 opacity-50">π</div>
+          <div className="editorial-accent-ink text-6xl mb-4 text-blue-500 opacity-50">π</div>
           <p className="text-sm">Select a session to get started</p>
         </div>
       </div>
@@ -131,7 +131,7 @@ export function LandingPage({
     <div className="flex-1 flex items-center justify-center p-6 overflow-auto">
       <div className="flex flex-col items-center gap-6 w-full max-w-3xl">
         <div className="text-center">
-          <div className="text-6xl mb-2 text-blue-500 opacity-50">π</div>
+          <div className="editorial-accent-ink text-6xl mb-2 text-blue-500 opacity-50">π</div>
           <div className="text-lg font-semibold text-[var(--text-primary)]">
             {allDone ? "Pick a session on the left to continue" : "Welcome to pi-dashboard"}
           </div>

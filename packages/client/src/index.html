@@ -8,6 +8,40 @@
     <link rel="apple-touch-icon" href="/icon-192.png" />
     <link rel="manifest" href="/manifest.json" />
     <title>PI Dashboard</title>
+    <script>
+      /* Pre-paint skin boot: set data-skin and inject the editorial webfonts
+         before React hydrates, so the first paint already wears the right skin
+         (no flash of legacy → editorial). Mirrors the localStorage contract in
+         hooks/useSkin.ts. Legacy never injects fonts. */
+      (function () {
+        try {
+          var skin = localStorage.getItem("dashboard:skin");
+          if (skin !== "editorial" && skin !== "legacy") skin = "editorial";
+          document.documentElement.setAttribute("data-skin", skin);
+          if (skin === "editorial") {
+            var pre1 = document.createElement("link");
+            pre1.id = "editorial-fonts-pre1";
+            pre1.rel = "preconnect";
+            pre1.href = "https://fonts.googleapis.com";
+            var pre2 = document.createElement("link");
+            pre2.id = "editorial-fonts-pre2";
+            pre2.rel = "preconnect";
+            pre2.href = "https://fonts.gstatic.com";
+            pre2.crossOrigin = "anonymous";
+            var sheet = document.createElement("link");
+            sheet.id = "editorial-fonts";
+            sheet.rel = "stylesheet";
+            sheet.href =
+              "https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;0,9..144,700;1,9..144,500&family=Hanken+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap";
+            document.head.appendChild(pre1);
+            document.head.appendChild(pre2);
+            document.head.appendChild(sheet);
+          }
+        } catch (e) {
+          document.documentElement.setAttribute("data-skin", "editorial");
+        }
+      })();
+    </script>
     <style>
       /* App-shell skeleton — paints before React hydrates.
          React 19 createRoot().render() replaces #root children atomically

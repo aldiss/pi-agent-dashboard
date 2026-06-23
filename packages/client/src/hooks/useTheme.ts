@@ -42,12 +42,20 @@ function applyMode(resolved: ResolvedTheme) {
   }
 }
 
-/** Apply theme CSS variables. For "base", remove inline overrides so CSS takes over. */
+/** Apply theme CSS variables. For "base", remove inline overrides so CSS takes over.
+ *
+ *  Skin interaction: the editorial skin is a committed palette that redefines
+ *  the same token names via CSS under [data-skin="editorial"]. A non-base named
+ *  theme writes those tokens as INLINE styles, which would outrank the editorial
+ *  CSS and produce a muddled hybrid. So when the editorial skin is active we
+ *  treat any named theme as "base" — strip the inline overrides and let the
+ *  editorial CSS own the palette. Legacy keeps full named-theme behavior. */
 export function applyThemeVars(themeName: string, resolved: ResolvedTheme) {
   if (typeof document === "undefined") return;
   const el = document.documentElement;
+  const editorialActive = el.getAttribute("data-skin") === "editorial";
 
-  if (themeName === "base") {
+  if (themeName === "base" || editorialActive) {
     // Remove all inline variable overrides — let CSS handle it
     for (const key of CSS_VAR_KEYS) {
       el.style.removeProperty(key);
@@ -112,6 +120,15 @@ export function useTheme(): ThemeState {
     mql.addEventListener("change", handler);
     return () => mql.removeEventListener("change", handler);
   }, [preference, themeName]);
+
+  // Re-apply theme vars when the skin axis toggles. Switching INTO editorial
+  // strips named-theme inline overrides (editorial owns the palette); switching
+  // back to legacy restores the user's named theme. Dispatched by useSkin.
+  useEffect(() => {
+    const handler = () => applyThemeVars(themeName, resolveTheme(preference));
+    window.addEventListener("skinchange", handler);
+    return () => window.removeEventListener("skinchange", handler);
+  }, [themeName, preference]);
 
   // Apply on mount
   useEffect(() => {
