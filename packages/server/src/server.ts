@@ -34,6 +34,7 @@ import { wireEvents } from "./event-wiring.js";
 import { createIdleTimer } from "./idle-timer.js";
 import { discoverAndBroadcastSessions } from "./session-bootstrap.js";
 import { scanAllSessions } from "./session-scanner.js";
+import { resolveDriverLiveness } from "./driver-liveness.js";
 import { needsMigration, runMigration } from "./migrate-persistence.js";
 import { detectZrokBinary, cleanupStaleZrok, createTunnel, deleteTunnel, scavengeOrphanZrokProcesses, getTunnelUrl } from "./tunnel.js";
 import { registerAuthPlugin, validateWsUpgrade } from "./auth-plugin.js";
@@ -306,6 +307,21 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
   const scanResult = scanAllSessions();
   for (const session of scanResult.sessions) {
     const restored = { ...session };
+    // Track 4, Fix L (2nd site) — the scan path also defaults sessions to
+    // status:"ended". A pi/tmux DRIVER whose process is still alive must NOT be
+    // false-ended here (it would render ended+hidden-by-default and vanish).
+    // Resolve liveness from the messenger registry (UUID-join sessionId===id) +
+    // kill -0 (the ground-truth; never heartbeat-freshness — C3). Scoped to
+    // pi/tmux ONLY: CC sessions stay ended (read-only views). Same mechanism as
+    // the session-bootstrap.ts restore() site. See driver-liveness.ts.
+    if (restored.source !== "claude-code" && restored.status === "ended") {
+      const liveness = resolveDriverLiveness(restored.id);
+      if (liveness.alive) {
+        restored.status = "idle";
+        restored.hidden = false;
+        if (liveness.name) restored.name = liveness.name;
+      }
+    }
     sessionManager.restore(restored);
   }
   if (scanResult.cacheUpdates > 0) {
