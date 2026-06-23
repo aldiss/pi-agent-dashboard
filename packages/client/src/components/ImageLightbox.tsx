@@ -161,6 +161,16 @@ function AnnotatedLightbox({
       <div
         data-testid={BACKDROP_ID}
         className="fixed inset-0 z-[9999] flex flex-col bg-black/90"
+        style={{
+          // Respect mobile safe areas (iPhone notch / Dynamic Island / home
+          // indicator) so the top bar + close control don't render under the
+          // status bar. The black background still fills inset-0; only the
+          // flex content is inset below the safe areas.
+          paddingTop: "env(safe-area-inset-top)",
+          paddingBottom: "env(safe-area-inset-bottom)",
+          paddingLeft: "env(safe-area-inset-left)",
+          paddingRight: "env(safe-area-inset-right)",
+        }}
       >
         {/* Bar */}
         <div
