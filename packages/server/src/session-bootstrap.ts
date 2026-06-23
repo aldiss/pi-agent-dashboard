@@ -6,6 +6,7 @@ import type { SessionManager } from "./memory-session-manager.js";
 import type { BrowserGateway } from "./browser-gateway.js";
 import { isOpenSpecDataEmpty, type DirectoryService } from "./directory-service.js";
 import { extractSessionStats } from "./session-stats-reader.js";
+import { resolveDriverLiveness } from "./driver-liveness.js";
 
 export interface SessionBootstrapDeps {
   sessionManager: SessionManager;
@@ -43,17 +44,33 @@ export async function discoverAndBroadcastSessions(deps: SessionBootstrapDeps): 
               }
             } catch { /* ignore */ }
           }
+          // Track 4, Fix L — false-ended-while-alive fix. Bootstrap defaults a
+          // reconstructed session to ended+hidden, but a pi/tmux DRIVER whose
+          // process is still alive (server merely restarted / WS dropped) must
+          // NOT be false-ended — it would vanish from the default list. Resolve
+          // liveness from the messenger registry (UUID-join sessionId===id) +
+          // kill -0 (the only ground-truth; heartbeat-freshness mis-calls quiet
+          // drivers — C3). Scoped to pi/tmux ONLY: CC sessions are correctly
+          // ended+hidden read-only views and are never resurrected. See
+          // driver-liveness.ts for the full mechanism (Bert d20 dl-1744/1758).
+          const liveness =
+            hist.source !== "claude-code"
+              ? resolveDriverLiveness(hist.id)
+              : { alive: false as const };
           sessionManager.restore({
             id: hist.id,
             cwd: hist.cwd,
-            name: hist.name,
+            // A live driver gets the registry's clean themed-name (e.g. "Don"),
+            // overriding the stale session_info name; dead/CC keep the discovered name.
+            name: liveness.alive && liveness.name ? liveness.name : hist.name,
             source: hist.source === "claude-code" ? "claude-code" : "tui",
-            status: "ended",
+            // Live driver → idle+visible (it is alive, just quiet); else ended+hidden.
+            status: liveness.alive ? "idle" : "ended",
             startedAt: hist.startedAt,
             sessionFile: hist.sessionFile,
             sessionDir: hist.sessionDir,
             firstMessage: hist.firstMessage,
-            hidden: true,
+            hidden: liveness.alive ? false : true,
             dataUnavailable: true,
             model,
             contextTokens,
