@@ -41,6 +41,7 @@ import { LandingPage } from "./components/LandingPage.js";
 import { SettingsPanel } from "./components/SettingsPanel.js";
 import { ZrokInstallGuide } from "./components/ZrokInstallGuide.js";
 import { InstallBanner } from "./components/InstallBanner.js";
+import { UpdatePrompt } from "./components/UpdatePrompt.js";
 import { BootstrapBanner } from "./components/BootstrapBanner.js";
 import { useBootstrapStatus } from "./hooks/useBootstrapStatus.js";
 import { useInstallPrompt } from "./hooks/useInstallPrompt.js";
@@ -1493,6 +1494,11 @@ export default function App() {
         sessions={allSessionsList}
         send={(msg) => send(msg as Parameters<typeof send>[0])}
       >
+        {/* PWA update pill — additive top-center overlay, mounted once for both
+            the mobile and desktop branches. Sits OUTSIDE the shell ErrorBoundary
+            so it still surfaces if the shell crashes (an update often fixes it).
+            Renders nothing until a new service worker is waiting. */}
+        <UpdatePrompt />
         <ErrorBoundary fallback={
           <div className="min-h-screen flex items-center justify-center p-8 bg-[var(--bg-primary)] text-[var(--text-primary)]" data-testid="shell-error-fallback">
             <div className="text-center space-y-2">

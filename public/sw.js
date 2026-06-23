@@ -4,10 +4,14 @@
 // W5-F1 P0 ROOT-CAUSE (SW EXPLICITLY DISABLED caching pre-v3).
 
 // ── Cache version + names ──────────────────────────────────────────
-// Bump CACHE_VERSION on every deploy that changes precached assets.
-// The build script auto-injects deploy hash into PRECACHE_MANIFEST,
-// but CACHE_VERSION is the human-readable invalidation handle.
-const CACHE_VERSION = "v3";
+// CACHE_VERSION is AUTO-DERIVED at build time — never hand-edit it.
+// packages/client/scripts/inject-sw-precache-manifest.mjs replaces the
+// "__CACHE_VERSION__" placeholder with `<pkg-version>-<precache-hash>`, so a
+// version bump can never be forgotten: any change to a precached asset moves
+// the precache hash, which moves CACHE_VERSION, which invalidates the old
+// cache in the activate handler below. If left as the literal placeholder
+// (dev mode / unsubstituted), the SW falls back to no-cache pass-through.
+const CACHE_VERSION = "__CACHE_VERSION__";
 const PRECACHE_NAME = `pi-dashboard-precache-${CACHE_VERSION}`;
 const RUNTIME_API_CACHE = `pi-dashboard-api-${CACHE_VERSION}`;
 
@@ -30,10 +34,27 @@ self.addEventListener("install", (event) => {
       // That's the correct behavior: a partial precache produces an
       // inconsistent shell on cold-load.
       await cache.addAll(PRECACHE_MANIFEST);
-      // Activate immediately — operator already opted-in to PWA install.
-      self.skipWaiting();
+      // NOTE: the install handler deliberately does NOT take over the page. On
+      // an UPDATE (a prior SW already controls the page) an immediate takeover
+      // would silently swap the controller mid-session and the running client
+      // keeps executing the OLD in-memory bundle against NEW cached assets — the
+      // exact stale-app symptom this fix targets. Instead the new SW parks in
+      // the `waiting` state; the client surfaces an "Update ready" pill and
+      // posts {type:"SKIP_WAITING"} (handler below) only when the operator taps
+      // it, then reloads. First install has no prior controller, so there is
+      // nothing to wait behind — activate proceeds immediately.
     })()
   );
+});
+
+// ── Message: client-driven skip-waiting ────────────────────────────
+// The "Update ready" pill (see useServiceWorkerUpdate) posts this when the
+// operator taps refresh. Activating here fires `controllerchange` in the page,
+// which the hook uses as its single, reliable signal to reload onto the new SW.
+self.addEventListener("message", (event) => {
+  if (event.data && event.data.type === "SKIP_WAITING") {
+    self.skipWaiting();
+  }
 });
 
 // ── Activate: drop stale caches from prior CACHE_VERSION ───────────

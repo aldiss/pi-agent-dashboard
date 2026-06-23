@@ -69,6 +69,58 @@ test.describe("PWA platform", () => {
     expect(body).toMatch(/"\/index\.html"/); // app-shell precached
   });
 
+  test("service worker carries the visible-update contract (auto CACHE_VERSION + wait-then-skip)", async ({ page }) => {
+    await bootAndConnect(page);
+    // The PWA update-flow fix (see change: pwa-update-flow-fix) requires the
+    // served SW to (a) have an AUTO-DERIVED CACHE_VERSION — never the literal
+    // "__CACHE_VERSION__" placeholder, never the frozen manual "v3" — and (b)
+    // PARK in the waiting state on update, taking over only on a client-posted
+    // SKIP_WAITING message (the "Update ready" pill), instead of calling
+    // skipWaiting() inside its own install handler (the silent mid-session swap
+    // that served the operator a stale client).
+    const res = await page.request.get(new URL("/sw.js", page.url()).toString());
+    expect(res.ok()).toBe(true);
+    const body = await res.text();
+
+    const cacheVersion = (body.match(/const CACHE_VERSION = "([^"]+)"/) || [])[1];
+    expect(cacheVersion, "CACHE_VERSION declaration present").toBeTruthy();
+    // Never the unsubstituted placeholder — the build must inject a real value.
+    expect(cacheVersion).not.toBe("__CACHE_VERSION__");
+
+    const hasSkipWaitingHandler = /type === "SKIP_WAITING"/.test(body);
+    if (!hasSkipWaitingHandler) {
+      // The currently-served build predates the update-flow fix (e.g. running
+      // against a live :8000 that still serves the prior committed build). The
+      // invariant above (no placeholder) still held; the wait-then-skip contract
+      // lands once this change is deployed. Non-blocking per the chicken-and-egg
+      // caveat in the build brief — one last manual reload reaches the PWA, then
+      // every later deploy self-heals.
+      test.info().annotations.push({
+        type: "issue",
+        description:
+          "served SW predates pwa-update-flow-fix (no SKIP_WAITING handler) — " +
+          "wait-then-skip contract asserts after this change deploys",
+      });
+      test.skip(true, "served build predates update-flow fix (chicken-and-egg, non-blocking)");
+      return;
+    }
+
+    // New build: assert the full contract.
+    // (a) auto-derived version shape: <pkg-version>-<hash>, not the old "v3".
+    expect(cacheVersion, "CACHE_VERSION auto-derived (not frozen v3)").toMatch(/.+-[0-9a-f]{6,}$/);
+    // (b) client-driven skip-waiting handler is wired.
+    expect(body).toMatch(/addEventListener\("message"/);
+    // (c) install handler no longer silently skips waiting. Slice the install
+    // handler body precisely — from its addEventListener to the NEXT
+    // addEventListener (whatever follows) — so a legitimate skipWaiting() in the
+    // sibling message handler is never counted against install. Match the CALL
+    // form `skipWaiting(` so an explanatory comment can't trip the assertion.
+    const installStart = body.indexOf('addEventListener("install"');
+    const installEnd = body.indexOf("addEventListener(", installStart + 1);
+    const installBlock = body.slice(installStart, installEnd === -1 ? undefined : installEnd);
+    expect(installBlock, "install handler must NOT call skipWaiting() (no silent swap)").not.toMatch(/skipWaiting\s*\(/);
+  });
+
   test("service worker registers (non-blocking if engine lacks SW)", async ({ page }) => {
     await bootAndConnect(page);
 

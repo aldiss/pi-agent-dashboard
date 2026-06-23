@@ -120,7 +120,7 @@
   --accent-orange:  #d98a3e;
   --accent-primary: #cf6238;
   --accent:         #cf6238;   /* satisfies ThinkingLevelSelector's var(--accent) */
-  --link:           #d2693f;
+  --link:           #cf6238;
   --link-hover:     #e6926a;
 
   --shadow-card: rgba(0, 0, 0, 0.5);
