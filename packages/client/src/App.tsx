@@ -1165,7 +1165,7 @@ export default function App() {
                 }
                 return next;
               });
-            } : undefined} showFilterControls={showMessageFilterControls} onCloseFilterControls={() => setShowMessageFilterControls(false)} />
+            } : undefined} showFilterControls={showMessageFilterControls} onCloseFilterControls={() => setShowMessageFilterControls(false)} pagerEnabled={selectedSession?.source === "claude-code"} />
             </SessionAssetsProvider>
           </ErrorBoundary>
           {/* StatusBar: desktop-only per-session footer (Bert tenure-2 Q1 W3

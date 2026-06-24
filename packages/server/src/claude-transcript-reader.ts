@@ -275,10 +275,14 @@ export function claudeRecordsToReplayEntries(records: any[]): any[] {
 
 /**
  * Read a CC session log (byte-bounded) and return pi-shaped entries ready for
- * `replayEntriesAsEvents`. Reads a HEAD window (for the earliest model/context)
- * plus a TAIL window (the recent, triage-useful turns), dropping the tail's
- * partial first line. For files within one window, reads once. NEVER reads the
- * whole file.
+ * `replayEntriesAsEvents`. For files within one window, reads once. For larger
+ * files, reads the TAIL window (the recent, triage-useful turns) so the first
+ * paint is fast AND the "load earlier" pager can walk cleanly backward to the
+ * session start (a head+tail base would render the file's middle ABOVE its head
+ * once earlier windows are prepended — reverse-chronological). The earlier
+ * history is reachable via `loadClaudeSessionWindow` + the transcript REST
+ * route. NEVER reads the whole file.
+ * See change: perf/cc-viewing-payload-fix (Track 2, Fix A).
  */
 export function loadClaudeSessionEntries(filePath: string): any[] {
   if (!isClaudeSessionFile(filePath)) return [];
@@ -288,10 +292,66 @@ export function loadClaudeSessionEntries(filePath: string): any[] {
   if (size <= CLAUDE_WINDOW) {
     return claudeRecordsToReplayEntries(parseLines(readWindow(filePath, 0, CLAUDE_WINDOW)));
   }
-  const head = parseLines(readWindow(filePath, 0, CLAUDE_WINDOW));
-  const tail = parseLines(readWindow(filePath, -CLAUDE_WINDOW, CLAUDE_WINDOW), { dropFirst: true });
-  // Use head for the first model_change + the tail for recent turns. Concatenate
-  // (the adapter de-dups model_change by lastModel). The middle is intentionally
-  // omitted — this is "recent transcript", the honest byte-bounded floor.
-  return claudeRecordsToReplayEntries(head.concat(tail));
+  // Tail-only base window: the last CLAUDE_WINDOW bytes, partial first line
+  // dropped. Delegates to loadClaudeSessionWindow (before=size) so the
+  // base-window and pager share one read/parse/adapt path.
+  return loadClaudeSessionWindow(filePath, size).entries;
+}
+
+/** Result of a single backward-pager window read. */
+export interface ClaudeWindowResult {
+  /** pi-shaped replay entries for this window (chronological within the window). */
+  entries: any[];
+  /**
+   * Byte offset where THIS window starts — pass it as the next call's
+   * `beforeByteOffset` to fetch the strictly-earlier window. Always the
+   * window's start; the partial line straddling it was dropped from THIS
+   * window and will be completed by the next (earlier) window.
+   */
+  nextBeforeOffset: number;
+  /** True once the window reaches byte 0 — no earlier history remains. */
+  atStart: boolean;
+}
+
+/**
+ * Read ONE byte-bounded window ENDING at `beforeByteOffset` (exclusive) and
+ * return its pi-shaped entries plus the cursor for the next (earlier) window.
+ * This is the backward-pager primitive behind `GET /api/session/:id/transcript`.
+ *
+ * Discipline (mirrors the head+tail reader's byte-bound):
+ *   - Window = bytes [start, beforeByteOffset) where start = max(0, before-len).
+ *   - When start > 0 the window's first line is partial (it began in the
+ *     previous window), so it is DROPPED — the earlier window completes it.
+ *   - When start === 0 there is no partial first line (file start), so keep it
+ *     and report `atStart:true`.
+ *   - `nextBeforeOffset = start`; a subsequent call with `before=start` reads
+ *     the strictly-earlier window with no overlap.
+ *
+ * NEVER reads the whole file; each call is O(len). Returns an empty result for
+ * non-CC paths or an exhausted cursor (`beforeByteOffset <= 0`).
+ * See change: perf/cc-viewing-payload-fix (Track 2, Fix A).
+ */
+export function loadClaudeSessionWindow(
+  filePath: string,
+  beforeByteOffset: number,
+  len: number = CLAUDE_WINDOW,
+): ClaudeWindowResult {
+  if (!isClaudeSessionFile(filePath)) return { entries: [], nextBeforeOffset: 0, atStart: true };
+  const size = fileSize(filePath);
+  if (size <= 0) return { entries: [], nextBeforeOffset: 0, atStart: true };
+
+  // Clamp the window end into the file; a cursor at/under 0 is exhausted.
+  const end = Math.min(beforeByteOffset <= 0 ? 0 : beforeByteOffset, size);
+  if (end <= 0) return { entries: [], nextBeforeOffset: 0, atStart: true };
+
+  const start = Math.max(0, end - len);
+  const atStart = start === 0;
+  const blob = readWindow(filePath, start, end - start);
+  // Drop the partial first line only when this window does NOT begin at byte 0.
+  const records = parseLines(blob, { dropFirst: !atStart });
+  return {
+    entries: claudeRecordsToReplayEntries(records),
+    nextBeforeOffset: start,
+    atStart,
+  };
 }

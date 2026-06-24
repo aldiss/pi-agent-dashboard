@@ -1,10 +1,10 @@
-import React, { useRef, useEffect, useCallback, useState, useMemo, forwardRef, useImperativeHandle } from "react";
+import React, { useRef, useEffect, useLayoutEffect, useCallback, useState, useMemo, forwardRef, useImperativeHandle } from "react";
 
 import { Icon } from "@mdi/react";
-import { mdiContentCopy, mdiTextBox, mdiLoading, mdiChevronDown, mdiSourceFork } from "@mdi/js";
+import { mdiContentCopy, mdiTextBox, mdiLoading, mdiChevronDown, mdiChevronUp, mdiSourceFork } from "@mdi/js";
 import { ErrorBanner } from "./ErrorBanner";
 import { RetryBanner } from "./RetryBanner";
-import type { SessionState, ChatImage, InteractiveUiRequest } from "../lib/event-reducer.js";
+import type { SessionState, ChatImage, InteractiveUiRequest, ChatMessage } from "../lib/event-reducer.js";
 import type { ToolContext } from "./tool-renderers/index.js";
 import { MarkdownContent } from "./MarkdownContent.js";
 import { CopyButton } from "./CopyButton.js";
@@ -39,6 +39,8 @@ import {
 import { MessageFilterControls } from "./MessageFilterControls.js";
 import { PinnedMessagesSection } from "./PinnedMessagesSection.js";
 import { PinToggleButton } from "./PinToggleButton.js";
+import { fetchTranscriptWindow } from "../lib/transcript-api.js";
+import { reduceEvent, createInitialState } from "../lib/event-reducer.js";
 import {
   getPinnedEntryIds,
   setPinnedEntryIds as persistPinnedEntryIds,
@@ -66,6 +68,14 @@ interface Props {
    */
   showFilterControls?: boolean;
   onCloseFilterControls?: () => void;
+  /**
+   * Enables the "▲ Load earlier" backward-pager affordance. Set true only for
+   * Claude-Code sessions (source === "claude-code"), whose transcript ships as
+   * a tail window on first paint and pages earlier history via
+   * `GET /api/session/:id/transcript`. pi sessions ship whole-file, so the
+   * pager is off for them. See change: perf/cc-viewing-payload-fix (Track 2, Fix B).
+   */
+  pagerEnabled?: boolean;
 }
 
 const ImageAttachments = React.memo(function ImageAttachments({ images }: { images: ChatImage[] }) {
@@ -177,7 +187,7 @@ export interface ChatViewHandle {
   toggleSearch: () => void;
 }
 
-export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ sessionId, state, toolContext, onCancelPending, onRespondToUi, onAbort, onForceKill, onForkFromMessage, onDismissError, onRetryAfterError, showFilterControls, onCloseFilterControls }, ref) {
+export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ sessionId, state, toolContext, onCancelPending, onRespondToUi, onAbort, onForceKill, onForkFromMessage, onDismissError, onRetryAfterError, showFilterControls, onCloseFilterControls, pagerEnabled }, ref) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const isNearBottom = useRef(true);
   const programmaticScroll = useRef(false);
@@ -207,6 +217,31 @@ export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ se
     if (programmaticTimeout.current) clearTimeout(programmaticTimeout.current);
   }, []);
   const [showScrollButton, setShowScrollButton] = useState(false);
+  // ── Backward-pager state (Track 2, Fix B) ─────────────────────────────
+  // Older (earlier-than-tail) CC messages fetched on demand via
+  // `GET /api/session/:id/transcript`. Held in ChatView-local state and
+  // PREPENDED to `state.messages` for render; the live event stream still
+  // owns `state.messages` (the tail). All four reset on session switch.
+  //   - olderMessages: accumulated earlier turns, chronological, dedup'd by id.
+  //   - oldestByteOffset: cursor for the NEXT (earlier) window; null until the
+  //     first fetch learns the tail's start offset.
+  //   - atStart: true once a window reached byte 0 — hides the button.
+  //   - loadingEarlier: in-flight guard (one fetch-chain at a time).
+  const [olderMessages, setOlderMessages] = useState<ChatMessage[]>([]);
+  const [oldestByteOffset, setOldestByteOffset] = useState<number | null>(null);
+  const [pagerAtStart, setPagerAtStart] = useState(false);
+  const [loadingEarlier, setLoadingEarlier] = useState(false);
+  // Scroll-anchor handoff: scrollHeight captured immediately BEFORE a prepend,
+  // consumed by a useLayoutEffect after the DOM grows to keep the viewport
+  // pinned to the same content (no jump). null = no pending anchor.
+  const prePrependScrollHeight = useRef<number | null>(null);
+  useEffect(() => {
+    setOlderMessages([]);
+    setOldestByteOffset(null);
+    setPagerAtStart(false);
+    setLoadingEarlier(false);
+    prePrependScrollHeight.current = null;
+  }, [sessionId]);
   // Search overlay active-state. Owned by ChatView so a session switch (or
   // an unmount) tears the overlay down with the parent — sister to the
   // scrollStateMap discipline above. ChatSearch handles its own query +
@@ -378,11 +413,24 @@ export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ se
     };
   }, [sessionId, markProgrammatic]);
 
+  // Combined message stream: earlier-than-tail pager messages PREPENDED to the
+  // live tail (`state.messages`). Dedup by id — the live tail wins on collision
+  // (it may carry fresher streaming state than a statically-paged copy). When
+  // no older messages are loaded (pi sessions, or before first "Load earlier"),
+  // this is referentially `state.messages` so memo identity is preserved.
+  // See change: perf/cc-viewing-payload-fix (Track 2, Fix B).
+  const combinedMessages = useMemo(() => {
+    if (olderMessages.length === 0) return state.messages;
+    const liveIds = new Set(state.messages.map((m) => m.id));
+    const prefix = olderMessages.filter((m) => !liveIds.has(m.id));
+    return prefix.length === 0 ? state.messages : [...prefix, ...state.messages];
+  }, [olderMessages, state.messages]);
+
   // Group consecutive repeated tool calls for cleaner display
   const filteredMessages = useMemo(() => {
-    if (showDebugTools) return state.messages;
-    return state.messages.filter((m) => m.role !== "toolResult" || !isDebugTool(m.toolName ?? ""));
-  }, [state.messages, showDebugTools]);
+    if (showDebugTools) return combinedMessages;
+    return combinedMessages.filter((m) => m.role !== "toolResult" || !isDebugTool(m.toolName ?? ""));
+  }, [combinedMessages, showDebugTools]);
   const groupedMessages = useMemo(() => groupConsecutiveToolCalls(filteredMessages), [filteredMessages]);
   const retriedErrorIds = useMemo(() => findRetriedErrorIds(filteredMessages), [filteredMessages]);
   const hiddenToolResultIds = useMemo(() => findActiveInteractiveToolResultIds(filteredMessages), [filteredMessages]);
@@ -470,6 +518,79 @@ export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ se
   }, [groupedMessages, messageFilter, pinnedEntryIds]);
   const isFilterActive = !isDefaultMessageFilter(messageFilter);
   const hiddenCount = groupedMessages.length - visibleMessages.length;
+
+  // ── "Load earlier" handler (Track 2, Fix B) ───────────────────────────
+  // Fetch one-or-more earlier transcript windows and prepend their messages.
+  // Auto-continue: the FIRST click has no cursor, so the server returns the
+  // tail window (already in `state.messages`) + its start offset; those fold
+  // to zero NEW messages after dedup. We loop (cap 6 windows/click) until at
+  // least one genuinely-earlier message surfaces OR we hit byte 0 — so one
+  // click always makes visible progress. Each window's events are folded
+  // through the SAME `reduceEvent` the live path uses (into a throwaway
+  // state), so CC adaptation/grouping stays identical to first paint.
+  const handleLoadEarlier = useCallback(async () => {
+    if (!sessionId || loadingEarlier || pagerAtStart) return;
+    setLoadingEarlier(true);
+    try {
+      // Anchor scroll BEFORE any DOM growth so the layout effect can pin it.
+      const el = scrollRef.current;
+      prePrependScrollHeight.current = el ? el.scrollHeight : null;
+
+      let cursor = oldestByteOffset; // null on first click → tail window
+      let reachedStart = false;
+      const knownIds = new Set<string>([
+        ...state.messages.map((m) => m.id),
+        ...olderMessages.map((m) => m.id),
+      ]);
+      const fresh: ChatMessage[] = [];
+
+      for (let i = 0; i < 6; i++) {
+        const win = await fetchTranscriptWindow(sessionId, cursor ?? undefined);
+        if (!win) break;
+        // Fold this window's events into a throwaway state → its messages.
+        let tmp = createInitialState();
+        for (const event of win.events) tmp = reduceEvent(tmp, event);
+        for (const m of tmp.messages) {
+          if (!knownIds.has(m.id)) {
+            knownIds.add(m.id);
+            fresh.push(m);
+          }
+        }
+        cursor = win.nextBeforeOffset;
+        if (win.atStart) { reachedStart = true; break; }
+        if (fresh.length > 0) break; // made visible progress
+      }
+
+      // Prepend fresh older messages (they are earlier than everything we hold).
+      if (fresh.length > 0) {
+        setOlderMessages((prev) => [...fresh, ...prev]);
+      } else {
+        // No new content surfaced (e.g. only the tail came back) — drop the
+        // anchor so the layout effect doesn't fire on an unchanged list.
+        prePrependScrollHeight.current = null;
+      }
+      setOldestByteOffset(cursor);
+      if (reachedStart) setPagerAtStart(true);
+    } finally {
+      setLoadingEarlier(false);
+    }
+  }, [sessionId, loadingEarlier, pagerAtStart, oldestByteOffset, state.messages, olderMessages]);
+
+  // Scroll-anchor: after a prepend grows scrollHeight, shift scrollTop by the
+  // delta so the viewport stays pinned to the same content (no jump to top).
+  // Runs synchronously pre-paint. Guarded by the captured pre-prepend height.
+  useLayoutEffect(() => {
+    const anchor = prePrependScrollHeight.current;
+    if (anchor == null) return;
+    const el = scrollRef.current;
+    if (!el) { prePrependScrollHeight.current = null; return; }
+    const delta = el.scrollHeight - anchor;
+    if (delta > 0) {
+      markProgrammatic();
+      el.scrollTop = el.scrollTop + delta;
+    }
+    prePrependScrollHeight.current = null;
+  }, [olderMessages, markProgrammatic]);
 
   useImperativeHandle(ref, () => ({
     scrollToTurn(turnIndex: number) {
@@ -618,6 +739,27 @@ export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ se
           onScrollToMessage={handleScrollToMessage}
           onTogglePin={handleTogglePin}
         />
+      )}
+      {/* ▲ Load earlier — backward-pager affordance (Track 2, Fix B). Top of
+          scroll content, ABOVE the first rendered turn. CC-only (pagerEnabled);
+          hidden once a window reaches the session start (pagerAtStart). Click
+          fetches + prepends earlier turns, preserving scroll position via the
+          useLayoutEffect anchor above. Kept ~50 lines clear of PwaSlick's
+          user-bubble region below for a trivially-clean Lane 1 ∩ Lane 3 merge.
+          See change: perf/cc-viewing-payload-fix (Track 2, Fix B). */}
+      {pagerEnabled && !pagerAtStart && (
+        <div className="flex justify-center py-2">
+          <button
+            onClick={handleLoadEarlier}
+            disabled={loadingEarlier}
+            className="inline-flex items-center gap-1.5 px-3 py-1 text-xs rounded-full border border-[var(--border-subtle)] bg-[var(--bg-secondary)] text-[var(--text-secondary)] hover:bg-[var(--bg-surface)] hover:text-[var(--text-primary)] disabled:opacity-50 transition-colors"
+            data-testid="load-earlier-btn"
+            aria-label="Load earlier messages"
+          >
+            <Icon path={loadingEarlier ? mdiLoading : mdiChevronUp} size={0.6} className={loadingEarlier ? "animate-spin" : undefined} />
+            <span>{loadingEarlier ? "Loading…" : "Load earlier"}</span>
+          </button>
+        </div>
       )}
       {visibleMessages.map((item, idx) => {
         // Collapsed group of repeated tool calls

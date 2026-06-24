@@ -31,8 +31,17 @@ export function encodeClaudeCwd(cwd: string): string {
   return cwd.replace(/[/.]/g, "-");
 }
 
-/** Derive a display title from a byte-bounded head window of a CC log. */
-function deriveClaudeHeader(filePath: string, projName: string): {
+/**
+ * Derive a display title from a byte-bounded head window of a CC log.
+ *
+ * `firstMessage` is capped at 200 chars at this store site (mirrors the title
+ * cap below): a CC first user turn can be a 30 KB paste, and shipping it raw
+ * inflated `/api/sessions` to ~91% CC bytes. 200 chars is a real preview, not a
+ * payload. Exported so the cap is unit-testable independent of the discovery
+ * DTO (which omits `firstMessage` entirely — see `discoverClaudeSessionsForCwd`).
+ * See change: perf/cc-viewing-payload-fix (Track 1, Fix 1).
+ */
+export function deriveClaudeHeader(filePath: string, projName: string): {
   cwd: string;
   title?: string;
   firstMessage?: string;
@@ -65,7 +74,7 @@ function deriveClaudeHeader(filePath: string, projName: string): {
     projName.replace(/^-+/, "").split("-").slice(-2).join("-") ||
     undefined;
 
-  return { cwd, title, firstMessage: firstUserText, startedAt };
+  return { cwd, title, firstMessage: firstUserText?.slice(0, 200), startedAt };
 }
 
 /**
@@ -88,13 +97,19 @@ export function discoverClaudeSessionsForCwd(cwd: string): DiscoveredSession[] {
         if (!stat.isFile() || stat.size === 0) continue;
         const id = file.replace(/\.jsonl$/, "");
         const header = deriveClaudeHeader(filePath, projName);
+        // `firstMessage` is intentionally OMITTED from the list DTO: the card
+        // renders `name` (always set for CC — the title chain always resolves),
+        // and the client only reads `firstMessage` as a name-fallback when
+        // `name` is empty (session-display-name.ts / session-grouping.ts). It
+        // was list-only bloat (~91% of /api/sessions bytes). The capped header
+        // value still exists for any future per-card lazy preview fetch.
+        // See change: perf/cc-viewing-payload-fix (Track 1, Fix 2).
         sessions.push({
           id,
           cwd: header.cwd || cwd,
           name: header.title,
           startedAt: header.startedAt ?? stat.mtimeMs,
           modifiedAt: stat.mtimeMs,
-          firstMessage: header.firstMessage,
           sessionFile: filePath,
           sessionDir: dir,
           source: "claude-code",

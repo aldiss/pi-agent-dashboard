@@ -164,7 +164,20 @@ export function groupSessionsByDirectory(
     });
   }
 
-  // Build unpinned groups sorted by most recent activity
+  // Build unpinned groups. Sort order (Track 3, Fix S — global active-first):
+  //   1. Groups containing ≥1 live session (status !== "ended") rank above
+  //      groups that are entirely ended — so an active driver in a
+  //      low-recency folder is no longer buried below hundreds of ended CC
+  //      rows from other folders. This is the "find my active sessions"
+  //      fix: it makes live work surface to the top regardless of folder.
+  //   2. Within the same liveness bucket, by most-recent activity
+  //      (`lastActivityAt ?? startedAt` desc) — recency as the tiebreak.
+  // The per-group session order (`sortSessionsByOrder`) is the inner
+  // ordering and is unchanged; it still composes with `sessionOrder` (drag)
+  // and the `flatMergeMode` search path, both of which operate on
+  // `group.sessions` AFTER grouping. Called both top-level and per-tier
+  // (SessionList tierGroups), so the active-first surfacing applies inside
+  // every tier. See change: perf/cc-viewing-payload-fix (Track 3, Fix S).
   const unpinned = Array.from(groups.entries())
     .filter(([key]) => !pinnedKeys.has(key))
     .map(([, g]) => ({
@@ -173,8 +186,11 @@ export function groupSessionsByDirectory(
       pinned: false,
     }))
     .sort((a, b) => {
-      const aMax = Math.max(...a.sessions.map((s) => s.startedAt));
-      const bMax = Math.max(...b.sessions.map((s) => s.startedAt));
+      const aHasActive = a.sessions.some((s) => s.status !== "ended") ? 0 : 1;
+      const bHasActive = b.sessions.some((s) => s.status !== "ended") ? 0 : 1;
+      if (aHasActive !== bHasActive) return aHasActive - bHasActive;
+      const aMax = Math.max(...a.sessions.map((s) => s.lastActivityAt ?? s.startedAt));
+      const bMax = Math.max(...b.sessions.map((s) => s.lastActivityAt ?? s.startedAt));
       return bMax - aMax;
     });
 

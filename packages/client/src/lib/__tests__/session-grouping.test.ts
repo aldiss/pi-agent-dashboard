@@ -47,6 +47,33 @@ describe("groupSessionsByDirectory", () => {
     expect(unpinned[0]!.cwd).toBe("/repo");
     expect(unpinned[0]!.sessions.map((s) => s.id).sort()).toEqual(["a", "b"]);
   });
+
+  it("ranks a folder with a live session above an ended-only folder, even when the ended folder is newer (Track 3, Fix S)", () => {
+    // The operator pain: an active driver buried below newer-but-ended CC
+    // folders. Active-first must win over raw recency across groups.
+    const live = { ...mk("live", "/active-work", 100), status: "active" } as DashboardSession;
+    const ended = { ...mk("ended", "/old-cc", 999), status: "ended" } as DashboardSession;
+    const { unpinned } = groupSessionsByDirectory([ended, live], undefined, [], "linux");
+    expect(unpinned.map((g) => g.cwd)).toEqual(["/active-work", "/old-cc"]);
+  });
+
+  it("within the live bucket, orders folders by lastActivityAt then startedAt desc (Track 3, Fix S)", () => {
+    // Two live folders: the one with the more recent lastActivityAt wins,
+    // even though its startedAt is older.
+    const olderStartNewerActivity = {
+      ...mk("a", "/recent-active", 100),
+      status: "active",
+      lastActivityAt: 5000,
+    } as DashboardSession;
+    const newerStart = { ...mk("b", "/recent-start", 200), status: "active" } as DashboardSession;
+    const { unpinned } = groupSessionsByDirectory(
+      [newerStart, olderStartNewerActivity],
+      undefined,
+      [],
+      "linux",
+    );
+    expect(unpinned.map((g) => g.cwd)).toEqual(["/recent-active", "/recent-start"]);
+  });
 });
 
 describe("filterStaleSessions", () => {

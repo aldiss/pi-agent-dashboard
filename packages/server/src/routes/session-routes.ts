@@ -9,6 +9,8 @@ import type { EventStore } from "../memory-event-store.js";
 import type { ApiResponse } from "@blackbelt-technology/pi-dashboard-shared/types.js";
 import type { NetworkGuard } from "./route-deps.js";
 import { extractFileChanges, enrichWithGitDiff } from "../session-diff.js";
+import { isClaudeSessionFile, loadClaudeSessionWindow, CLAUDE_WINDOW } from "../claude-transcript-reader.js";
+import { replayEntriesAsEvents } from "@blackbelt-technology/pi-dashboard-shared/state-replay.js";
 
 export function registerSessionRoutes(
   fastify: FastifyInstance,
@@ -34,6 +36,43 @@ export function registerSessionRoutes(
         return { success: false, error: "Event not found" } satisfies ApiResponse;
       }
       return { success: true, data: event } satisfies ApiResponse;
+    },
+  );
+
+  // Claude-Code transcript backward-pager. Returns ONE byte-bounded window of a
+  // CC session's history ENDING at `before` (exclusive; default = EOF/tail), as
+  // browser events the client reducer already understands, plus the cursor for
+  // the next (earlier) window. Lets "▲ Load earlier" walk a 50 MB CC log back to
+  // its start without ever whole-reading it. Only CC sessions have a byte-paged
+  // history (pi sessions ship whole-file on subscribe), so non-CC sessions are
+  // rejected. See change: perf/cc-viewing-payload-fix (Track 2, Fix A).
+  fastify.get<{ Params: { id: string }; Querystring: { before?: string; limit?: string } }>(
+    "/api/session/:id/transcript",
+    async (request, reply) => {
+      const { id } = request.params;
+      const session = sessionManager.get(id);
+      if (!session) {
+        reply.code(404);
+        return { success: false, error: "session not found" } satisfies ApiResponse;
+      }
+      const sessionFile = session.sessionFile;
+      if (!sessionFile || !isClaudeSessionFile(sessionFile)) {
+        reply.code(400);
+        return { success: false, error: "not a Claude-Code session" } satisfies ApiResponse;
+      }
+      // `before` defaults to EOF (the tail window) when omitted/invalid. `limit`
+      // is clamped to [1, CLAUDE_WINDOW] so a caller can't force an unbounded read.
+      const beforeRaw = request.query.before != null ? Number(request.query.before) : Number.POSITIVE_INFINITY;
+      const before = Number.isFinite(beforeRaw) && beforeRaw >= 0 ? beforeRaw : Number.POSITIVE_INFINITY;
+      const limitRaw = request.query.limit != null ? Number(request.query.limit) : CLAUDE_WINDOW;
+      const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, CLAUDE_WINDOW) : CLAUDE_WINDOW;
+
+      const { entries, nextBeforeOffset, atStart } = loadClaudeSessionWindow(sessionFile, before, limit);
+      const events = replayEntriesAsEvents(id, entries, session.contextWindow).map((m) => m.event);
+      return {
+        success: true,
+        data: { events, nextBeforeOffset, atStart },
+      } satisfies ApiResponse;
     },
   );
 
