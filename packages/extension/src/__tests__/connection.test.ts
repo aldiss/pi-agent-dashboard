@@ -109,6 +109,45 @@ describe("ConnectionManager", () => {
     cm.disconnect();
   });
 
+  // fix-mdns-local-host-hijack FIX-c: a session switched (via updateUrl, e.g.
+  // mDNS discovery) to an endpoint that won't connect must self-heal by
+  // reverting to the last known-good URL after repeated failures — without a
+  // full re-bootstrap. This is the durable fix for the already-latched case.
+  it("reverts to the last working URL after repeated failures to a switched URL", () => {
+    const cm = new ConnectionManager({
+      url: "ws://localhost:9999",
+      WebSocketImpl: MockWebSocket as any,
+    });
+    cm.connect();
+
+    // Initial connection to localhost succeeds — anchors lastWorkingUrl.
+    MockWebSocket.instances[0].simulateOpen();
+    expect(MockWebSocket.instances[0].url).toBe("ws://localhost:9999");
+
+    // mDNS discovery switches to an unreachable bare-hostname endpoint
+    // (the real bug: ws://<bare-name>:9998 that never resolves). updateUrl
+    // force-disconnects + arms a reconnect timer (failure #1) — the new
+    // connection fires after the backoff, not synchronously.
+    cm.updateUrl("ws://vaceslavs-macbook-pro:9998");
+    vi.advanceTimersByTime(1000); // INITIAL_BACKOFF — instance[1] @ new URL
+    expect(MockWebSocket.instances[1].url).toBe("ws://vaceslavs-macbook-pro:9998");
+
+    // That endpoint fails to connect repeatedly (close without open).
+    // REVERT_AFTER_FAILURES = 3: failure #1 was the updateUrl disconnect, so
+    // two more failed attempts to the dead URL trip the revert on failure #3.
+    MockWebSocket.instances[1].simulateClose(); // failure #2 — arms next timer
+    vi.advanceTimersByTime(2000);
+    expect(MockWebSocket.instances[2].url).toBe("ws://vaceslavs-macbook-pro:9998");
+    MockWebSocket.instances[2].simulateClose(); // failure #3 → REVERT to lastWorkingUrl
+    vi.advanceTimersByTime(1000); // backoff was reset to 0 on revert → INITIAL_BACKOFF
+
+    // The newest connection attempt must have reverted to the working URL.
+    const latest = MockWebSocket.instances[MockWebSocket.instances.length - 1];
+    expect(latest.url).toBe("ws://localhost:9999");
+
+    cm.disconnect();
+  });
+
   it("should cap backoff at 30s", () => {
     const cm = new ConnectionManager({
       url: "ws://localhost:9999",
