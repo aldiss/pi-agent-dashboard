@@ -110,10 +110,17 @@ function initBridge(pi: ExtensionAPI) {
   prev.cleanup?.();
   prev.cleanup = undefined;
 
-  // Disconnect ALL orphaned connections from previous bridge incarnations
+  // Disconnect ALL orphaned connections from previous bridge incarnations.
+  // WI-5: the session these orphans served CONTINUES across this re-init (this
+  // is not a shutdown), so close them RECOVERABLY — release the dead socket but
+  // leave the watchdog armed + intentionalClose unset, so each orphan
+  // self-recovers its :9999 socket within one watchdog tick even if the new
+  // incarnation's connect() never re-fires. Genuine-shutdown closes
+  // (session_shutdown / deactivate) still use disconnect() and stay closed.
+  // See change: handover-reliability-wi5.
   if (prev.connections) {
     for (const conn of prev.connections) {
-      conn.disconnect();
+      conn.disconnectOrphanRecoverable();
     }
   }
   prev.connections = [];

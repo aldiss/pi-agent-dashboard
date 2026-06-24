@@ -84,6 +84,51 @@ export class ConnectionManager {
     }
   }
 
+  /**
+   * WI-5 — recoverable close for the bridge-reinit ORPHAN path ONLY
+   * (`bridge.ts` "disconnect ALL orphaned connections from previous bridge
+   * incarnations"). The session those orphans served CONTINUES across a bridge
+   * re-init, so the orphan must stay RECOVERABLE — but the new incarnation's
+   * `connect()` may never re-fire on a long-running session, leaving the orphan
+   * stuck with zero `:9999` socket forever. That is the operator's "can't reach
+   * Lane".
+   *
+   * Unlike `disconnect()` (genuine shutdown), this:
+   *   - releases the dead socket (detaches handlers + closes + nulls `ws`), but
+   *   - DOES NOT set `intentionalClose` (so the Patch-A watchdog re-arm fires), and
+   *   - KEEPS the watchdog armed (so recovery is owned by exactly one timer).
+   *
+   * Result: within one watchdog tick the stuck-DISCONNECTED guard
+   * (`!ws && !intentionalClose && reconnectTimer === null`) re-arms
+   * `scheduleReconnect()` and the orphan re-establishes its `:9999` socket.
+   *
+   * Mechanism note (load-bearing): the discriminator is SHUTDOWN-INTENT, not
+   * kill-0. kill-0 is server-side (`driver-liveness.ts`); the extension runs
+   * INSIDE the pi process so it is trivially alive while the watchdog runs and
+   * cannot kill-0 itself. We therefore distinguish recover-vs-stay-closed by
+   * WHICH close fired — this method (reinit-orphan → recover) vs `disconnect()`
+   * (session_shutdown/deactivate → stay-closed). We do NOT "recover all
+   * `ws===null`": that would resurrect a genuinely-ending session (Bert d22).
+   * We also do NOT touch `handleDisconnect()` (the involuntary socket-drop path
+   * that already reconnects every server-restart survivor).
+   * See change: handover-reliability-wi5.
+   */
+  disconnectOrphanRecoverable(): void {
+    // Explicitly NOT setting intentionalClose — this orphan must recover.
+    if (this.ws) {
+      // Detach handlers so closing the dead socket does not double-drive
+      // recovery via handleDisconnect; the watchdog is the single owner.
+      this.ws.onclose = null;
+      this.ws.onerror = null;
+      this.ws.onopen = null;
+      this.ws.onmessage = null;
+      try { this.ws.close(); } catch { /* already closed — ignore */ }
+      this.ws = null;
+    }
+    // Keep (or re-arm) the watchdog so the stuck-DISCONNECTED guard can fire.
+    this.startWatchdog();
+  }
+
   send(message: unknown): void {
     const data = JSON.stringify(message);
 
