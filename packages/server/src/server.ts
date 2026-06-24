@@ -35,6 +35,7 @@ import { createIdleTimer } from "./idle-timer.js";
 import { discoverAndBroadcastSessions } from "./session-bootstrap.js";
 import { scanAllSessions } from "./session-scanner.js";
 import { resolveDriverLiveness } from "./driver-liveness.js";
+import { createSessionRescanner } from "./session-rescan.js";
 import { needsMigration, runMigration } from "./migrate-persistence.js";
 import { detectZrokBinary, cleanupStaleZrok, createTunnel, deleteTunnel, scavengeOrphanZrokProcesses, getTunnelUrl } from "./tunnel.js";
 import { registerAuthPlugin, validateWsUpgrade } from "./auth-plugin.js";
@@ -676,6 +677,20 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
   // Active terminals keep the server alive even when no pi sessions are
   // attached. See change: fix-terminal-half-height-dual-mount.
   const idleTimer = createIdleTimer(config, piGateway, () => terminalManager.list().length > 0);
+
+  // Runtime session rescan + liveness re-resolution (handover-reliability WI-1).
+  // The boot-only scanAllSessions + Fix-L liveness leave a post-boot-registered
+  // (class-1) or ended-while-alive (class-2) session wrong until restart. This
+  // re-runs that same scan + kill-0 liveness pass on a ~15s floor (and on an
+  // explicit rotation-detected tick), guarded-merge so it never clobbers a
+  // live/active row (I5) and surfaces same-name predecessors for reap (I6).
+  // Started in start() / stopped in stop(), gated on !isFixture.
+  // See change: handover-reliability-wi1.
+  const sessionRescanner = createSessionRescanner({
+    sessionManager,
+    broadcastSessionAdded: (session) => browserGateway.broadcastSessionAdded(session),
+    broadcastSessionUpdated: (sessionId, updates) => browserGateway.broadcastSessionUpdated(sessionId, updates),
+  });
 
   const fastify = Fastify({
     logger: false,
@@ -1502,6 +1517,9 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
 
       idleTimer.start();
       heapWatchdog.start();
+      // Runtime session rescan floor (handover-reliability WI-1). Skipped in
+      // fixture mode — fixtures pre-seed/replay sessions deterministically.
+      if (!isFixture) sessionRescanner.start();
     },
 
     async stop() {
@@ -1512,6 +1530,7 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
       } catch { /* ignore mDNS cleanup errors */ }
       removePid();
       idleTimer.cancel();
+      sessionRescanner.stop();
       heapWatchdog.stop();
       directoryService.stopPolling();
       browserGateway.shutdownHeadlessProcesses();

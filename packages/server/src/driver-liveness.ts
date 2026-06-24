@@ -91,3 +91,50 @@ export function resolveDriverLiveness(sessionId: string): DriverLiveness {
   }
   return { alive: false }; // no entry binds this session id → not a live mesh driver
 }
+
+/**
+ * Batched liveness resolver — reads the messenger registry directory ONCE and
+ * returns a closure that resolves any number of session ids against that single
+ * snapshot. Semantically identical to calling `resolveDriverLiveness(id)` per id
+ * (same UUID-join + kill-0, same C2/C3 guards, same fail-safe-to-ended), but it
+ * does ONE `readdirSync` + N `readFileSync` per snapshot instead of per id.
+ *
+ * The runtime rescan (WI-1) re-resolves liveness for every ended pi/tmux row on
+ * a ~15s timer; with hundreds of ended rows the per-id variant would re-scan the
+ * registry hundreds of times per tick. This collapses that to one scan/tick.
+ *
+ * kill-0 (`pidAlive`) is still evaluated lazily at query time so a pid that dies
+ * mid-tick is not falsely reported alive from a stale read.
+ * See change: handover-reliability-wi1 (WI-3 liveness re-resolution on a timer).
+ */
+export function createLivenessSnapshot(): (sessionId: string) => DriverLiveness {
+  // sessionId → {pid,name} for every readable registry entry that carries a
+  // sessionId. Built once; pidAlive() is still called per query (see above).
+  const bySessionId = new Map<string, { pid: unknown; name: unknown }>();
+  let files: string[];
+  try {
+    files = readdirSync(messengerRegistryDir()).filter((f) => f.endsWith(".json"));
+  } catch {
+    // No registry dir → every query fails safe to ended.
+    return () => ({ alive: false });
+  }
+  for (const file of files) {
+    try {
+      const entry = JSON.parse(readFileSync(join(messengerRegistryDir(), file), "utf8"));
+      if (entry && typeof entry.sessionId === "string" && !bySessionId.has(entry.sessionId)) {
+        bySessionId.set(entry.sessionId, { pid: entry.pid, name: entry.name });
+      }
+    } catch {
+      continue; // skip an unreadable/partial registry file
+    }
+  }
+  return (sessionId: string): DriverLiveness => {
+    if (!sessionId) return { alive: false };
+    const entry = bySessionId.get(sessionId);
+    if (!entry) return { alive: false };
+    if (typeof entry.pid === "number" && pidAlive(entry.pid)) {
+      return { alive: true, name: typeof entry.name === "string" ? entry.name : undefined };
+    }
+    return { alive: false };
+  };
+}

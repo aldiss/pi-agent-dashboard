@@ -45,10 +45,34 @@ export interface OnChangeContext {
   priorStatus?: SessionStatus;
 }
 
+/**
+ * Outcome of a guarded `restore()` call. `applied` is false only when the
+ * guard refused to overwrite a live/active row. `reason` records which arm
+ * of invariant I5 fired so a runtime rescan can emit the §4 step-event
+ * (`row_merged{absent|existing-ended}` vs `row_skipped{live-active-guard}`).
+ * See change: handover-reliability-wi1 (invariant I5).
+ */
+export interface RestoreResult {
+  applied: boolean;
+  reason: "absent" | "existing-ended" | "live-active-guard";
+}
+
 export interface SessionManager {
   register(params: RegisterSessionParams): DashboardSession;
-  /** Restore a previously persisted session (e.g. on startup). Does not trigger onChange. */
-  restore(session: DashboardSession): void;
+  /**
+   * Guarded-merge restore of a previously persisted/scanned session.
+   * Does not trigger onChange.
+   *
+   * Invariant I5 (load-bearing): restores into the map ONLY IF the id is
+   * ABSENT or the existing row is already `ended`. A live/active row is
+   * NEVER overwritten — the scanned snapshot is always staler than the live
+   * bridge-fed row, so clobbering it would regress active/name/order/hidden/
+   * unread state. This makes acceptance-#4 (no-regression) structurally safe,
+   * not merely tested-safe. At boot the map is empty so every restore applies
+   * (no behavior change); the guard only bites on the post-boot rescan path.
+   * See change: handover-reliability-wi1.
+   */
+  restore(session: DashboardSession): RestoreResult;
   unregister(sessionId: string): void;
   update(sessionId: string, updates: Partial<DashboardSession>): void;
   get(sessionId: string): DashboardSession | undefined;
@@ -115,8 +139,16 @@ export function createMemorySessionManager(): SessionManager {
       return session;
     },
 
-    restore(session: DashboardSession): void {
+    restore(session: DashboardSession): RestoreResult {
+      // Invariant I5 — guarded merge. Never clobber a live/active row with a
+      // staler scanned snapshot. Restore only when the id is absent or the
+      // existing row is already ended. See change: handover-reliability-wi1.
+      const existing = sessions.get(session.id);
+      if (existing && existing.status !== "ended") {
+        return { applied: false, reason: "live-active-guard" };
+      }
       sessions.set(session.id, session);
+      return { applied: true, reason: existing ? "existing-ended" : "absent" };
     },
 
     unregister(sessionId: string): void {
