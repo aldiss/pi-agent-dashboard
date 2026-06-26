@@ -932,8 +932,10 @@ export function reduceEvent(state: SessionState, event: DashboardEvent): Session
         // from the visible queue — it becomes the committed user bubble pushed
         // below. ChatView animates the lift. See change: dashboard-message-queue.
         const dispatchedNonce = data.queueNonce as string | undefined;
+        let removedByNonce = false;
         if (dispatchedNonce && next.queue.some((q) => q.queueNonce === dispatchedNonce)) {
           next.queue = next.queue.filter((q) => q.queueNonce !== dispatchedNonce);
+          removedByNonce = true;
         }
         let text = "";
         let images: ChatImage[] | undefined;
@@ -953,6 +955,26 @@ export function reduceEvent(state: SessionState, event: DashboardEvent): Session
           }
         } else {
           text = String(msg.content ?? "");
+        }
+        // FALSE-FAILED reconcile (AMEND #2): if this committing user message was
+        // NOT removed by an exact queueNonce match, fall back to TEXT-match and
+        // drop the most-recent matching queued entry. This covers the
+        // streaming-view-mismatch race: the client queued an optimistic card
+        // (it saw `isStreaming`) but the bridge committed the send straight to
+        // work (it saw the agent already idle) and never emitted
+        // `message_enqueued` — so the card would otherwise rot into the 30s
+        // stuck-timeout "failed" state even though the message was sent fine.
+        // The committing message IS that card; remove it (it becomes the bubble
+        // below). Match newest-first so back-to-back identical sends pop the
+        // right one. See change: dashboard-message-queue (AMEND #2).
+        if (!removedByNonce && text && next.queue.length > 0) {
+          let lastIdx = -1;
+          for (let i = next.queue.length - 1; i >= 0; i--) {
+            if (next.queue[i].text === text) { lastIdx = i; break; }
+          }
+          if (lastIdx !== -1) {
+            next.queue = next.queue.filter((_, i) => i !== lastIdx);
+          }
         }
         // Detect a wrapped <skill>...</skill> envelope so the renderer can show
         // a collapsible card and ArrowUp recall can return the slash form.
@@ -1464,20 +1486,38 @@ export function reduceEvent(state: SessionState, event: DashboardEvent): Session
       // Message-queue enqueue confirmation (dashboard-message-queue/v1).
       // The bridge acked a follow-up enqueue. Reconcile by queueNonce:
       //   - matches an existing optimistic entry → flip it to "confirmed".
-      //   - no match (TUI-origin, or this client never had the optimistic
-      //     entry) → append a fresh "confirmed" entry.
-      // Idempotent: a duplicate event for an already-confirmed nonce no-ops.
+      //   - no exact-nonce match → TEXT+RECENCY fallback (AMEND #2): adopt this
+      //     confirmation onto the most-recent still-optimistic entry with the
+      //     same text (covers a nonce-thread mismatch), flipping it confirmed +
+      //     re-keying it to the bridge's nonce so the later
+      //     message_start(queueNonce) dispatch matches. ONLY append a fresh card
+      //     when there is genuinely no optimistic card to confirm (true
+      //     TUI-origin). This prevents the DOUBLING bug (append-on-any-no-match).
+      //   - Idempotent: a duplicate event for an already-confirmed nonce no-ops.
       const queueNonce = data.queueNonce as string | undefined;
       if (!queueNonce) break;
       const text = typeof data.text === "string" ? data.text : "";
       const source = data.source === "tui" ? "tui" : "dashboard";
       const images = mapWireImagesToChat(data.images);
-      const existingIdx = next.queue.findIndex((q) => q.queueNonce === queueNonce);
+      let existingIdx = next.queue.findIndex((q) => q.queueNonce === queueNonce);
+      // Text+recency fallback: no exact nonce match → newest optimistic entry
+      // with matching text. Re-key it to the bridge's nonce.
+      let reKey = false;
+      if (existingIdx === -1 && text) {
+        for (let i = next.queue.length - 1; i >= 0; i--) {
+          if (next.queue[i].state === "optimistic" && next.queue[i].text === text) {
+            existingIdx = i;
+            reKey = true;
+            break;
+          }
+        }
+      }
       if (existingIdx !== -1) {
-        if (next.queue[existingIdx].state === "confirmed") break;
+        if (next.queue[existingIdx].state === "confirmed" && !reKey) break;
         next.queue = next.queue.slice();
         next.queue[existingIdx] = {
           ...next.queue[existingIdx],
+          ...(reKey ? { queueNonce } : {}),
           state: "confirmed",
           source,
           // Prefer the bridge's text/images (authoritative) but keep the
