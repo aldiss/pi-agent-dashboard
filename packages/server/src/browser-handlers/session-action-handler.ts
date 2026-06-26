@@ -243,6 +243,10 @@ export async function handleSendPrompt(
       sessionId: msg.sessionId,
       text: msg.text,
       images: msg.images,
+      // Thread the client's queue correlation id to the bridge so it can
+      // reuse it as the queued message's queueNonce (the client's optimistic
+      // card reconciles by exact match). See change: dashboard-message-queue.
+      ...(msg.queueNonce ? { queueNonce: msg.queueNonce } : {}),
     });
     if (!sent) {
       console.error(`[dashboard] send_prompt failed: no bridge connection for session ${msg.sessionId}`);
