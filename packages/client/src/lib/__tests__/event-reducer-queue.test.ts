@@ -148,8 +148,8 @@ describe("event-reducer queue: AMEND #5 queue_state authoritative-supersede (F4)
     ];
     const s1 = reduceEvent(s0, ev("queue_state", {
       followUp: [
-        { queueNonce: "bridge1", text: "same" },
-        { queueNonce: "bridge2", text: "same" },
+        { queueNonce: "bridge1", text: "same", source: "dashboard" },
+        { queueNonce: "bridge2", text: "same", source: "dashboard" },
       ],
       steeringCount: 0,
       pendingMessageCount: 2,
@@ -168,7 +168,7 @@ describe("event-reducer queue: AMEND #5 queue_state authoritative-supersede (F4)
       { queueNonce: "o2", text: "same", state: "optimistic", source: "dashboard", createdAt: TS + 1 },
     ];
     const s1 = reduceEvent(s0, ev("queue_state", {
-      followUp: [{ queueNonce: "bridge1", text: "same" }],
+      followUp: [{ queueNonce: "bridge1", text: "same", source: "dashboard" }],
       steeringCount: 0,
       pendingMessageCount: 1,
       source: "lifecycle",
@@ -190,8 +190,8 @@ describe("event-reducer queue: AMEND #5 queue_state authoritative-supersede (F4)
     // Snapshot confirms o1 by its EXACT nonce + a second bridge-nonce for o2's text.
     const s1 = reduceEvent(s0, ev("queue_state", {
       followUp: [
-        { queueNonce: "o1", text: "same" },
-        { queueNonce: "bridge2", text: "same" },
+        { queueNonce: "o1", text: "same", source: "dashboard" },
+        { queueNonce: "bridge2", text: "same", source: "dashboard" },
       ],
       steeringCount: 0,
       pendingMessageCount: 2,
@@ -222,6 +222,95 @@ describe("event-reducer queue: AMEND #5 queue_state authoritative-supersede (F4)
     expect(s1.queue[0].state).toBe("confirmed");
     expect(s1.queue[1].queueNonce).toBe("o-other");
     expect(s1.queue[1].state).toBe("optimistic");
+  });
+
+  // ── AMEND #6 / F5: ORIGIN axis — a TUI snapshot entry never supersedes a
+  //    dashboard optimistic. Correctness-proof (Bert): client optimistics are
+  //    ALL dashboard-origin (TUI input arrives as a CONFIRMED card via
+  //    message_enqueued, never as a client optimistic), so gating supersede-slots
+  //    to `source === "dashboard"` supersedes exactly the optimistics that can
+  //    exist — and a "tui"/absent snapshot entry stays a pure separate card.
+
+  it("F5 PRIMARY: dashboard optimistic + TUI-origin snapshot of same text → BOTH remain (dashboard optimistic PRESERVED, no drop)", () => {
+    const s0 = createInitialState();
+    s0.queue = [
+      { queueNonce: "dash1", text: "same", state: "optimistic", source: "dashboard", createdAt: TS },
+    ];
+    const s1 = reduceEvent(s0, ev("queue_state", {
+      followUp: [{ queueNonce: "tui1", text: "same", source: "tui" }],
+      steeringCount: 0,
+      pendingMessageCount: 1,
+      source: "lifecycle",
+    }));
+    // tui1 is a SEPARATE confirmed card; it creates NO supersede-slot, so the
+    // dashboard optimistic dash1 is NOT consumed. FIRING preservation assert:
+    // dash1 must be PRESENT and STILL optimistic (not silently vanished).
+    const dash1 = s1.queue.find((q) => q.queueNonce === "dash1");
+    expect(dash1).toBeDefined();
+    expect(dash1!.state).toBe("optimistic");
+    const tui1 = s1.queue.find((q) => q.queueNonce === "tui1");
+    expect(tui1).toBeDefined();
+    expect(tui1!.state).toBe("confirmed");
+    expect(s1.queue).toHaveLength(2); // no drop, no dup
+  });
+
+  it("F5 ABSENT-SOURCE (old-bridge deploy-transient): source-absent snapshot entry creates NO slot → dashboard optimistic PRESERVED (fail toward recoverable)", () => {
+    // Strict gate: absent/undefined source → no supersede-slot → preserve. This
+    // transiently re-opens F4 (a VISIBLE duplicate that self-corrects on the next
+    // source-stamped snapshot) rather than F5 (a SILENT vanish). Recoverable side.
+    const s0 = createInitialState();
+    s0.queue = [
+      { queueNonce: "dash1", text: "same", state: "optimistic", source: "dashboard", createdAt: TS },
+    ];
+    const s1 = reduceEvent(s0, ev("queue_state", {
+      followUp: [{ queueNonce: "old", text: "same" }], // no source (old bridge)
+      steeringCount: 0,
+      pendingMessageCount: 1,
+      source: "lifecycle",
+    }));
+    const dash1 = s1.queue.find((q) => q.queueNonce === "dash1");
+    expect(dash1).toBeDefined();
+    expect(dash1!.state).toBe("optimistic"); // PRESERVED — not vanished
+  });
+
+  it("F4 PRESERVED under source-gate: dashboard optimistic + dashboard-origin snapshot same text → superseded (one card, no dup)", () => {
+    const s0 = createInitialState();
+    s0.queue = [
+      { queueNonce: "dash1", text: "same", state: "optimistic", source: "dashboard", createdAt: TS },
+    ];
+    const s1 = reduceEvent(s0, ev("queue_state", {
+      followUp: [{ queueNonce: "bridge1", text: "same", source: "dashboard" }],
+      steeringCount: 0,
+      pendingMessageCount: 1,
+      source: "lifecycle",
+    }));
+    // dashboard snapshot entry DOES supersede its dashboard optimistic (F4 intact).
+    expect(s1.queue).toHaveLength(1);
+    expect(s1.queue[0].queueNonce).toBe("bridge1");
+    expect(s1.queue[0].state).toBe("confirmed");
+    expect(s1.queue.find((q) => q.queueNonce === "dash1")).toBeUndefined(); // superseded
+  });
+
+  it("F5 MIXED: dashboard optimistic + snapshot [dashboard same, tui same] → dash superseded by the dashboard entry, tui a separate confirmed, no orphan/no-drop", () => {
+    const s0 = createInitialState();
+    s0.queue = [
+      { queueNonce: "dash1", text: "same", state: "optimistic", source: "dashboard", createdAt: TS },
+    ];
+    const s1 = reduceEvent(s0, ev("queue_state", {
+      followUp: [
+        { queueNonce: "bridge1", text: "same", source: "dashboard" },
+        { queueNonce: "tui1", text: "same", source: "tui" },
+      ],
+      steeringCount: 0,
+      pendingMessageCount: 2,
+      source: "lifecycle",
+    }));
+    // bridge1 (dashboard) supersedes dash1; tui1 stays a separate confirmed card.
+    // Result: exactly the two confirmed snapshot cards, the dashboard optimistic
+    // superseded (not orphaned), NO real send dropped.
+    expect(s1.queue.map((q) => q.queueNonce)).toEqual(["bridge1", "tui1"]);
+    expect(s1.queue.every((q) => q.state === "confirmed")).toBe(true);
+    expect(s1.queue.find((q) => q.queueNonce === "dash1")).toBeUndefined();
   });
 });
 

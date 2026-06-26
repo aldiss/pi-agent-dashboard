@@ -1670,19 +1670,26 @@ export function reduceEvent(state: SessionState, event: DashboardEvent): Session
           text: typeof f?.text === "string" ? f.text : prior?.text ?? "",
           ...(prior?.images ? { images: prior.images } : {}),
           state: "confirmed" as const,
-          source: prior?.source ?? "tui",
+          // AMEND #6 / F5: an exact-matched entry inherits the client's source;
+          // otherwise use the snapshot entry's own stamped source; default "tui".
+          source: prior?.source ?? (f?.source === "dashboard" || f?.source === "tui" ? f.source : "tui"),
           createdAt: prior?.createdAt ?? event.timestamp,
         };
       });
-      // 2. Supersede-slots by text — from snapshot entries that did NOT
-      //    exact-match a client nonce (the "new" confirmeds that must claim an
-      //    optimistic by text). Each slot supersedes one FIFO-oldest same-text
-      //    optimistic/failed.
+      // 2. Supersede-slots by text — ONLY from snapshot entries that are
+      //    DASHBOARD-origin AND did NOT exact-match a client nonce. AMEND #6 /
+      //    F5 (origin axis): a "tui"-origin (or source-absent) snapshot entry is
+      //    a SEPARATE confirmed card and must create NO supersede-slot — it must
+      //    never consume a dashboard optimistic by text (that would drop a real
+      //    dashboard send and violate "TUI-origin stays separate"). A re-keyed
+      //    dashboard snapshot entry (source:"dashboard") still text-supersedes
+      //    its dashboard optimistic — F4's duplicate-fix is preserved.
       const supersedeSlots = new Map<string, number>();
       for (const f of followUp) {
         const fNonce = (f as any)?.queueNonce as string | undefined;
         const matchedClientNonce = fNonce !== undefined && byNonce.has(fNonce);
         if (matchedClientNonce) continue; // already adopted by exact nonce
+        if ((f as any)?.source !== "dashboard") continue; // origin-gate: TUI/absent → no slot
         const t = typeof (f as any)?.text === "string" ? (f as any).text : "";
         if (!t) continue;
         supersedeSlots.set(t, (supersedeSlots.get(t) ?? 0) + 1);

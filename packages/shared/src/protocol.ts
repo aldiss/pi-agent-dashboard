@@ -140,8 +140,15 @@ export interface MessageEnqueuedEventData {
  * (sister to `sessions_snapshot`).
  */
 export interface QueueStateEventData {
-  /** Ordered follow-up queue (head = next to dispatch). */
-  followUp: Array<{ queueNonce?: string; text: string }>;
+  /**
+   * Ordered follow-up queue (head = next to dispatch). Each entry carries its
+   * `source` so the client can reconcile origin-aware (AMEND #6 / F5): a
+   * `"tui"`-origin snapshot entry is a SEPARATE confirmed card and must NEVER
+   * supersede a dashboard-origin optimistic by text — only a `"dashboard"`
+   * snapshot entry text-supersedes a dashboard optimistic. See change:
+   * dashboard-message-queue.
+   */
+  followUp: Array<{ queueNonce?: string; text: string; source: "dashboard" | "tui" }>;
   /**
    * Count of steering-queue messages. v1 surfaces a count only (the bridge
    * cannot enumerate the steering queue — see resolution note). Usually 0.

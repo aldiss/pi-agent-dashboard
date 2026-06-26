@@ -185,7 +185,9 @@ export class QueueTracker {
    */
   snapshot(source: QueueStateEventData["source"]): QueueStateEventData {
     return {
-      followUp: this.followUp.map((e) => ({ queueNonce: e.queueNonce, text: e.text })),
+      // Carry each entry's own origin (AMEND #6 / F5) so the client reconciles
+      // origin-aware — a "tui" entry never supersedes a dashboard optimistic.
+      followUp: this.followUp.map((e) => ({ queueNonce: e.queueNonce, text: e.text, source: e.source })),
       steeringCount: 0,
       pendingMessageCount: this.followUp.length,
       source,
