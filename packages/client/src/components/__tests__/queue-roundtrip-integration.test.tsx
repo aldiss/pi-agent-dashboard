@@ -227,4 +227,43 @@ describe("queue round-trip integration — AMEND #2", () => {
     });
     expect(h.getQueue()[0].state).toBe("failed");
   });
+
+  it("AMEND #3 SAME-TEXT: two INTENTIONAL same-text sends → two cards, FIFO send-order, neither false-fails", () => {
+    const h = renderHarness();
+    // First intentional send.
+    h.sendText("same text twice");
+    // Second intentional send, spaced PAST the 600ms double-submit window so it
+    // is NOT collapsed (the guard only stops accidental double-FIRES).
+    act(() => {
+      vi.advanceTimersByTime(700);
+    });
+    h.sendText("same text twice");
+
+    // Two distinct optimistic cards (intentional re-send is allowed).
+    let queue = h.getQueue();
+    expect(queue).toHaveLength(2);
+    const [n1, n2] = [queue[0].queueNonce, queue[1].queueNonce];
+    expect(n1).not.toBe(n2);
+
+    // Exactly TWO real send_prompts reached the wire (not 1, not 4).
+    const sends = h.send.mock.calls.filter((c) => c[0]?.type === "send_prompt");
+    expect(sends).toHaveLength(2);
+
+    // Each confirms by its EXACT nonce (the normal round-trip) — send-order
+    // (FIFO) is preserved, nonces NOT swapped.
+    h.inject(enqueuedEvent(n1, "same text twice"));
+    h.inject(enqueuedEvent(n2, "same text twice"));
+    queue = h.getQueue();
+    expect(queue.map((q) => q.queueNonce)).toEqual([n1, n2]);
+    expect(queue.every((q) => q.state === "confirmed")).toBe(true);
+
+    // pi pulls them into work FIFO; advance past the stuck-timeout to prove
+    // NEITHER false-fails along the way.
+    h.inject(userCommitEvent("same text twice", n1));
+    act(() => { vi.advanceTimersByTime(31_000); });
+    expect(h.getQueue().map((q) => q.queueNonce)).toEqual([n2]);
+    expect(h.getQueue()[0].state).toBe("confirmed");
+    h.inject(userCommitEvent("same text twice", n2));
+    expect(h.getQueue()).toHaveLength(0);
+  });
 });

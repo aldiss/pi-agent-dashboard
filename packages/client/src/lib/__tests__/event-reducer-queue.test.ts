@@ -229,3 +229,128 @@ describe("event-reducer queue: degenerate single-slot path unchanged", () => {
     expect(createInitialState().queue).toEqual([]);
   });
 });
+
+describe("event-reducer queue: AMEND #3 same-text reconciliation (FIFO-oldest + single-match)", () => {
+  /** Two genuine same-text optimistic entries, distinct nonces, FIFO order o1→o2. */
+  function stateWithTwoSameText(): SessionState {
+    const s = createInitialState();
+    s.queue = [
+      { queueNonce: "o1", text: "same text", state: "optimistic", source: "dashboard", createdAt: TS },
+      { queueNonce: "o2", text: "same text", state: "optimistic", source: "dashboard", createdAt: TS + 1 },
+    ];
+    return s;
+  }
+
+  it("exact-nonce match still wins over the text fallback (no mis-adopt)", () => {
+    const s0 = stateWithTwoSameText();
+    // A confirmation carrying o2's exact nonce must confirm o2 — NOT the oldest.
+    const s1 = reduceEvent(s0, ev("message_enqueued", {
+      queueNonce: "o2", text: "same text", source: "dashboard",
+    }));
+    const o2 = s1.queue.find((q) => q.queueNonce === "o2")!;
+    const o1 = s1.queue.find((q) => q.queueNonce === "o1")!;
+    expect(o2.state).toBe("confirmed");
+    expect(o1.state).toBe("optimistic");
+  });
+
+  it("SINGLE same-text optimistic: an UNMATCHED-nonce message_enqueued adopts THAT one (FIFO-oldest, re-keyed)", () => {
+    // One same-text optimistic among a differently-texted sibling. The
+    // text-fallback fires (exactly one match) and adopts the bridge nonce.
+    const s = createInitialState();
+    s.queue = [
+      { queueNonce: "other", text: "different", state: "optimistic", source: "dashboard", createdAt: TS },
+      { queueNonce: "o1", text: "target text", state: "optimistic", source: "dashboard", createdAt: TS + 1 },
+    ];
+    const s1 = reduceEvent(s, ev("message_enqueued", {
+      queueNonce: "bridge-x", text: "target text", source: "dashboard",
+    }));
+    expect(s1.queue).toHaveLength(2); // adopted, NOT appended
+    const adopted = s1.queue.find((q) => q.queueNonce === "bridge-x")!;
+    expect(adopted.state).toBe("confirmed");
+    expect(adopted.createdAt).toBe(TS + 1); // identity preserved = the OLD o1 entry
+    expect(s1.queue.find((q) => q.queueNonce === "other")!.state).toBe("optimistic");
+  });
+
+  it("SINGLE same-text optimistic: a nonce-less message_start commit removes THAT one (FIFO-oldest)", () => {
+    const s = createInitialState();
+    s.queue = [
+      { queueNonce: "other", text: "different", state: "optimistic", source: "dashboard", createdAt: TS },
+      { queueNonce: "o1", text: "target text", state: "optimistic", source: "dashboard", createdAt: TS + 1 },
+    ];
+    const s1 = reduceEvent(s, ev("message_start", {
+      message: { role: "user", content: [{ type: "text", text: "target text" }] },
+      nonce: "n-a",
+    }));
+    // The single same-text match (o1) removed; the differently-texted sibling stays.
+    expect(s1.queue.map((q) => q.queueNonce)).toEqual(["other"]);
+  });
+
+  it("MULTIPLE same-text + UNMATCHED message_enqueued → does NOT adopt either (waits, no swap)", () => {
+    const s0 = stateWithTwoSameText();
+    const s1 = reduceEvent(s0, ev("message_enqueued", {
+      queueNonce: "no-match", text: "same text", source: "dashboard",
+    }));
+    // Two same-text optimistics → findSoleOptimisticByText returns -1 → neither
+    // is re-keyed (a newest-first guess would SWAP nonces). The two send-order
+    // nonces are preserved; a fresh card is appended (queue_state reconciles).
+    const o1 = s1.queue.find((q) => q.queueNonce === "o1");
+    const o2 = s1.queue.find((q) => q.queueNonce === "o2");
+    expect(o1?.state).toBe("optimistic");
+    expect(o2?.state).toBe("optimistic");
+    expect(s1.queue[0].queueNonce).toBe("o1");
+    expect(s1.queue[1].queueNonce).toBe("o2");
+  });
+
+  it("MULTIPLE same-text + nonce-less message_start → does NOT remove either (waits)", () => {
+    const s0 = stateWithTwoSameText();
+    const s1 = reduceEvent(s0, ev("message_start", {
+      message: { role: "user", content: [{ type: "text", text: "same text" }] },
+      nonce: "n-ambiguous",
+    }));
+    // Ambiguous → neither optimistic removed (both still queued, send-order intact).
+    expect(s1.queue.map((q) => q.queueNonce)).toEqual(["o1", "o2"]);
+  });
+
+  it("REPLY-LINKAGE (Bert dl-2691 falsifiable criterion): two same-text sends dispatch in send-order so replies thread to the correct card", () => {
+    // Two genuine same-text sends, confirmed by their EXACT nonces (the normal
+    // dashboard round-trip: client mints o1 then o2; bridge reuses each).
+    let s: SessionState = stateWithTwoSameText();
+    s = reduceEvent(s, ev("message_enqueued", { queueNonce: "o1", text: "same text", source: "dashboard" }));
+    s = reduceEvent(s, ev("message_enqueued", { queueNonce: "o2", text: "same text", source: "dashboard" }));
+    expect(s.queue.map((q) => q.queueNonce)).toEqual(["o1", "o2"]); // send-order intact, NOT swapped
+
+    // pi pulls them into work FIFO: o1 first. Its message_start carries o1 +
+    // a per-message nonce "n1"; the user bubble lands, then its reply.
+    s = reduceEvent(s, ev("message_start", {
+      message: { role: "user", content: [{ type: "text", text: "same text" }] },
+      queueNonce: "o1", nonce: "n1",
+    }));
+    // assistant reply #1 (distinct text) threads positionally after o1's bubble.
+    s = reduceEvent(s, ev("message_start", { message: { role: "assistant", content: [] }, nonce: "r1" }));
+    s = reduceEvent(s, ev("message_update", { message: { role: "assistant", content: [{ type: "text", text: "REPLY-ONE" }] } }));
+    s = reduceEvent(s, ev("message_end", { message: { role: "assistant", content: [{ type: "text", text: "REPLY-ONE" }] }, nonce: "r1", entryId: "e-r1" }));
+
+    // Then o2 dispatches; its reply follows.
+    s = reduceEvent(s, ev("message_start", {
+      message: { role: "user", content: [{ type: "text", text: "same text" }] },
+      queueNonce: "o2", nonce: "n2",
+    }));
+    s = reduceEvent(s, ev("message_start", { message: { role: "assistant", content: [] }, nonce: "r2" }));
+    s = reduceEvent(s, ev("message_update", { message: { role: "assistant", content: [{ type: "text", text: "REPLY-TWO" }] } }));
+    s = reduceEvent(s, ev("message_end", { message: { role: "assistant", content: [{ type: "text", text: "REPLY-TWO" }] }, nonce: "r2", entryId: "e-r2" }));
+
+    // Reply-linkage = positional thread in messages[]. The first user bubble is
+    // immediately followed by REPLY-ONE; the second by REPLY-TWO. A nonce-swap
+    // would have dispatched o2's card first → replies under the wrong bubble.
+    const roles = s.messages.map((m) => `${m.role}:${m.content}`);
+    const firstUser = roles.indexOf("user:same text");
+    const secondUser = roles.indexOf("user:same text", firstUser + 1);
+    expect(firstUser).toBeGreaterThanOrEqual(0);
+    expect(secondUser).toBeGreaterThan(firstUser);
+    // The reply right after the first user bubble is REPLY-ONE, after the second is REPLY-TWO.
+    expect(roles[firstUser + 1]).toBe("assistant:REPLY-ONE");
+    expect(roles[secondUser + 1]).toBe("assistant:REPLY-TWO");
+    // Queue fully drained.
+    expect(s.queue).toHaveLength(0);
+  });
+});
