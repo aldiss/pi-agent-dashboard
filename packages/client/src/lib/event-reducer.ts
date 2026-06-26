@@ -183,6 +183,18 @@ export interface SessionState {
    * `queue_state` snapshot. See change: dashboard-message-queue.
    */
   queue: QueuedMessage[];
+  /**
+   * Nonces superseded by a retry (dashboard-message-queue/v1 AMEND #5 (f)).
+   * When `handleRetryQueued` re-keys a failed card OLD→NEW and re-sends, it
+   * records the OLD nonce here. The reducer makes any LATE confirmation for a
+   * superseded nonce INERT (no adopt/re-key/append/dispatch) across
+   * `message_enqueued` / `queue_state` / `message_start` — so a connected-slow
+   * OLD send that confirms after the retry-re-key cannot flip-flop the NEW card
+   * or spawn a duplicate. The OLD send itself is already in pi's follow-up queue
+   * and cannot be aborted client-side (deferred control-tail) — this guards
+   * CLIENT STATE only. See change: dashboard-message-queue (AMEND #5 (f)).
+   */
+  supersededNonces: Set<string>;
   interactiveRequests: InteractiveUiRequest[];
   flowState: FlowState | null;
   /** All flow states seen during execution (main + subflows), keyed by flowName */
@@ -259,6 +271,7 @@ export function createInitialState(): SessionState {
     status: "idle",
     turnStats: [],
     queue: [],
+    supersededNonces: new Set(),
     interactiveRequests: [],
     flowState: null,
     flowStates: new Map(),
@@ -967,7 +980,18 @@ export function reduceEvent(state: SessionState, event: DashboardEvent): Session
         // below. ChatView animates the lift. See change: dashboard-message-queue.
         const dispatchedNonce = data.queueNonce as string | undefined;
         let removedByNonce = false;
-        if (dispatchedNonce && next.queue.some((q) => q.queueNonce === dispatchedNonce)) {
+        // AMEND #5 (f) idempotency-guard: a dispatch carrying a retry-superseded
+        // OLD nonce must NOT remove/dispatch a card. The committed user bubble
+        // still renders below (pi genuinely committed the OLD send — see the
+        // honest-disclosed pi-side double), but the visible queue card is the
+        // NEW (retry) entry and must stay untouched. We also set
+        // `removedByNonce = true` so the text-fallback below does NOT let the
+        // OLD send's text grab the NEW card (no flip-flop). See
+        // SessionState.supersededNonces.
+        const dispatchSuperseded = dispatchedNonce !== undefined && next.supersededNonces.has(dispatchedNonce);
+        if (dispatchSuperseded) {
+          removedByNonce = true; // suppress text-fallback for this ghost dispatch
+        } else if (dispatchedNonce && next.queue.some((q) => q.queueNonce === dispatchedNonce)) {
           next.queue = next.queue.filter((q) => q.queueNonce !== dispatchedNonce);
           removedByNonce = true;
         }
@@ -1534,6 +1558,11 @@ export function reduceEvent(state: SessionState, event: DashboardEvent): Session
       //   - Idempotent: a duplicate event for an already-confirmed nonce no-ops.
       const queueNonce = data.queueNonce as string | undefined;
       if (!queueNonce) break;
+      // AMEND #5 (f) idempotency-guard: a confirmation for a retry-superseded
+      // OLD nonce is INERT — do NOT adopt, re-key (no flip-flop onto the NEW
+      // card), nor append (no duplicate). The OLD send is a ghost; the NEW
+      // (retry) card is live. See SessionState.supersededNonces.
+      if (next.supersededNonces.has(queueNonce)) break;
       const text = typeof data.text === "string" ? data.text : "";
       const source = data.source === "tui" ? "tui" : "dashboard";
       const images = mapWireImagesToChat(data.images);
@@ -1618,7 +1647,15 @@ export function reduceEvent(state: SessionState, event: DashboardEvent): Session
       // optimistics beyond the snapshot's same-text count stay preserved (newer,
       // not yet acked). NEVER render both a snapshot-confirmed entry AND its
       // corresponding optimistic.
-      const followUp = Array.isArray(data.followUp) ? data.followUp : [];
+      // AMEND #5 (f) idempotency-guard: drop any snapshot entry whose nonce is
+      // retry-superseded BEFORE reconciling. A ghost OLD-send still lingering in
+      // the bridge's reconstructed snapshot must NOT build a confirmed card, nor
+      // create a same-text supersede-slot that could claim the NEW (retry) card.
+      // The single filter here flows into snapshotNonces / confirmed /
+      // supersedeSlots below. See SessionState.supersededNonces.
+      const followUp = (Array.isArray(data.followUp) ? data.followUp : []).filter(
+        (f: any) => !(typeof f?.queueNonce === "string" && next.supersededNonces.has(f.queueNonce)),
+      );
       const snapshotNonces = new Set(
         followUp.map((f: any) => f?.queueNonce).filter(Boolean),
       );

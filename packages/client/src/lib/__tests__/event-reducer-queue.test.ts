@@ -470,3 +470,95 @@ describe("event-reducer queue: AMEND #3 same-text reconciliation (FIFO-oldest + 
     expect(s.queue).toHaveLength(0);
   });
 });
+
+describe("event-reducer queue: AMEND #5 (f) retry idempotency-guard (stale OLD confirmation inert)", () => {
+  /**
+   * Models the post-retry state: a failed card was re-keyed OLD→NEW (now
+   * optimistic) and the OLD nonce recorded as retry-superseded. A connected-slow
+   * OLD send then confirms LATE — as each of the 3 reducer surfaces — and must
+   * be INERT: no flip-flop back to OLD, no duplicate card, no second dispatch.
+   */
+  function statePostRetry(): SessionState {
+    const s = createInitialState();
+    s.queue = [
+      { queueNonce: "NEW", text: "retry me", state: "optimistic", source: "dashboard", createdAt: TS + 100 },
+    ];
+    s.supersededNonces = new Set(["OLD"]);
+    return s;
+  }
+
+  it("late OLD message_enqueued is inert (no flip-flop, no duplicate)", () => {
+    const s0 = statePostRetry();
+    const s1 = reduceEvent(s0, ev("message_enqueued", {
+      queueNonce: "OLD", text: "retry me", source: "dashboard",
+    }));
+    // Card unchanged: still the single NEW optimistic. OLD neither adopted,
+    // re-keyed onto NEW, nor appended.
+    expect(s1.queue).toHaveLength(1);
+    expect(s1.queue[0].queueNonce).toBe("NEW");
+    expect(s1.queue[0].state).toBe("optimistic");
+  });
+
+  it("late OLD queue_state snapshot entry is inert (no ghost confirmed, no NEW supersede)", () => {
+    const s0 = statePostRetry();
+    // The bridge's reconstructed snapshot still lists the OLD ghost (same text).
+    const s1 = reduceEvent(s0, ev("queue_state", {
+      followUp: [{ queueNonce: "OLD", text: "retry me" }],
+      steeringCount: 0,
+      pendingMessageCount: 1,
+      source: "lifecycle",
+    }));
+    // OLD filtered out → no confirmed card built, no same-text slot to claim
+    // NEW. NEW preserved as the sole optimistic.
+    expect(s1.queue).toHaveLength(1);
+    expect(s1.queue[0].queueNonce).toBe("NEW");
+    expect(s1.queue[0].state).toBe("optimistic");
+  });
+
+  it("late OLD message_start dispatch is inert (no removal of NEW, no flip-flop via text)", () => {
+    const s0 = statePostRetry();
+    const s1 = reduceEvent(s0, ev("message_start", {
+      message: { role: "user", content: [{ type: "text", text: "retry me" }] },
+      queueNonce: "OLD",
+      nonce: "n-old",
+    }));
+    // The committed user bubble renders (pi did commit the OLD send — the
+    // honest-disclosed pi-side double), but the NEW card is untouched: not
+    // removed by OLD's nonce, and OLD's text did NOT grab NEW via the fallback.
+    expect(s1.queue).toHaveLength(1);
+    expect(s1.queue[0].queueNonce).toBe("NEW");
+    expect(s1.queue[0].state).toBe("optimistic");
+    const lastUser = s1.messages.filter((m) => m.role === "user").pop();
+    expect(lastUser?.content).toBe("retry me");
+  });
+
+  it("the NEW (non-superseded) confirmation still reconciles correctly (no over-suppression)", () => {
+    const s0 = statePostRetry();
+    const s1 = reduceEvent(s0, ev("message_enqueued", {
+      queueNonce: "NEW", text: "retry me", source: "dashboard",
+    }));
+    expect(s1.queue).toHaveLength(1);
+    expect(s1.queue[0].queueNonce).toBe("NEW");
+    expect(s1.queue[0].state).toBe("confirmed");
+  });
+
+  it("full sequence: NEW confirms, then OLD ghost-dispatches → still exactly the NEW card lifecycle, no duplicate", () => {
+    let s: SessionState = statePostRetry();
+    // NEW confirms.
+    s = reduceEvent(s, ev("message_enqueued", { queueNonce: "NEW", text: "retry me", source: "dashboard" }));
+    expect(s.queue.map((q) => q.queueNonce)).toEqual(["NEW"]);
+    // OLD ghost commits first in pi FIFO (it was enqueued earlier) — inert, no
+    // second card removed, NEW survives.
+    s = reduceEvent(s, ev("message_start", {
+      message: { role: "user", content: [{ type: "text", text: "retry me" }] },
+      queueNonce: "OLD", nonce: "n-old",
+    }));
+    expect(s.queue.map((q) => q.queueNonce)).toEqual(["NEW"]);
+    // Then NEW genuinely dispatches → card removed, queue drained.
+    s = reduceEvent(s, ev("message_start", {
+      message: { role: "user", content: [{ type: "text", text: "retry me" }] },
+      queueNonce: "NEW", nonce: "n-new",
+    }));
+    expect(s.queue).toHaveLength(0);
+  });
+});

@@ -3,7 +3,7 @@
  * Extracted from App.tsx — maps each message type to the correct state setter.
  */
 import { useCallback } from "react";
-import { createInitialState, reduceEvent, addInteractiveRequest, resolveInteractiveRequest, dismissInteractiveRequest, type SessionState } from "../lib/event-reducer.js";
+import { createInitialState, reduceEvent, addInteractiveRequest, resolveInteractiveRequest, dismissInteractiveRequest, markQueueEntryFailed, type SessionState } from "../lib/event-reducer.js";
 import type { DashboardSession, CommandInfo, FlowInfo, FileEntry, OpenSpecData, OpenSpecGroup, ModelInfo, RoleInfo } from "@blackbelt-technology/pi-dashboard-shared/types.js";
 import { encodeFolderPath } from "../lib/folder-encoding.js";
 import type { TerminalSession } from "@blackbelt-technology/pi-dashboard-shared/terminal-types.js";
@@ -192,9 +192,14 @@ export function useMessageHandler(
           // after; preserving meanwhile keeps queued cards from vanishing
           // (sister rationale to pendingPrompt). See change: dashboard-message-queue.
           const carryQueue = next.get(msg.sessionId)?.queue;
+          // AMEND #5 (f): carry the retry-superseded nonce set across the reset
+          // too, so a late OLD confirmation arriving after a bridge reconnect
+          // stays inert (sister to the queue carry). See dashboard-message-queue.
+          const carrySuperseded = next.get(msg.sessionId)?.supersededNonces;
           const fresh = createInitialState();
           if (carry) fresh.pendingPrompt = carry;
           if (carryQueue && carryQueue.length > 0) fresh.queue = carryQueue;
+          if (carrySuperseded && carrySuperseded.size > 0) fresh.supersededNonces = carrySuperseded;
           next.set(msg.sessionId, fresh);
           return next;
         });
@@ -210,6 +215,28 @@ export function useMessageHandler(
         });
         if (msg.seq > (maxSeqMapRef.current.get(msg.sessionId) ?? 0)) {
           maxSeqMapRef.current.set(msg.sessionId, msg.seq);
+        }
+        break;
+
+      // AMEND #5 (f) delivery-aware-fail (2b): the server could not deliver the
+      // send_prompt to the bridge (sent === false → bridge absent). This is the
+      // REAL bridge-absent failure signal — flip the matching optimistic queue
+      // card to "failed" immediately (retry-safe: it genuinely never reached
+      // pi), instead of waiting out the long-grace backstop. markQueueEntryFailed
+      // only acts on an "optimistic" entry; a confirmed/dispatched one no-ops.
+      // See change: dashboard-message-queue.
+      case "send_prompt_failed":
+        if (msg.queueNonce) {
+          const failNonce = msg.queueNonce;
+          setSessionStates((prev) => {
+            const current = prev.get(msg.sessionId);
+            if (!current) return prev;
+            const updated = markQueueEntryFailed(current, failNonce);
+            if (updated === current) return prev;
+            const next = new Map(prev);
+            next.set(msg.sessionId, updated);
+            return next;
+          });
         }
         break;
 
@@ -312,9 +339,13 @@ export function useMessageHandler(
           // See change: preserve-pending-prompt-across-replay.
           const carry = shouldReset ? next.get(msg.sessionId)?.pendingPrompt : undefined;
           const carryQueue = shouldReset ? next.get(msg.sessionId)?.queue : undefined;
+          // AMEND #5 (f): carry retry-superseded nonces across the full-replay
+          // reset (sister to the queue carry). See dashboard-message-queue.
+          const carrySuperseded = shouldReset ? next.get(msg.sessionId)?.supersededNonces : undefined;
           let current = shouldReset ? createInitialState() : (next.get(msg.sessionId) ?? createInitialState());
           if (carry) current.pendingPrompt = carry;
           if (carryQueue && carryQueue.length > 0) current.queue = carryQueue;
+          if (carrySuperseded && carrySuperseded.size > 0) current.supersededNonces = carrySuperseded;
           for (const { event } of msg.events) {
             current = reduceEvent(current, event);
           }

@@ -41,6 +41,12 @@ interface Harness {
   sendText: (text: string) => void;
   /** Inject a DashboardEvent through the real reducer (as the server would). */
   inject: (event: DashboardEvent) => void;
+  /** Fire the real handleRetryQueued (as tapping "retry" would). */
+  retry: (queueNonce: string) => void;
+  /** Toggle the browser↔server WS connected state (gap (i) WS-drop). */
+  setConnected: (v: boolean) => void;
+  /** Apply the send_prompt_failed client path (markQueueEntryFailed) — gap (ii). */
+  failByNonce: (queueNonce: string) => void;
   /** Current queue snapshot for assertions. */
   getQueue: () => SessionState["queue"];
   container: HTMLElement;
@@ -53,7 +59,7 @@ interface Harness {
  */
 function renderHarness(): Harness {
   const send = vi.fn();
-  let api: Pick<Harness, "sendText" | "inject" | "getQueue"> | null = null;
+  let api: Pick<Harness, "sendText" | "inject" | "getQueue" | "retry" | "setConnected" | "failByNonce"> | null = null;
 
   function App() {
     const [sessionStates, setSessionStates] = useState<Map<string, SessionState>>(() => {
@@ -62,6 +68,8 @@ function renderHarness(): Harness {
       s.status = "streaming";
       return new Map([[SID, s]]);
     });
+    // Controllable browser↔server WS state (gap (i)).
+    const [connected, setConnected] = useState(true);
 
     // Minimal deps for useSessionActions — only handleSend is exercised.
     const setSessions = useState(() => new Map())[1] as any;
@@ -99,6 +107,7 @@ function renderHarness(): Harness {
     );
     useQueueStuckTimeout(
       optimisticQueueEntries,
+      connected,
       useCallback((queueNonce: string) => {
         setSessionStates((prev) => {
           const current = prev.get(SID);
@@ -112,6 +121,18 @@ function renderHarness(): Harness {
 
     api = {
       sendText: (text: string) => actions.handleSend(text),
+      retry: (queueNonce: string) => actions.handleRetryQueued(queueNonce),
+      setConnected: (v: boolean) => setConnected(v),
+      // Gap (ii): the useMessageHandler `send_prompt_failed` case calls exactly
+      // markQueueEntryFailed(nonce). Drive that same path.
+      failByNonce: (queueNonce: string) =>
+        setSessionStates((prev) => {
+          const current = prev.get(SID);
+          if (!current) return prev;
+          const next = new Map(prev);
+          next.set(SID, markQueueEntryFailed(current, queueNonce));
+          return next;
+        }),
       inject: (event: DashboardEvent) =>
         setSessionStates((prev) => {
           const current = prev.get(SID) ?? createInitialState();
@@ -131,6 +152,9 @@ function renderHarness(): Harness {
     send,
     sendText: (t) => act(() => api!.sendText(t)),
     inject: (e) => act(() => api!.inject(e)),
+    retry: (n) => act(() => api!.retry(n)),
+    setConnected: (v) => act(() => api!.setConnected(v)),
+    failByNonce: (n) => act(() => api!.failByNonce(n)),
     getQueue: () => api!.getQueue(),
     container,
   };
@@ -209,23 +233,83 @@ describe("queue round-trip integration — AMEND #2", () => {
     h.inject(userCommitEvent("focus on the parser"));
 
     // The optimistic card must be reconciled away by the text match — NOT left
-    // to rot. Advance past the 30s stuck-timeout to prove it never fails.
+    // to rot. Advance past the long-grace backstop to prove it never fails.
     act(() => {
-      vi.advanceTimersByTime(31_000);
+      vi.advanceTimersByTime(95_000);
     });
     const queue = h.getQueue();
     expect(queue.find((q) => q.state === "failed")).toBeUndefined(); // pre-fix: FAILED
     expect(queue).toHaveLength(0); // dispatched into the committed bubble
   });
 
-  it("GENUINE LOSS still fails visibly: nothing confirms → 30s stuck-timeout → failed", () => {
+  // ── AMEND #5 (f) delivery-aware-fail: three gaps, none silent ──
+
+  it("(2b-iii) CONNECTED-SLOW does NOT false-fail before the long grace; confirms within window", () => {
     const h = renderHarness();
-    h.sendText("this one truly never reaches the bridge");
+    h.sendText("connected but slow");
+    const nonce = h.getQueue()[0].queueNonce;
+    // Past the OLD bare-30s proxy, well before the ~90s long grace — must stay
+    // optimistic (connected + sent=true; no failure signal).
+    act(() => { vi.advanceTimersByTime(45_000); });
+    expect(h.getQueue()[0].state).toBe("optimistic"); // pre-fix: false-"failed" at 30s
+    // The slow confirmation arrives within the window → confirmed, never failed.
+    h.inject(enqueuedEvent(nonce, "connected but slow"));
+    expect(h.getQueue()[0].state).toBe("confirmed");
+  });
+
+  it("(2b-iii) LONG-GRACE genuine bridge→pi loss: connected + sent=true + no message_enqueued within ~90s → failed", () => {
+    const h = renderHarness();
+    h.sendText("reached bridge WS but pi lost it");
     expect(h.getQueue()[0].state).toBe("optimistic");
-    act(() => {
-      vi.advanceTimersByTime(31_000);
-    });
+    // Connected throughout; no message_enqueued ever (pi crashed/session ended
+    // after ws.send). The long-grace backstop MUST fire — genuine loss surfaced,
+    // not silently vanished.
+    act(() => { vi.advanceTimersByTime(91_000); });
     expect(h.getQueue()[0].state).toBe("failed");
+  });
+
+  it("(2b-i) WS-DROP fast-fails an in-flight optimistic (didn't reach the server)", () => {
+    const h = renderHarness();
+    h.sendText("never reached the server");
+    expect(h.getQueue()[0].state).toBe("optimistic");
+    // browser↔server WS drops while the send is in-flight → fast-fail (no need
+    // to wait the long grace; the send provably didn't reach the server).
+    h.setConnected(false);
+    expect(h.getQueue()[0].state).toBe("failed");
+  });
+
+  it("(2b-ii) send_prompt_failed (bridge absent) fast-fails the matching card", () => {
+    const h = renderHarness();
+    h.sendText("bridge is not connected");
+    const nonce = h.getQueue()[0].queueNonce;
+    expect(h.getQueue()[0].state).toBe("optimistic");
+    // The server emits send_prompt_failed on sent===false; the client reducer
+    // path is markQueueEntryFailed(nonce) (useMessageHandler `send_prompt_failed`
+    // case). It fast-fails immediately — no waiting out the long grace.
+    h.failByNonce(nonce);
+    expect(h.getQueue()[0].state).toBe("failed");
+  });
+
+  it("(f) RETRY round-trip: false-failed → retry → late OLD confirm is inert (no flip-flop, no duplicate)", () => {
+    const h = renderHarness();
+    h.sendText("retry round trip");
+    const oldNonce = h.getQueue()[0].queueNonce;
+    // Force a (genuine-loss) long-grace failure.
+    act(() => { vi.advanceTimersByTime(91_000); });
+    expect(h.getQueue()[0].state).toBe("failed");
+    // User taps retry → re-key OLD→NEW, OLD recorded superseded, re-send.
+    h.retry(oldNonce);
+    const newNonce = h.getQueue()[0].queueNonce;
+    expect(newNonce).not.toBe(oldNonce);
+    expect(h.getQueue()[0].state).toBe("optimistic");
+    // The OLD send confirms LATE (connected-slow) — must be INERT.
+    h.inject(enqueuedEvent(oldNonce, "retry round trip"));
+    expect(h.getQueue()).toHaveLength(1); // no duplicate
+    expect(h.getQueue()[0].queueNonce).toBe(newNonce); // no flip-flop back to OLD
+    // The NEW confirms normally.
+    h.inject(enqueuedEvent(newNonce, "retry round trip"));
+    expect(h.getQueue()).toHaveLength(1);
+    expect(h.getQueue()[0].state).toBe("confirmed");
   });
 
   it("AMEND #3 SAME-TEXT: two INTENTIONAL same-text sends → two cards, FIFO send-order, neither false-fails", () => {

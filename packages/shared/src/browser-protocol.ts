@@ -306,6 +306,26 @@ export interface SessionStateResetMessage {
   sessionId: string;
 }
 
+/**
+ * Server → browser: a `send_prompt` could NOT be delivered to the session's
+ * bridge (`piGateway.sendToSession` returned `sent === false` — no bridge
+ * connection). Previously the server only `console.error`'d this, leaving the
+ * browser to infer failure from a bare timeout (a proxy that cannot tell
+ * "bridge absent" from "connected-but-slow"). This event is the REAL
+ * bridge-absent failure signal — the client marks the matching optimistic
+ * queue card `"failed"` immediately (retry-safe: the message genuinely never
+ * reached pi). `queueNonce` correlates the card; absent for non-queue sends.
+ * See change: dashboard-message-queue (AMEND #5 (f) delivery-aware-fail).
+ */
+export interface SendPromptFailedMessage {
+  type: "send_prompt_failed";
+  sessionId: string;
+  /** The client-minted queue correlation id, when the send carried one. */
+  queueNonce?: string;
+  /** Optional human-readable reason (e.g. "no bridge connection"). */
+  reason?: string;
+}
+
 /** Notifies browsers of editor instance status changes. */
 export interface EditorStatusMessage {
   type: "editor_status";
@@ -557,6 +577,7 @@ export type ServerToBrowserMessage =
   | TerminalRemovedMessage
   | TerminalUpdatedMessage
   | SessionStateResetMessage
+  | SendPromptFailedMessage
   | PackageProgressMessage
   | PackageOperationCompleteMessage
   | PiCoreUpdateProgressMessage

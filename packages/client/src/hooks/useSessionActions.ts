@@ -201,9 +201,29 @@ export function useSessionActions(deps: SessionActionDeps) {
       const newNonce = mintRequestId();
       const images = entry.images?.map((img) => ({ type: "image" as const, data: img.data, mimeType: img.mimeType }));
       send({ type: "send_prompt", sessionId: selectedId, text: entry.text, images, queueNonce: newNonce });
+      // AMEND #5 (f) idempotency-guard: re-key OLD→NEW + re-send, AND record the
+      // OLD nonce as retry-superseded so a LATE confirmation for it is inert in
+      // the reducer (no flip-flop back to OLD, no duplicate card, no second
+      // dispatch). "failed" is the 30s stuck-timeout, a PROXY for "reached pi"
+      // that cannot distinguish "disconnected (never reached pi)" from
+      // "connected-but-slow (reached pi, slow confirm)". In the connected-slow
+      // case the OLD send DID reach pi's follow-up queue and will confirm late.
+      //
+      // HONEST RESIDUAL (do not pretend otherwise): the client CANNOT abort the
+      // OLD send already enqueued in pi — the extension API exposes no
+      // per-message removal (the deferred control-tail). So when this race fires
+      // (connected-slow + retry-in-window), pi holds BOTH the OLD and NEW
+      // messages and the agent processes the text twice. This guard makes the
+      // CLIENT STATE correct (one card, NEW nonce, no flip-flop) but cannot
+      // un-send the pi-side duplicate. (Follow-on: a WS-aware stuck-timeout
+      // would cut the false-fail frequency → fewer retries → fewer pi doubles;
+      // it needs its own pass since a connected WS ≠ guaranteed-reached-pi.)
+      const supersededNonces = new Set(current.supersededNonces);
+      supersededNonces.add(queueNonce);
       const next = new Map(prev);
       next.set(selectedId, {
         ...current,
+        supersededNonces,
         queue: current.queue.map((q) =>
           q.queueNonce === queueNonce
             ? { ...q, queueNonce: newNonce, state: "optimistic" as const, createdAt: Date.now() }

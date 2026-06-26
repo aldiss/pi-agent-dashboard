@@ -570,6 +570,7 @@ export default function App() {
   );
   useQueueStuckTimeout(
     optimisticQueueEntries,
+    status === "connected",
     useCallback((queueNonce: string) => {
       if (!selectedId) return;
       setSessionStates((prev) => {

@@ -186,7 +186,7 @@ export async function handleSendPrompt(
   msg: Extract<BrowserToServerMessage, { type: "send_prompt" }>,
   ctx: BrowserHandlerContext,
 ): Promise<void> {
-  const { sessionManager, piGateway, headlessPidRegistry, pendingResumeRegistry, pendingResumeIntents, pendingDashboardSpawns, broadcast } = ctx;
+  const { sessionManager, piGateway, headlessPidRegistry, pendingResumeRegistry, pendingResumeIntents, pendingDashboardSpawns, broadcast, ws, sendTo } = ctx;
 
   // Intercept `/reload` on active headless sessions — forward the request to
   // our kill-and-respawn handler instead of routing the prompt to the bridge
@@ -250,6 +250,18 @@ export async function handleSendPrompt(
     });
     if (!sent) {
       console.error(`[dashboard] send_prompt failed: no bridge connection for session ${msg.sessionId}`);
+      // AMEND #5 (f) delivery-aware-fail (2a): tell the BROWSER, not only the
+      // log. `sent === false` means no bridge connection — the message
+      // genuinely never reached pi. Emit the explicit bridge-absent failure so
+      // the client marks its optimistic queue card "failed" immediately
+      // (retry-safe), instead of waiting out a bare timeout that cannot tell
+      // bridge-absent from connected-but-slow. See change: dashboard-message-queue.
+      sendTo(ws, {
+        type: "send_prompt_failed",
+        sessionId: msg.sessionId,
+        ...(msg.queueNonce ? { queueNonce: msg.queueNonce } : {}),
+        reason: "no bridge connection",
+      });
     }
   }
 }
