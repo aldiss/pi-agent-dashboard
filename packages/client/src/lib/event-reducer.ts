@@ -867,6 +867,40 @@ export function removeQueueEntry(
   return { ...state, queue: state.queue.filter((q) => q.queueNonce !== queueNonce) };
 }
 
+/**
+ * Conservative same-text reconciliation lookup (dashboard-message-queue/v1
+ * AMEND #3). Returns the index of the OPTIMISTIC queue entry matching `text`,
+ * but ONLY when EXACTLY ONE such entry exists — and that entry is the
+ * FIFO-oldest by construction (it's the only one).
+ *
+ * Why this shape (architect-mandated, closes the AMEND #2 nonce-swap seam):
+ * the queueNonce IS the reply-linkage + dispatch identity. With TWO genuine
+ * same-text optimistic entries (the operator intentionally sends the same text
+ * twice while streaming — the double-submit guard only stops accidental
+ * double-FIRES, not intentional re-sends), a newest-first text fallback would
+ * adopt confirmation C1 onto entry O2 and C2 onto O1 — SWAPPING the nonces, so
+ * each agent reply later threads to the WRONG card. Refusing to guess when
+ * count > 1 (returning -1) leaves those entries for the exact-`queueNonce`
+ * match or the authoritative `queue_state` snapshot to reconcile in send-order
+ * — preserving reply-linkage. Mis-adopting is worse than waiting.
+ *
+ * Returns -1 when there are zero OR multiple optimistic same-text matches.
+ */
+export function findSoleOptimisticByText(
+  queue: readonly QueuedMessage[],
+  text: string,
+): number {
+  if (!text) return -1;
+  let foundIdx = -1;
+  for (let i = 0; i < queue.length; i++) {
+    if (queue[i].state === "optimistic" && queue[i].text === text) {
+      if (foundIdx !== -1) return -1; // more than one → do NOT guess
+      foundIdx = i;
+    }
+  }
+  return foundIdx;
+}
+
 export function reduceEvent(state: SessionState, event: DashboardEvent): SessionState {
   const next = { ...state, toolCalls: new Map(state.toolCalls) };
   const data = event.data;
@@ -956,24 +990,25 @@ export function reduceEvent(state: SessionState, event: DashboardEvent): Session
         } else {
           text = String(msg.content ?? "");
         }
-        // FALSE-FAILED reconcile (AMEND #2): if this committing user message was
-        // NOT removed by an exact queueNonce match, fall back to TEXT-match and
-        // drop the most-recent matching queued entry. This covers the
-        // streaming-view-mismatch race: the client queued an optimistic card
-        // (it saw `isStreaming`) but the bridge committed the send straight to
-        // work (it saw the agent already idle) and never emitted
-        // `message_enqueued` — so the card would otherwise rot into the 30s
-        // stuck-timeout "failed" state even though the message was sent fine.
-        // The committing message IS that card; remove it (it becomes the bubble
-        // below). Match newest-first so back-to-back identical sends pop the
-        // right one. See change: dashboard-message-queue (AMEND #2).
+        // FALSE-FAILED reconcile (AMEND #2, hardened AMEND #3): if this
+        // committing user message was NOT removed by an exact queueNonce match,
+        // fall back to TEXT-match. This covers the streaming-view-mismatch race:
+        // the client queued an optimistic card (it saw `isStreaming`) but the
+        // bridge committed the send straight to work (it saw the agent already
+        // idle) and never emitted `message_enqueued` — so the card would
+        // otherwise rot into the 30s stuck-timeout "failed" state even though
+        // the message was sent fine. The committing message IS that card; remove
+        // it (it becomes the bubble below).
+        //
+        // AMEND #3: drop the FIFO-oldest match, and ONLY when EXACTLY ONE
+        // optimistic same-text entry exists (findSoleOptimisticByText). With two
+        // genuine same-text sends a newest-first guess would swap reply-linkage;
+        // when ambiguous we wait for the exact nonce / queue_state snapshot.
+        // See change: dashboard-message-queue (AMEND #2, AMEND #3).
         if (!removedByNonce && text && next.queue.length > 0) {
-          let lastIdx = -1;
-          for (let i = next.queue.length - 1; i >= 0; i--) {
-            if (next.queue[i].text === text) { lastIdx = i; break; }
-          }
-          if (lastIdx !== -1) {
-            next.queue = next.queue.filter((_, i) => i !== lastIdx);
+          const soleIdx = findSoleOptimisticByText(next.queue, text);
+          if (soleIdx !== -1) {
+            next.queue = next.queue.filter((_, i) => i !== soleIdx);
           }
         }
         // Detect a wrapped <skill>...</skill> envelope so the renderer can show
@@ -1486,12 +1521,15 @@ export function reduceEvent(state: SessionState, event: DashboardEvent): Session
       // Message-queue enqueue confirmation (dashboard-message-queue/v1).
       // The bridge acked a follow-up enqueue. Reconcile by queueNonce:
       //   - matches an existing optimistic entry → flip it to "confirmed".
-      //   - no exact-nonce match → TEXT+RECENCY fallback (AMEND #2): adopt this
-      //     confirmation onto the most-recent still-optimistic entry with the
-      //     same text (covers a nonce-thread mismatch), flipping it confirmed +
-      //     re-keying it to the bridge's nonce so the later
-      //     message_start(queueNonce) dispatch matches. ONLY append a fresh card
-      //     when there is genuinely no optimistic card to confirm (true
+      //   - no exact-nonce match → conservative TEXT fallback (AMEND #2,
+      //     hardened AMEND #3): adopt this confirmation onto the FIFO-oldest
+      //     still-optimistic entry with the same text, but ONLY when EXACTLY ONE
+      //     such entry exists (findSoleOptimisticByText) — re-keying it to the
+      //     bridge's nonce so the later message_start(queueNonce) dispatch +
+      //     reply-linkage match. With multiple same-text optimistics we do NOT
+      //     guess (a newest-first guess would SWAP nonces → reply mis-linkage);
+      //     wait for the exact nonce / queue_state snapshot. ONLY append a fresh
+      //     card when there is genuinely no optimistic card to confirm (true
       //     TUI-origin). This prevents the DOUBLING bug (append-on-any-no-match).
       //   - Idempotent: a duplicate event for an already-confirmed nonce no-ops.
       const queueNonce = data.queueNonce as string | undefined;
@@ -1500,16 +1538,15 @@ export function reduceEvent(state: SessionState, event: DashboardEvent): Session
       const source = data.source === "tui" ? "tui" : "dashboard";
       const images = mapWireImagesToChat(data.images);
       let existingIdx = next.queue.findIndex((q) => q.queueNonce === queueNonce);
-      // Text+recency fallback: no exact nonce match → newest optimistic entry
-      // with matching text. Re-key it to the bridge's nonce.
+      // Conservative text fallback: no exact nonce match → the SOLE FIFO-oldest
+      // optimistic entry with matching text (or -1 when zero/multiple). Re-key
+      // it to the bridge's nonce.
       let reKey = false;
-      if (existingIdx === -1 && text) {
-        for (let i = next.queue.length - 1; i >= 0; i--) {
-          if (next.queue[i].state === "optimistic" && next.queue[i].text === text) {
-            existingIdx = i;
-            reKey = true;
-            break;
-          }
+      if (existingIdx === -1) {
+        const soleIdx = findSoleOptimisticByText(next.queue, text);
+        if (soleIdx !== -1) {
+          existingIdx = soleIdx;
+          reKey = true;
         }
       }
       if (existingIdx !== -1) {
