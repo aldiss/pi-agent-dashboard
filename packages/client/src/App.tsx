@@ -50,7 +50,7 @@ import { TerminalsView } from "./components/TerminalsView.js";
 import { EditorView } from "./components/EditorView.js";
 import { decodeFolderPath, encodeFolderPath } from "./lib/folder-encoding.js";
 import { FileDiffView } from "./components/FileDiffView.js";
-import { createInitialState, findLastUserPrompt, reduceEvent, resolveInteractiveRequest, type SessionState } from "./lib/event-reducer.js";
+import { createInitialState, findLastUserPrompt, reduceEvent, resolveInteractiveRequest, markQueueEntryFailed, type SessionState } from "./lib/event-reducer.js";
 import { useMessageHandler } from "./hooks/useMessageHandler.js";
 import { useEditors } from "./lib/use-editors.js";
 import { useContentViews } from "./hooks/useContentViews.js";
@@ -59,6 +59,7 @@ import { useViewDispatcher } from "./hooks/useViewDispatcher.js";
 import { selectViewedSessionId } from "./lib/selectViewedSessionId.js";
 import { useSessionActions } from "./hooks/useSessionActions.js";
 import { usePendingPromptTimeout } from "./hooks/usePendingPromptTimeout.js";
+import { useQueueStuckTimeout } from "./hooks/useQueueStuckTimeout.js";
 import { useOpenSpecActions } from "./hooks/useOpenSpecActions.js";
 import type { DashboardSession, CommandInfo, FlowInfo, FileEntry, OpenSpecData, OpenSpecGroup, ModelInfo, RoleInfo, ImageContent } from "@blackbelt-technology/pi-dashboard-shared/types.js";
 import { SearchableSelectDialog, type SelectOption } from "./components/SearchableSelectDialog.js";
@@ -556,6 +557,31 @@ export default function App() {
     }
   }, [selectedId, setSessionStates]));
 
+  // Message-queue (dashboard-message-queue/v1): per-entry stuck-timeout.
+  // Flip any `optimistic` queued entry the bridge never confirms within 30s to
+  // a visible `failed` state ("failed — tap to retry"). Makes loss VISIBLE,
+  // never silent. See change: dashboard-message-queue.
+  const optimisticQueueEntries = useMemo(
+    () =>
+      selectedState.queue
+        .filter((q) => q.state === "optimistic")
+        .map((q) => ({ queueNonce: q.queueNonce, createdAt: q.createdAt })),
+    [selectedState.queue],
+  );
+  useQueueStuckTimeout(
+    optimisticQueueEntries,
+    useCallback((queueNonce: string) => {
+      if (!selectedId) return;
+      setSessionStates((prev) => {
+        const current = prev.get(selectedId);
+        if (!current) return prev;
+        const next = new Map(prev);
+        next.set(selectedId, markQueueEntryFailed(current, queueNonce));
+        return next;
+      });
+    }, [selectedId, setSessionStates]),
+  );
+
   const selectedCommands = selectedId
     ? sessionCommands.get(selectedId) ?? []
     : [];
@@ -633,6 +659,7 @@ export default function App() {
     handleHideSession, handleUnhideSession,
     handleCreateTerminal, handleKillTerminal, handleRenameTerminal, handleTerminalTitle,
     handleListFiles,
+    handleRetryQueued, handleDismissQueued,
   } = sessionActions;
 
   // Flow picker state (for /flows command intercept)
@@ -1198,7 +1225,7 @@ export default function App() {
                 }
                 return next;
               });
-            } : undefined} showFilterControls={showMessageFilterControls} onCloseFilterControls={() => setShowMessageFilterControls(false)} />
+            } : undefined} onRetryQueued={handleRetryQueued} onDismissQueued={handleDismissQueued} showFilterControls={showMessageFilterControls} onCloseFilterControls={() => setShowMessageFilterControls(false)} />
             </SessionAssetsProvider>
           </ErrorBoundary>
           {/* StatusBar: desktop-only per-session footer (Bert tenure-2 Q1 W3
@@ -1266,6 +1293,7 @@ export default function App() {
             onForceKill={handleForceKill}
             pendingPrompt={!!selectedState.pendingPrompt}
             onCancelPending={handleCancelPending}
+            queuedCount={selectedState.queue.length}
             sessionId={selectedId}
             draft={selectedDraft}
             onDraftChange={setDraftForSelected}

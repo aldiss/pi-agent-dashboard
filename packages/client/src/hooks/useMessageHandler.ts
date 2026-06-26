@@ -186,8 +186,15 @@ export function useMessageHandler(
           // makes the user feel their message vanished.
           // See change: preserve-pending-prompt-across-replay.
           const carry = next.get(msg.sessionId)?.pendingPrompt;
+          // Message-queue (dashboard-message-queue/v1): also carry the visible
+          // queue across the bridge-reconnect reset. The authoritative
+          // queue_state snapshot atomic-replaces the confirmed portion shortly
+          // after; preserving meanwhile keeps queued cards from vanishing
+          // (sister rationale to pendingPrompt). See change: dashboard-message-queue.
+          const carryQueue = next.get(msg.sessionId)?.queue;
           const fresh = createInitialState();
           if (carry) fresh.pendingPrompt = carry;
+          if (carryQueue && carryQueue.length > 0) fresh.queue = carryQueue;
           next.set(msg.sessionId, fresh);
           return next;
         });
@@ -304,8 +311,10 @@ export function useMessageHandler(
           // pendingPrompt across the full-replay reset branch.
           // See change: preserve-pending-prompt-across-replay.
           const carry = shouldReset ? next.get(msg.sessionId)?.pendingPrompt : undefined;
+          const carryQueue = shouldReset ? next.get(msg.sessionId)?.queue : undefined;
           let current = shouldReset ? createInitialState() : (next.get(msg.sessionId) ?? createInitialState());
           if (carry) current.pendingPrompt = carry;
+          if (carryQueue && carryQueue.length > 0) current.queue = carryQueue;
           for (const { event } of msg.events) {
             current = reduceEvent(current, event);
           }

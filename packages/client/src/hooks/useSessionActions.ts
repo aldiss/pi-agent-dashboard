@@ -3,7 +3,7 @@
  * Handles send, abort, resume, spawn, hide, rename, shutdown, terminal, and selection actions.
  */
 import { useCallback } from "react";
-import { createInitialState, resolveInteractiveRequest, type SessionState } from "../lib/event-reducer.js";
+import { createInitialState, resolveInteractiveRequest, removeQueueEntry, type SessionState } from "../lib/event-reducer.js";
 import { encodePromptAnswer } from "../lib/prompt-answer-encoder.js";
 import type { DashboardSession } from "@blackbelt-technology/pi-dashboard-shared/types.js";
 import type { TerminalSession } from "@blackbelt-technology/pi-dashboard-shared/terminal-types.js";
@@ -111,17 +111,45 @@ export function useSessionActions(deps: SessionActionDeps) {
 
   const handleSend = useCallback((text: string, images?: ImageContent[]) => {
     if (selectedId) {
-      send({ type: "send_prompt", sessionId: selectedId, text, images });
+      // Message-queue (dashboard-message-queue/v1): mint a queueNonce so a
+      // queued-while-streaming send can be reconciled by exact match when the
+      // bridge acks it (`message_enqueued`) and dispatched when pi pulls it
+      // into work (`message_start(queueNonce)`). The nonce rides on send_prompt
+      // → server → bridge. For the immediate (non-streaming) send it's simply
+      // unused. See change: dashboard-message-queue.
+      const queueNonce = mintRequestId();
+      send({ type: "send_prompt", sessionId: selectedId, text, images, queueNonce });
       setSessionStates((prev) => {
         const next = new Map(prev);
         const current = next.get(selectedId) ?? createInitialState();
-        next.set(selectedId, {
-          ...current,
-          pendingPrompt: {
-            text,
-            images: images?.map((img) => ({ data: img.data, mimeType: img.mimeType })),
-          },
-        });
+        const chatImages = images?.map((img) => ({ data: img.data, mimeType: img.mimeType }));
+        if (current.isStreaming || current.status === "streaming") {
+          // Streaming → promote to the visible queue. Push an optimistic entry
+          // for instant 0ms feedback; the bridge confirms/reconciles it. Guard
+          // against a double-push (StrictMode / rapid re-send) by queueNonce.
+          if (current.queue.some((q) => q.queueNonce === queueNonce)) return prev;
+          next.set(selectedId, {
+            ...current,
+            queue: [
+              ...current.queue,
+              {
+                queueNonce,
+                text,
+                ...(chatImages && chatImages.length > 0 ? { images: chatImages } : {}),
+                state: "optimistic" as const,
+                source: "dashboard" as const,
+                createdAt: Date.now(),
+              },
+            ],
+          });
+        } else {
+          // Idle → degenerate 0-queue case: keep today's single-slot
+          // optimistic pendingPrompt behavior unchanged.
+          next.set(selectedId, {
+            ...current,
+            pendingPrompt: { text, images: chatImages },
+          });
+        }
         return next;
       });
     }
@@ -131,6 +159,44 @@ export function useSessionActions(deps: SessionActionDeps) {
     navigate(`/session/${id}`);
     setMobileOpen(false);
   }, [navigate, setMobileOpen]);
+
+  // ── Message-queue retry / dismiss (dashboard-message-queue/v1) ──
+  // Retry a failed queued entry: re-send (with a fresh queueNonce) and reset
+  // it to optimistic so the stuck-timeout re-arms. Honest-removal: dismiss is
+  // only offered for unconfirmed (optimistic/failed) entries — a confirmed
+  // entry sits in pi's real queue and the extension API exposes no removal.
+  const handleRetryQueued = useCallback((queueNonce: string) => {
+    if (!selectedId) return;
+    setSessionStates((prev) => {
+      const current = prev.get(selectedId);
+      const entry = current?.queue.find((q) => q.queueNonce === queueNonce);
+      if (!current || !entry || entry.state !== "failed") return prev;
+      const newNonce = mintRequestId();
+      const images = entry.images?.map((img) => ({ type: "image" as const, data: img.data, mimeType: img.mimeType }));
+      send({ type: "send_prompt", sessionId: selectedId, text: entry.text, images, queueNonce: newNonce });
+      const next = new Map(prev);
+      next.set(selectedId, {
+        ...current,
+        queue: current.queue.map((q) =>
+          q.queueNonce === queueNonce
+            ? { ...q, queueNonce: newNonce, state: "optimistic" as const, createdAt: Date.now() }
+            : q,
+        ),
+      });
+      return next;
+    });
+  }, [selectedId, send, setSessionStates]);
+
+  const handleDismissQueued = useCallback((queueNonce: string) => {
+    if (!selectedId) return;
+    setSessionStates((prev) => {
+      const current = prev.get(selectedId);
+      if (!current) return prev;
+      const next = new Map(prev);
+      next.set(selectedId, removeQueueEntry(current, queueNonce));
+      return next;
+    });
+  }, [selectedId, setSessionStates]);
 
   const handleRenameSession = useCallback((sessionId: string, name: string) => {
     send({ type: "rename_session", sessionId, name });
@@ -275,6 +341,7 @@ export function useSessionActions(deps: SessionActionDeps) {
   return {
     handleAbort, handleForceKill, handleCancelPending, handleRespondToUi, handleFlowAction, handleSend,
     handleSelect, handleRenameSession, handleShutdownSession, handleKillProcess,
+    handleRetryQueued, handleDismissQueued,
     handleSendPromptToSession, handleResumeSession, handleResumeSessionKeepPosition, handleSpawnSession,
     handleHideSession, handleUnhideSession,
     handleCreateTerminal, handleKillTerminal, handleRenameTerminal, handleTerminalTitle,

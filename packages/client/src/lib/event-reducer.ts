@@ -76,6 +76,42 @@ export interface PendingPrompt {
   images?: ChatImage[];
 }
 
+/**
+ * A single message in the visible follow-up queue (dashboard-message-queue/v1).
+ *
+ * Promotes the single-slot `pendingPrompt` into an ordered list so the queue
+ * lifecycle (enqueued → dispatched → replied) is VISIBLE, never inferred.
+ *
+ * State machine:
+ *   - "optimistic"  — pushed by `handleSend` the instant the user sends while
+ *                     streaming. 0ms feedback; not yet confirmed by the bridge.
+ *   - "confirmed"   — the bridge acked the enqueue (`message_enqueued`) or the
+ *                     authoritative `queue_state` snapshot includes it. This is
+ *                     the message genuinely sitting in pi's follow-up queue.
+ *   - "failed"      — an "optimistic" entry whose confirmation never arrived
+ *                     within the stuck-timeout window (disconnect failure mode).
+ *                     Rendered as "failed — tap to retry". Makes loss VISIBLE.
+ *
+ * (There is no distinct "dispatching" state: the dispatch edge IS the
+ * `message_start(queueNonce)` event, which removes the entry from the queue
+ * and pushes the committed user bubble in the same reducer pass. The lift
+ * animation lives in ChatView.)
+ *
+ * `queueNonce` is the correlation id — client-minted for dashboard-origin
+ * entries (so the optimistic card reconciles by exact match), bridge-minted
+ * for TUI-origin entries.
+ */
+export interface QueuedMessage {
+  queueNonce: string;
+  text: string;
+  images?: ChatImage[];
+  state: "optimistic" | "confirmed" | "failed";
+  /** Origin — "dashboard" (this client or another) vs "tui" (pi's own terminal). */
+  source?: "dashboard" | "tui";
+  /** Epoch ms when this entry was created client-side (for stuck-timeout). */
+  createdAt: number;
+}
+
 export interface InteractiveUiRequest {
   requestId: string;
   method: string;
@@ -139,6 +175,14 @@ export interface SessionState {
   turnStats: TurnStat[];
   contextUsage?: { tokens: number | null; contextWindow: number };
   pendingPrompt?: PendingPrompt;
+  /**
+   * Visible follow-up queue (dashboard-message-queue/v1). Empty in the
+   * degenerate 0-queue case (the single-slot `pendingPrompt` path handles the
+   * immediate non-streaming send). Populated when ≥1 message is queued while
+   * the agent is streaming. Reconciled by the bridge's authoritative
+   * `queue_state` snapshot. See change: dashboard-message-queue.
+   */
+  queue: QueuedMessage[];
   interactiveRequests: InteractiveUiRequest[];
   flowState: FlowState | null;
   /** All flow states seen during execution (main + subflows), keyed by flowName */
@@ -214,6 +258,7 @@ export function createInitialState(): SessionState {
     cost: 0,
     status: "idle",
     turnStats: [],
+    queue: [],
     interactiveRequests: [],
     flowState: null,
     flowStates: new Map(),
@@ -778,6 +823,50 @@ export function extractAgentEndError(data: Record<string, unknown>): string | un
   return (last.errorMessage as string) || "An unknown error occurred";
 }
 
+// ── Message-queue helpers (dashboard-message-queue/v1) ──
+
+/** Map wire-format images (`{data,mimeType}` / `ImageContent`) to ChatImage[]. */
+function mapWireImagesToChat(images: unknown): ChatImage[] | undefined {
+  if (!Array.isArray(images) || images.length === 0) return undefined;
+  const mapped = images
+    .filter((img: any) => img?.data && img?.mimeType)
+    .map((img: any) => ({ data: img.data as string, mimeType: img.mimeType as string }));
+  return mapped.length > 0 ? mapped : undefined;
+}
+
+/**
+ * Flip the matching `optimistic` queue entry to `failed` (stuck-timeout fired
+ * before the bridge confirmed it — disconnect failure mode). No-op if the
+ * entry is absent or already confirmed/failed. Pure: returns a new state only
+ * when something changed.
+ */
+export function markQueueEntryFailed(
+  state: SessionState,
+  queueNonce: string,
+): SessionState {
+  const idx = state.queue.findIndex((q) => q.queueNonce === queueNonce);
+  if (idx === -1 || state.queue[idx].state !== "optimistic") return state;
+  const nextQueue = state.queue.slice();
+  nextQueue[idx] = { ...nextQueue[idx], state: "failed" };
+  return { ...state, queue: nextQueue };
+}
+
+/**
+ * Remove a queue entry by nonce. Honest-removal contract (resolution-1): only
+ * `optimistic` and `failed` (unconfirmed) entries can be dismissed client-side
+ * — a `confirmed` entry sits in pi's real queue and the extension API exposes
+ * no removal, so we refuse to drop it (would desync from pi). No-op if absent
+ * or confirmed. Pure.
+ */
+export function removeQueueEntry(
+  state: SessionState,
+  queueNonce: string,
+): SessionState {
+  const entry = state.queue.find((q) => q.queueNonce === queueNonce);
+  if (!entry || entry.state === "confirmed") return state;
+  return { ...state, queue: state.queue.filter((q) => q.queueNonce !== queueNonce) };
+}
+
 export function reduceEvent(state: SessionState, event: DashboardEvent): SessionState {
   const next = { ...state, toolCalls: new Map(state.toolCalls) };
   const data = event.data;
@@ -837,6 +926,15 @@ export function reduceEvent(state: SessionState, event: DashboardEvent): Session
       }
       if (msg?.role === "user") {
         next.pendingPrompt = undefined;
+        // Message-queue dispatch→work edge (dashboard-message-queue/v1): when
+        // this user message_start carries a `queueNonce`, the queued follow-up
+        // it identifies was just pulled into work. Remove exactly that entry
+        // from the visible queue — it becomes the committed user bubble pushed
+        // below. ChatView animates the lift. See change: dashboard-message-queue.
+        const dispatchedNonce = data.queueNonce as string | undefined;
+        if (dispatchedNonce && next.queue.some((q) => q.queueNonce === dispatchedNonce)) {
+          next.queue = next.queue.filter((q) => q.queueNonce !== dispatchedNonce);
+        }
         let text = "";
         let images: ChatImage[] | undefined;
         if (Array.isArray(msg.content)) {
@@ -1359,6 +1457,87 @@ export function reduceEvent(state: SessionState, event: DashboardEvent): Session
         tokens: data.tokens as SubagentState["tokens"],
         toolUses: data.toolUses as number | undefined,
       });
+      break;
+    }
+
+    case "message_enqueued": {
+      // Message-queue enqueue confirmation (dashboard-message-queue/v1).
+      // The bridge acked a follow-up enqueue. Reconcile by queueNonce:
+      //   - matches an existing optimistic entry → flip it to "confirmed".
+      //   - no match (TUI-origin, or this client never had the optimistic
+      //     entry) → append a fresh "confirmed" entry.
+      // Idempotent: a duplicate event for an already-confirmed nonce no-ops.
+      const queueNonce = data.queueNonce as string | undefined;
+      if (!queueNonce) break;
+      const text = typeof data.text === "string" ? data.text : "";
+      const source = data.source === "tui" ? "tui" : "dashboard";
+      const images = mapWireImagesToChat(data.images);
+      const existingIdx = next.queue.findIndex((q) => q.queueNonce === queueNonce);
+      if (existingIdx !== -1) {
+        if (next.queue[existingIdx].state === "confirmed") break;
+        next.queue = next.queue.slice();
+        next.queue[existingIdx] = {
+          ...next.queue[existingIdx],
+          state: "confirmed",
+          source,
+          // Prefer the bridge's text/images (authoritative) but keep the
+          // optimistic createdAt for stable ordering/age.
+          text: text || next.queue[existingIdx].text,
+          ...(images ? { images } : {}),
+        };
+      } else {
+        next.queue = [
+          ...next.queue,
+          {
+            queueNonce,
+            text,
+            ...(images ? { images } : {}),
+            state: "confirmed",
+            source,
+            createdAt: event.timestamp,
+          },
+        ];
+      }
+      break;
+    }
+
+    case "queue_state": {
+      // Message-queue authoritative snapshot (dashboard-message-queue/v1).
+      // The bridge's reconstructed follow-up order. ATOMIC-REPLACE the
+      // confirmed portion (sister to sessions_snapshot's replace-not-merge),
+      // while PRESERVING this client's not-yet-confirmed entries:
+      //   - "optimistic": still in-flight to the bridge — keep (a snapshot
+      //     computed before our send reached the bridge must not erase it).
+      //   - "failed": user-visible loss marker — keep until retried/dismissed.
+      // Any prior "confirmed" entry absent from the snapshot is dropped (it
+      // was dispatched or cleared). Entries present in the snapshot become
+      // "confirmed" in the snapshot's exact order.
+      const followUp = Array.isArray(data.followUp) ? data.followUp : [];
+      const snapshotNonces = new Set(
+        followUp.map((f: any) => f?.queueNonce).filter(Boolean),
+      );
+      // Preserve optimistic/failed entries NOT represented in the snapshot,
+      // in their current relative order, AFTER the authoritative confirmed
+      // block (they're newer — not yet acked).
+      const preserved = next.queue.filter(
+        (q) =>
+          (q.state === "optimistic" || q.state === "failed") &&
+          !snapshotNonces.has(q.queueNonce),
+      );
+      const byNonce = new Map(next.queue.map((q) => [q.queueNonce, q]));
+      const confirmed: QueuedMessage[] = followUp.map((f: any, i: number) => {
+        const nonce = (f?.queueNonce as string | undefined) ?? `tui-${event.timestamp}-${i}`;
+        const prior = f?.queueNonce ? byNonce.get(f.queueNonce) : undefined;
+        return {
+          queueNonce: nonce,
+          text: typeof f?.text === "string" ? f.text : prior?.text ?? "",
+          ...(prior?.images ? { images: prior.images } : {}),
+          state: "confirmed" as const,
+          source: prior?.source ?? "tui",
+          createdAt: prior?.createdAt ?? event.timestamp,
+        };
+      });
+      next.queue = [...confirmed, ...preserved];
       break;
     }
 

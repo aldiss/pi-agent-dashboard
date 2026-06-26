@@ -61,6 +61,14 @@ interface Props {
   onDismissError?: () => void;
   onRetryAfterError?: () => void;
   /**
+   * Message-queue (dashboard-message-queue/v1): retry a `failed` queued entry
+   * (re-send) / dismiss an unconfirmed (`optimistic`|`failed`) queued entry.
+   * Confirmed entries expose no dismiss (pi's real queue; no extension-API
+   * removal). See change: dashboard-message-queue.
+   */
+  onRetryQueued?: (queueNonce: string) => void;
+  onDismissQueued?: (queueNonce: string) => void;
+  /**
    * Visibility of MessageFilterControls (Feature 2). Parent (App.tsx) owns
    * the toggle so a header button in SessionHeader can flip it without a
    * second copy of the controls. Controls render inline above the chat
@@ -139,6 +147,93 @@ const MessageBubble = React.memo(function MessageBubble({ content, className, ti
   );
 });
 
+/**
+ * Message-queue (dashboard-message-queue/v1): one visible queued follow-up
+ * card in the stack below the live transcript. Dimmed/"pending" with a
+ * "queued · #N" marker + blue pulse (the MobileComposer blue-pulse vocabulary).
+ * The HEAD card is the next to dispatch; on dispatch it's removed from the
+ * queue and the committed user bubble renders in its place (ChatView's
+ * lift→reconcile spring). `failed` entries surface "failed — tap to retry".
+ */
+const QueuedMessageCard = React.memo(function QueuedMessageCard({
+  entry,
+  position,
+  bubbleMax,
+  reducedMotion,
+  onRetry,
+  onDismiss,
+}: {
+  entry: import("../lib/event-reducer.js").QueuedMessage;
+  position: number;
+  bubbleMax: string;
+  reducedMotion: boolean;
+  onRetry?: (queueNonce: string) => void;
+  onDismiss?: (queueNonce: string) => void;
+}) {
+  const failed = entry.state === "failed";
+  const unconfirmed = entry.state === "optimistic";
+  return (
+    <m.div
+      data-testid="queued-message-card"
+      data-queue-state={entry.state}
+      className="mt-2 mb-2 flex justify-end"
+      initial={reducedMotion ? false : { opacity: 0, y: 16 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={reducedMotion ? undefined : { opacity: 0, y: -8 }}
+      transition={spring.smooth}
+    >
+      <div
+        className={`relative rounded-xl shadow-sm px-4 py-2 ${bubbleMax} border ${
+          failed
+            ? "bg-[var(--accent-red)]/10 border-[var(--accent-red)]/40 border-l-2 border-l-[var(--accent-red)]"
+            : "bg-blue-500/5 border-blue-500/15 border-l-2 border-l-blue-400/60 opacity-80"
+        }`}
+      >
+        <div className="flex items-center gap-1.5 mb-1 text-[10px] uppercase tracking-wide text-[var(--text-tertiary)]">
+          {failed ? (
+            <span className="text-[var(--accent-red)] font-medium">failed</span>
+          ) : (
+            <>
+              <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" aria-hidden="true" />
+              <span>queued · #{position}</span>
+              {unconfirmed && <span className="text-[var(--text-tertiary)]/60">· sending…</span>}
+            </>
+          )}
+        </div>
+        {entry.images && entry.images.length > 0 && (
+          <ImageAttachments images={entry.images} />
+        )}
+        <MarkdownContent content={entry.text} />
+        {(failed || unconfirmed) && (
+          <div className="mt-1.5 flex items-center justify-end gap-2 text-[11px]">
+            {failed && onRetry && (
+              <button
+                type="button"
+                onClick={() => onRetry(entry.queueNonce)}
+                className="px-2 py-0.5 rounded bg-[var(--accent-red)]/20 hover:bg-[var(--accent-red)]/30 text-[var(--accent-red)]"
+                data-testid="queued-retry"
+              >
+                Tap to retry
+              </button>
+            )}
+            {onDismiss && (
+              <button
+                type="button"
+                onClick={() => onDismiss(entry.queueNonce)}
+                className="px-1.5 py-0.5 rounded hover:bg-[var(--bg-secondary)] text-[var(--text-tertiary)] hover:text-[var(--text-secondary)]"
+                aria-label="Dismiss queued message"
+                data-testid="queued-dismiss"
+              >
+                ✕
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+    </m.div>
+  );
+});
+
 const InteractiveUiCard = React.memo(function InteractiveUiCard({ request, onRespondToUi }: {
   request: InteractiveUiRequest;
   onRespondToUi?: (requestId: string, result?: unknown, cancelled?: boolean) => void;
@@ -179,7 +274,7 @@ export interface ChatViewHandle {
   toggleSearch: () => void;
 }
 
-export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ sessionId, state, toolContext, onCancelPending, onRespondToUi, onAbort, onForceKill, onForkFromMessage, onDismissError, onRetryAfterError, showFilterControls, onCloseFilterControls }, ref) {
+export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ sessionId, state, toolContext, onCancelPending, onRespondToUi, onAbort, onForceKill, onForkFromMessage, onDismissError, onRetryAfterError, onRetryQueued, onDismissQueued, showFilterControls, onCloseFilterControls }, ref) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const isNearBottom = useRef(true);
   const reducedMotion = useReducedMotion() ?? false;
@@ -302,7 +397,7 @@ export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ se
         scrollRef.current?.scrollTo(0, scrollRef.current!.scrollHeight);
       });
     }
-  }, [state.messages.length, state.streamingText, state.pendingPrompt, markProgrammatic]);
+  }, [state.messages.length, state.streamingText, state.pendingPrompt, state.queue.length, markProgrammatic]);
 
   // Re-anchor scroll position to bottom after viewport resize (iOS-rotation,
   // keyboard show/hide, address-bar collapse/expand).
@@ -920,7 +1015,25 @@ export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ se
         </m.div>
       )}
 
-      {state.messages.length === 0 && !state.streamingText && !state.pendingPrompt && (
+      {/* Message-queue visible stack (dashboard-message-queue/v1) — each queued
+          follow-up as a distinct dimmed "queued · #N" card below the live
+          transcript. The head is next to dispatch; on dispatch the reducer
+          removes it and the committed user bubble renders above. Generalizes
+          the single optimistic pending-prompt card to N. See change:
+          dashboard-message-queue. */}
+      {state.queue.map((entry, i) => (
+        <QueuedMessageCard
+          key={entry.queueNonce}
+          entry={entry}
+          position={i + 1}
+          bubbleMax={bubbleMax}
+          reducedMotion={reducedMotion}
+          onRetry={onRetryQueued}
+          onDismiss={onDismissQueued}
+        />
+      ))}
+
+      {state.messages.length === 0 && !state.streamingText && !state.pendingPrompt && state.queue.length === 0 && (
         <div className="flex items-center justify-center h-full text-[var(--text-tertiary)]">
           <p>No messages yet</p>
         </div>
