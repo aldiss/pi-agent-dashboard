@@ -9,9 +9,10 @@ import { Loader } from "@earendil-works/pi-tui";
 import { ConnectionManager } from "./connection.js";
 import { detectSessionSource } from "./source-detector.js";
 import { mapEventToProtocol } from "./event-forwarder.js";
-import { createCommandHandler } from "./command-handler.js";
+import { createCommandHandler, parseSendPrompt } from "./command-handler.js";
 import { RetryTracker } from "./retry-tracker.js";
 import { UsageLimitOrderer } from "./usage-limit-orderer.js";
+import { QueueTracker } from "./queue-tracker.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -199,6 +200,41 @@ function initBridge(pi: ExtensionAPI) {
   // `message_end` / `agent_end` events. See change: fix-provider-retry-infinite-loop.
   const retryTracker = new RetryTracker();
   const usageLimitOrderer = new UsageLimitOrderer();
+
+  // ── Message-queue reconstruction (dashboard-message-queue/v1) ──
+  // The bridge reconstructs pi's follow-up queue from observed signals
+  // (own followUp sends + `input` events + message_start dequeues), because
+  // the extension API does NOT expose the AgentSession queue accessors — only
+  // `ctx.hasPendingMessages(): boolean`. See queue-tracker.ts + resolution-1.
+  const queueTracker = new QueueTracker();
+
+  /** Forward the bridge's reconstructed queue snapshot as a queue_state event. */
+  const forwardQueueState = (source: "dashboard" | "tui" | "lifecycle"): void => {
+    if (!isActive() || !sessionReady) return;
+    connection.send({
+      type: "event_forward",
+      sessionId,
+      event: {
+        eventType: "queue_state",
+        timestamp: Date.now(),
+        data: queueTracker.snapshot(source) as unknown as Record<string, unknown>,
+      },
+    });
+  };
+
+  /**
+   * Corroborate the reconstructed model against pi's `hasPendingMessages()`
+   * and forward queue_state. Called on lifecycle edges (message_start /
+   * turn_end / agent_end). The clamp bounds drift from any missed signal.
+   */
+  const recomputeQueueStateFromLifecycle = (ctx: any): void => {
+    if (!isActive() || !sessionReady) return;
+    try {
+      const hasPending = ctx?.hasPendingMessages?.();
+      if (typeof hasPending === "boolean") queueTracker.clampEmpty(hasPending);
+    } catch { /* probe failure non-fatal — keep modeled state */ }
+    forwardQueueState("lifecycle");
+  };
 
   /** Forward a synthesized auto_retry_* event using the standard event_forward shape. */
   const sendSyntheticRetryEvent = (eventType: string, data: Record<string, unknown>): void => {
@@ -572,6 +608,37 @@ function initBridge(pi: ExtensionAPI) {
         }
         return;
       }
+      // ── Message-queue: dashboard-originated enqueue detection ──
+      // When the dashboard sends a prompt WHILE the agent is streaming AND it
+      // parses as a plain follow-up (passthrough — the only type that routes
+      // to `sendUserMessage(deliverAs:"followUp")` in command-handler), record
+      // it in the reconstructed FIFO and forward message_enqueued + queue_state
+      // BEFORE the command handler runs the actual send. The command handler
+      // still performs the real `sendUserMessage`; we only do the bookkeeping.
+      // See change: dashboard-message-queue.
+      if (
+        (msg as any).type === "send_prompt" &&
+        getBridgeState().isAgentStreaming &&
+        sessionReady &&
+        parseSendPrompt((msg as any).text ?? "").type === "passthrough"
+      ) {
+        const enqueued = queueTracker.enqueueDashboard(
+          (msg as any).queueNonce,
+          (msg as any).text ?? "",
+          (msg as any).images,
+        );
+        connection.send({
+          type: "event_forward",
+          sessionId,
+          event: {
+            eventType: "message_enqueued",
+            timestamp: Date.now(),
+            data: enqueued as unknown as Record<string, unknown>,
+          },
+        });
+        forwardQueueState("dashboard");
+      }
+
       const response = await commandHandler.handle(msg);
       if (response) connection.send(response);
       // Immediately send model/thinking update after handling set_thinking_level
@@ -849,6 +916,12 @@ function initBridge(pi: ExtensionAPI) {
             sendSyntheticRetryEvent(trackerSynth.eventType, trackerSynth.data);
           }
         }
+        // Message-queue: the turn finished. All follow-ups should have been
+        // consumed via their own message_start dequeue; clamp the model to
+        // pi's hasPendingMessages() truth and forward the (usually empty)
+        // snapshot so the client's count settles. See change:
+        // dashboard-message-queue.
+        recomputeQueueStateFromLifecycle(ctx);
       }
       // For model_select, enrich the event data with thinkingLevel
       if (eventType === "model_select") {
@@ -880,9 +953,24 @@ function initBridge(pi: ExtensionAPI) {
         if (messageRef && typeof messageRef === "object") {
           const nonce = nextNonce();
           pendingNonces.set(messageRef as object, nonce);
-          const enriched = { ...event, nonce };
+          // Message-queue dequeue: a user message_start means a queued
+          // follow-up was just pulled into work. Pop the bridge FIFO head and
+          // stamp its queueNonce so the client transitions exactly that queued
+          // card into the committed bubble. Empty FIFO → undefined (the
+          // turn-initiating message, degenerate 0-queue case).
+          // See change: dashboard-message-queue.
+          let queueNonce: string | undefined;
+          if ((messageRef as any).role === "user") {
+            queueNonce = queueTracker.dequeueHead();
+          }
+          const enriched = { ...event, nonce, ...(queueNonce ? { queueNonce } : {}) };
           const msg = mapEventToProtocol(sessionId, enriched);
           connection.send(msg);
+          // Recompute queue_state after the dequeue (corroborated by
+          // hasPendingMessages) so the client's authoritative count tracks.
+          if ((messageRef as any).role === "user") {
+            recomputeQueueStateFromLifecycle(ctx);
+          }
           return;
         }
       }
@@ -957,6 +1045,41 @@ function initBridge(pi: ExtensionAPI) {
       connection.send(msg);
     }));
   }
+
+  // ── Message-queue: TUI-typed follow-up enqueue detection ──
+  // A SECOND listener on `input` (the first forwards it as a passthrough). The
+  // `input` event is the only extension-reachable signal for a message typed
+  // in pi's OWN TUI while the agent is streaming. We enqueue it ONLY when:
+  //   - streamingBehavior === "followUp" (it will queue, not steer), AND
+  //   - source !== "extension" (dashboard sends arrive via sendUserMessage as
+  //     source "extension"/"rpc" and are already counted in the send_prompt
+  //     interceptor above — this avoids double-counting).
+  // The bridge mints the queueNonce (no dashboard card to reconcile); the
+  // client appends a fresh confirmed card. See change: dashboard-message-queue.
+  pi.on("input" as any, safe(async (event: any, ctx: any) => {
+    if (!isActive() || !sessionReady) return;
+    cachedCtx = ctx;
+    const ev = event as {
+      streamingBehavior?: string;
+      source?: string;
+      text?: string;
+      images?: any;
+    };
+    if (ev.streamingBehavior !== "followUp") return;
+    if (ev.source === "extension" || ev.source === "rpc") return;
+    if (!ev.text) return;
+    const enqueued = queueTracker.enqueueTui(ev.text, ev.images);
+    connection.send({
+      type: "event_forward",
+      sessionId,
+      event: {
+        eventType: "message_enqueued",
+        timestamp: Date.now(),
+        data: enqueued as unknown as Record<string, unknown>,
+      },
+    });
+    forwardQueueState("tui");
+  }));
 
   // EventBus catch-all: intercept pi.events.emit to forward all EventBus
   // traffic (flow events, subagent events, custom extension events).
@@ -1531,6 +1654,13 @@ function initBridge(pi: ExtensionAPI) {
         });
       }
     }
+
+    // Message-queue: recompute the reconstructed queue snapshot at each turn
+    // boundary (corroborated by hasPendingMessages). The enriched-loop
+    // turn_end arm early-returns when contextUsage is present, so this
+    // dedicated handler is the reliable place to settle queue_state per turn.
+    // See change: dashboard-message-queue.
+    recomputeQueueStateFromLifecycle(ctx);
 
   }));
 
