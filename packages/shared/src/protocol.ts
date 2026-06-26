@@ -100,6 +100,74 @@ export interface EntryPersistedEventData {
   nonce: string;
 }
 
+/**
+ * Message-queue lifecycle event-data shapes (dashboard-message-queue/v1).
+ *
+ * Carried inside the existing `event_forward` envelope as new `eventType`s —
+ * no new transport, no new WS message class. The server forwards them
+ * transparently (event-wiring stores + broadcasts any eventType). The client
+ * reducer promotes the single-slot `pendingPrompt` into a visible `queue[]`.
+ *
+ * Source-of-truth note (see cc-build-resolution-1.md): the extension API
+ * exposes only `hasPendingMessages(): boolean`, NOT the AgentSession queue
+ * accessors. The bridge therefore RECONSTRUCTS the queue model from its own
+ * `sendUserMessage(deliverAs:"followUp")` sends + the `input` event
+ * (TUI-typed, `streamingBehavior:"followUp"`) + `message_start(role=user)`
+ * dequeues, corroborated by `hasPendingMessages()`. `queue_state` is the
+ * bridge's reconstructed snapshot, not a direct read.
+ */
+
+/**
+ * `event_forward` data for `eventType:"message_enqueued"` — one message just
+ * entered the follow-up queue. `queueNonce` correlates the client's optimistic
+ * card (dashboard origin) or anchors a freshly-appended card (TUI origin).
+ */
+export interface MessageEnqueuedEventData {
+  /** Bridge/client-shared correlation id for this queued message. */
+  queueNonce: string;
+  /** The queued message text. */
+  text: string;
+  /** Attached images, if any (wire shape). */
+  images?: ImageContent[];
+  /** Where the message was queued from. */
+  source: "dashboard" | "tui";
+}
+
+/**
+ * `event_forward` data for `eventType:"queue_state"` — the bridge's
+ * authoritative (reconstructed) snapshot of the follow-up queue. The client
+ * atomic-REPLACEs the confirmed portion of its `queue[]` with this ordering
+ * (sister to `sessions_snapshot`).
+ */
+export interface QueueStateEventData {
+  /** Ordered follow-up queue (head = next to dispatch). */
+  followUp: Array<{ queueNonce?: string; text: string }>;
+  /**
+   * Count of steering-queue messages. v1 surfaces a count only (the bridge
+   * cannot enumerate the steering queue — see resolution note). Usually 0.
+   */
+  steeringCount: number;
+  /**
+   * Total pending message count from the bridge's reconstructed model,
+   * corroborated by `ctx.hasPendingMessages()`. = followUp.length +
+   * steeringCount in the common case.
+   */
+  pendingMessageCount: number;
+  /** Origin of the snapshot recompute trigger (informational). */
+  source: "dashboard" | "tui" | "lifecycle";
+}
+
+/**
+ * Conventions on `message_start` event_forward payloads relevant to the queue:
+ *
+ * - A `message_start` whose `data.message.role === "user"` MAY carry an
+ *   optional `data.queueNonce: string` stamped by the bridge when that message
+ *   was the head of the bridge's reconstructed follow-up FIFO (i.e. it was
+ *   queued, now dispatched into work). The client transitions exactly that
+ *   `queue[]` entry into the committed user bubble. Absent when the user
+ *   message was the turn-initiating message (degenerate 0-queue case).
+ */
+
 export interface CommandsListMessage {
   type: "commands_list";
   sessionId: string;
@@ -349,6 +417,15 @@ export interface SendPromptToExtensionMessage {
   sessionId: string;
   text: string;
   images?: ImageContent[];
+  /**
+   * Client-minted correlation id for the message-queue lifecycle
+   * (dashboard-message-queue/v1). When present AND the agent is streaming AND
+   * the message parses as a plain follow-up (passthrough), the bridge reuses
+   * this id as the queued message's `queueNonce` so the client's optimistic
+   * card reconciles by exact match. Absent for legacy clients / non-queueing
+   * sends. See change: dashboard-message-queue.
+   */
+  queueNonce?: string;
 }
 
 export interface AbortToExtensionMessage {

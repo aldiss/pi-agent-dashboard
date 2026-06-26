@@ -595,6 +595,13 @@ export interface SendPromptToBrowserMessage {
   sessionId: string;
   text: string;
   images?: ImageContent[];
+  /**
+   * Client-minted correlation id for the message-queue lifecycle
+   * (dashboard-message-queue/v1). Threaded verbatim to the bridge's
+   * `send_prompt` so the bridge can reuse it as the queued message's
+   * `queueNonce`. Optional/back-compat. See change: dashboard-message-queue.
+   */
+  queueNonce?: string;
 }
 
 export interface AbortToBrowserMessage {
