@@ -1599,26 +1599,32 @@ export function reduceEvent(state: SessionState, event: DashboardEvent): Session
       // Message-queue authoritative snapshot (dashboard-message-queue/v1).
       // The bridge's reconstructed follow-up order. ATOMIC-REPLACE the
       // confirmed portion (sister to sessions_snapshot's replace-not-merge),
-      // while PRESERVING this client's not-yet-confirmed entries:
-      //   - "optimistic": still in-flight to the bridge — keep (a snapshot
-      //     computed before our send reached the bridge must not erase it).
-      //   - "failed": user-visible loss marker — keep until retried/dismissed.
-      // Any prior "confirmed" entry absent from the snapshot is dropped (it
-      // was dispatched or cleared). Entries present in the snapshot become
-      // "confirmed" in the snapshot's exact order.
+      // while reconciling this client's not-yet-confirmed entries:
+      //   - "optimistic": still in-flight to the bridge.
+      //   - "failed": user-visible loss marker.
+      //
+      // AMEND #5 (F4) — authoritative-SUPERSEDE, count-based by text. The
+      // snapshot is authoritative for its confirmed-portion: it must SUPERSEDE
+      // the same-text optimistic/failed entries it covers, not preserve them as
+      // duplicates. Nonce-keyed-only reconciliation duplicated under a
+      // nonce-MISMATCH (snapshot carries bridge-nonces ≠ the client's optimistic
+      // nonces for the same message): [o1,o2 opt "same"] + snapshot
+      // [bridge1,bridge2 "same"] → 4 cards. (F3's append-fix WAITS for
+      // queue_state to reconcile — so queue_state must not itself duplicate.)
+      //
+      // Identity rule (consistent with adopt/append): exact-nonce wins; the
+      // snapshot supersedes the FIFO-oldest same-text optimistics it covers
+      // (count-based, since a snapshot can confirm MULTIPLE same-text at once);
+      // optimistics beyond the snapshot's same-text count stay preserved (newer,
+      // not yet acked). NEVER render both a snapshot-confirmed entry AND its
+      // corresponding optimistic.
       const followUp = Array.isArray(data.followUp) ? data.followUp : [];
       const snapshotNonces = new Set(
         followUp.map((f: any) => f?.queueNonce).filter(Boolean),
       );
-      // Preserve optimistic/failed entries NOT represented in the snapshot,
-      // in their current relative order, AFTER the authoritative confirmed
-      // block (they're newer — not yet acked).
-      const preserved = next.queue.filter(
-        (q) =>
-          (q.state === "optimistic" || q.state === "failed") &&
-          !snapshotNonces.has(q.queueNonce),
-      );
       const byNonce = new Map(next.queue.map((q) => [q.queueNonce, q]));
+      // 1. Build confirmed from the snapshot. A snapshot entry whose nonce
+      //    exact-matches a client entry inherits its text/images/createdAt/source.
       const confirmed: QueuedMessage[] = followUp.map((f: any, i: number) => {
         const nonce = (f?.queueNonce as string | undefined) ?? `tui-${event.timestamp}-${i}`;
         const prior = f?.queueNonce ? byNonce.get(f.queueNonce) : undefined;
@@ -1631,6 +1637,35 @@ export function reduceEvent(state: SessionState, event: DashboardEvent): Session
           createdAt: prior?.createdAt ?? event.timestamp,
         };
       });
+      // 2. Supersede-slots by text — from snapshot entries that did NOT
+      //    exact-match a client nonce (the "new" confirmeds that must claim an
+      //    optimistic by text). Each slot supersedes one FIFO-oldest same-text
+      //    optimistic/failed.
+      const supersedeSlots = new Map<string, number>();
+      for (const f of followUp) {
+        const fNonce = (f as any)?.queueNonce as string | undefined;
+        const matchedClientNonce = fNonce !== undefined && byNonce.has(fNonce);
+        if (matchedClientNonce) continue; // already adopted by exact nonce
+        const t = typeof (f as any)?.text === "string" ? (f as any).text : "";
+        if (!t) continue;
+        supersedeSlots.set(t, (supersedeSlots.get(t) ?? 0) + 1);
+      }
+      // 3. Walk optimistic/failed entries in FIFO order; drop if exact-nonce in
+      //    snapshot OR a same-text supersede slot is available (consume one);
+      //    else preserve (genuinely newer than the snapshot).
+      const preserved: QueuedMessage[] = [];
+      for (const q of next.queue) {
+        if (q.state !== "optimistic" && q.state !== "failed") continue;
+        if (snapshotNonces.has(q.queueNonce)) continue; // exact-superseded
+        const slot = supersedeSlots.get(q.text) ?? 0;
+        if (slot > 0) {
+          supersedeSlots.set(q.text, slot - 1); // text-superseded (FIFO-oldest first)
+          continue;
+        }
+        preserved.push(q);
+      }
+      // 4. Authoritative confirmed block first, then the genuinely-newer
+      //    not-yet-acked entries.
       next.queue = [...confirmed, ...preserved];
       break;
     }

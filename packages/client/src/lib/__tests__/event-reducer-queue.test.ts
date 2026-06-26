@@ -138,6 +138,93 @@ describe("event-reducer queue: queue_state (atomic replace)", () => {
   });
 });
 
+describe("event-reducer queue: AMEND #5 queue_state authoritative-supersede (F4)", () => {
+  it("NO-DUP: two same-text optimistics + MISMATCHED-nonce snapshot of two → length 2 (supersede, not preserve)", () => {
+    // The F4 repro. Pre-fix this produced [bridge1, bridge2, o1, o2] = 4 cards.
+    const s0 = createInitialState();
+    s0.queue = [
+      { queueNonce: "o1", text: "same", state: "optimistic", source: "dashboard", createdAt: TS },
+      { queueNonce: "o2", text: "same", state: "optimistic", source: "dashboard", createdAt: TS + 1 },
+    ];
+    const s1 = reduceEvent(s0, ev("queue_state", {
+      followUp: [
+        { queueNonce: "bridge1", text: "same" },
+        { queueNonce: "bridge2", text: "same" },
+      ],
+      steeringCount: 0,
+      pendingMessageCount: 2,
+      source: "lifecycle",
+    }));
+    // Both same-text optimistics are SUPERSEDED by the two snapshot confirmeds.
+    expect(s1.queue).toHaveLength(2);
+    expect(s1.queue.map((q) => q.queueNonce)).toEqual(["bridge1", "bridge2"]);
+    expect(s1.queue.every((q) => q.state === "confirmed")).toBe(true);
+  });
+
+  it("PARTIAL: two same-text optimistics + snapshot of ONE → length 2 (oldest superseded, newer preserved)", () => {
+    const s0 = createInitialState();
+    s0.queue = [
+      { queueNonce: "o1", text: "same", state: "optimistic", source: "dashboard", createdAt: TS },
+      { queueNonce: "o2", text: "same", state: "optimistic", source: "dashboard", createdAt: TS + 1 },
+    ];
+    const s1 = reduceEvent(s0, ev("queue_state", {
+      followUp: [{ queueNonce: "bridge1", text: "same" }],
+      steeringCount: 0,
+      pendingMessageCount: 1,
+      source: "lifecycle",
+    }));
+    // One slot supersedes the FIFO-oldest (o1); o2 (newer) preserved.
+    expect(s1.queue).toHaveLength(2);
+    expect(s1.queue[0].queueNonce).toBe("bridge1");
+    expect(s1.queue[0].state).toBe("confirmed");
+    expect(s1.queue[1].queueNonce).toBe("o2");
+    expect(s1.queue[1].state).toBe("optimistic");
+  });
+
+  it("EXACT-NONCE still wins: snapshot carrying a client's exact nonce adopts it (no text supersede needed, no dup)", () => {
+    const s0 = createInitialState();
+    s0.queue = [
+      { queueNonce: "o1", text: "same", state: "optimistic", source: "dashboard", createdAt: TS },
+      { queueNonce: "o2", text: "same", state: "optimistic", source: "dashboard", createdAt: TS + 1 },
+    ];
+    // Snapshot confirms o1 by its EXACT nonce + a second bridge-nonce for o2's text.
+    const s1 = reduceEvent(s0, ev("queue_state", {
+      followUp: [
+        { queueNonce: "o1", text: "same" },
+        { queueNonce: "bridge2", text: "same" },
+      ],
+      steeringCount: 0,
+      pendingMessageCount: 2,
+      source: "lifecycle",
+    }));
+    expect(s1.queue).toHaveLength(2);
+    // o1 adopted by exact nonce (inherits createdAt); bridge2 supersedes o2 by text.
+    expect(s1.queue[0].queueNonce).toBe("o1");
+    expect(s1.queue[0].createdAt).toBe(TS); // identity inherited
+    expect(s1.queue[1].queueNonce).toBe("bridge2");
+    expect(s1.queue.every((q) => q.state === "confirmed")).toBe(true);
+  });
+
+  it("DISTINCT-TEXT untouched: a same-text snapshot confirmed must NOT supersede a different-text optimistic", () => {
+    const s0 = createInitialState();
+    s0.queue = [
+      { queueNonce: "o-other", text: "different", state: "optimistic", source: "dashboard", createdAt: TS },
+    ];
+    const s1 = reduceEvent(s0, ev("queue_state", {
+      followUp: [{ queueNonce: "bridge1", text: "same" }],
+      steeringCount: 0,
+      pendingMessageCount: 1,
+      source: "lifecycle",
+    }));
+    // "same" slot does not match "different" → o-other preserved alongside the confirmed.
+    expect(s1.queue).toHaveLength(2);
+    expect(s1.queue[0].queueNonce).toBe("bridge1");
+    expect(s1.queue[0].state).toBe("confirmed");
+    expect(s1.queue[1].queueNonce).toBe("o-other");
+    expect(s1.queue[1].state).toBe("optimistic");
+  });
+});
+
 describe("event-reducer queue: message_start(queueNonce) dispatch", () => {
   it("removes exactly the dispatched entry and pushes the committed user bubble", () => {
     const s0 = createInitialState();
