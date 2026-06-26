@@ -3,6 +3,7 @@ const ACTIVE_ONLY_KEY = "dashboard:activeOnly";
 const COLLAPSED_GROUPS_KEY = "dashboard:collapsedGroups";
 const STALE_HOURS_KEY = "dashboard:staleHours";
 const HIDE_STALE_KEY = "dashboard:hideStale";
+const GROUP_BY_FOLDER_KEY = "dashboard:groupByFolder";
 
 /** Default stale-active threshold (hours of no activity before a non-ended session is treated as stale). */
 const DEFAULT_STALE_HOURS = 24;
@@ -72,6 +73,25 @@ export function getHideStale(): boolean {
 
 export function setHideStale(value: boolean): void {
   getStorage().setItem(HIDE_STALE_KEY, String(value));
+}
+
+/**
+ * Whether each tier's sessions are grouped into directory folders. When `true`
+ * (the default), the sidebar nests tier → directory-folder; when `false`, each
+ * tier renders a flat list of sessions with no directory wrapping.
+ */
+export function getGroupByFolder(): boolean {
+  try {
+    const raw = getStorage().getItem(GROUP_BY_FOLDER_KEY);
+    if (raw === null) return true; // Default to ON (current nested behavior)
+    return raw === "true";
+  } catch {
+    return true;
+  }
+}
+
+export function setGroupByFolder(value: boolean): void {
+  getStorage().setItem(GROUP_BY_FOLDER_KEY, String(value));
 }
 
 export function getCollapsedGroups(): Set<string> {

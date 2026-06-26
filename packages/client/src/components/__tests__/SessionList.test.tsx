@@ -386,3 +386,47 @@ describe("groupSessionsByDirectory", () => {
     expect(unpinned.map((g) => g.cwd)).toEqual(["/new", "/mid", "/old"]);
   });
 });
+
+describe("SessionList folder grouping toggle", () => {
+  it("nested mode (default) wraps each folder's sessions in folder chrome", () => {
+    render(
+      <TestRouter>
+        <ThemeProvider>
+          <SessionList
+            sessions={[
+              makeSession({ id: "s1", cwd: "/a", name: "Alpha" }),
+              makeSession({ id: "s2", cwd: "/b", name: "Beta" }),
+            ]}
+            onSelect={() => {}}
+            onSpawnSession={() => {}}
+          />
+        </ThemeProvider>
+      </TestRouter>,
+    );
+    // Folder chrome present → a FolderActionBar (spawn button) per folder card.
+    expect(screen.getAllByTestId("spawn-session-btn").length).toBeGreaterThan(0);
+  });
+
+  it("flat mode (groupByFolder=false) renders sessions with no folder chrome", () => {
+    localStorage.setItem("dashboard:groupByFolder", "false");
+    const { container } = render(
+      <TestRouter>
+        <ThemeProvider>
+          <SessionList
+            sessions={[
+              makeSession({ id: "s1", cwd: "/a", name: "Alpha" }),
+              makeSession({ id: "s2", cwd: "/b", name: "Beta" }),
+            ]}
+            onSelect={() => {}}
+            onSpawnSession={() => {}}
+          />
+        </ThemeProvider>
+      </TestRouter>,
+    );
+    // No folder cards → no per-folder spawn buttons (FolderActionBar not rendered).
+    expect(screen.queryByTestId("spawn-session-btn")).toBeNull();
+    // Both sessions still render as flat cards directly under the tier.
+    expect(container.querySelector('[data-session-id="s1"]')).toBeTruthy();
+    expect(container.querySelector('[data-session-id="s2"]')).toBeTruthy();
+  });
+});

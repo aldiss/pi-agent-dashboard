@@ -3,7 +3,7 @@ import { SpawnErrorBanner } from "./SpawnErrorBanner.js";
 import { getApiBase } from "../lib/api-context.js";
 import { useLocation } from "wouter";
 import { Icon } from "@mdi/react";
-import { mdiChevronRight, mdiChevronDown, mdiChevronUp, mdiPlus, mdiPin, mdiFolder, mdiFolderOpen, mdiConsoleLine, mdiCog, mdiPuzzleOutline, mdiFileDocumentOutline, mdiViewDashboard, mdiAccountGroup, mdiCube, mdiHelpCircle } from "@mdi/js";
+import { mdiChevronRight, mdiChevronDown, mdiChevronUp, mdiPlus, mdiPin, mdiFolder, mdiFolderOpen, mdiConsoleLine, mdiCog, mdiPuzzleOutline, mdiFileDocumentOutline, mdiViewDashboard, mdiAccountGroup, mdiCube, mdiHelpCircle, mdiSteering } from "@mdi/js";
 import { PiLogo } from "./PiLogo.js";
 import { FolderActionBar } from "./FolderActionBar.js";
 import { encodeFolderPath } from "../lib/folder-encoding.js";
@@ -20,6 +20,7 @@ import {
   filterStaleSessions,
   filterByQuery,
   sortSessionsByOrder,
+  groupTierByFolder,
   SESSION_TIER_ORDER,
   type DirectoryGroup,
   type SessionTier,
@@ -33,6 +34,8 @@ import {
   getStaleHoursThreshold,
   getHideStale,
   setHideStale,
+  getGroupByFolder,
+  setGroupByFolder,
 } from "../lib/session-filter-storage.js";
 import { SessionCard, GroupGitInfo, EditorButtons, branchCache } from "./SessionCard.js";
 import { PlaceholderSessionCard } from "./PlaceholderSessionCard.js";
@@ -134,6 +137,7 @@ export { groupSessionsByDirectory, filterSessions, type DirectoryGroup } from ".
  */
 const TIER_LABEL: Record<SessionTier, string> = {
   "standing-crew": "Standing crew",
+  drivers: "Drivers",
   "cell-executor": "Cell-executors",
   "operator-chat-pane": "Operator chat-panes",
   worker: "Workers",
@@ -142,6 +146,7 @@ const TIER_LABEL: Record<SessionTier, string> = {
 
 const TIER_ICON: Record<SessionTier, string> = {
   "standing-crew": mdiAccountGroup,
+  drivers: mdiSteering,
   "cell-executor": mdiCube,
   "operator-chat-pane": mdiConsoleLine,
   worker: mdiCog,
@@ -156,6 +161,7 @@ const TIER_ICON: Record<SessionTier, string> = {
  */
 const DEFAULT_EXPANDED_TIERS: ReadonlySet<SessionTier> = new Set<SessionTier>([
   "standing-crew",
+  "drivers",
   "cell-executor",
 ]);
 
@@ -302,6 +308,10 @@ export function SessionList({ sessions, selectedId, onSelect, contextUsageMap, o
   // Persisted via dashboard:hideStale / dashboard:staleHours.
   const [hideStale, setHideStaleState] = useState(() => getHideStale());
   const staleHoursThreshold = useMemo(() => getStaleHoursThreshold(), []);
+  // Folder-grouping toggle. When ON (default), each tier's sessions are grouped
+  // into directory folders; when OFF, the tier renders a flat list of sessions
+  // with no directory wrapping. Persisted via dashboard:groupByFolder.
+  const [groupByFolder, setGroupByFolderState] = useState(() => getGroupByFolder());
   // Sidebar-level search/filter.
   //   - workspaceFilter: substring match against the folder path.
   //     Narrows the folder list. Matching folders auto-expand.
@@ -418,20 +428,23 @@ export function SessionList({ sessions, selectedId, onSelect, contextUsageMap, o
   // group by cwd; cwd ordering matches `sortSessionsByOrder` for stability).
   // A directory containing sessions across multiple tiers naturally appears
   // in each tier with only that tier's sessions visible inside it.
-  const tierGroups = useMemo<Array<{ tier: SessionTier; dirGroups: DirectoryGroup[] }>>(() => {
+  const tierGroups = useMemo<Array<{ tier: SessionTier; sessions: DashboardSession[]; groups: DirectoryGroup[] }>>(() => {
     const unpinnedSessions = unpinnedGroups.flatMap((g) => g.sessions);
     const byTier = groupSessionsByTier(unpinnedSessions);
-    const out: Array<{ tier: SessionTier; dirGroups: DirectoryGroup[] }> = [];
+    const out: Array<{ tier: SessionTier; sessions: DashboardSession[]; groups: DirectoryGroup[] }> = [];
     for (const tier of SESSION_TIER_ORDER) {
       const tierSessions = byTier.get(tier);
       if (!tierSessions || tierSessions.length === 0) continue;
-      const { unpinned } = groupSessionsByDirectory(tierSessions, sessionOrderMap, []);
-      out.push({ tier, dirGroups: unpinned });
+      // groupByFolder ON → split into directory folders; OFF → one flat bucket
+      // (keyed per-tier so ended-toggle state stays stable). Powers the
+      // sidebar "Folders" toggle.
+      const groups = groupTierByFolder(tierSessions, groupByFolder, sessionOrderMap, `__tier__:${tier}`);
+      out.push({ tier, sessions: tierSessions, groups });
     }
     return out;
-  }, [unpinnedGroups, sessionOrderMap]);
+  }, [unpinnedGroups, sessionOrderMap, groupByFolder]);
   const allGroups = useMemo(
-    () => [...pinnedGroups, ...tierGroups.flatMap((tg) => tg.dirGroups)],
+    () => [...pinnedGroups, ...tierGroups.flatMap((tg) => tg.groups)],
     [pinnedGroups, tierGroups],
   );
 
@@ -452,6 +465,9 @@ export function SessionList({ sessions, selectedId, onSelect, contextUsageMap, o
 
     if (activeType === "session") {
       for (const group of allGroups) {
+        // Flat-mode tier buckets use a synthetic cwd key and have no real
+        // directory to persist order against — skip reorder/resume for them.
+        if (group.cwd.startsWith("__tier__:")) continue;
         // Session IDs only (terminals moved to TerminalsView)
         const sessionIds = group.sessions.map((s) => s.id);
         const oldIndex = sessionIds.indexOf(active.id as string);
@@ -600,6 +616,20 @@ export function SessionList({ sessions, selectedId, onSelect, contextUsageMap, o
         </div>
         {/* Session + terminal cards — animated collapse */}
         <div className={`group-collapse ${isCollapsed ? "collapsed" : "expanded"}`}>
+          {renderSessionCards(group)}
+        </div>
+      </div>
+    );
+  }
+
+  /**
+   * Render just the session cards for a group — spawn-error banner, placeholder
+   * card, active/ended card list, and the ended-toggle row. Shared by
+   * {@link renderGroup} (wrapped in folder chrome) and the flat tier render
+   * (no folder chrome, when the "Folders" toggle is OFF).
+   */
+  function renderSessionCards(group: DirectoryGroup) {
+    return (
         <div className="space-y-1 pt-1">
           {/* Spawn error banner — see change: spawn-failure-diagnostics */}
           {spawnErrors?.get(group.cwd) && (
@@ -786,8 +816,6 @@ export function SessionList({ sessions, selectedId, onSelect, contextUsageMap, o
             );
           })()}
         </div>
-        </div>
-      </div>
     );
   }
 
@@ -859,6 +887,18 @@ export function SessionList({ sessions, selectedId, onSelect, contextUsageMap, o
           >
             {`Hide stale (${staleHoursThreshold}h+)`}
           </ToggleButton>
+          <ToggleButton
+            active={groupByFolder}
+            onClick={() => {
+              setGroupByFolderState((p) => {
+                const next = !p;
+                setGroupByFolder(next);
+                return next;
+              });
+            }}
+          >
+            Folders
+          </ToggleButton>
           {onPinDirectory && (
             <button
               onClick={() => onOpenPinDialog?.()}
@@ -894,13 +934,41 @@ export function SessionList({ sessions, selectedId, onSelect, contextUsageMap, o
               omitted. Tier headers are collapsible; default-expanded for
               standing-crew + cell-executor, default-collapsed for the rest.
               Tier order matches SESSION_TIER_ORDER. */}
-          {tierGroups.map(({ tier, dirGroups }) => {
-            const visibleDirGroups = dirGroups.filter((g) =>
-              workspaceFilter.length > 0
-                ? folderMatchesFilters(g)
-                : g.sessions.some((s) => s.status !== "ended")
-            );
-            if (visibleDirGroups.length === 0) return null;
+          {tierGroups.map(({ tier, sessions: tierSessions, groups }) => {
+            // Compute the tier's visible content + header count. Two modes:
+            //   • Folders ON  → directory-folder cards (one renderGroup each)
+            //   • Folders OFF → a single flat list of session cards (no folder chrome)
+            let content: React.ReactNode;
+            let count: number;
+            if (groupByFolder) {
+              const visibleDirGroups = groups.filter((g) =>
+                workspaceFilter.length > 0
+                  ? folderMatchesFilters(g)
+                  : g.sessions.some((s) => s.status !== "ended")
+              );
+              if (visibleDirGroups.length === 0) return null;
+              count = visibleDirGroups.length;
+              content = (
+                <div className="flex flex-col gap-2">
+                  {visibleDirGroups.map((group) => renderGroup(group, false))}
+                </div>
+              );
+            } else {
+              // Flat mode: `groups` holds exactly one synthetic bucket per tier.
+              const flatGroup = groups[0];
+              const matched = sessionSearch.length > 0
+                ? filterByQuery(tierSessions, sessionSearch)
+                : tierSessions;
+              const aliveCount = tierSessions.filter((s) => s.status !== "ended").length;
+              const hasVisible = sessionSearch.length > 0 ? matched.length > 0 : aliveCount > 0;
+              if (!flatGroup || !hasVisible) return null;
+              count = sessionSearch.length > 0 ? matched.length : aliveCount;
+              content = (
+                <div className="bg-[var(--bg-secondary)] rounded-lg p-2">
+                  {renderSessionCards(flatGroup)}
+                </div>
+              );
+            }
             const filterActive = workspaceFilter.length > 0 || sessionSearch.length > 0;
             // Auto-expand when only a single tier is present — collapsing the
             // only tier would hide all sidebar content, which is confusing
@@ -925,14 +993,10 @@ export function SessionList({ sessions, selectedId, onSelect, contextUsageMap, o
                   </span>
                   <span className="editorial-heading">{TIER_LABEL[tier]}</span>
                   <span className="text-[10px] font-normal text-[var(--text-muted)] normal-case tracking-normal">
-                    ({visibleDirGroups.length})
+                    ({count})
                   </span>
                 </button>
-                {!tierCollapsed && (
-                  <div className="flex flex-col gap-2">
-                    {visibleDirGroups.map((group) => renderGroup(group, false))}
-                  </div>
-                )}
+                {!tierCollapsed && content}
               </div>
             );
           })}

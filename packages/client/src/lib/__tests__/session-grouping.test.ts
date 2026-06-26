@@ -6,6 +6,7 @@ import { describe, it, expect } from "vitest";
 import type { DashboardSession } from "@blackbelt-technology/pi-dashboard-shared/types.js";
 import {
   groupSessionsByDirectory,
+  groupTierByFolder,
   filterStaleSessions,
   classifyTier,
   groupSessionsByTier,
@@ -228,6 +229,43 @@ describe("classifyTier", () => {
     ).toBe("other");
   });
 
+  it("classifies pi-drivers (tmux + nos-cells/ cwd) as drivers", () => {
+    // Live driver shapes verified own-hand against the running dashboard:
+    // single-word PascalCase names, compound names, and a -driver cell-id —
+    // ALL keyed on the nos-cells/ cwd, not a themed-name regex.
+    const base = "/Users/x/.pi/orchestration-state/nos-cells";
+    expect(classifyTier(s({ name: "Vault", source: "tmux", cwd: `${base}/cell-git-repo-binding` }))).toBe("drivers");
+    expect(classifyTier(s({ name: "Harbor", source: "tmux", cwd: `${base}/intake-attention-protection-driver` }))).toBe("drivers");
+    expect(classifyTier(s({ name: "Keystone", source: "tmux", cwd: `${base}/architect-pair-driver` }))).toBe("drivers");
+    expect(classifyTier(s({ name: "BrightUnion", source: "tmux", cwd: `${base}/handover-reliability-driver` }))).toBe("drivers");
+  });
+
+  it("classifies a null-named driver under nos-cells/ as drivers (name-agnostic)", () => {
+    // The arch-diagram-driver tmux peer has no name — cwd is the discriminator.
+    expect(
+      classifyTier(s({ name: undefined, source: "tmux", cwd: "/Users/x/.pi/orchestration-state/nos-cells/arch-diagram-driver" })),
+    ).toBe("drivers");
+  });
+
+  it("classifies a -driver cell-id outside nos-cells/ as drivers (guarded fallback)", () => {
+    expect(
+      classifyTier(s({ name: "Solo", source: "tmux", cwd: "/Users/x/work/my-thing-driver" })),
+    ).toBe("drivers");
+  });
+
+  it("does NOT classify a /.pi/cells/ session as drivers even when its path contains -driver", () => {
+    // The -driver fallback is guarded against /.pi/cells/ so cell-executors stay distinct.
+    expect(
+      classifyTier(s({ name: "OakHawk", source: "tmux", cwd: "/Users/x/.pi/cells/some-driver-cell/v1" })),
+    ).toBe("cell-executor");
+  });
+
+  it("keeps a standing-crew member out of drivers even under nos-cells/ (order-safe)", () => {
+    expect(
+      classifyTier(s({ name: "Joan-tenure-64", source: "tmux", cwd: "/Users/x/.pi/orchestration-state/nos-cells/architect-pair-driver" })),
+    ).toBe("standing-crew");
+  });
+
   it("falls through to other for unknown sources", () => {
     expect(
       classifyTier(s({ name: "x", source: "unknown", cwd: "/x" })),
@@ -299,13 +337,38 @@ describe("groupSessionsByTier", () => {
 });
 
 describe("SESSION_TIER_ORDER", () => {
-  it("is the canonical 5-element order", () => {
+  it("is the canonical 6-element order with drivers after standing-crew", () => {
     expect(SESSION_TIER_ORDER).toEqual([
       "standing-crew",
+      "drivers",
       "cell-executor",
       "operator-chat-pane",
       "worker",
       "other",
     ]);
+  });
+});
+
+describe("groupTierByFolder", () => {
+  it("nested mode (default) splits a tier's sessions by directory", () => {
+    const a = mk("a", "/repoA", 100);
+    const b = mk("b", "/repoB", 200);
+    const groups = groupTierByFolder([a, b], true);
+    expect(groups).toHaveLength(2);
+    expect(groups.map((g) => g.cwd).sort()).toEqual(["/repoA", "/repoB"]);
+  });
+
+  it("flat mode collapses all sessions into one bucket with no directory sub-groups", () => {
+    const a = mk("a", "/repoA", 100);
+    const b = mk("b", "/repoB", 200);
+    const groups = groupTierByFolder([a, b], false, undefined, "__tier__:drivers");
+    expect(groups).toHaveLength(1);
+    expect(groups[0]!.cwd).toBe("__tier__:drivers");
+    expect(groups[0]!.sessions.map((session) => session.id).sort()).toEqual(["a", "b"]);
+  });
+
+  it("returns no buckets for empty input in either mode", () => {
+    expect(groupTierByFolder([], false)).toHaveLength(0);
+    expect(groupTierByFolder([], true)).toHaveLength(0);
   });
 });
