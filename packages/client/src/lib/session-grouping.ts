@@ -248,8 +248,15 @@ export const SESSION_TIER_ORDER: ReadonlyArray<SessionTier> = [
   "other",
 ];
 
-/** Anchored at start-of-name so e.g. `"NotJoan"` does not match. */
-const STANDING_CREW_NAME_RE = /^(Bert|Joan|Peggy|Lane|Pete|Faye|Don)(-|$)/i;
+/**
+ * Anchored at start-of-name so e.g. `"NotJoan"` does not match. The trailing
+ * negative-lookahead `(?![A-Za-z])` accepts ANY non-letter boundary after the
+ * canonical name — hyphen (`Joan-tenure-23`), space + em-dash (`Don — Don tenure-4 …`),
+ * or end-of-string (`Alice`) — while still rejecting a longer word that merely
+ * starts with a crew name (`Donna`, `Petersen`). Broadened from the old `(-|$)`
+ * which missed the `" — …"` status-suffix shape (Don/Alice grouping fix 2026-06-26).
+ */
+const STANDING_CREW_NAME_RE = /^(Bert|Joan|Peggy|Lane|Pete|Faye|Don|Alice)(?![A-Za-z])/i;
 
 /** Subagent worker by name (e.g. `subagent-worker-3f4a…`). */
 const SUBAGENT_WORKER_NAME_RE = /^subagent-worker-[0-9a-f]/i;
@@ -266,7 +273,7 @@ const THEMED_NAME_RE = /^[A-Z][a-z]+[A-Z][a-z]+/;
  * Decision order (first match wins):
  *   1. `name` matches `subagent-worker-…` → `worker`.
  *   2. `sessionFile` path ends `/run-N/session.jsonl` (cell-internal worker) → `worker`.
- *   3. `name` starts with a standing-crew canonical name (Bert / Joan / Peggy / Lane / Pete / Faye / Don)
+ *   3. `name` starts with a standing-crew canonical name (Bert / Joan / Peggy / Lane / Pete / Faye / Don / Alice)
  *      anchored at start-of-name → `standing-crew`.
  *   4. `source === "tui"` → `operator-chat-pane`.
  *   5. `source === "tmux"` AND (name contains `"cell-executor"` OR themed-PascalCase name

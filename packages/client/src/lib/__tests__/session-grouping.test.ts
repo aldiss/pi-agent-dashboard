@@ -151,6 +151,15 @@ describe("classifyTier", () => {
     expect(classifyTier(s({ name: "Pete-qa" }))).toBe("standing-crew");
     expect(classifyTier(s({ name: "Faye-tenure-2" }))).toBe("standing-crew");
     expect(classifyTier(s({ name: "Don-tenure-1" }))).toBe("standing-crew");
+    expect(classifyTier(s({ name: "Alice" }))).toBe("standing-crew");
+  });
+
+  it("classifies standing-crew names with a ' — status' suffix (the live dashboard name shape)", () => {
+    // Live sessions carry a status-suffix after an em-dash, e.g. the mesh status-string.
+    // The boundary must accept space/em-dash, not only hyphen/end (Don/Alice fix 2026-06-26).
+    expect(classifyTier(s({ name: "Don — Don tenure-4 operator-language layer" }))).toBe("standing-crew");
+    expect(classifyTier(s({ name: "Alice — L0.4 cross-model architect" }))).toBe("standing-crew");
+    expect(classifyTier(s({ name: "Joan tenure-64 — system-evolution" }))).toBe("standing-crew");
   });
 
   it("is case-insensitive for standing-crew canonical names", () => {
@@ -161,6 +170,13 @@ describe("classifyTier", () => {
   it("does NOT match standing-crew names that are not anchored at start", () => {
     expect(classifyTier(s({ name: "NotJoan" }))).not.toBe("standing-crew");
     expect(classifyTier(s({ name: "my-bert-thing" }))).not.toBe("standing-crew");
+  });
+
+  it("does NOT over-match a longer word that merely starts with a crew name", () => {
+    // The negative-lookahead boundary must reject a crew name immediately followed by a letter.
+    expect(classifyTier(s({ name: "Donna" }))).not.toBe("standing-crew");
+    expect(classifyTier(s({ name: "Petersen" }))).not.toBe("standing-crew");
+    expect(classifyTier(s({ name: "Bertram" }))).not.toBe("standing-crew");
   });
 
   it("classifies TUI sessions as operator-chat-pane (after worker/standing-crew checks)", () => {
