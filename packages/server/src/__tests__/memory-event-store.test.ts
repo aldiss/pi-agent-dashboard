@@ -212,6 +212,101 @@ describe("memory-event-store", () => {
     });
   });
 
+  describe("operator/agent message-content preservation (bidirectional truncation fix)", () => {
+    // Use a tiny per-string cap so a modest test string exceeds it; the real
+    // default is 4000 — the cap the operator's long messages were hitting. The
+    // exemption must hold at ANY cap, in BOTH directions (user + assistant).
+    const SMALL_CAP = 100;
+    const longText = "P".repeat(500); // > SMALL_CAP
+    const small = () => createMemoryEventStore(neverPinned, 100, 5000, SMALL_CAP);
+
+    it("preserves a long USER message (operator→agent) whole — no …[truncated]", () => {
+      const store = small();
+      store.insertEvent("s1", {
+        eventType: "message_start",
+        timestamp: Date.now(),
+        data: { message: { role: "user", content: longText } },
+      });
+      const stored = store.getEvent("s1", 1) as any;
+      expect(stored.data.message.content).toBe(longText);
+      expect(stored.data.message.content).not.toContain("truncated");
+    });
+
+    it("preserves a long ASSISTANT message (agent→operator) whole — no …[truncated]", () => {
+      const store = small();
+      store.insertEvent("s1", {
+        eventType: "message_end",
+        timestamp: Date.now(),
+        data: { message: { role: "assistant", content: longText } },
+      });
+      const stored = store.getEvent("s1", 1) as any;
+      expect(stored.data.message.content).toBe(longText);
+      expect(stored.data.message.content).not.toContain("truncated");
+    });
+
+    it("preserves a long TEXT BLOCK inside a user message content array", () => {
+      const store = small();
+      store.insertEvent("s1", {
+        eventType: "message_start",
+        timestamp: Date.now(),
+        data: { message: { role: "user", content: [{ type: "text", text: longText }] } },
+      });
+      const stored = store.getEvent("s1", 1) as any;
+      expect(stored.data.message.content[0].text).toBe(longText);
+    });
+
+    it("STILL truncates tool-result content (role:toolResult) — bloat defense preserved", () => {
+      const store = small();
+      store.insertEvent("s1", {
+        eventType: "tool_execution_end",
+        timestamp: Date.now(),
+        data: { message: { role: "toolResult", toolName: "t", content: longText } },
+      });
+      const stored = store.getEvent("s1", 1) as any;
+      expect(stored.data.message.content.length).toBeLessThan(longText.length);
+      expect(stored.data.message.content).toContain("truncated");
+    });
+
+    it("STILL truncates a non-message string field — cap preserved", () => {
+      const store = small();
+      store.insertEvent("s1", {
+        eventType: "test",
+        timestamp: Date.now(),
+        data: { meta: { note: longText } },
+      });
+      const stored = store.getEvent("s1", 1) as any;
+      expect(stored.data.meta.note.length).toBeLessThan(longText.length);
+      expect(stored.data.meta.note).toContain("truncated");
+    });
+
+    it("STILL caps a thinking block on an assistant message (legit cap preserved)", () => {
+      const store = small();
+      const longThinking = "T".repeat(2000);
+      store.insertEvent("s1", {
+        eventType: "message_end",
+        timestamp: Date.now(),
+        data: { message: { role: "assistant", content: longText, thinking: longThinking } },
+      });
+      const stored = store.getEvent("s1", 1) as any;
+      expect(stored.data.message.content).toBe(longText); // message preserved
+      expect(stored.data.message.thinking).toContain("truncated"); // thinking still capped
+      expect(stored.data.message.thinking.length).toBeLessThan(longThinking.length);
+    });
+
+    it("STILL strips raw_content even inside a user message (defense-in-depth)", () => {
+      const store = small();
+      store.insertEvent("s1", {
+        eventType: "message_start",
+        timestamp: Date.now(),
+        data: { message: { role: "user", content: [{ type: "text", text: longText, raw_content: "R".repeat(50_000) }] } },
+      });
+      const stored = store.getEvent("s1", 1) as any;
+      const block = stored.data.message.content[0];
+      expect(block.text).toBe(longText); // message text preserved
+      expect(block.raw_content).toMatch(/^\[stripped \d+kb raw_content\]$/); // raw_content still stripped
+    });
+  });
+
   describe("getMaxSeq", () => {
     it("returns 0 for unknown session", () => {
       const store = createMemoryEventStore(neverPinned);

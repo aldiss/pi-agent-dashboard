@@ -124,14 +124,23 @@ function previewContent(content: unknown, max = 200): string | undefined {
  *  - Preserve base64 image `data` when a sibling `mimeType` is present (bounded
  *    per-image by MAX_EVENT_IMAGE_BYTES); accumulate preserved bytes into `ctx`
  *    so the total-byte cap can exempt them.
+ *  - Preserve user/assistant message `content` in full (the operator's and the
+ *    agent's actual chat text) — exempt from the per-string cap via
+ *    `preserveStrings` so messages round-trip WHOLE in BOTH directions. Tool
+ *    results (role:"toolResult") stay capped; the raw_content strip + byte
+ *    backstop still bound genuinely oversized payloads.
  *
  * Returns a new object/array if anything changed, otherwise the original.
  */
-function deepSanitize(obj: unknown, maxSize: number, depth: number, ctx: SanitizeCtx): unknown {
+function deepSanitize(obj: unknown, maxSize: number, depth: number, ctx: SanitizeCtx, preserveStrings = false): unknown {
   if (depth > MAX_SANITIZE_DEPTH) return obj;
 
   if (typeof obj === "string") {
-    if (maxSize > 0 && obj.length > maxSize) return obj.slice(0, maxSize) + "\n…[truncated]";
+    // `preserveStrings` is set while walking a user/assistant message's content
+    // — the operator's and the agent's actual chat text, which must arrive
+    // WHOLE (never clipped with the "…[truncated]" marker). The cap still
+    // applies to every other string (tool output, metadata, …).
+    if (!preserveStrings && maxSize > 0 && obj.length > maxSize) return obj.slice(0, maxSize) + "\n…[truncated]";
     return obj;
   }
 
@@ -139,7 +148,7 @@ function deepSanitize(obj: unknown, maxSize: number, depth: number, ctx: Sanitiz
     if (maxSize > 0 && obj.length > MAX_ARRAY_LENGTH) return `[array truncated: ${obj.length} items]`;
     let changed = false;
     const result = obj.map((item) => {
-      const t = deepSanitize(item, maxSize, depth + 1, ctx);
+      const t = deepSanitize(item, maxSize, depth + 1, ctx, preserveStrings);
       if (t !== item) changed = true;
       return t;
     });
@@ -147,6 +156,13 @@ function deepSanitize(obj: unknown, maxSize: number, depth: number, ctx: Sanitiz
   }
 
   if (obj && typeof obj === "object") {
+    // A user/assistant message object ({ role, content }) carries the operator's
+    // or the agent's chat text. Recurse into ITS `content` with string
+    // preservation so the message round-trips WHOLE in both directions. Tool
+    // results (role:"toolResult") are deliberately excluded — their potentially
+    // huge output stays subject to the cap + raw_content strip + byte backstop.
+    const role = (obj as Record<string, unknown>).role;
+    const isChatMessage = role === "user" || role === "assistant";
     let changed = false;
     const result: Record<string, unknown> = {};
     for (const [key, val] of Object.entries(obj)) {
@@ -175,7 +191,10 @@ function deepSanitize(obj: unknown, maxSize: number, depth: number, ctx: Sanitiz
         changed = true;
         continue;
       }
-      const t = deepSanitize(val, maxSize, depth + 1, ctx);
+      // A user/assistant message's `content` is preserved whole; everything else
+      // inherits the current preservation state (default: cap enforced).
+      const childPreserve = preserveStrings || (isChatMessage && key === "content");
+      const t = deepSanitize(val, maxSize, depth + 1, ctx, childPreserve);
       if (t !== val) changed = true;
       result[key] = t;
     }

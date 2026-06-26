@@ -181,6 +181,30 @@ export function groupSessionsByDirectory(
   return { pinned, unpinned };
 }
 
+/**
+ * Within a single tier, split sessions into directory folders (the default,
+ * `groupByFolder === true`) or collapse them into ONE flat bucket
+ * (`groupByFolder === false`) with no directory sub-grouping.
+ *
+ * Powers the sidebar "Folders" on/off toggle: ON preserves the nested
+ * tier→directory view; OFF yields flat tier-buckets. The flat bucket carries
+ * `flatKey` as its `cwd` so per-tier UI state (ended-toggle, test ids) stays
+ * stable across tiers — pass a tier-unique key from the caller. Returns `[]`
+ * for empty input so callers can omit empty tiers.
+ */
+export function groupTierByFolder(
+  sessions: DashboardSession[],
+  groupByFolder: boolean,
+  orderMap?: Map<string, string[]>,
+  flatKey = "",
+): DirectoryGroup[] {
+  if (sessions.length === 0) return [];
+  if (!groupByFolder) {
+    return [{ cwd: flatKey, sessions: [...sessions], pinned: false }];
+  }
+  return groupSessionsByDirectory(sessions, orderMap, []).unpinned;
+}
+
 /** Apply filter pipeline: active-only → hidden → visible sessions */
 export function filterSessions(
   sessions: DashboardSession[],
@@ -229,11 +253,12 @@ export function filterStaleSessions(
  * Coarse-grained role tier the session belongs to, for sidebar primary
  * grouping. Orthogonal to directory grouping (which becomes secondary).
  *
- * Tier order (when rendered): standing-crew → cell-executor →
+ * Tier order (when rendered): standing-crew → drivers → cell-executor →
  * operator-chat-pane → worker → other. Empty tiers are omitted by
- * {@link groupSessionsByTier}.
+ * {@link groupSessionsByTier}. `drivers` sits above `cell-executor` because
+ * pi-drivers are L2 orchestration peers, above cell-internal workers.
  */
-export type SessionTier = "standing-crew" | "cell-executor" | "operator-chat-pane" | "worker" | "other";
+export type SessionTier = "standing-crew" | "drivers" | "cell-executor" | "operator-chat-pane" | "worker" | "other";
 
 /**
  * Canonical tier order used by {@link groupSessionsByTier}. Exported for
@@ -242,6 +267,7 @@ export type SessionTier = "standing-crew" | "cell-executor" | "operator-chat-pan
  */
 export const SESSION_TIER_ORDER: ReadonlyArray<SessionTier> = [
   "standing-crew",
+  "drivers",
   "cell-executor",
   "operator-chat-pane",
   "worker",
@@ -276,10 +302,15 @@ const THEMED_NAME_RE = /^[A-Z][a-z]+[A-Z][a-z]+/;
  *   3. `name` starts with a standing-crew canonical name (Bert / Joan / Peggy / Lane / Pete / Faye / Don / Alice)
  *      anchored at start-of-name → `standing-crew`.
  *   4. `source === "tui"` → `operator-chat-pane`.
- *   5. `source === "tmux"` AND (name contains `"cell-executor"` OR themed-PascalCase name
+ *   5. `source === "tmux"` AND cwd under `nos-cells/` (or a `-driver` cell-id
+ *      outside `/.pi/cells/`) → `drivers`. Keyed on cwd, NOT a themed-name
+ *      regex: pi-driver names are often single-word PascalCase (`Vault`,
+ *      `Harbor`, `Keystone`) or even absent, which the compound
+ *      {@link THEMED_NAME_RE} would miss.
+ *   6. `source === "tmux"` AND (name contains `"cell-executor"` OR themed-PascalCase name
  *      combined with a cell-pattern indicator — `"cell"` / `"ephemeral"` / `"l2"` substring
  *      in name, or cwd containing `"/.pi/cells/"`) → `cell-executor`.
- *   6. Else → `other`.
+ *   7. Else → `other`.
  *
  * Matches the AGENTS.md v1.3.1 standing-crew canonical-name discipline + the
  * cell-pattern v0.4 cell-executor naming conventions; sessions that do not
@@ -292,6 +323,19 @@ export function classifyTier(session: DashboardSession): SessionTier {
   if (STANDING_CREW_NAME_RE.test(name)) return "standing-crew";
   if (session.source === "tui") return "operator-chat-pane";
   if (session.source === "tmux") {
+    // pi-drivers (L2 orchestration) live under the operator's nos-cells/ tree
+    // (e.g. .../nos-cells/architect-pair-driver) and are matched BEFORE the
+    // cell-executor rules below. Keyed on cwd — NOT a themed-name regex —
+    // because driver names are often single-word PascalCase (Vault, Harbor,
+    // Keystone) or absent (the arch-diagram-driver tmux peer has no name),
+    // which the compound THEMED_NAME_RE would miss. Distinct from
+    // cell-executors: drivers are nos-cells/, cell-executors are /.pi/cells/
+    // (nos-cells/ ≠ /.pi/cells/). The "-driver" cell-id fallback is guarded so
+    // it never swallows a /.pi/cells/ cell-executor.
+    const cwd = session.cwd ?? "";
+    if (cwd.includes("nos-cells/") || (cwd.includes("-driver") && !cwd.includes("/.pi/cells/"))) {
+      return "drivers";
+    }
     if (name.includes("cell-executor")) return "cell-executor";
     if (THEMED_NAME_RE.test(name)) {
       const lower = name.toLowerCase();
