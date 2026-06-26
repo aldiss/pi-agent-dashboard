@@ -285,20 +285,49 @@ describe("event-reducer queue: AMEND #3 same-text reconciliation (FIFO-oldest + 
     expect(s1.queue.map((q) => q.queueNonce)).toEqual(["other"]);
   });
 
-  it("MULTIPLE same-text + UNMATCHED message_enqueued → does NOT adopt either (waits, no swap)", () => {
+  it("MULTIPLE same-text + UNMATCHED DASHBOARD message_enqueued → does NOT adopt NOR append (waits, queue stays exactly 2)", () => {
     const s0 = stateWithTwoSameText();
     const s1 = reduceEvent(s0, ev("message_enqueued", {
       queueNonce: "no-match", text: "same text", source: "dashboard",
     }));
-    // Two same-text optimistics → findSoleOptimisticByText returns -1 → neither
-    // is re-keyed (a newest-first guess would SWAP nonces). The two send-order
-    // nonces are preserved; a fresh card is appended (queue_state reconciles).
-    const o1 = s1.queue.find((q) => q.queueNonce === "o1");
-    const o2 = s1.queue.find((q) => q.queueNonce === "o2");
-    expect(o1?.state).toBe("optimistic");
-    expect(o2?.state).toBe("optimistic");
-    expect(s1.queue[0].queueNonce).toBe("o1");
-    expect(s1.queue[1].queueNonce).toBe("o2");
+    // AMEND #4 F3: two same-text optimistics → findSoleOptimisticByText returns
+    // -1 (no adopt — a guess would swap nonces). The append branch is
+    // SOURCE-AWARE: a dashboard confirmation with an ambiguous same-text
+    // optimistic must NOT append a 3rd card (that re-opened the doubling bug).
+    // Queue stays EXACTLY the original two optimistics; send-order nonces intact.
+    expect(s1.queue).toHaveLength(2);
+    expect(s1.queue.map((q) => q.queueNonce)).toEqual(["o1", "o2"]);
+    expect(s1.queue.every((q) => q.state === "optimistic")).toBe(true);
+  });
+
+  it("TUI-origin same-text message_enqueued still appends a fresh card (legitimate separate origin)", () => {
+    // A TUI-typed message with the same text as a dashboard optimistic is a
+    // genuinely separate card — the bridge minted its nonce, there is no client
+    // optimistic to reconcile. It MUST still append.
+    const s0 = stateWithTwoSameText();
+    const s1 = reduceEvent(s0, ev("message_enqueued", {
+      queueNonce: "tui-x", text: "same text", source: "tui",
+    }));
+    expect(s1.queue).toHaveLength(3);
+    const appended = s1.queue.find((q) => q.queueNonce === "tui-x")!;
+    expect(appended.state).toBe("confirmed");
+    expect(appended.source).toBe("tui");
+    // The two dashboard optimistics are untouched.
+    expect(s1.queue.filter((q) => q.state === "optimistic").map((q) => q.queueNonce)).toEqual(["o1", "o2"]);
+  });
+
+  it("DASHBOARD message_enqueued with NO same-text optimistic still appends (genuinely-new, e.g. optimistic already cleared)", () => {
+    // source dashboard but the optimistic card is gone (cleared/failed) → there
+    // is genuinely nothing to reconcile, so appending is correct (not a dup).
+    const s = createInitialState();
+    s.queue = [
+      { queueNonce: "other", text: "different", state: "confirmed", source: "dashboard", createdAt: TS },
+    ];
+    const s1 = reduceEvent(s, ev("message_enqueued", {
+      queueNonce: "fresh", text: "brand new text", source: "dashboard",
+    }));
+    expect(s1.queue).toHaveLength(2);
+    expect(s1.queue.find((q) => q.queueNonce === "fresh")!.state).toBe("confirmed");
   });
 
   it("MULTIPLE same-text + nonce-less message_start → does NOT remove either (waits)", () => {

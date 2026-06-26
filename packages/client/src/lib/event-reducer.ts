@@ -1563,6 +1563,23 @@ export function reduceEvent(state: SessionState, event: DashboardEvent): Session
           ...(images ? { images } : {}),
         };
       } else {
+        // SOURCE-AWARE append (AMEND #4 F3): the append branch must NOT add a
+        // fresh card when this is a DASHBOARD confirmation that still has an
+        // ambiguous same-text optimistic awaiting reconciliation. A dashboard
+        // confirmation ALWAYS corresponds to a client-created optimistic card;
+        // when the sole-match fallback above declined (because MULTIPLE
+        // same-text optimistics exist → it returns -1, no guess), appending
+        // here would duplicate — re-opening the doubling bug on the append
+        // branch. Instead WAIT for the exact queueNonce or the authoritative
+        // queue_state snapshot to reconcile in send-order. Only append when:
+        //   - source === "tui" (a real separate origin, no client card), OR
+        //   - source === "dashboard" but there is genuinely NO same-text
+        //     optimistic (e.g. the optimistic already cleared/failed).
+        // See change: dashboard-message-queue (AMEND #4).
+        const sameTextOptimistic = next.queue.some(
+          (q) => q.state === "optimistic" && q.text === text,
+        );
+        if (source === "dashboard" && sameTextOptimistic) break;
         next.queue = [
           ...next.queue,
           {
