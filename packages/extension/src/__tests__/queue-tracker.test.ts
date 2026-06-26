@@ -54,26 +54,94 @@ describe("QueueTracker — enqueue + snapshot", () => {
   });
 });
 
-describe("QueueTracker — dequeue (FIFO)", () => {
-  it("dequeueHead pops in FIFO order and returns the queueNonce", () => {
+describe("QueueTracker — classifyDequeue (steer-vs-followUp, text-match)", () => {
+  it("dispatches the follow-up HEAD only on a text-match (FIFO order)", () => {
     const qt = new QueueTracker();
-    qt.enqueueDashboard("first", "1");
-    qt.enqueueTui("2"); // bridge-minted nonce
-    qt.enqueueDashboard("third", "3");
-    expect(qt.dequeueHead()).toBe("first");
-    // second is TUI (minted) — just assert order shrank and third is last.
-    const second = qt.dequeueHead();
+    qt.enqueueDashboard("first", "do A");
+    qt.enqueueTui("do B"); // bridge-minted nonce
+    qt.enqueueDashboard("third", "do C");
+    // Head matches → pops "first".
+    expect(qt.classifyDequeue("do A")).toBe("first");
+    // New head is the TUI entry "do B" (minted nonce) — matches by text.
+    const second = qt.classifyDequeue("do B");
     expect(second).toBeTruthy();
     expect(second).not.toBe("third");
-    expect(qt.dequeueHead()).toBe("third");
+    expect(qt.classifyDequeue("do C")).toBe("third");
     expect(qt.size()).toBe(0);
   });
 
-  it("dequeueHead on an empty queue returns undefined (turn-initiating message)", () => {
+  it("does NOT pop when the committing text does not match the head", () => {
     const qt = new QueueTracker();
-    expect(qt.dequeueHead()).toBeUndefined();
+    qt.enqueueDashboard("head", "queued follow-up");
+    // A turn-initiating / untracked message commits with unrelated text.
+    expect(qt.classifyDequeue("something else entirely")).toBeUndefined();
+    // The follow-up card stays queued — NOT falsely dispatched.
+    expect(qt.size()).toBe(1);
+  });
+
+  it("classifyDequeue on an empty model returns undefined", () => {
+    const qt = new QueueTracker();
+    expect(qt.classifyDequeue("anything")).toBeUndefined();
+  });
+
+  it("empty text never pops (mirrors pi's `if (messageText)` guard)", () => {
+    const qt = new QueueTracker();
+    qt.enqueueDashboard("head", ""); // pathological empty-text entry
+    expect(qt.classifyDequeue("")).toBeUndefined();
+    expect(qt.size()).toBe(1);
   });
 });
+
+describe("QueueTracker — steering (recordSteer + steering-first removal)", () => {
+  it("a committing message matching a tracked steer is removed steering-first, dispatches nothing", () => {
+    const qt = new QueueTracker();
+    qt.recordSteer("steer text");
+    expect(qt.classifyDequeue("steer text")).toBeUndefined();
+    // Re-committing the same text would NOT find the steer again (it was removed).
+    // (No follow-up entries exist, so still undefined.)
+    expect(qt.classifyDequeue("steer text")).toBeUndefined();
+  });
+
+  it("steering-first: a steer is preferred even when a follow-up has identical text", () => {
+    const qt = new QueueTracker();
+    qt.enqueueDashboard("fu-nonce", "same text");
+    qt.recordSteer("same text");
+    // pi removes from steering FIRST → the follow-up card must survive.
+    expect(qt.classifyDequeue("same text")).toBeUndefined();
+    expect(qt.size()).toBe(1); // follow-up still queued
+    // A subsequent commit of the same text now matches the follow-up head.
+    expect(qt.classifyDequeue("same text")).toBe("fu-nonce");
+    expect(qt.size()).toBe(0);
+  });
+});
+
+describe("QueueTracker — AMEND #1 INTERLEAVE: TUI steer must not dispatch a queued follow-up card", () => {
+  it("enqueue dashboard followUp → TUI steer (non-matching text) commits → followUp NOT dispatched", () => {
+    const qt = new QueueTracker();
+    // 1. A dashboard follow-up is queued (card present in the FIFO).
+    qt.enqueueDashboard("dash-card-1", "please run the tests");
+    expect(qt.size()).toBe(1);
+
+    // 2. The operator types a STEER in pi's own TUI while streaming. The bridge
+    //    input-listener records it (no card, no message_enqueued).
+    qt.recordSteer("actually, focus on the parser bug");
+
+    // 3. The steer commits → message_start(role:user) with the STEER's text.
+    //    Pre-fix, this blind-popped the followUp head. classifyDequeue must
+    //    NOT dispatch the dashboard follow-up card.
+    const dispatched = qt.classifyDequeue("actually, focus on the parser bug");
+    expect(dispatched).toBeUndefined();
+
+    // The dashboard follow-up card is STILL queued — not falsely "dispatched".
+    expect(qt.size()).toBe(1);
+
+    // 4. Later, the follow-up itself is pulled into work → its text commits →
+    //    NOW it dispatches (correct edge), stamping its real queueNonce.
+    expect(qt.classifyDequeue("please run the tests")).toBe("dash-card-1");
+    expect(qt.size()).toBe(0);
+  });
+});
+
 
 describe("QueueTracker — hasPendingMessages clamp", () => {
   it("clampEmpty(false) hard-resyncs a non-empty model to empty", () => {

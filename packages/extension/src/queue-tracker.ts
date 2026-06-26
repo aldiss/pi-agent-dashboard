@@ -13,21 +13,30 @@
  *   - TUI-typed enqueue while streaming → the `input` event
  *     (`streamingBehavior:"followUp"`, `source:"interactive"`). The bridge
  *     mints a `queueNonce` (no client card to reconcile). → `enqueueTui`.
- *   - dequeue → work → `message_start(role:"user")`: pop the FIFO head and
- *     stamp its `queueNonce` onto the forwarded event. → `dequeueHead`.
+ *   - TUI-typed STEER while streaming → the `input` event
+ *     (`streamingBehavior:"steer"`). Tracked (no card) → `recordSteer`, so the
+ *     dequeue can classify correctly.
+ *   - dequeue → work → `message_start(role:"user")`: classify the committing
+ *     message by TEXT-MATCH, STEERING-FIRST (mirrors pi `_handleAgentEvent`,
+ *     agent-session.js): a matched steer removes-and-dispatches-nothing; else
+ *     a text-match against the follow-up FIFO head pops it + stamps its
+ *     `queueNonce`; else no pop. → `classifyDequeue`. (A TUI steer ALSO emits
+ *     `message_start(user)` but must NOT pop a follow-up card — that was the
+ *     blind-`dequeueHead` seam the architects caught.)
  *   - emptiness corroboration → `ctx.hasPendingMessages()`: after each
  *     relevant event, if `false`, hard-resync the model to empty. This bounds
  *     any missed-event drift (e.g. a TUI-side cancel the bridge can't see).
  *     → `clampEmpty`.
  *
- * pi's follow-up queue is FIFO, so head-of-FIFO matches head-of-dequeue.
+ * pi's follow-up queue is FIFO, so the committing follow-up is the head.
  *
  * This is a per-bridge in-memory model (one tracker per bridge process,
  * keyed by nothing — the bridge already scopes to a single active sessionId).
  * NOT persisted. Composes the FIFO vocabulary of
  * `server/src/pending-attach-registry.ts`.
  *
- * See change: dashboard-message-queue.
+ * See changes: dashboard-message-queue, dashboard-message-queue (AMEND #1
+ * steer-vs-followUp classify).
  */
 
 import type {
@@ -47,6 +56,15 @@ export interface QueueEntry {
 export class QueueTracker {
   /** The reconstructed follow-up queue, head = next to dispatch. */
   private followUp: QueueEntry[] = [];
+  /**
+   * Reconstructed steering-message texts (TUI-typed `streamingBehavior:"steer"`
+   * while streaming). Steers have NO dashboard card — they are tracked only so
+   * the dequeue can classify a committing user message correctly (a steer ALSO
+   * emits `message_start(role:user)`, but must NOT pop a follow-up card).
+   * Mirrors pi's `_steeringMessages` (agent-session.js). Text-keyed, not FIFO —
+   * removal is by text-match, sister to pi's `indexOf`/`splice`.
+   */
+  private steering: string[] = [];
   private nonceCounter = 0;
 
   /** Mint a bridge-side queueNonce (used for TUI-origin entries). */
@@ -93,26 +111,63 @@ export class QueueTracker {
   }
 
   /**
-   * Pop the head of the FIFO (the message just dispatched into work) and
-   * return its `queueNonce` to stamp onto the forwarded `message_start`.
-   * Returns undefined when the queue is empty (the user message was the
-   * turn-initiating message, degenerate 0-queue case).
+   * Record a TUI-typed STEER (`streamingBehavior:"steer"` while streaming).
+   * Steers interrupt-after-tool and have NO dashboard card. Tracked only so
+   * `classifyDequeue` can mirror pi's steering-first removal and avoid popping
+   * an unrelated follow-up card when the steer commits. No event is forwarded.
    */
-  dequeueHead(): string | undefined {
-    const head = this.followUp.shift();
-    return head?.queueNonce;
+  recordSteer(text: string): void {
+    this.steering.push(text);
+  }
+
+  /**
+   * Classify a committing user `message_start` by its text, mirroring pi's
+   * removal logic (agent-session.js `_handleAgentEvent`): STEERING-FIRST,
+   * then follow-up, by TEXT-MATCH — never a blind head-pop.
+   *
+   *   1. If `text` matches a tracked steer → remove that steer, dispatch
+   *      NOTHING (return undefined). A steer is not a queued follow-up card.
+   *   2. Else if `text` matches the follow-up FIFO HEAD → pop the head and
+   *      return its `queueNonce` (the genuine dispatch→work edge).
+   *   3. Else → no pop (return undefined): the committing message is the
+   *      turn-initiating message OR an out-of-order / untracked message; popping
+   *      would dispatch the WRONG card.
+   *
+   * Head-only follow-up match (not pi's whole-queue `indexOf`) keeps the FIFO
+   * model intact — pi's follow-up queue is FIFO so the committing follow-up IS
+   * the head in normal operation; refusing a non-head match is the safe choice
+   * (no false dispatch) and the architect-specified faithful fix.
+   *
+   * Empty `text` (no text blocks) → no pop (return undefined), matching pi's
+   * `if (messageText)` guard.
+   */
+  classifyDequeue(text: string): string | undefined {
+    if (text) {
+      const steerIdx = this.steering.indexOf(text);
+      if (steerIdx !== -1) {
+        this.steering.splice(steerIdx, 1);
+        return undefined;
+      }
+      if (this.followUp.length > 0 && this.followUp[0].text === text) {
+        const head = this.followUp.shift();
+        return head?.queueNonce;
+      }
+    }
+    return undefined;
   }
 
   /**
    * Corroborate against pi's `hasPendingMessages()` boolean. When pi reports
-   * NO pending messages but the model still holds entries, a signal was
-   * missed (e.g. TUI-side cancel, or a dequeue without a matching
-   * message_start) — hard-resync the model to empty to bound drift.
-   * Returns true if the model changed.
+   * NO pending messages but the model still holds entries (follow-up OR
+   * steering), a signal was missed (e.g. TUI-side cancel, or a dequeue without
+   * a matching message_start) — hard-resync BOTH queues to empty to bound
+   * drift. `hasPendingMessages()` counts steering + follow-up, so a false
+   * reading means both are truly empty. Returns true if the model changed.
    */
   clampEmpty(hasPending: boolean): boolean {
-    if (!hasPending && this.followUp.length > 0) {
+    if (!hasPending && (this.followUp.length > 0 || this.steering.length > 0)) {
       this.followUp = [];
+      this.steering = [];
       return true;
     }
     return false;

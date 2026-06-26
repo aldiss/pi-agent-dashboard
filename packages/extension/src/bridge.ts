@@ -77,6 +77,26 @@ function getBridgeState(): BridgeState {
   return (process as any)[BRIDGE_KEY];
 }
 
+/**
+ * Extract the text of a user message, mirroring pi's `_getUserMessageText`
+ * (agent-session.js): string content → as-is; content-array → join the `text`
+ * blocks. Used to classify a committing `message_start(role:user)` against the
+ * queue model by TEXT-MATCH (steer-vs-followUp), exactly as pi removes from its
+ * own queues. See change: dashboard-message-queue (AMEND #1).
+ */
+function extractUserMessageText(message: any): string {
+  if (!message || message.role !== "user") return "";
+  const content = message.content;
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .filter((c: any) => c?.type === "text")
+      .map((c: any) => c.text)
+      .join("");
+  }
+  return "";
+}
+
 export default function (pi: ExtensionAPI) {
   try {
     // Activate provider management before bridge init so providers are
@@ -953,22 +973,28 @@ function initBridge(pi: ExtensionAPI) {
         if (messageRef && typeof messageRef === "object") {
           const nonce = nextNonce();
           pendingNonces.set(messageRef as object, nonce);
-          // Message-queue dequeue: a user message_start means a queued
-          // follow-up was just pulled into work. Pop the bridge FIFO head and
-          // stamp its queueNonce so the client transitions exactly that queued
-          // card into the committed bubble. Empty FIFO → undefined (the
-          // turn-initiating message, degenerate 0-queue case).
-          // See change: dashboard-message-queue.
+          // Message-queue dispatch→work classification. A committing user
+          // message_start is NOT always a queued follow-up being pulled into
+          // work — a TUI STEER (Enter-while-streaming) ALSO emits
+          // message_start(role:user). Mirror pi's removal logic
+          // (agent-session.js _handleAgentEvent: steering-first text-match,
+          // then follow-up): classifyDequeue removes a matched steer WITHOUT
+          // dispatching a card, pops the follow-up HEAD only on a text-match,
+          // and returns no queueNonce otherwise (turn-initiating / untracked
+          // message). This replaces the blind dequeueHead that mis-dispatched
+          // the wrong follow-up card on a steer. See change:
+          // dashboard-message-queue (AMEND #1 steer-vs-followUp).
           let queueNonce: string | undefined;
-          if ((messageRef as any).role === "user") {
-            queueNonce = queueTracker.dequeueHead();
+          const isUser = (messageRef as any).role === "user";
+          if (isUser) {
+            queueNonce = queueTracker.classifyDequeue(extractUserMessageText(messageRef));
           }
           const enriched = { ...event, nonce, ...(queueNonce ? { queueNonce } : {}) };
           const msg = mapEventToProtocol(sessionId, enriched);
           connection.send(msg);
-          // Recompute queue_state after the dequeue (corroborated by
+          // Recompute queue_state after the classify (corroborated by
           // hasPendingMessages) so the client's authoritative count tracks.
-          if ((messageRef as any).role === "user") {
+          if (isUser) {
             recomputeQueueStateFromLifecycle(ctx);
           }
           return;
@@ -1046,16 +1072,20 @@ function initBridge(pi: ExtensionAPI) {
     }));
   }
 
-  // ── Message-queue: TUI-typed follow-up enqueue detection ──
+  // ── Message-queue: TUI-typed enqueue / steer detection ──
   // A SECOND listener on `input` (the first forwards it as a passthrough). The
   // `input` event is the only extension-reachable signal for a message typed
-  // in pi's OWN TUI while the agent is streaming. We enqueue it ONLY when:
-  //   - streamingBehavior === "followUp" (it will queue, not steer), AND
-  //   - source !== "extension" (dashboard sends arrive via sendUserMessage as
-  //     source "extension"/"rpc" and are already counted in the send_prompt
-  //     interceptor above — this avoids double-counting).
-  // The bridge mints the queueNonce (no dashboard card to reconcile); the
-  // client appends a fresh confirmed card. See change: dashboard-message-queue.
+  // in pi's OWN TUI while the agent is streaming. We act on it ONLY when
+  // `source !== "extension"/"rpc"` (dashboard sends arrive via sendUserMessage
+  // as source "extension" and are already counted in the send_prompt
+  // interceptor above — this avoids double-counting), then branch on
+  // streamingBehavior:
+  //   - "followUp" → enqueue (mint queueNonce, no client card to reconcile) +
+  //     forward message_enqueued + queue_state.
+  //   - "steer"    → record the steer text ONLY (no card, no message_enqueued).
+  //     A steer ALSO emits message_start(role:user) later; tracking it lets
+  //     classifyDequeue avoid mis-dispatching an unrelated follow-up card on
+  //     that commit (the AMEND #1 seam). See change: dashboard-message-queue.
   pi.on("input" as any, safe(async (event: any, ctx: any) => {
     if (!isActive() || !sessionReady) return;
     cachedCtx = ctx;
@@ -1065,9 +1095,14 @@ function initBridge(pi: ExtensionAPI) {
       text?: string;
       images?: any;
     };
-    if (ev.streamingBehavior !== "followUp") return;
     if (ev.source === "extension" || ev.source === "rpc") return;
     if (!ev.text) return;
+    if (ev.streamingBehavior === "steer") {
+      // Steers have no dashboard card — track only for dequeue classification.
+      queueTracker.recordSteer(ev.text);
+      return;
+    }
+    if (ev.streamingBehavior !== "followUp") return;
     const enqueued = queueTracker.enqueueTui(ev.text, ev.images);
     connection.send({
       type: "event_forward",
