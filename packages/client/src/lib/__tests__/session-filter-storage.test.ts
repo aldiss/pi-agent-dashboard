@@ -10,6 +10,8 @@ import {
   setStaleHoursThreshold,
   getHideStale,
   setHideStale,
+  getGroupByFolder,
+  setGroupByFolder,
 } from "../session-filter-storage.js";
 
 // Node 25's built-in localStorage overrides jsdom's and lacks standard methods.
@@ -177,6 +179,22 @@ describe("session-filter-storage", () => {
     it("round-trips false", () => {
       setHideStale(false);
       expect(getHideStale()).toBe(false);
+    });
+  });
+
+  describe("getGroupByFolder / setGroupByFolder", () => {
+    it("defaults to true when nothing stored", () => {
+      expect(getGroupByFolder()).toBe(true);
+    });
+
+    it("round-trips true", () => {
+      setGroupByFolder(true);
+      expect(getGroupByFolder()).toBe(true);
+    });
+
+    it("round-trips false", () => {
+      setGroupByFolder(false);
+      expect(getGroupByFolder()).toBe(false);
     });
   });
 });
