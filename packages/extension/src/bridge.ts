@@ -669,6 +669,29 @@ function initBridge(pi: ExtensionAPI) {
     }),
     onReconnect: safe(() => {
       if (!isActive()) return; // Stale listener guard
+      // fix-mdns-local-host-hijack BUG-2: re-send session_register on every
+      // reconnect. session_register is otherwise emitted ONLY once, in the
+      // `session_start` handler; a bare reconnect (socket dropped + re-opened
+      // by the ConnectionManager watchdog) re-establishes the WS but never
+      // re-registers, so the server keeps the socket but never re-associates
+      // it with this session → the session reconnects-but-stays-invisible
+      // (no bridge in /api/sessions). Re-emit from the closure-level last-known
+      // values so the reconnected socket is re-registered. Buffered-safe:
+      // connection.send() buffers until the socket is open, then flushes.
+      if (sessionId) {
+        connection.send({
+          type: "session_register",
+          sessionId,
+          cwd: cachedCtx?.cwd ?? "",
+          name: lastSessionName || undefined,
+          source: detectSessionSource(cachedHasUI, lastSessionFile),
+          model: lastModel,
+          thinkingLevel: lastThinkingLevel,
+          sessionFile: lastSessionFile,
+          sessionDir: lastSessionDir,
+          firstMessage: lastFirstMessage,
+        });
+      }
       // Reset caches that aren't persisted server-side so the upcoming
       // 30s tick (and the inline calls below) re-emit the live state.
       const _bc = syncBc();

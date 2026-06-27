@@ -25,7 +25,7 @@ describe("autoStartServer", () => {
 
     const result = await autoStartServer(baseConfig, deps);
 
-    expect(result.server).toEqual({ host: "myhost.local", port: 8000, piPort: 9999 });
+    expect(result.server).toEqual({ host: "localhost", port: 8000, piPort: 9999 });
     expect(deps.isDashboardRunning).not.toHaveBeenCalled();
     expect(deps.launchServer).not.toHaveBeenCalled();
   });
@@ -85,7 +85,10 @@ describe("autoStartServer", () => {
 
     const result = await autoStartServer(baseConfig, deps);
 
-    expect(result.server).toEqual({ host: "myhost.local", port: 8000, piPort: 9998 });
+    // fix-mdns-local-host-hijack: a discovered LOCAL server is always returned
+    // as `localhost` (NOT its mDNS-advertised host) so a DNS-unresolvable bare
+    // computer-name can never be used for a same-machine connection.
+    expect(result.server).toEqual({ host: "localhost", port: 8000, piPort: 9998 });
   });
 
   it("suppresses warning when launch fails but health check succeeds on recheck", async () => {
@@ -165,7 +168,7 @@ describe("autoStartServer", () => {
 
     const result = await autoStartServer(baseConfig, deps);
 
-    expect(result.server).toEqual({ host: "myhost.local", port: 8000, piPort: 9999 });
+    expect(result.server).toEqual({ host: "localhost", port: 8000, piPort: 9999 });
   });
 
   describe("onLaunchStart / onLaunchEnd callbacks", () => {

@@ -8,9 +8,20 @@ describe("pickBestHost", () => {
     expect(pickBestHost(service)).toBe("my-mac.local");
   });
 
-  it("keeps a bare DNS-safe hostname unchanged", () => {
+  it("resolves a bare single-label hostname to its IPv4 (bare names are unresolvable without .local)", () => {
+    // fix-mdns-local-host-hijack: a bare single-label name like `macbook` is
+    // DNS-character-safe but NOT resolvable without the `.local` suffix
+    // (it was the root cause of the 0-bridge reconnect-loop). When an IPv4
+    // address was advertised, prefer it (always reachable).
     const service = { host: "macbook", addresses: ["192.168.1.5"] } as any;
-    expect(pickBestHost(service)).toBe("macbook");
+    expect(pickBestHost(service)).toBe("192.168.1.5");
+  });
+
+  it("appends .local to a bare single-label hostname when no IPv4 is advertised", () => {
+    // No address to fall back on → use the mDNS-resolvable `.local` form
+    // rather than the unresolvable bare name.
+    const service = { host: "macbook", addresses: [] } as any;
+    expect(pickBestHost(service)).toBe("macbook.local");
   });
 
   it("falls back to IPv4 address when host has a space", () => {
