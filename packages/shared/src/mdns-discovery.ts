@@ -114,6 +114,15 @@ function getLocalAddresses(): Set<string> {
  *
  * Rule: a host is DNS-safe iff it matches `[A-Za-z0-9.-]+` and does not
  * begin or end with a hyphen (RFC 1123, relaxed for the `.local` suffix).
+ *
+ * fix-mdns-local-host-hijack: DNS-safe CHARACTERS are not the same as DNS-
+ * RESOLVABLE. Bonjour on macOS advertises `service.host` as the bare OS
+ * computer-name (e.g. `vaceslavs-macbook-pro`) — valid characters, but a
+ * single-label bare name does NOT resolve without the `.local` suffix
+ * (`ping vaceslavs-macbook-pro` → "cannot resolve"; `…​.local` → 127.0.0.1).
+ * So for a bare single-label name we prefer a concrete IPv4 address when one
+ * was advertised, and otherwise append `.local` (the mDNS-resolvable form),
+ * rather than returning an unresolvable bare host that yields undici onerror.
  */
 export function pickBestHost(service: Pick<Service, "host" | "addresses">): string {
   const host = service.host;
@@ -123,7 +132,20 @@ export function pickBestHost(service: Pick<Service, "host" | "addresses">): stri
     /^[A-Za-z0-9.-]+$/.test(host) &&
     !host.startsWith("-") &&
     !host.endsWith("-");
-  if (isDnsSafe) return host;
+  if (isDnsSafe) {
+    // A bare single-label hostname (no dot) other than `localhost` is DNS-
+    // character-safe but NOT reliably resolvable (needs the `.local` suffix).
+    // Prefer a concrete IPv4 address if advertised; else use the `.local` form.
+    const isBareSingleLabel =
+      !host.includes(".") && host !== "localhost";
+    if (isBareSingleLabel) {
+      const addrs = service.addresses ?? [];
+      const ipv4 = addrs.find((a) => /^\d+\.\d+\.\d+\.\d+$/.test(a));
+      if (ipv4) return ipv4;
+      return `${host}.local`;
+    }
+    return host;
+  }
 
   const addresses = service.addresses ?? [];
   const ipv4 = addresses.find((a) => /^\d+\.\d+\.\d+\.\d+$/.test(a));

@@ -61,7 +61,14 @@ export async function autoStartServer(
     const servers = await deps.discoverDashboard(2000);
     const local = servers.find(s => s.isLocal);
     if (local) {
-      return { server: { host: local.host, port: local.port, piPort: local.piPort } };
+      // A local server is always reachable via `localhost`. Do NOT use the
+      // mDNS-advertised `local.host` here: Bonjour can advertise the bare OS
+      // computer-name (e.g. `vaceslavs-macbook-pro`) which is NOT DNS-resolvable
+      // without the `.local` suffix, so connecting to `ws://<bare-name>:<port>`
+      // fails at hostname resolution (undici onerror, upstream of TCP SYN) and
+      // the bridge falls into a reconnect-loop-to-a-dead-URL → 0-bridge.
+      // See change: fix-mdns-local-host-hijack.
+      return { server: { host: "localhost", port: local.port, piPort: local.piPort } };
     }
     // Remote servers exist but no local — fall through to health check
   } catch {
@@ -101,7 +108,9 @@ export async function autoStartServer(
       const discovered = await deps.discoverDashboard(10000);
       const local = discovered.find(s => s.isLocal);
       if (local) {
-        return { server: { host: local.host, port: local.port, piPort: local.piPort } };
+        // Local server → always use `localhost` (see fix-mdns-local-host-hijack
+        // above): the mDNS-advertised bare host may be DNS-unresolvable.
+        return { server: { host: "localhost", port: local.port, piPort: local.piPort } };
       }
     } catch {
       // mDNS failed — use config defaults

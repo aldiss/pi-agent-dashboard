@@ -15,6 +15,19 @@ export interface ConnectionManagerOptions {
 
 export class ConnectionManager {
   private url: string;
+  /**
+   * fix-mdns-local-host-hijack FIX-c: the last URL that actually reached
+   * `onopen` (a confirmed-working endpoint). Anchored to the initial URL at
+   * construction, and updated whenever a connection opens. Used to self-heal a
+   * session that got switched (via `updateUrl`, e.g. mDNS discovery) to an
+   * endpoint that then fails to connect: after repeated failures the reconnect
+   * loop ABANDONS the dead URL and reverts here — no re-bootstrap needed.
+   */
+  private lastWorkingUrl: string;
+  /** Consecutive reconnect attempts since the last successful `onopen`. */
+  private consecutiveReconnectFailures = 0;
+  /** Revert to `lastWorkingUrl` after this many consecutive failures to a switched URL. */
+  private static readonly REVERT_AFTER_FAILURES = 3;
   private WS: any;
   private ws: any | null = null;
   private buffer: string[] = [];
@@ -47,6 +60,7 @@ export class ConnectionManager {
 
   constructor(options: ConnectionManagerOptions) {
     this.url = options.url;
+    this.lastWorkingUrl = options.url; // initial URL is the known-good anchor until proven otherwise
     this.WS = options.WebSocketImpl ?? (globalThis as any).WebSocket;
     this.maxBufferSize = options.maxBufferSize ?? 10000;
     this.watchdogTimeout = options.watchdogTimeout ?? ConnectionManager.DEFAULT_WATCHDOG_TIMEOUT;
@@ -157,6 +171,10 @@ export class ConnectionManager {
     this.ws.onopen = () => {
       // Reset backoff on successful connection
       this.backoff = 0;
+      // fix-mdns-local-host-hijack FIX-c: this URL just connected — it is now
+      // the known-good anchor, and the failure streak resets.
+      this.lastWorkingUrl = this.url;
+      this.consecutiveReconnectFailures = 0;
       this.lastMessageAt = Date.now();
 
       // Notify reconnect if this isn't the first connection
@@ -245,6 +263,27 @@ export class ConnectionManager {
   }
 
   private scheduleReconnect(): void {
+    // fix-mdns-local-host-hijack FIX-c: self-heal a session that was switched
+    // (via updateUrl, e.g. mDNS discovery) to an endpoint that won't connect.
+    // Each scheduleReconnect without an intervening onopen is a failure; after
+    // REVERT_AFTER_FAILURES consecutive failures to a URL that is NOT the last
+    // known-good one, abandon the dead URL and revert to lastWorkingUrl
+    // (typically localhost). This is purely inside the reconnect loop — no
+    // session_start / re-bootstrap needed — so an already-latched session
+    // recovers on its own (the stuck-on-dead-:9998 case).
+    this.consecutiveReconnectFailures++;
+    if (
+      this.consecutiveReconnectFailures >= ConnectionManager.REVERT_AFTER_FAILURES &&
+      this.url !== this.lastWorkingUrl
+    ) {
+      console.error(
+        `[dashboard] connection to ${this.url} failed ${this.consecutiveReconnectFailures}× — reverting to last working URL ${this.lastWorkingUrl}`,
+      );
+      this.url = this.lastWorkingUrl;
+      this.consecutiveReconnectFailures = 0;
+      this.backoff = 0;
+    }
+
     // Patch C (drift-fix v1): idempotent single-owner timer. If a caller
     // re-enters scheduleReconnect() without going through handleDisconnect()
     // first (e.g. the new Patch A watchdog guard), the previous setTimeout
