@@ -535,3 +535,73 @@ describe("MarkdownContent", () => {
     expect(codeBlock!.textContent).toContain("│ A │ B │");
   });
 });
+
+// Render-verify for the message-render bug (event-store byte-cap clipped a long
+// orchestrator message to 200 chars, ending mid-`**bold**`). The RENDERER is
+// innocent: react-markdown renders an unclosed `**` literally (correct
+// CommonMark) — the literal `**` the operator saw was the symptom of upstream
+// truncation, not a renderer fault. These tests pin both halves: full content
+// renders as <strong> (the fixed path), and the truncated input is exactly what
+// produces the literal `**` (the bug), plus a full stress message renders every
+// block construct correctly. See change: event-store-bytecap-preserve-chat.
+describe("message-render: literal ** + mid-bold truncation (renderer innocence)", () => {
+  const prefix =
+    "This is the most important thing you've said tonight — and you're right. " +
+    "Let me reflect it back sharp, because getting the framing right IS the work:\n\n";
+  const boldSpan = "**We've been building fragile, then patching the fragility instead of curing it**";
+  const tail = "\n\nYour two steps are exactly right. Let me lock them in and dispatch Step 1 now.";
+
+  it("renders the FULL message with <strong> bold — no literal ** (the fixed path)", () => {
+    const { container } = renderMd(prefix + boldSpan + tail);
+    const strong = container.querySelector("strong");
+    expect(strong).not.toBeNull();
+    expect(strong!.textContent).toBe(
+      "We've been building fragile, then patching the fragility instead of curing it",
+    );
+    // The full message text is present (not cut at ~4 lines) …
+    expect(container.textContent).toContain("dispatch Step 1 now.");
+    // … and no raw asterisks leak into the rendered output.
+    expect(container.textContent).not.toContain("**");
+  });
+
+  it("renders the 200-char-CLIPPED input with a LITERAL ** (documents the bug + renderer innocence)", () => {
+    // Exactly what the buggy byte-cap summary served: prose sliced at 200 chars,
+    // mid-bold, so the closing ** is gone. react-markdown CORRECTLY renders the
+    // unclosed opener as literal text — proving the renderer is not at fault.
+    const clipped = (prefix + boldSpan).slice(0, 200);
+    expect(clipped).not.toContain("curing it**"); // closing marker was lost
+    const { container } = renderMd(clipped);
+    expect(container.querySelector("strong")).toBeNull(); // no bold rendered
+    expect(container.textContent).toContain("**"); // literal asterisks shown
+    expect(container.textContent).toContain("patching the"); // ends mid-sentence
+  });
+
+  it("renders a full STRESS message (## + > + --- + lists + **bold** + long) correctly across constructs", () => {
+    const stress = [
+      "## Framing",
+      "",
+      "> We've been building fragile, then patching the fragility.",
+      "",
+      "**The cure is to fix the cause, not the symptom.** " + "Long tail. ".repeat(40),
+      "",
+      "---",
+      "",
+      "- Step 1: find the root cause",
+      "- Step 2: fix the **cause**",
+      "- Step 3: add a regression test",
+      "",
+      "Closing line after the list.",
+    ].join("\n");
+    const { container } = renderMd(stress);
+    expect(container.querySelector("h2")?.textContent).toBe("Framing");
+    expect(container.querySelector("blockquote")).not.toBeNull();
+    expect(container.querySelector("hr")).not.toBeNull();
+    const items = container.querySelectorAll("ul li");
+    expect(items.length).toBe(3);
+    expect(container.querySelectorAll("strong").length).toBeGreaterThanOrEqual(2);
+    // Full content rendered (the long tail + closing line both present) …
+    expect(container.textContent).toContain("Closing line after the list.");
+    // … and zero raw `**` leaks anywhere in the output.
+    expect(container.textContent).not.toContain("**");
+  });
+});

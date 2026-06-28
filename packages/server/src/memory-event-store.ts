@@ -114,6 +114,32 @@ function previewContent(content: unknown, max = 200): string | undefined {
 }
 
 /**
+ * Full operator-visible text of a user/assistant chat message's `content` — the
+ * whole string, or EVERY text block joined, with NO length cap. Used by the
+ * over-cap summary so chat text is never clipped to a short preview.
+ *
+ * Chat text is the operator's and the agent's actual words; it must round-trip
+ * WHOLE. The per-string cap already exempts it (deepSanitize `preserveStrings`,
+ * change 19f2256) and inline images are exempt from the byte cap (change
+ * 34ff964) — this carries the same guarantee into the total-byte-cap summary.
+ * Non-text blocks (thinking, signatures, tool payloads) are intentionally
+ * DROPPED: they are the bloat the summary exists to shed, not operator-visible
+ * content. Returns undefined when there is no text (e.g. an image-only message).
+ */
+function chatMessageText(content: unknown): string | undefined {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    const parts: string[] = [];
+    for (const block of content) {
+      const text = block && typeof block === "object" ? (block as Record<string, unknown>).text : undefined;
+      if (typeof text === "string") parts.push(text);
+    }
+    return parts.length > 0 ? parts.join("") : undefined;
+  }
+  return undefined;
+}
+
+/**
  * Recursively sanitize event data:
  *  - ALWAYS strip `raw_content` / `rawContent` at any depth (the nested
  *    MCP/Tavily web-page payloads are the load-bearing leak shape), regardless
@@ -228,11 +254,17 @@ function extractImageBlocks(content: unknown): Array<{ type: "image"; data: stri
 
 /**
  * Build a compact summary of an over-cap event's data, preserving the fields
- * the UI needs to render a row (tool identity, message role + a short text
- * preview) AND any inline image blocks (so a screenshot is never silently lost
- * — image bytes are exempt from the cap, so this path only fires when the
- * NON-image text exceeds the cap). Used only when an event still exceeds
- * MAX_EVENT_DATA_SIZE after field-level sanitization.
+ * the UI needs to render a row (tool identity, message role + text) AND any
+ * inline image blocks (so a screenshot is never silently lost — image bytes
+ * are exempt from the cap, so this path only fires when the NON-image text
+ * exceeds the cap). Used only when an event still exceeds MAX_EVENT_DATA_SIZE
+ * after field-level sanitization.
+ *
+ * User/assistant chat text is kept WHOLE (chatMessageText) — it is the
+ * operator-visible content and must never be clipped by the byte cap. Only
+ * non-chat (tool) message text is reduced to a short preview. The bloat that
+ * tripped the cap (large thinking/signature blocks, oversized tool payloads)
+ * is shed by keeping just role + text + images.
  */
 function summarizeOverCap(data: Record<string, unknown>, bytes: number): Record<string, unknown> {
   const summary: Record<string, unknown> = { __truncated: true, __bytes: bytes };
@@ -244,7 +276,16 @@ function summarizeOverCap(data: Record<string, unknown>, bytes: number): Record<
     const m = msg as Record<string, unknown>;
     const msgSummary: Record<string, unknown> = {};
     if ("role" in m) msgSummary.role = m.role;
-    const preview = previewContent(m.content);
+    // User/assistant chat text is operator-visible and must round-trip WHOLE
+    // even when the WHOLE event trips the byte cap (e.g. a streaming
+    // message_update bloated by a large thinking/signature block pushes the
+    // serialized event over MAX_EVENT_DATA_SIZE). Clipping it to a 200-char
+    // preview here is what made a long orchestrator message render as ~4 lines
+    // ending mid-`**bold**` (unclosed marker → literal `**`). Keep the full
+    // chat text; non-chat (tool) messages keep the short preview as before.
+    // See change: event-store-bytecap-preserve-chat.
+    const isChatMessage = m.role === "user" || m.role === "assistant";
+    const preview = isChatMessage ? chatMessageText(m.content) : previewContent(m.content);
     const imgs = extractImageBlocks(m.content);
     if (imgs.length > 0) {
       // Rebuild a minimal content array: a text preview block (if any) + the

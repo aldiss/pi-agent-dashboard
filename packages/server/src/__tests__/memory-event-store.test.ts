@@ -307,6 +307,104 @@ describe("memory-event-store", () => {
     });
   });
 
+  describe("chat-message preservation under the TOTAL-BYTE cap (over-cap summary)", () => {
+    // Regression: a long orchestrator message rendered as ~4 lines ending mid
+    // `**bold**` (literal `**`). Root cause: the total-event-byte cap
+    // (MAX_EVENT_DATA_SIZE = 64_000) routed the WHOLE event through
+    // summarizeOverCap, which clipped the assistant message content to a
+    // 200-char preview. The per-string-cap exemption (preserveStrings) and the
+    // image-byte exemption did not cover the byte-cap summary for chat TEXT.
+    // These tests pin the fix: chat text survives the byte-cap summary WHOLE,
+    // while non-chat (tool) bloat is still shed. Default store (4000 per-string
+    // cap, real config); the bloat that trips the byte cap is a large
+    // non-text block that survives field-level sanitization.
+
+    // Mirrors the real failing message (Joan, 2026-06-28T13:08:38Z): the `**`
+    // bold opener sits at ~offset 151, so a 200-char clip lands INSIDE the bold
+    // span and drops the closing `**` → unclosed marker → renders literally.
+    const prefix =
+      "This is the most important thing you've said tonight — and you're right. " +
+      "Let me reflect it back sharp, because getting the framing right IS the work:\n\n";
+    const bold = "**We've been building fragile, then patching the fragility instead of curing it**";
+    const tail = "\n\nYour two steps are exactly right. Let me lock them in and dispatch Step 1 now.";
+    const prose = prefix + bold + tail;
+
+    it("preserves a long ASSISTANT message WHOLE when a big non-text block trips the byte cap (the bug)", () => {
+      const store = createMemoryEventStore(neverPinned); // real defaults (4000 per-string cap, 64k byte cap)
+      // A large `signature` on a thinking block survives field-level sanitize
+      // (it is inside the preserved chat content, and is not a capped key), so
+      // the serialized event exceeds MAX_EVENT_DATA_SIZE → summarizeOverCap.
+      const fatSignature = "S".repeat(70_000);
+      store.insertEvent("s1", {
+        eventType: "message_update",
+        timestamp: Date.now(),
+        data: {
+          message: {
+            role: "assistant",
+            content: [
+              { type: "text", text: prose },
+              { type: "thinking", thinking: "brief", signature: fatSignature },
+            ],
+          },
+        },
+      });
+      const stored = store.getEvent("s1", 1) as any;
+
+      // The over-cap summary DID fire (the event was genuinely > 64KB) …
+      expect(stored.data.__truncated).toBe(true);
+      // … and the 70KB non-text bloat was shed (memory bound preserved) …
+      expect(JSON.stringify(stored).length).toBeLessThan(10_000);
+      // … but the operator-visible chat text survived WHOLE — not clipped to 200.
+      const content = stored.data.message.content;
+      const text = typeof content === "string"
+        ? content
+        : content.find((b: any) => b.type === "text").text;
+      expect(text).toBe(prose);
+      expect(text.length).toBeGreaterThan(200);
+      // The closing `**` is present → react-markdown renders <strong>, not a
+      // literal `**`. The legacy 200-char clip dropped it (documented here).
+      expect(text).toContain("curing it**");
+      expect(prose.slice(0, 200)).not.toContain("curing it**");
+    });
+
+    it("preserves an ASSISTANT message whose chat TEXT itself exceeds the byte cap", () => {
+      const store = createMemoryEventStore(neverPinned);
+      const hugeProse = `${bold} `.repeat(1200); // ~100KB of genuine assistant prose, no bloat
+      store.insertEvent("s1", {
+        eventType: "message_end",
+        timestamp: Date.now(),
+        data: { message: { role: "assistant", content: hugeProse } },
+      });
+      const stored = store.getEvent("s1", 1) as any;
+      // Chat text is operator-visible → preserved whole even though it alone
+      // exceeds the byte cap (consistent with the per-string preserveStrings
+      // exemption). It must NOT be reduced to a 200-char preview.
+      expect(stored.data.message.content).toBe(hugeProse);
+      expect(stored.data.message.content.length).toBe(hugeProse.length);
+      expect(stored.data.message.content).toContain("curing it**");
+    });
+
+    it("STILL summarizes a NON-chat (toolResult) message to a short preview — byte-cap memory bound preserved", () => {
+      const store = createMemoryEventStore(neverPinned);
+      // 45 medium text blocks (~67KB total); each < 4000 so the per-string cap
+      // leaves them intact, and 45 < MAX_ARRAY_LENGTH so the array survives —
+      // the event clears 64KB and hits the byte cap as a non-chat message.
+      const blocks = Array.from({ length: 45 }, () => ({ type: "text", text: "Z".repeat(1500) }));
+      store.insertEvent("s1", {
+        eventType: "tool_execution_end",
+        timestamp: Date.now(),
+        data: { message: { role: "toolResult", toolName: "t", content: blocks } },
+      });
+      const stored = store.getEvent("s1", 1) as any;
+      expect(stored.data.__truncated).toBe(true);
+      const content = stored.data.message.content;
+      // Tool content is reduced to a short preview (NOT kept whole) — the
+      // memory backstop still applies to non-operator-visible bloat.
+      expect(typeof content).toBe("string");
+      expect(content.length).toBeLessThanOrEqual(200);
+    });
+  });
+
   describe("getMaxSeq", () => {
     it("returns 0 for unknown session", () => {
       const store = createMemoryEventStore(neverPinned);
