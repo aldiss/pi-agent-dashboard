@@ -49,13 +49,42 @@ export interface AutoStartResult {
 
 /**
  * Discover or auto-start the dashboard server.
- * Discovery chain: mDNS browse → health check fallback → auto-start.
- * Returns the server to connect to.
+ * Discovery chain: pinned-URL guard → mDNS browse → health check fallback → auto-start.
+ * Returns the server to connect to (empty when pinned — caller keeps its URL).
  */
 export async function autoStartServer(
-  config: { piPort: number; port: number; autoStart: boolean },
+  config: { piPort: number; port: number; autoStart: boolean; pinnedUrl?: string },
   deps: AutoStartDeps,
 ): Promise<AutoStartResult> {
+  // 0. ISOLATION GUARD — pinned ⇒ no discovery, no auto-start.
+  //
+  // When `PI_DASHBOARD_URL` is explicitly set the bridge passes it here as
+  // `pinnedUrl`. A pinned session must NEVER discover or auto-start a server:
+  // it stays anchored to the URL its ConnectionManager was constructed with
+  // (the `pinnedUrl ?? localhost` capture in bridge.ts initBridge). Returning
+  // `{}` means `result.server` is undefined, so the ONLY production
+  // `connection.updateUrl` caller (the bridge's `autoStartServer().then`
+  // repoint, gated on `result.server`) is never reached.
+  //
+  // This closes BOTH cross-wire vectors that hijacked the live crew (dl-2942 /
+  // dl-2976), for the LIFETIME of the session — not just the initial connect:
+  //   • Vector 1 (mDNS-discovery-first, the `discoverDashboard` step below):
+  //     skipped entirely — no discovery, so no `updateUrl` to a discovered
+  //     `isLocal` server.
+  //   • Vector 2 (reconnect-to-cached-host, ConnectionManager.scheduleReconnect
+  //     revert): because `updateUrl` is never called, `this.url` stays ===
+  //     `lastWorkingUrl` forever, so the revert branch (gated on
+  //     `url !== lastWorkingUrl`) can never fire. A forced reconnect therefore
+  //     always re-targets the pin.
+  //
+  // The guard is at the TOP so it governs every entry into this function — the
+  // initial connect AND any future code path that re-enters discovery.
+  // See: nos-real-e2e-test-infrastructure/v1 design-pass §1.2 (composes on the
+  // deployed ff63726 mDNS-hardening base; orthogonal isolation layer).
+  if (config.pinnedUrl) {
+    return {};
+  }
+
   // 1. Try mDNS discovery (2s timeout)
   try {
     const servers = await deps.discoverDashboard(2000);
