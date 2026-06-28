@@ -124,6 +124,9 @@ export function parseArgs(args: string[]): ParsedArgs {
       flags.dev = true;
     } else if (arg === "--no-tunnel") {
       flags.tunnel = false;
+    } else if (arg === "--fixture") {
+      // Deterministic e2e/visual testing — equivalent to PI_DASHBOARD_FIXTURE_MODE=1.
+      flags.fixtureMode = true;
     }
   }
 
@@ -153,6 +156,18 @@ export function buildConfig(flags: Partial<ServerConfig>): ServerConfig {
     reattachPlacement: fileConfig.reattachPlacement,
     resolvedTrustedNetworks: fileConfig.resolvedTrustedNetworks,
     corsAllowedOrigins: fileConfig.cors.allowedOrigins,
+    // Fixture mode (deterministic visual/e2e testing — disables mDNS-advertise,
+    // browser-open, zrok, bootstrap-install; see server.ts isFixture gating).
+    // The ServerConfig field has always been consumed by createServer, but no
+    // boot path ever populated it — the "Gated by PI_DASHBOARD_FIXTURE_MODE=1"
+    // contract was documented-not-wired. Wire it here so the real-e2e sandbox
+    // (design-pass §1.2 closure-#1: fixture-advertise-OFF ⇒ sandbox invisible
+    // to live mDNS discovery) actually gets a fixture server. `PI_SANDBOX` is
+    // read directly in server.ts (net/auth-guard skip) and needs no wiring.
+    fixtureMode:
+      flags.fixtureMode ??
+      (process.env.PI_DASHBOARD_FIXTURE_MODE === "1" ||
+        process.env.PI_DASHBOARD_FIXTURE_MODE === "true"),
   };
 }
 

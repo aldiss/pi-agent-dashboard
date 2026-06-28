@@ -1,8 +1,8 @@
 /**
  * Tests for CLI argument parsing.
  */
-import { describe, it, expect } from "vitest";
-import { parseArgs } from "../cli.js";
+import { describe, it, expect, afterEach } from "vitest";
+import { parseArgs, buildConfig } from "../cli.js";
 
 describe("parseArgs", () => {
   it("returns null subcommand with no args", () => {
@@ -62,6 +62,12 @@ describe("parseArgs", () => {
     expect(result.flags.tunnel).toBe(false);
   });
 
+  it("parses --fixture flag (deterministic e2e/visual testing)", () => {
+    const result = parseArgs(["start", "--fixture"]);
+    expect(result.subcommand).toBe("start");
+    expect(result.flags.fixtureMode).toBe(true);
+  });
+
   it("ignores unknown args", () => {
     const result = parseArgs(["start", "--unknown", "value"]);
     expect(result.subcommand).toBe("start");
@@ -72,6 +78,45 @@ describe("parseArgs", () => {
     const result = parseArgs(["--port", "3000"]);
     expect(result.subcommand).toBeNull();
     expect(result.flags.port).toBe(3000);
+  });
+});
+
+describe("buildConfig — fixtureMode wiring (real-e2e sandbox isolation)", () => {
+  // The ServerConfig.fixtureMode field is consumed by createServer (mDNS-advertise
+  // OFF, browser OFF, zrok OFF, bootstrap-install OFF) but NO boot path ever
+  // populated it — the "Gated by PI_DASHBOARD_FIXTURE_MODE=1" contract was
+  // documented-not-wired. These lock the wiring the real-e2e sandbox depends on
+  // (design-pass §1.2 closure-#1: fixture ⇒ sandbox invisible to live mDNS).
+  const ENV_KEY = "PI_DASHBOARD_FIXTURE_MODE";
+  const saved = process.env[ENV_KEY];
+  afterEach(() => {
+    if (saved === undefined) delete process.env[ENV_KEY];
+    else process.env[ENV_KEY] = saved;
+  });
+
+  it("defaults fixtureMode to false when neither flag nor env is set", () => {
+    delete process.env[ENV_KEY];
+    expect(buildConfig({}).fixtureMode).toBe(false);
+  });
+
+  it("enables fixtureMode from PI_DASHBOARD_FIXTURE_MODE=1", () => {
+    process.env[ENV_KEY] = "1";
+    expect(buildConfig({}).fixtureMode).toBe(true);
+  });
+
+  it("enables fixtureMode from PI_DASHBOARD_FIXTURE_MODE=true", () => {
+    process.env[ENV_KEY] = "true";
+    expect(buildConfig({}).fixtureMode).toBe(true);
+  });
+
+  it("does NOT enable fixtureMode for a non-truthy env value", () => {
+    process.env[ENV_KEY] = "0";
+    expect(buildConfig({}).fixtureMode).toBe(false);
+  });
+
+  it("the --fixture flag wins over an unset env", () => {
+    delete process.env[ENV_KEY];
+    expect(buildConfig({ fixtureMode: true }).fixtureMode).toBe(true);
   });
 });
 
