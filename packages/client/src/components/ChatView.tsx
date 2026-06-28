@@ -687,9 +687,23 @@ export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ se
       onScroll={handleScroll}
       className={`flex-1 min-h-0 overflow-y-auto ${isMobile ? "p-2" : "p-4"}`}
       style={isMobile ? {
-        paddingBottom: "100px",
-        WebkitMaskImage: "linear-gradient(to bottom, black 0%, black calc(100% - 80px), transparent 100%)",
-        maskImage: "linear-gradient(to bottom, black 0%, black calc(100% - 80px), transparent 100%)",
+        // Queued cards are actionable content the operator must read in full, so
+        // when the visible queue is non-empty we (a) drop the bottom fade-mask
+        // (it would fade the last queued card to transparent = "not fully
+        // visible") and (b) widen the bottom clearance to clear the floating
+        // composer pill — which is TALLER when it shows the "N queued" badge and
+        // on notched devices (safe-area-inset), so the fixed 100px is
+        // insufficient and the card's bottom hides behind it. Empty-queue keeps
+        // the original transcript fade. Operator-caught on first live use
+        // (long queued message clipped). See change: dashboard-message-queue
+        // (AMEND #7 — long-queued-message visibility).
+        paddingBottom: state.queue.length > 0
+          ? "calc(150px + env(safe-area-inset-bottom, 0px))"
+          : "100px",
+        ...(state.queue.length === 0 ? {
+          WebkitMaskImage: "linear-gradient(to bottom, black 0%, black calc(100% - 80px), transparent 100%)",
+          maskImage: "linear-gradient(to bottom, black 0%, black calc(100% - 80px), transparent 100%)",
+        } : {}),
       } : undefined}
     >
       {/* Tier-A operator-direct 2026-05-20 (follow-up to cd70e4dd content-header-sticky
