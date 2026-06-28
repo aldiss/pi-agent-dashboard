@@ -4,6 +4,28 @@ export type SessionSource = "tui" | "zed" | "tmux" | "dashboard" | "terminal" | 
 /** Current status of a session */
 export type SessionStatus = "active" | "idle" | "streaming" | "ended";
 
+/** Operator effort the NEXT step of a driver needs — the next-engagement badge
+ *  (dl-2620). Ordered ascending by how much operator effort is required:
+ *  autonomous (none) < one-action (single ratify) < short (~5min) <
+ *  back-and-forth (~30min interactive). */
+export type EngagementEffort = "autonomous" | "one-action" | "short" | "back-and-forth";
+
+/** Per-driver self-reported progress (dl-2620). `pct` (0-100) is authoritative;
+ *  `milestonesDone`/`milestonesTotal` are present when reported milestone-wise
+ *  (the CLI derives pct from the fraction). */
+export interface DriverProgress {
+  pct: number;
+  label?: string;
+  milestonesDone?: number;
+  milestonesTotal?: number;
+}
+
+/** Per-driver self-reported next-engagement effort + optional note (dl-2620). */
+export interface DriverNextEngagement {
+  effort: EngagementEffort;
+  note?: string;
+}
+
 /** A dashboard session representing a connected pi instance */
 export interface DashboardSession {
   id: string;
@@ -62,6 +84,21 @@ export interface DashboardSession {
   attachedProposal?: string | null;
   contextTokens?: number | null;
   contextWindow?: number;
+  /**
+   * Per-driver self-report — how much of the dispatched work is done. Sourced
+   * SERVER-side (NOT from the bridge) by polling the driver-state sidecar
+   * `~/.pi/orchestration-state/driver-state/<name>.json` written by the
+   * `driver-report` CLI; shown in the session-list ALONGSIDE context-% so the
+   * operator can triage drivers at a glance. See `driver-self-report.ts` +
+   * pi-config `references/driver-self-report.md` (intake dl-2620). `null`
+   * clears it. Bridges SHALL NOT send this.
+   */
+  progress?: DriverProgress | null;
+  /**
+   * Per-driver self-report — operator effort the NEXT step needs (badge). Same
+   * server-poll source + lifecycle as `progress`. Bridges SHALL NOT send this.
+   */
+  nextEngagement?: DriverNextEngagement | null;
   sessionFile?: string;
   sessionDir?: string;
   hidden?: boolean;

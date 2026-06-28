@@ -6,6 +6,8 @@ import { getSessionDisplayName } from "../lib/session-display-name.js";
 import { formatRelativeTime } from "../lib/format.js";
 import { selectBadgeTimestamp } from "../lib/session-card-time.js";
 import { ContextUsageBar } from "./ContextUsageBar.js";
+import { DriverProgressBar } from "./DriverProgressBar.js";
+import { EngagementBadge } from "./EngagementBadge.js";
 import type { ContextUsageInfo } from "./SessionList.js";
 import type { OpenSpecChange } from "@blackbelt-technology/pi-dashboard-shared/types.js";
 import { OpenSpecActivityBadge } from "./OpenSpecActivityBadge.js";
@@ -451,6 +453,18 @@ export const SessionCard = React.memo(function SessionCard({
           </span>
         )}
       </div>
+
+      {/* Row 3b: per-driver self-report (dl-2620) — progress-% (left) + next-
+          engagement-effort badge (right), shown ALONGSIDE context-% for drivers
+          that self-report via the `driver-report` CLI. Renders ONLY when present,
+          so non-driver cards are pixel-identical to before. */}
+      {(session.progress || session.nextEngagement) && (
+        <div className="flex items-center gap-2 text-[11px]" data-testid="driver-indicators-row">
+          <DriverProgressBar progress={session.progress} compact />
+          <span className="flex-1" />
+          <EngagementBadge nextEngagement={session.nextEngagement} />
+        </div>
+      )}
 
       {/* Row 4: OpenSpec badge — desktop only, conditional */}
       {(session.openspecPhase || session.openspecChange) ? (

@@ -35,6 +35,7 @@ import { createIdleTimer } from "./idle-timer.js";
 import { discoverAndBroadcastSessions } from "./session-bootstrap.js";
 import { scanAllSessions } from "./session-scanner.js";
 import { resolveDriverLiveness } from "./driver-liveness.js";
+import { startDriverSelfReportPolling } from "./driver-self-report.js";
 import { needsMigration, runMigration } from "./migrate-persistence.js";
 import { detectZrokBinary, cleanupStaleZrok, createTunnel, deleteTunnel, scavengeOrphanZrokProcesses, getTunnelUrl } from "./tunnel.js";
 import { registerAuthPlugin, validateWsUpgrade } from "./auth-plugin.js";
@@ -598,6 +599,20 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
   });
 
   const browserGateway = createBrowserGateway(sessionManager, eventStore, piGateway, undefined, pendingForkRegistry, sessionOrderManager, preferencesStore, directoryService, terminalManager, pendingDashboardSpawns, config.maxWsBufferBytes, pendingAttachRegistry, pendingResumeIntents, pendingClientCorrelations, pushPrefsMap, () => config.push?.defaults);
+
+  // Driver self-report poller (dl-2620): re-reads the driver-state sidecars
+  // (written by the `driver-report` CLI) and pushes per-driver progress-% +
+  // next-engagement-effort into the session-list ALONGSIDE context-%. Mutates
+  // the manager + broadcasts on change so both fresh + live browsers stay
+  // current. `s.name` is the mesh themed-name (the sidecar key) for live
+  // drivers; the sidecar's session_id guards against prior-tenure reports.
+  // See driver-self-report.ts.
+  const stopDriverSelfReportPolling = startDriverSelfReportPolling({
+    listSessions: () => sessionManager.listAll(),
+    resolveName: (s) => s.name,
+    applyUpdate: (id, updates) => sessionManager.update(id, updates),
+    broadcast: (id, updates) => browserGateway.broadcastSessionUpdated(id, updates),
+  });
 
   // ── Push dispatcher (conditional on config.push.enabled && !config.push.errors) ──
   let pushDispatcher: PushDispatcher | undefined;
@@ -1514,6 +1529,7 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
       idleTimer.cancel();
       heapWatchdog.stop();
       directoryService.stopPolling();
+      stopDriverSelfReportPolling();
       browserGateway.shutdownHeadlessProcesses();
       metaPersistence.flushAll();
       metaPersistence.dispose();
