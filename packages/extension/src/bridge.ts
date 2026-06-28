@@ -431,7 +431,12 @@ function initBridge(pi: ExtensionAPI) {
   // Load config to determine WebSocket URL
   ensureConfig();
   const config = loadConfig();
-  const dashboardUrl = process.env.PI_DASHBOARD_URL ?? `ws://localhost:${config.piPort}`;
+  // `PI_DASHBOARD_URL` (when set) pins this session to a specific dashboard
+  // gateway and DISABLES discovery/auto-start (see autoStartServer guard +
+  // design-pass §1.2). Captured once here so the pin is a single source of
+  // truth for both the initial connection URL and the auto-start config.
+  const pinnedUrl = process.env.PI_DASHBOARD_URL || undefined;
+  const dashboardUrl = pinnedUrl ?? `ws://localhost:${config.piPort}`;
 
   // Long-lived ctx wrapper for the Extension UI System (Phase 1) — see
   // change: add-extension-ui-modal. `getSessionId` reads the closed-over
@@ -1577,7 +1582,7 @@ function initBridge(pi: ExtensionAPI) {
         throw err;
       }
     };
-    autoStartServer(config, {
+    autoStartServer({ ...config, pinnedUrl }, {
       discoverDashboard,
       isDashboardRunning,
       launchServer,
