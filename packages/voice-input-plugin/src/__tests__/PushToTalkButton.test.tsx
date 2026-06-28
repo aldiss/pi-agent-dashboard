@@ -223,4 +223,61 @@ describe("PushToTalkButton — click-to-toggle (Option B, 2026-05-14)", () => {
     expect(button.getAttribute("data-phase")).toBe("idle");
     expect(button.getAttribute("aria-pressed")).toBe("false");
   });
+
+  // ── vector-glyph contract (mic-rewrite 2026-06-28) ──────────────────────────
+  // The pre-rewrite button rendered emoji (🎤/🔴/⏳) which ignore `style.color`.
+  // The rewrite renders inline-SVG Material glyphs that inherit `currentColor`,
+  // so they finally respect the theme token driven by the button's style.color.
+
+  it("idle renders a vector SVG glyph (not emoji) that inherits currentColor", () => {
+    render(<PushToTalkButton onTranscript={vi.fn()} />);
+    const button = screen.getByTestId("push-to-talk");
+
+    // A real <svg> glyph is present, tagged with the current phase.
+    const icon = screen.getByTestId("ptt-icon");
+    expect(icon.tagName.toLowerCase()).toBe("svg");
+    expect(icon.getAttribute("data-icon-phase")).toBe("idle");
+
+    // The path paints with currentColor — the whole point of dropping emoji.
+    const path = icon.querySelector("path");
+    expect(path?.getAttribute("fill")).toBe("currentColor");
+
+    // No emoji glyph survives anywhere in the button.
+    expect(button.textContent ?? "").not.toMatch(/[🎤🔴⏳]/u);
+
+    // currentColor is fed by the theme token, not a hardcoded hex.
+    expect((button as HTMLElement).style.color).toContain("--text-secondary");
+  });
+
+  it("recording paints the calm accent token and shows the vector pulse ring (no red emoji)", async () => {
+    render(<PushToTalkButton onTranscript={vi.fn()} />);
+    const button = screen.getByTestId("push-to-talk");
+
+    await act(async () => {
+      fireEvent.click(button);
+      await new Promise(resolve => setTimeout(resolve, 0));
+    });
+    await waitFor(() => {
+      expect(button.getAttribute("data-phase")).toBe("recording");
+    });
+
+    // Recording reads CALM: var(--accent-primary), never an alarming red token/emoji.
+    expect((button as HTMLElement).style.color).toContain("--accent-primary");
+    expect((button as HTMLElement).style.color).not.toContain("--accent-red");
+
+    // The calm vector pulse ring is present and carries no hardcoded color —
+    // it borders with currentColor, so it inherits the accent token above.
+    // (jsdom drops the `currentColor` keyword when re-serializing the `border`
+    //  shorthand, so assert structure + absence-of-hardcoded-color instead.)
+    const ring = screen.getByTestId("ptt-pulse-ring");
+    expect(ring).toBeTruthy();
+    expect(ring.style.border).toContain("2px solid");
+    expect(ring.style.border).not.toMatch(/#|rgb|hsl/i);
+
+    // The glyph tracks the phase and still inherits currentColor.
+    const icon = screen.getByTestId("ptt-icon");
+    expect(icon.getAttribute("data-icon-phase")).toBe("recording");
+    expect(icon.querySelector("path")?.getAttribute("fill")).toBe("currentColor");
+    expect(button.textContent ?? "").not.toMatch(/[🎤🔴⏳]/u);
+  });
 });

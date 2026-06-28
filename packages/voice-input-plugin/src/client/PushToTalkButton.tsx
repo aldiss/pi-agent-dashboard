@@ -89,6 +89,48 @@ const ERROR_AUTO_CLEAR_MS = 6_000;
 
 type ButtonPhase = "idle" | "recording" | "uploading" | "error";
 
+/**
+ * Vector glyphs for the four button phases (replaces the pre-2026-06-28 emoji
+ * 🎤/🔴/⏳ which, being full-color glyphs, ignored `style.color` and read as a
+ * skeuomorphic sticker in the otherwise flat-vector composer). Inline Material
+ * path data (no `@mdi` dependency — keeps the workspace plugin dependency-light;
+ * the host client owns `@mdi/js` but the plugin must stay portable). Each `<path>`
+ * uses `fill="currentColor"` so the glyph finally inherits the theme-token color
+ * driven by `style.color` below.
+ *
+ *   idle      → mic outline      (ghost, var(--text-secondary))
+ *   recording → mic filled       (var(--accent-primary) + calm pulse ring)
+ *   uploading → loading arc       (var(--text-secondary) + spin)
+ *   error     → alert circle      (var(--accent-red))
+ */
+const ICON_PATHS: Record<ButtonPhase, string> = {
+  idle: "M17.3,11C17.3,14 14.76,16.1 12,16.1C9.24,16.1 6.7,14 6.7,11H5C5,14.41 7.72,17.23 11,17.72V21H13V17.72C16.28,17.23 19,14.41 19,11M10.8,4.9C10.8,4.24 11.34,3.7 12,3.7C12.66,3.7 13.2,4.24 13.2,4.9L13.19,11.1C13.19,11.76 12.66,12.3 12,12.3C11.34,12.3 10.8,11.76 10.8,11.1M12,14A3,3 0 0,0 15,11V5A3,3 0 0,0 12,2A3,3 0 0,0 9,5V11A3,3 0 0,0 12,14Z",
+  recording:
+    "M12,2A3,3 0 0,1 15,5V11A3,3 0 0,1 12,14A3,3 0 0,1 9,11V5A3,3 0 0,1 12,2M19,11C19,14.53 16.39,17.44 13,17.93V21H11V17.93C7.61,17.44 5,14.53 5,11H7A5,5 0 0,0 12,16A5,5 0 0,0 17,11H19Z",
+  uploading: "M12,4V2A10,10 0 0,0 2,12H4A8,8 0 0,1 12,4Z",
+  error:
+    "M11,15H13V17H11V15M11,7H13V13H11V7M12,2C6.47,2 2,6.5 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2M12,20A8,8 0 0,1 4,12A8,8 0 0,1 12,4A8,8 0 0,1 20,12A8,8 0 0,1 12,20Z",
+};
+
+/**
+ * Scoped keyframes for the spinner (uploading) and the calm accent record-ring
+ * (recording). Kept inside the component output so the portable plugin carries
+ * its own motion — it does not rely on the host's Tailwind `animate-spin` being
+ * emitted. `prefers-reduced-motion` disables both (the `!important` beats the
+ * inline `animation` shorthand on the targeted elements).
+ */
+const PTT_KEYFRAMES = `
+@keyframes ptt-spin { to { transform: rotate(360deg); } }
+@keyframes ptt-ring {
+  0%   { transform: scale(0.9); opacity: 0.55; }
+  100% { transform: scale(1.6); opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-testid="ptt-icon"],
+  [data-testid="ptt-pulse-ring"] { animation: none !important; }
+}
+`;
+
 export interface PushToTalkButtonProps {
   onTranscript: (transcript: string) => void;
   endpoint?: string;
@@ -440,13 +482,17 @@ export function PushToTalkButton({
     "p-2 min-h-[44px] min-w-[44px] flex items-center justify-center bg-[var(--bg-tertiary)] rounded-lg hover:bg-[var(--bg-hover)] transition-colors";
 
   const style: CSSProperties = {
+    // Glyphs inherit this via currentColor. Recording reads CALM
+    // (var(--accent-primary)) — terracotta on editorial, blue on dark — never an
+    // alarming red. Tokens resolve per active skin in client/src/index.css.
+    position: "relative",
     color: isRecording
-      ? "var(--accent-error, #e74c3c)"
+      ? "var(--accent-primary)"
       : phase === "uploading"
-      ? "var(--accent-warning, #f39c12)"
+      ? "var(--text-secondary)"
       : phase === "error"
-      ? "var(--accent-error, #e74c3c)"
-      : "var(--text-secondary, #888)",
+      ? "var(--accent-red)"
+      : "var(--text-secondary)",
   };
 
   return (
@@ -463,13 +509,41 @@ export function PushToTalkButton({
         data-phase={phase}
         style={style}
       >
-        {phase === "uploading" ? (
-          <span aria-hidden>⏳</span>
-        ) : isRecording ? (
-          <span aria-hidden>🔴</span>
-        ) : (
-          <span aria-hidden>🎤</span>
+        <style>{PTT_KEYFRAMES}</style>
+        {/* Calm accent record-ring — vector, themed via currentColor, gentle
+            expand-fade. Replaces the alarming red 🔴 emoji. Recording only. */}
+        {isRecording && (
+          <span
+            aria-hidden
+            data-testid="ptt-pulse-ring"
+            style={{
+              position: "absolute",
+              inset: "-3px",
+              borderRadius: "9999px",
+              border: "2px solid currentColor",
+              opacity: 0.55,
+              animation: "ptt-ring 1.6s ease-out infinite",
+              pointerEvents: "none",
+            }}
+          />
         )}
+        {/* Vector glyph — single Material mic family, inherits currentColor so it
+            finally respects the theme token in `style.color` above. */}
+        <svg
+          aria-hidden
+          data-testid="ptt-icon"
+          data-icon-phase={phase}
+          viewBox="0 0 24 24"
+          width="20"
+          height="20"
+          style={
+            phase === "uploading"
+              ? { display: "block", animation: "ptt-spin 0.9s linear infinite" }
+              : { display: "block" }
+          }
+        >
+          <path fill="currentColor" d={ICON_PATHS[phase]} />
+        </svg>
       </button>
     </div>
   );
