@@ -98,7 +98,7 @@ final class ProtocolTests: XCTestCase {
     }
 
     func testWebsocketURLScheme() {
-        XCTAssertEqual(DashboardClient.websocketURL(base: URL(string: "http://localhost:8000")!)?.absoluteString, "ws://localhost:8000")
-        XCTAssertEqual(DashboardClient.websocketURL(base: URL(string: "https://x.ts.net:8443")!)?.absoluteString, "wss://x.ts.net:8443")
+        XCTAssertEqual(DashboardClient.websocketURL(base: URL(string: "http://localhost:8000")!)?.absoluteString, "ws://localhost:8000/ws")
+        XCTAssertEqual(DashboardClient.websocketURL(base: URL(string: "https://x.ts.net:8443")!)?.absoluteString, "wss://x.ts.net:8443/ws")
     }
 }

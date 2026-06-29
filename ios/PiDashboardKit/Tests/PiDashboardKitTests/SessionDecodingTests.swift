@@ -48,6 +48,27 @@ final class SessionDecodingTests: XCTestCase {
         XCTAssertNotNil(health.server?.activeSessions)
     }
 
+    /// End-to-end contract proof: decode a REAL `sessions_snapshot` captured live
+    /// from the dashboard browser gateway (`ws://localhost:8000/ws`) through the
+    /// full `ServerMessage` decoder — the actual server bytes the native client
+    /// will receive on connect.
+    func testDecodeRealWebSocketSnapshot() throws {
+        let data = try fixtureData("ws-snapshot-sample", "json")
+        let msg = try JSONDecoder().decode(ServerMessage.self, from: data)
+        guard case .sessionsSnapshot(let sessions, let orders) = msg else {
+            return XCTFail("expected sessions_snapshot, got \(msg.wireType)")
+        }
+        XCTAssertEqual(sessions.count, 8)
+        XCTAssertTrue(sessions.allSatisfy { !$0.id.isEmpty })
+        XCTAssertFalse(orders.isEmpty, "real snapshot carries per-cwd ordering")
+        // Every ordered id refers to a session present in the snapshot.
+        let ids = Set(sessions.map { $0.id })
+        for (_, ordered) in orders { XCTAssertTrue(ordered.allSatisfy { ids.contains($0) }) }
+        // The snapshot is groupable into tiers without error.
+        let tiers = SessionGrouping.groupByTier(sessions)
+        XCTAssertFalse(tiers.isEmpty)
+    }
+
     func testPartialUpdatePatchDecodes() throws {
         // session_updated.updates is a Partial<DashboardSession> — a bare patch
         // with only an id must decode against the same model.

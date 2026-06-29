@@ -28,7 +28,9 @@ public actor DashboardClient {
         self.session = session
     }
 
-    /// Map a dashboard base URL (`http(s)://host:port`) to its WS form (`ws(s)://…`).
+    /// Map a dashboard base URL (`http(s)://host:port`) to its browser-gateway WS
+    /// endpoint (`ws(s)://host:port/ws`). The gateway upgrades at the `/ws` path
+    /// (verified against `packages/client/src/App.tsx` + `api-context.ts`).
     public static func websocketURL(base: URL) -> URL? {
         guard var comps = URLComponents(url: base, resolvingAgainstBaseURL: false) else { return nil }
         switch comps.scheme {
@@ -37,6 +39,10 @@ public actor DashboardClient {
         case "ws", "wss": break
         default: comps.scheme = "ws"
         }
+        var path = comps.path
+        if path.hasSuffix("/") { path.removeLast() }
+        if !path.hasSuffix("/ws") { path += "/ws" }
+        comps.path = path
         return comps.url
     }
 
