@@ -7,5 +7,10 @@ xcuserdata/
 .swiftpm/xcode/
 .swiftpm/configuration/
 
+# XcodeGen-generated project (project.yml is the source of truth; regenerate
+# with `xcodegen generate`). Acceptance gate 2 regenerates it.
+PiDashboard/PiDashboard.xcodeproj/
+PiDashboard/Sources/Info.plist
+
 # macOS
 .DS_Store

@@ -1,0 +1,89 @@
+import SwiftUI
+import PiDashboardKit
+
+/// Hex → SwiftUI `Color`. Maps the core's UI-free `ThemePalette` hex strings
+/// (lifted from `index.css :root`) onto real colors. Supports `#rgb`, `#rrggbb`,
+/// `#rrggbbaa` and the `rgba(r,g,b,a)` form a couple of tokens use.
+extension Color {
+    init(hex raw: String) {
+        let s = raw.trimmingCharacters(in: .whitespaces)
+        if s.hasPrefix("rgba(") || s.hasPrefix("rgb(") {
+            self = Color.parseRGBA(s) ?? .clear
+            return
+        }
+        var hex = s
+        if hex.hasPrefix("#") { hex.removeFirst() }
+        // Expand shorthand #rgb → #rrggbb
+        if hex.count == 3 {
+            hex = hex.map { "\($0)\($0)" }.joined()
+        }
+        var value: UInt64 = 0
+        Scanner(string: hex).scanHexInt64(&value)
+        let r, g, b, a: Double
+        switch hex.count {
+        case 8:
+            r = Double((value >> 24) & 0xFF) / 255
+            g = Double((value >> 16) & 0xFF) / 255
+            b = Double((value >> 8) & 0xFF) / 255
+            a = Double(value & 0xFF) / 255
+        default: // 6 (or malformed → black)
+            r = Double((value >> 16) & 0xFF) / 255
+            g = Double((value >> 8) & 0xFF) / 255
+            b = Double(value & 0xFF) / 255
+            a = 1
+        }
+        self = Color(.sRGB, red: r, green: g, blue: b, opacity: a)
+    }
+
+    private static func parseRGBA(_ s: String) -> Color? {
+        guard let open = s.firstIndex(of: "("), let close = s.firstIndex(of: ")") else { return nil }
+        let inner = s[s.index(after: open)..<close]
+        let parts = inner.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+        guard parts.count >= 3,
+              let r = Double(parts[0]), let g = Double(parts[1]), let b = Double(parts[2]) else { return nil }
+        let a = parts.count >= 4 ? (Double(parts[3]) ?? 1) : 1
+        return Color(.sRGB, red: r / 255, green: g / 255, blue: b / 255, opacity: a)
+    }
+}
+
+/// The active palette mapped to SwiftUI colors — the app's single theme surface.
+/// Dark default is the operator's; the struct stays swappable (light/warm exist in
+/// the core's token set) but the MVP ships dark only.
+struct Theme {
+    let palette: ThemePalette
+    static let dark = Theme(palette: DashboardTheme.dark)
+
+    var bgPrimary: Color { Color(hex: palette.bgPrimary) }
+    var bgSecondary: Color { Color(hex: palette.bgSecondary) }
+    var bgTertiary: Color { Color(hex: palette.bgTertiary) }
+    var bgSurface: Color { Color(hex: palette.bgSurface) }
+    var bgCode: Color { Color(hex: palette.bgCode) }
+    var textPrimary: Color { Color(hex: palette.textPrimary) }
+    var textSecondary: Color { Color(hex: palette.textSecondary) }
+    var textTertiary: Color { Color(hex: palette.textTertiary) }
+    var textFaint: Color { Color(hex: palette.textFaint) }
+    var borderPrimary: Color { Color(hex: palette.borderPrimary) }
+    var borderSecondary: Color { Color(hex: palette.borderSecondary) }
+    var accentBlue: Color { Color(hex: palette.accentBlue) }
+    var accentGreen: Color { Color(hex: palette.accentGreen) }
+    var accentRed: Color { Color(hex: palette.accentRed) }
+    var accentOrange: Color { Color(hex: palette.accentOrange) }
+    var accentYellow: Color { Color(hex: palette.accentYellow) }
+    var accentPurple: Color { Color(hex: palette.accentPurple) }
+
+    /// Status-chip color via the core's mapping (active→green, streaming→blue, …).
+    func statusColor(_ status: String?) -> Color {
+        Color(hex: DashboardTheme.statusColor(status, palette))
+    }
+}
+
+/// Lightweight environment access so views read `theme` without prop-drilling.
+private struct ThemeKey: EnvironmentKey {
+    static let defaultValue = Theme.dark
+}
+extension EnvironmentValues {
+    var theme: Theme {
+        get { self[ThemeKey.self] }
+        set { self[ThemeKey.self] = newValue }
+    }
+}

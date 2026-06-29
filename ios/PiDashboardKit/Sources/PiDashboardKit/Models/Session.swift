@@ -28,18 +28,28 @@ public struct DriverProgress: Codable, Sendable, Equatable {
     public var label: String?
     public var milestonesDone: Double?
     public var milestonesTotal: Double?
+    public init(pct: Double, label: String? = nil, milestonesDone: Double? = nil, milestonesTotal: Double? = nil) {
+        self.pct = pct; self.label = label
+        self.milestonesDone = milestonesDone; self.milestonesTotal = milestonesTotal
+    }
 }
 
 /// Per-driver self-reported next-engagement effort + note. Mirrors `DriverNextEngagement`.
 public struct DriverNextEngagement: Codable, Sendable, Equatable {
     public var effort: String
     public var note: String?
+    public init(effort: String, note: String? = nil) {
+        self.effort = effort; self.note = note
+    }
 }
 
 /// Git worktree metadata. Mirrors `DashboardSession.worktree`.
 public struct Worktree: Codable, Sendable, Equatable {
     public var branch: String
     public var path: String
+    public init(branch: String, path: String) {
+        self.branch = branch; self.path = path
+    }
 }
 
 /// Latest process metrics from the pi agent. Mirrors `DashboardSession.processMetrics`.
@@ -104,11 +114,17 @@ public struct DashboardSession: Codable, Sendable, Identifiable, Equatable {
     public var statusEnum: SessionStatus? { status.flatMap(SessionStatus.init(rawValue:)) }
     public var isEnded: Bool { status == "ended" }
 
-    /// Display name the card shows — name → firstMessage → last path segment of cwd.
-    /// Mirrors `getSessionDisplayName` / the `filterByQuery` search target.
+    /// Display name the card shows — name → first line of firstMessage → last path
+    /// segment of cwd. Mirrors `getSessionDisplayName`. The firstMessage fallback is
+    /// reduced to its FIRST line (cc-ios-build improvement: a multi-line first prompt
+    /// makes a broken multi-line card title; `filterByQuery` still searches the full
+    /// firstMessage text, so search recall is unaffected).
     public var displayName: String {
         if let n = name?.trimmingCharacters(in: .whitespacesAndNewlines), !n.isEmpty { return n }
-        if let f = firstMessage?.trimmingCharacters(in: .whitespacesAndNewlines), !f.isEmpty { return f }
+        if let f = firstMessage?.trimmingCharacters(in: .whitespacesAndNewlines), !f.isEmpty {
+            let firstLine = f.split(separator: "\n", maxSplits: 1).first.map(String.init) ?? f
+            return firstLine.trimmingCharacters(in: .whitespaces)
+        }
         return cwd?.split(separator: "/").last.map(String.init) ?? id
     }
 
