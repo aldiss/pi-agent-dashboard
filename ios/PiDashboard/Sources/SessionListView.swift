@@ -94,7 +94,10 @@ struct SessionListView: View {
             }
             .padding(.vertical, 6)
             .padding(.horizontal, 4)
+            .frame(maxWidth: .infinity, alignment: .leading)
             .background(theme.bgPrimary)
+            .accessibilityElement(children: .combine)
+            .accessibilityAddTraits(.isHeader)
             .accessibilityIdentifier("tier-section-\(section.tier.rawValue)")
         }
     }
@@ -121,6 +124,7 @@ struct SessionListView: View {
                     SessionCard(session: session)
                 }
                 .buttonStyle(.plain)
+                .accessibilityIdentifier("session-card-\(session.id)")
             }
         }
     }

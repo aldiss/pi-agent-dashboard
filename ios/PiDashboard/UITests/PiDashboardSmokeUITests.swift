@@ -27,32 +27,45 @@ final class PiDashboardSmokeUITests: XCTestCase {
         // F2 — session list with at least one tier section.
         let list = app.scrollViews["session-list"]
         XCTAssertTrue(list.waitForExistence(timeout: 10), "session list renders after connect")
-        let anyTier = app.otherElements["tier-section-drivers"]
+        let anyTier = app.descendants(matching: .any)["tier-section-drivers"]
         XCTAssertTrue(anyTier.waitForExistence(timeout: 5), "a tier section renders")
         attachScreenshot(name: "02-list")
 
         // F3 — open the Cartographer (drivers) session.
-        let card = app.buttons["session-card-fix-cartographer"]
+        let card = app.descendants(matching: .any)["session-card-fix-cartographer"]
         XCTAssertTrue(card.waitForExistence(timeout: 5), "session card present")
         card.tap()
 
-        // composer single-row first.
-        let composerCard = app.otherElements["mobile-composer-card"]
-        XCTAssertTrue(composerCard.waitForExistence(timeout: 10), "composer visible after open")
-        XCTAssertEqual(composerCard.value as? String, "single-row", "starts single-row")
+        // composer single-row first. The layout value (single-row/multiline) rides
+        // on `mobile-composer-card`; some SwiftUI a11y trees promote it to the outer
+        // `mobile-composer` — resolve whichever carries it.
+        let composer = layoutElement()
+        XCTAssertTrue(composer.waitForExistence(timeout: 10), "composer visible after open")
+        XCTAssertEqual(composer.value as? String, "single-row", "starts single-row")
         attachScreenshot(name: "03-chat-composer-single-row")
 
         // F4 — type >20 wrapping chars → flips to multiline (the hysteresis).
-        let textView = app.textViews["mobile-composer-textarea"]
-        XCTAssertTrue(textView.waitForExistence(timeout: 5))
+        let textView = app.descendants(matching: .any).matching(identifier: "mobile-composer-textarea").firstMatch
+        XCTAssertTrue(textView.waitForExistence(timeout: 5), "composer text input present")
         textView.tap()
         textView.typeText("This is a sufficiently long message that wraps across multiple lines on the iPhone composer width")
 
-        let multiline = NSPredicate(format: "value == %@", "multiline")
-        expectation(for: multiline, evaluatedWith: composerCard)
-        waitForExpectations(timeout: 5)
-        XCTAssertEqual(composerCard.value as? String, "multiline", "long wrapping text → multiline column")
+        // Poll the layout value until it flips (no self-capturing predicate —
+        // keeps Swift 6 strict-concurrency happy).
+        var flipped = false
+        for _ in 0..<25 {
+            if layoutElement().value as? String == "multiline" { flipped = true; break }
+            usleep(200_000) // 0.2s
+        }
+        XCTAssertTrue(flipped, "long wrapping text → multiline column")
         attachScreenshot(name: "04-chat-composer-multiline")
+    }
+
+    /// Resolve the element carrying the composer layout value — the dedicated
+    /// `mobile-composer-card` marker (canonical per TEST-CONTRACT §A). `.firstMatch`
+    /// keeps it unambiguous.
+    private func layoutElement() -> XCUIElement {
+        app.descendants(matching: .any).matching(identifier: "mobile-composer-card").firstMatch
     }
 
     private func attachScreenshot(name: String) {

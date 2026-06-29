@@ -34,9 +34,31 @@ struct AdaptiveComposer: View {
         .padding(.horizontal, 8)
         .padding(.top, 8)
         .background(theme.bgSecondary)
-        .accessibilityIdentifier("mobile-composer")
+        // NB: a SwiftUI `.accessibilityIdentifier` on this container would CASCADE
+        // onto every descendant element (attach/textarea/send), overwriting their
+        // own ids. So the container + layout identifiers live on dedicated zero-size
+        // marker elements instead, leaving the controls' own ids intact.
+        .overlay(alignment: .topLeading) { composerMarkers }
         .onChange(of: text) { _, _ in recomputeLayout() }
         .onChange(of: photoItems) { _, items in Task { await loadImages(items) } }
+    }
+
+    /// Zero-size a11y markers: `mobile-composer` (outer container handle) and
+    /// `mobile-composer-card` (layout value carrier, single-row/multiline per
+    /// TEST-CONTRACT §A). Kept off the visual tree so they never cascade ids onto
+    /// the real controls.
+    private var composerMarkers: some View {
+        ZStack {
+            Color.clear.frame(width: 1, height: 1)
+                .accessibilityElement()
+                .accessibilityIdentifier("mobile-composer")
+            Color.clear.frame(width: 1, height: 1)
+                .accessibilityElement()
+                .accessibilityIdentifier("mobile-composer-card")
+                .accessibilityValue(isMultiline ? "multiline" : "single-row")
+        }
+        .frame(width: 1, height: 1)
+        .allowsHitTesting(false)
     }
 
     // MARK: card (one stable tree, two layouts)
@@ -65,8 +87,6 @@ struct AdaptiveComposer: View {
         )
         .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
         .frame(minHeight: isMultiline ? nil : 48)
-        .accessibilityIdentifier("mobile-composer-card")
-        .accessibilityValue(isMultiline ? "multiline" : "single-row")
     }
 
     private var textEditor: some View {

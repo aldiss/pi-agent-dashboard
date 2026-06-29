@@ -126,7 +126,6 @@ struct SessionCard: View {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .stroke(theme.borderPrimary, lineWidth: 1)
         )
-        .accessibilityIdentifier("session-card-\(session.id)")
     }
 
     @ViewBuilder private var driverRow: some View {

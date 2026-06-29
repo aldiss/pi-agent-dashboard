@@ -85,4 +85,20 @@ final class DirectoryGroupingTests: XCTestCase {
         XCTAssertTrue(SessionGrouping.groupTierByFolder([], folders: true).isEmpty)
         XCTAssertTrue(SessionGrouping.groupTierByFolder([], folders: false).isEmpty)
     }
+
+    func testGroupTierByFolder_dropsEmptyPinnedGroups() {
+        // A pinned dir with NO sessions in THIS tier must not render as an empty
+        // folder (it left a blank gap under every tier header). Pinned dirs that DO
+        // have sessions here keep their badge.
+        let sessions: [DashboardSession] = [
+            .init(id: "a", cwd: "/x/pinned", startedAt: 100),
+            .init(id: "b", cwd: "/x/other", startedAt: 200),
+        ]
+        let groups = SessionGrouping.groupTierByFolder(
+            sessions, folders: true, pinnedDirectories: ["/x/pinned", "/x/empty-pin"])
+        // /x/empty-pin (zero sessions in this tier) dropped; /x/pinned kept + badged.
+        XCTAssertEqual(groups.map { $0.cwd }, ["/x/pinned", "/x/other"])
+        XCTAssertTrue(groups[0].pinned)
+        XCTAssertFalse(groups.contains { $0.sessions.isEmpty })
+    }
 }

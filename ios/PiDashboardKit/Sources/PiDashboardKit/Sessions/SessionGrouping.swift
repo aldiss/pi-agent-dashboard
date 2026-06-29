@@ -209,11 +209,17 @@ public enum SessionGrouping {
 
     /// Within ONE tier, produce directory subgroups when `folders` is on, else a
     /// single flat bucket (powers the Folders toggle). Mirrors `groupTierByFolder`.
+    ///
+    /// Pin handling: pinned dirs keep their ordering + badge for groups that have
+    /// sessions in THIS tier, but zero-session pinned groups are dropped — a pinned
+    /// directory is a sidebar-level concern and must not render as an empty folder
+    /// in every tier (that left a large blank gap under each tier header).
     public static func groupTierByFolder(_ sessions: [DashboardSession], folders: Bool,
                                          orders: [String: [String]] = [:],
                                          pinnedDirectories: [String] = []) -> [DirectoryGroup] {
         if sessions.isEmpty { return [] }
         if !folders { return [DirectoryGroup(cwd: "", sessions: sessions, pinned: false)] }
         return groupByDirectory(sessions, orders: orders, pinnedDirectories: pinnedDirectories)
+            .filter { !$0.sessions.isEmpty }
     }
 }
