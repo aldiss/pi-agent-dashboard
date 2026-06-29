@@ -116,7 +116,7 @@ export function MobileComposer({
   // `Math.min(scrollHeight, 120)` then set height beyond the 40px minimum. Fix: short-circuit
   // when text is empty (no scrollHeight measurement needed; CSS minHeight 40px floor applies).
   // When non-empty, use `auto` reset (cleaner than 40px reset) to get accurate intrinsic
-  // scrollHeight, then clamp [40, 120].
+  // scrollHeight, then clamp [36, 200].
   useEffect(() => {
     const ta = textareaRef.current;
     if (!ta) return;
@@ -125,7 +125,7 @@ export function MobileComposer({
       return;
     }
     ta.style.height = "auto";
-    ta.style.height = Math.min(Math.max(36, ta.scrollHeight), 120) + "px";
+    ta.style.height = Math.min(Math.max(36, ta.scrollHeight), 200) + "px";
   }, [text]);
 
   // Recording-stream subscription: PushToTalkButton fires onStreamChange when MediaStream
@@ -286,12 +286,12 @@ export function MobileComposer({
        *  fine": card padding py-2→py-1.5; minHeight 56→48; textarea minHeight 40→36.
        *  Aggregate ~12px vertical reclaim per QuickKnight scope-option (a) recommendation. */}
       <div
-        className="bg-[var(--bg-secondary)] border border-[var(--border-subtle)] rounded-3xl px-3 py-1.5 flex items-end gap-2 shadow-lg"
-        style={{ minHeight: 48 }}
+        className="bg-[var(--bg-secondary)] border border-[var(--border-subtle)] rounded-3xl px-3 py-2 flex flex-col gap-1.5 shadow-lg"
       >
-        {/* r22 Image-attach button (operator-direct scope-add 2026-05-17). Tap opens iOS native
-         *  photo picker (library + camera options). Hidden <input type="file"> triggered
-         *  imperatively for cleaner Tailwind styling. */}
+        {/* r22 Image-attach (operator-direct scope-add 2026-05-17): hidden <input type="file">
+         *  opens the iOS native photo picker (library + camera). Triggered imperatively from the
+         *  attach button in the controls row below for cleaner Tailwind styling. The hidden input
+         *  has no visual position — kept at the top of the card. */}
         <input
           ref={fileInputRef}
           type="file"
@@ -303,20 +303,12 @@ export function MobileComposer({
           tabIndex={-1}
           data-testid="mobile-composer-file-input"
         />
-        <Pressable
-          type="button"
-          onClick={openImagePicker}
-          disabled={disabled}
-          aria-label="Attach image"
-          title="Attach image"
-          className="w-9 h-9 rounded-full bg-[var(--bg-tertiary)] hover:bg-[var(--bg-hover)] transition-colors flex items-center justify-center self-end disabled:opacity-50 disabled:cursor-not-allowed"
-          data-testid="mobile-composer-attach"
-        >
-          <Icon path={mdiPlus} size={0.85} />
-        </Pressable>
 
-        {/* Text area OR audio wave (when recording, wave replaces textarea visually) */}
-        <div className="flex-1 relative">
+        {/* Row 1 — text, FULL WIDTH. The textarea spans the whole card width and auto-grows
+            downward (ChatGPT-iOS multiline) so wrapped text no longer collides with the controls.
+            The audio-wave overlay still absolutely covers the textarea while recording (replaces
+            it visually). */}
+        <div className="relative w-full">
           <textarea
             ref={textareaRef}
             value={text}
@@ -327,7 +319,7 @@ export function MobileComposer({
             disabled={disabled || isRecording}
             rows={1}
             className="w-full bg-transparent text-base text-[var(--text-primary)] placeholder-[var(--text-tertiary)] focus:outline-none disabled:opacity-50 resize-none"
-            style={{ minHeight: "36px", maxHeight: "120px" }}
+            style={{ minHeight: "36px", maxHeight: "200px" }}
             data-testid="mobile-composer-textarea"
           />
           {isRecording && (
@@ -341,52 +333,71 @@ export function MobileComposer({
           )}
         </div>
 
-        {/* Mic button (PushToTalkButton handles its own state + audio capture + transcribe).
-            Subscribes via onStreamChange so MobileComposer renders the audio wave during recording.
-            Custom className keeps the button at 40x40 ChatGPT-style + self-end alignment. */}
-        <PushToTalkButton
-          disabled={disabled}
-          onTranscript={handleTranscript}
-          onStreamChange={setRecordingStream}
-          className="w-10 h-10 rounded-full bg-[var(--bg-tertiary)] hover:bg-[var(--bg-hover)] active:scale-95 transition-all flex items-center justify-center self-end disabled:opacity-50 disabled:cursor-not-allowed"
-          idleTitle="Tap to record voice (tap again to stop)"
-        />
-
-        {/* r27 Phase 1.1.1: Send + Stop render side-by-side when isWorking (vs pre-r27 Stop-only).
-         *  Send button is now ALWAYS rendered (operator can tap-to-queue while agent streams);
-         *  Stop button renders ADDITIONALLY when isWorking && onAbort (preserves abort affordance).
-         *  Backend handles queue via deliverAs: "followUp" in pi-bridge command-handler.ts. */}
-        {isWorking && onAbort && (
+        {/* Row 2 — controls BELOW the text (ChatGPT-iOS column layout). Attach on the LEFT, a
+            flex-1 spacer, then the mic / stop / send cluster on the RIGHT. items-center aligns the
+            row; the per-button self-end is no longer needed now they share their own row. */}
+        <div className="flex items-center gap-2">
           <Pressable
             type="button"
-            onClick={onAbort}
-            haptic="warning"
-            className="w-10 h-10 rounded-full bg-[var(--accent-red)] hover:opacity-90 transition-opacity flex items-center justify-center self-end"
-            title="Stop"
-            data-testid="mobile-composer-stop"
+            onClick={openImagePicker}
+            disabled={disabled}
+            aria-label="Attach image"
+            title="Attach image"
+            className="w-9 h-9 rounded-full bg-[var(--bg-tertiary)] hover:bg-[var(--bg-hover)] transition-colors flex items-center justify-center disabled:opacity-50 disabled:cursor-not-allowed"
+            data-testid="mobile-composer-attach"
           >
-            <Icon path={mdiStop} size={0.7} color="#fff" />
+            <Icon path={mdiPlus} size={0.85} />
           </Pressable>
-        )}
-        <Pressable
-          type="button"
-          onClick={handleSend}
-          disabled={!canSend}
-          haptic={false}
-          className={`w-10 h-10 rounded-full flex items-center justify-center self-end transition-colors ${
-            canSend
-              ? "bg-white hover:opacity-90"
-              : "bg-[var(--bg-tertiary)] cursor-not-allowed"
-          }`}
-          title={isWorking ? "Queue message for next turn" : "Send"}
-          data-testid="mobile-composer-send"
-        >
-          <Icon
-            path={mdiArrowUp}
-            size={0.85}
-            color={canSend ? "#000" : "var(--text-tertiary)"}
+
+          <div className="flex-1" />
+
+          {/* Mic button (PushToTalkButton handles its own state + audio capture + transcribe).
+              Subscribes via onStreamChange so MobileComposer renders the audio wave during recording.
+              Custom className keeps the button at 40x40 ChatGPT-style. */}
+          <PushToTalkButton
+            disabled={disabled}
+            onTranscript={handleTranscript}
+            onStreamChange={setRecordingStream}
+            className="w-10 h-10 rounded-full bg-[var(--bg-tertiary)] hover:bg-[var(--bg-hover)] active:scale-95 transition-all flex items-center justify-center disabled:opacity-50 disabled:cursor-not-allowed"
+            idleTitle="Tap to record voice (tap again to stop)"
           />
-        </Pressable>
+
+          {/* r27 Phase 1.1.1: Send + Stop render side-by-side when isWorking (vs pre-r27 Stop-only).
+           *  Send button is now ALWAYS rendered (operator can tap-to-queue while agent streams);
+           *  Stop button renders ADDITIONALLY when isWorking && onAbort (preserves abort affordance).
+           *  Backend handles queue via deliverAs: "followUp" in pi-bridge command-handler.ts. */}
+          {isWorking && onAbort && (
+            <Pressable
+              type="button"
+              onClick={onAbort}
+              haptic="warning"
+              className="w-10 h-10 rounded-full bg-[var(--accent-red)] hover:opacity-90 transition-opacity flex items-center justify-center"
+              title="Stop"
+              data-testid="mobile-composer-stop"
+            >
+              <Icon path={mdiStop} size={0.7} color="#fff" />
+            </Pressable>
+          )}
+          <Pressable
+            type="button"
+            onClick={handleSend}
+            disabled={!canSend}
+            haptic={false}
+            className={`w-10 h-10 rounded-full flex items-center justify-center transition-colors ${
+              canSend
+                ? "bg-white hover:opacity-90"
+                : "bg-[var(--bg-tertiary)] cursor-not-allowed"
+            }`}
+            title={isWorking ? "Queue message for next turn" : "Send"}
+            data-testid="mobile-composer-send"
+          >
+            <Icon
+              path={mdiArrowUp}
+              size={0.85}
+              color={canSend ? "#000" : "var(--text-tertiary)"}
+            />
+          </Pressable>
+        </div>
       </div>
     </div>
   );
