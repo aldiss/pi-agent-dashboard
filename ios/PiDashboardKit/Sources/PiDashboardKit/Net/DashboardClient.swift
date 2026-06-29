@@ -47,7 +47,15 @@ public actor DashboardClient {
     }
 
     /// Connect to the browser gateway and return a stream of decoded server messages.
-    /// Re-connecting first tears down any existing socket.
+    /// Re-connecting first tears down any existing socket. The returned stream
+    /// FINISHES when the socket drops — the caller (DashboardStore) observes that
+    /// end-of-stream to drive its reconnect/backoff + the disconnect banner.
+    ///
+    /// Ownership note (cc-ios-build): the seed set `state = .connected` synchronously
+    /// after `resume()` and the receive loop mutated the actor's `continuation`
+    /// without checking it still owned the live socket — so an old loop tearing down
+    /// after a reconnect could finish the *new* stream. Reworked to bind the socket
+    /// into the loop and identity-gate every shared-state write on `socket === task`.
     public func connect(base: URL, token: String? = nil) -> AsyncStream<ServerMessage> {
         disconnect()
         guard let wsURL = Self.websocketURL(base: base) else {
@@ -63,8 +71,7 @@ public actor DashboardClient {
         self.task = socket
         let stream = AsyncStream<ServerMessage> { cont in self.continuation = cont }
         socket.resume()
-        state = .connected
-        Task { await self.receiveLoop() }
+        Task { await self.receiveLoop(socket: socket) }
         return stream
     }
 
@@ -83,17 +90,22 @@ public actor DashboardClient {
         try await task.send(.string(json))
     }
 
-    private func receiveLoop() async {
-        guard let task else { return }
+    /// Receive loop bound to the socket it was started for. Every write to shared
+    /// actor state is gated on `socket === task`; a superseded loop (post-reconnect)
+    /// exits silently without touching the live socket's `state`/`continuation`.
+    private func receiveLoop(socket: URLSessionWebSocketTask) async {
         while true {
             do {
-                let message = try await task.receive()
+                let message = try await socket.receive()
+                guard socket === task else { return }  // superseded by a reconnect
+                if state != .connected { state = .connected }
                 switch message {
                 case .string(let text): emit(Data(text.utf8))
                 case .data(let data): emit(data)
                 @unknown default: break
                 }
             } catch {
+                guard socket === task else { return }  // superseded loop: stay silent
                 state = .failed(error.localizedDescription)
                 continuation?.finish()
                 continuation = nil

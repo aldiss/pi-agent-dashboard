@@ -133,4 +133,87 @@ public enum SessionGrouping {
             return a.offset < b.offset
         }.map { $0.element }
     }
+
+    // MARK: - Secondary directory grouping (cc-ios-build owned)
+    //
+    // The seed shipped tier (primary) grouping only. SessionListView (§3) needs the
+    // SECONDARY directory grouping the PWA's `groupSessionsByDirectory` provides —
+    // pinned dirs first (in pin order), worktree sessions folded under their parent
+    // repo via `groupCwd`, each group internally sorted by server order. Ported here
+    // as owned core logic (path folding kept POSIX-simple — the dashboard server is
+    // the operator's macOS host; Windows drive-letter folding is out of MVP scope).
+
+    /// One directory subgroup within a tier. `pinned` drives the pin badge + ordering.
+    public struct DirectoryGroup: Sendable, Equatable {
+        public let cwd: String
+        public let sessions: [DashboardSession]
+        public let pinned: Bool
+        public init(cwd: String, sessions: [DashboardSession], pinned: Bool) {
+            self.cwd = cwd; self.sessions = sessions; self.pinned = pinned
+        }
+        /// Last path segment — the label the directory header shows.
+        public var basename: String { cwd.split(separator: "/").last.map(String.init) ?? cwd }
+    }
+
+    /// Canonical key collapsing trailing-separator drift (POSIX, case-sensitive).
+    static func pathKey(_ p: String) -> String {
+        var s = p
+        while s.count > 1 && s.hasSuffix("/") { s.removeLast() }
+        return s
+    }
+
+    /// The directory a session groups under: worktree sessions fold to `groupCwd`,
+    /// else `cwd` (mirrors `resolveSessionGroupPath`).
+    public static func groupPath(_ session: DashboardSession) -> String {
+        session.groupCwd ?? session.cwd ?? ""
+    }
+
+    /// Split sessions into directory subgroups: pinned dirs first (in pin order,
+    /// including empty pinned dirs), then unpinned by most-recent activity. Each
+    /// group's sessions are server-order sorted. Mirrors `groupSessionsByDirectory`.
+    public static func groupByDirectory(_ sessions: [DashboardSession],
+                                        orders: [String: [String]] = [:],
+                                        pinnedDirectories: [String] = []) -> [DirectoryGroup] {
+        let pinnedKeys = Set(pinnedDirectories.map(pathKey))
+        // Bucket by canonical key, retaining first-seen display path.
+        var order: [String] = []
+        var byKey: [String: (cwd: String, sessions: [DashboardSession])] = [:]
+        for s in sessions {
+            let path = groupPath(s)
+            let key = pathKey(path)
+            if byKey[key] == nil { byKey[key] = (path, []); order.append(key) }
+            byKey[key]!.sessions.append(s)
+        }
+        var result: [DirectoryGroup] = []
+        // Pinned groups first, in pin order (zero-session pinned dirs included).
+        for dir in pinnedDirectories {
+            let key = pathKey(dir)
+            let bucket = byKey[key]
+            result.append(DirectoryGroup(
+                cwd: dir,
+                sessions: sortSessionsByOrder(bucket?.sessions ?? [], order: orders[dir] ?? orders[bucket?.cwd ?? ""]),
+                pinned: true))
+        }
+        // Unpinned groups by most-recent activity (startedAt desc).
+        let unpinned = order.compactMap { key -> DirectoryGroup? in
+            guard !pinnedKeys.contains(key), let bucket = byKey[key] else { return nil }
+            return DirectoryGroup(
+                cwd: bucket.cwd,
+                sessions: sortSessionsByOrder(bucket.sessions, order: orders[bucket.cwd]),
+                pinned: false)
+        }.sorted { a, b in
+            (a.sessions.map { $0.startedAt ?? 0 }.max() ?? 0) > (b.sessions.map { $0.startedAt ?? 0 }.max() ?? 0)
+        }
+        return result + unpinned
+    }
+
+    /// Within ONE tier, produce directory subgroups when `folders` is on, else a
+    /// single flat bucket (powers the Folders toggle). Mirrors `groupTierByFolder`.
+    public static func groupTierByFolder(_ sessions: [DashboardSession], folders: Bool,
+                                         orders: [String: [String]] = [:],
+                                         pinnedDirectories: [String] = []) -> [DirectoryGroup] {
+        if sessions.isEmpty { return [] }
+        if !folders { return [DirectoryGroup(cwd: "", sessions: sessions, pinned: false)] }
+        return groupByDirectory(sessions, orders: orders, pinnedDirectories: pinnedDirectories)
+    }
 }

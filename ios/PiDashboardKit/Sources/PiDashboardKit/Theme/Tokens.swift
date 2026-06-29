@@ -28,10 +28,10 @@ public struct ThemePalette: Sendable, Equatable {
 }
 
 public enum DashboardTheme {
-    /// Default DARK palette (the operator's). Background + accent hex are lifted
-    /// verbatim from `index.css :root` dark. `textPrimary/Secondary/Tertiary` are
-    /// provisional and get lifted exactly during the SwiftUI build; `textFaint`
-    /// (#3a3a3a) + all `bg-*`/`border-*`/`accent-*` are confirmed from source.
+    /// Default DARK palette (the operator's). Every hex lifted verbatim from
+    /// `index.css :root` dark. `textPrimary/Secondary/Tertiary` were provisional
+    /// in the design pass and are now lifted exactly (#e5e5e5 / #b0b0b0 / #808080);
+    /// `textFaint` (#3a3a3a) + all `bg-*`/`border-*`/`accent-*` confirmed from source.
     public static let dark = ThemePalette(
         bgPrimary: "#0a0a0a",
         bgSecondary: "#141414",
@@ -39,9 +39,9 @@ public enum DashboardTheme {
         bgSurface: "#2a2a2a",
         bgSelected: "#1e1e1e",
         bgCode: "#1a1a1a",
-        textPrimary: "#ededed",
-        textSecondary: "#a0a0a0",
-        textTertiary: "#6b6b6b",
+        textPrimary: "#e5e5e5",
+        textSecondary: "#b0b0b0",
+        textTertiary: "#808080",
         textFaint: "#3a3a3a",
         borderPrimary: "#252525",
         borderSecondary: "#333333",
