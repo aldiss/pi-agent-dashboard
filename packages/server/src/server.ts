@@ -34,7 +34,9 @@ import { wireEvents } from "./event-wiring.js";
 import { createIdleTimer } from "./idle-timer.js";
 import { discoverAndBroadcastSessions } from "./session-bootstrap.js";
 import { scanAllSessions } from "./session-scanner.js";
-import { resolveDriverLiveness } from "./driver-liveness.js";
+import { resolveDriverLiveness, pidAlive } from "./driver-liveness.js";
+import { createClaudePaneProbe } from "./cc-pane-liveness.js";
+import type { HygieneProbes } from "./session-hygiene.js";
 import { startDriverSelfReportPolling } from "./driver-self-report.js";
 import { needsMigration, runMigration } from "./migrate-persistence.js";
 import { detectZrokBinary, cleanupStaleZrok, createTunnel, deleteTunnel, scavengeOrphanZrokProcesses, getTunnelUrl } from "./tunnel.js";
@@ -827,7 +829,24 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
     ? async () => {}
     : createNetworkGuard(config.resolvedTrustedNetworks ?? []);
 
-  registerSessionRoutes(fastify, { sessionManager, eventStore, networkGuard });
+  // Hygiene probes (dashboard-session-row-hygiene): the explicit liveness I/O
+  // injected into the /api/sessions read-path reconciler + the retire endpoint.
+  // CC tmux-pane probe is TTL-cached so a reconnect storm collapses to one spawn.
+  const claudePaneProbe = createClaudePaneProbe();
+  const hygieneProbes: HygieneProbes = {
+    resolveDriverLiveness,
+    pidAlive,
+    listClaudePanes: claudePaneProbe.listClaudePanes,
+  };
+
+  registerSessionRoutes(fastify, {
+    sessionManager,
+    eventStore,
+    networkGuard,
+    hygieneProbes,
+    broadcastSessionUpdated: (sessionId, updates) =>
+      browserGateway.broadcastSessionUpdated(sessionId, updates),
+  });
   registerGitRoutes(fastify, { networkGuard });
   registerFileRoutes(fastify, { sessionManager, preferencesStore, networkGuard });
   registerOpenSpecRoutes(fastify, {
