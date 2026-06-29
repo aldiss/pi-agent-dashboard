@@ -107,6 +107,16 @@ export function MobileComposer({
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
+  // r31 ADAPTIVE layout (operator-direct: ChatGPT single-row ⇄ column). EMPTY/single-line →
+  // COMPACT SINGLE ROW (attach | textarea flex-1 | mic/stop/send inline) keeps the composer
+  // short; MULTILINE (2+ lines) → COLUMN (textarea full-width on top, attach left / controls
+  // right on a row below). Decided in the auto-grow effect via asymmetric HYSTERESIS so a
+  // borderline-wrapping message does not flip-flop every keystroke (the single-row textarea is
+  // narrow ~26ch/line; the column textarea is wide ~43ch/line — a re-measure after the flip
+  // would otherwise oscillate). One stable element tree toggles classNames only (no remount →
+  // no focus loss); see the card JSX below.
+  const [isMultiline, setIsMultiline] = useState(false);
+
   // Auto-grow textarea on text change (composes with W3 r11 fix shape).
   // r21 BUGFIX (operator empirical 2026-05-17, Pattern 87 typos `proprtions`+`frim` PRESERVED:
   // "on iphone 14 pro max proprtions of the typing screen is not correct / you have like
@@ -122,10 +132,24 @@ export function MobileComposer({
     if (!ta) return;
     if (text.length === 0) {
       ta.style.height = "36px";
+      setIsMultiline(false);
       return;
     }
     ta.style.height = "auto";
-    ta.style.height = Math.min(Math.max(36, ta.scrollHeight), 200) + "px";
+    const sh = ta.scrollHeight;
+    ta.style.height = Math.min(Math.max(36, sh), 200) + "px";
+    // HYSTERESIS (TRAP 1): go column on an explicit newline OR (while still single-row) a wrap
+    // past the ~45px scrollHeight threshold — but only once the text is long enough to commit
+    // (>20 chars). Once column, STAY column by LENGTH ALONE (no width-derived re-measure) until
+    // the text is short (≤20, no newline) or cleared. Entry-floor and revert-floor share 20, so
+    // there is no unstable pocket: on this real geometry the single-row textarea is very narrow
+    // (~136px → wraps at ~len 18), BELOW 20; gating entry by >20 (and dropping the `sh>45`
+    // re-measure from the stay branch) is what kills the per-keystroke flip-flop the naive
+    // sh-only formula hits (brief-mandated "engineer around the trap"; constants 45/20 preserved).
+    const hasNewline = text.includes("\n");
+    setIsMultiline((prev) =>
+      hasNewline ? true : prev ? text.length > 20 : sh > 45 && text.length > 20,
+    );
   }, [text]);
 
   // Recording-stream subscription: PushToTalkButton fires onStreamChange when MediaStream
@@ -281,17 +305,28 @@ export function MobileComposer({
         </div>
       )}
 
-      {/* Composer card: rounded dark card with textarea + buttons.
-       *  r22 compression-(a) ratified per operator pick 2026-05-17 "compression menu - default
-       *  fine": card padding py-2→py-1.5; minHeight 56→48; textarea minHeight 40→36.
-       *  Aggregate ~12px vertical reclaim per QuickKnight scope-option (a) recommendation. */}
+      {/* Composer card — ONE STABLE TREE, adaptive class-toggle only (TRAP 2: no remount → no
+       *  focus loss). EMPTY/single-line → single-row `flex items-end` (attach | textarea flex-1 |
+       *  mic/stop/send inline), minHeight 48 keeps the ChatGPT compact pill. MULTILINE → column
+       *  `flex flex-wrap items-center`: the textarea wrapper's `order-first basis-full w-full`
+       *  forces it onto line 1 full-width, while `attach` and the `ml-auto` controls group wrap to
+       *  line 2 (attach left, cluster right). Every interactive element keeps the SAME identity
+       *  across the flip; only classNames/order/width change.
+       *  r22 compression-(a) ratified per operator pick 2026-05-17: card padding py-1.5/py-2;
+       *  minHeight 48 (single-row); textarea minHeight 36. */}
       <div
-        className="bg-[var(--bg-secondary)] border border-[var(--border-subtle)] rounded-3xl px-3 py-2 flex flex-col gap-1.5 shadow-lg"
+        className={
+          isMultiline
+            ? "bg-[var(--bg-secondary)] border border-[var(--border-subtle)] rounded-3xl px-3 py-2 flex flex-wrap items-center gap-2 shadow-lg"
+            : "bg-[var(--bg-secondary)] border border-[var(--border-subtle)] rounded-3xl px-3 py-1.5 flex items-end gap-2 shadow-lg"
+        }
+        style={!isMultiline ? { minHeight: 48 } : undefined}
+        data-testid="mobile-composer-card"
+        data-multiline={isMultiline ? "true" : "false"}
       >
         {/* r22 Image-attach (operator-direct scope-add 2026-05-17): hidden <input type="file">
          *  opens the iOS native photo picker (library + camera). Triggered imperatively from the
-         *  attach button in the controls row below for cleaner Tailwind styling. The hidden input
-         *  has no visual position — kept at the top of the card. */}
+         *  attach button. The hidden input has no visual position — kept at the top of the card. */}
         <input
           ref={fileInputRef}
           type="file"
@@ -304,11 +339,25 @@ export function MobileComposer({
           data-testid="mobile-composer-file-input"
         />
 
-        {/* Row 1 — text, FULL WIDTH. The textarea spans the whole card width and auto-grows
-            downward (ChatGPT-iOS multiline) so wrapped text no longer collides with the controls.
-            The audio-wave overlay still absolutely covers the textarea while recording (replaces
-            it visually). */}
-        <div className="relative w-full">
+        {/* Attach (+) — STABLE first flow child; left in BOTH modes (single-row: between card edge
+            and textarea; column: line 2 left). className mode-independent so it never remounts. */}
+        <Pressable
+          type="button"
+          onClick={openImagePicker}
+          disabled={disabled}
+          aria-label="Attach image"
+          title="Attach image"
+          className="w-9 h-9 rounded-full bg-[var(--bg-tertiary)] hover:bg-[var(--bg-hover)] transition-colors flex items-center justify-center disabled:opacity-50 disabled:cursor-not-allowed"
+          data-testid="mobile-composer-attach"
+        >
+          <Icon path={mdiPlus} size={0.85} />
+        </Pressable>
+
+        {/* Textarea wrapper — STABLE single textarea. Single-row: `flex-1` shares the row beside
+            the controls. Column: `order-first basis-full w-full` forces it onto line 1 full-width,
+            wrapping attach + controls to line 2. Auto-grows downward; the audio-wave overlay still
+            absolutely covers it while recording (replaces it visually). */}
+        <div className={isMultiline ? "order-first basis-full w-full relative" : "flex-1 relative"}>
           <textarea
             ref={textareaRef}
             value={text}
@@ -333,24 +382,10 @@ export function MobileComposer({
           )}
         </div>
 
-        {/* Row 2 — controls BELOW the text (ChatGPT-iOS column layout). Attach on the LEFT, a
-            flex-1 spacer, then the mic / stop / send cluster on the RIGHT. items-center aligns the
-            row; the per-button self-end is no longer needed now they share their own row. */}
-        <div className="flex items-center gap-2">
-          <Pressable
-            type="button"
-            onClick={openImagePicker}
-            disabled={disabled}
-            aria-label="Attach image"
-            title="Attach image"
-            className="w-9 h-9 rounded-full bg-[var(--bg-tertiary)] hover:bg-[var(--bg-hover)] transition-colors flex items-center justify-center disabled:opacity-50 disabled:cursor-not-allowed"
-            data-testid="mobile-composer-attach"
-          >
-            <Icon path={mdiPlus} size={0.85} />
-          </Pressable>
-
-          <div className="flex-1" />
-
+        {/* Right controls group — STABLE. Single-row: `flex items-end` sits inline after the
+            textarea. Column: `ml-auto flex items-center` pushes the cluster to the right edge of
+            line 2 (attach stays left). mic / stop / send keep identity across the flip. */}
+        <div className={isMultiline ? "ml-auto flex items-center gap-2" : "flex items-end gap-2"}>
           {/* Mic button (PushToTalkButton handles its own state + audio capture + transcribe).
               Subscribes via onStreamChange so MobileComposer renders the audio wave during recording.
               Custom className keeps the button at 40x40 ChatGPT-style. */}
