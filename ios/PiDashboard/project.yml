@@ -59,6 +59,7 @@ targets:
     deploymentTarget: "17.0"
     sources:
       - path: UITests
+      - path: ../qa-e2e/PiDashboardUITests
     dependencies:
       - target: PiDashboard
     settings:
