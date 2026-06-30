@@ -13,6 +13,15 @@ public enum ToolStatus: String, Sendable, Equatable {
     case running, complete, error
 }
 
+/// Delivery state of an OPTIMISTICALLY-rendered user message — one the app appended
+/// the instant Send was tapped, before the server echoed it back. `nil` means a
+/// normal server-originated row (no badge). `pending` = sent, awaiting the echo;
+/// `confirmed` = the server's `message_start(role:user)` echo matched + replaced it;
+/// `failed` = the send threw or `send_prompt_failed` arrived (offer a retry).
+public enum DeliveryStatus: String, Sendable, Equatable {
+    case pending, confirmed, failed
+}
+
 /// A single renderable chat row — the native mirror of `ChatMessage`. Identity is
 /// the stable `id` (content-stable across replay so re-reducing the same event
 /// stream never double-pushes a row).
@@ -28,17 +37,20 @@ public struct ChatMessage: Sendable, Equatable, Identifiable {
     public var timestamp: Double
     public var startedAt: Double?
     public var duration: Double?
+    /// Delivery state for an optimistic user bubble (nil for server-originated rows).
+    public var delivery: DeliveryStatus?
     /// Free-form per-row metadata (e.g. bash `command`/`exitCode`, command-feedback `status`).
     public var args: [String: JSONValue]
 
     public init(id: String, role: ChatRole, content: String, images: [ImageContent] = [],
                 toolName: String? = nil, toolCallId: String? = nil, toolStatus: ToolStatus? = nil,
                 result: String? = nil, timestamp: Double, startedAt: Double? = nil,
-                duration: Double? = nil, args: [String: JSONValue] = [:]) {
+                duration: Double? = nil, delivery: DeliveryStatus? = nil,
+                args: [String: JSONValue] = [:]) {
         self.id = id; self.role = role; self.content = content; self.images = images
         self.toolName = toolName; self.toolCallId = toolCallId; self.toolStatus = toolStatus
         self.result = result; self.timestamp = timestamp; self.startedAt = startedAt
-        self.duration = duration; self.args = args
+        self.duration = duration; self.delivery = delivery; self.args = args
     }
 }
 
@@ -68,6 +80,32 @@ public struct SubagentState: Sendable, Equatable, Identifiable {
     public var error: String?
 }
 
+/// Origin of a queued follow-up: `dashboard` (this app) vs `tui` (pi's terminal).
+public enum QueueSource: String, Sendable, Equatable {
+    case dashboard, tui
+}
+
+/// A follow-up message held for the agent's next turn (sent while it was streaming).
+/// Mirrors the PWA `QueuedMessage`. `status`: `pending` = optimistic, not yet acked
+/// by the bridge; `confirmed` = in the bridge's authoritative queue; `failed` = the
+/// send/enqueue failed. `queueNonce` correlates the optimistic card with the
+/// bridge's `message_enqueued` / `message_start(queueNonce)` dispatch.
+public struct QueuedMessage: Sendable, Equatable, Identifiable {
+    public enum Status: String, Sendable, Equatable { case pending, confirmed, failed }
+    public var queueNonce: String
+    public var text: String
+    public var images: [ImageContent]
+    public var source: QueueSource
+    public var status: Status
+    public var id: String { queueNonce }
+
+    public init(queueNonce: String, text: String, images: [ImageContent] = [],
+                source: QueueSource = .dashboard, status: Status = .pending) {
+        self.queueNonce = queueNonce; self.text = text; self.images = images
+        self.source = source; self.status = status
+    }
+}
+
 /// The reduced chat state for one session — the native mirror of `SessionState`
 /// (MVP subset). `reduce(_:)` folds a `DashboardEvent` stream into renderable
 /// rows + running stats, faithful to `reduceEvent` for the event types the MVP
@@ -92,6 +130,9 @@ public struct ChatSessionState: Sendable, Equatable {
     public var contextTokens: Double?
     public var contextWindow: Double?
     public var subagents: [String: SubagentState] = [:]
+    /// Follow-up messages held for the agent's next turn (send-while-streaming).
+    /// Head = next to dispatch. Mirrors the PWA per-session `queue[]`.
+    public var queued: [QueuedMessage] = []
     /// True once the current assistant message's streaming text has been flushed
     /// into a permanent row (mirrors `streamingTextFlushed`). Reset at each
     /// assistant message_start and message_end.
@@ -100,6 +141,66 @@ public struct ChatSessionState: Sendable, Equatable {
     public init() {}
 
     private static let maxTurnStats = 50
+
+    // MARK: Optimistic user echo (dashboard-sent prompts)
+
+    /// Append the operator's prompt as a `pending` user bubble the INSTANT Send is
+    /// tapped — so the message shows immediately (like the PWA), before the server
+    /// round-trip. The later `message_start(role:user)` echo confirms it in place
+    /// (see the reducer's user arm), avoiding a double bubble. `id` is unique per
+    /// optimistic send so multiple pending rows don't collide.
+    public func appendingOptimisticUser(text: String, images: [ImageContent] = [],
+                                        timestamp: Double, nonce: String) -> ChatSessionState {
+        var next = self
+        next.messages.append(ChatMessage(
+            id: "optim-\(nonce)", role: .user, content: text, images: images,
+            timestamp: timestamp, delivery: .pending))
+        return next
+    }
+
+    /// Flip the most-recent still-`pending` user bubble to `failed` (the send threw,
+    /// or `send_prompt_failed` arrived) so the operator sees it didn't land + can
+    /// retry. No-op when there's no pending row. Pure.
+    public func markingLatestOptimisticFailed() -> ChatSessionState {
+        guard let idx = messages.lastIndex(where: { $0.role == .user && $0.delivery == .pending })
+        else { return self }
+        var next = self
+        next.messages[idx].delivery = .failed
+        return next
+    }
+
+    /// Whether any optimistic user bubble is still awaiting confirmation.
+    public var hasPendingOptimisticUser: Bool {
+        messages.contains { $0.role == .user && $0.delivery == .pending }
+    }
+
+    // MARK: Follow-up queue (send-while-streaming)
+
+    /// Append a `pending` queued follow-up — called the instant Send is tapped while
+    /// the agent is streaming. The bridge's `message_enqueued(queueNonce)` confirms
+    /// it; `message_start(role:user, queueNonce)` later dequeues it into a bubble.
+    public func enqueueingOptimistic(text: String, images: [ImageContent] = [],
+                                     nonce: String) -> ChatSessionState {
+        var next = self
+        next.queued.append(QueuedMessage(
+            queueNonce: nonce, text: text, images: images, source: .dashboard, status: .pending))
+        return next
+    }
+
+    /// Flip the matching queued entry to `failed` (send threw / `send_prompt_failed`).
+    /// No-op when the nonce isn't queued. Pure.
+    public func markingQueuedFailed(nonce: String) -> ChatSessionState {
+        guard let idx = queued.firstIndex(where: { $0.queueNonce == nonce }) else { return self }
+        var next = self
+        next.queued[idx].status = .failed
+        return next
+    }
+
+    /// Live queue size for the composer "N queued" badge (excludes failed entries —
+    /// those are surfaced separately for retry, not counted as still-waiting).
+    public var activeQueuedCount: Int {
+        queued.filter { $0.status != .failed }.count
+    }
 
     /// Fold one event into a new state. Pure: `self` is not mutated.
     public func reduce(_ event: DashboardEvent) -> ChatSessionState {
@@ -126,9 +227,32 @@ public struct ChatSessionState: Sendable, Equatable {
             }
             if role == "user" {
                 let (text, images) = ChatSessionState.extractMessageTextAndImages(data["message"])
-                next.messages.append(ChatMessage(
-                    id: "msg-\(next.messages.count)", role: .user, content: text,
-                    images: images, timestamp: ts))
+                // DEQUEUE: a user message_start carrying a queueNonce means that
+                // queued follow-up was just pulled into work — remove it from
+                // queued[] (it becomes the committed user bubble below). Absent
+                // queueNonce = a turn-initiating message (no dequeue).
+                if let dispatched = data["queueNonce"]?.stringValue {
+                    next.queued.removeAll { $0.queueNonce == dispatched }
+                }
+                // DEDUP: the server echoes a dashboard-sent prompt back as
+                // message_start(role:user). If we already rendered it optimistically
+                // (pending, identical trimmed content), CONFIRM that row in place
+                // instead of appending a second identical bubble. Match the most
+                // recent pending user row so repeated identical sends still pair 1:1.
+                let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                if let idx = next.messages.lastIndex(where: {
+                    $0.role == .user && $0.delivery == .pending
+                        && $0.content.trimmingCharacters(in: .whitespacesAndNewlines) == trimmed
+                }) {
+                    next.messages[idx].delivery = .confirmed
+                    // Adopt the server timestamp + any images it carried (authoritative).
+                    next.messages[idx].timestamp = ts
+                    if !images.isEmpty { next.messages[idx].images = images }
+                } else {
+                    next.messages.append(ChatMessage(
+                        id: "msg-\(next.messages.count)", role: .user, content: text,
+                        images: images, timestamp: ts))
+                }
             }
 
         case "message_update":
@@ -314,6 +438,58 @@ public struct ChatSessionState: Sendable, Equatable {
             default: sub.status = "created"
             }
             next.subagents[id] = sub
+
+        case "message_enqueued":
+            // One follow-up entered the bridge queue (data: {queueNonce,text,images?,source}).
+            // dashboard + matching pending nonce → confirm it; tui or unknown nonce
+            // → append a fresh confirmed card. Idempotent: an already-confirmed nonce
+            // is left as-is. Mirrors the PWA message_enqueued arm (MVP subset).
+            if let nonce = data["queueNonce"]?.stringValue {
+                let source: QueueSource = data["source"]?.stringValue == "tui" ? .tui : .dashboard
+                let text = data["text"]?.stringValue ?? ""
+                let images = ChatSessionState.extractImages(data["images"]) ?? []
+                if let idx = next.queued.firstIndex(where: { $0.queueNonce == nonce }) {
+                    if next.queued[idx].status != .confirmed {
+                        next.queued[idx].status = .confirmed
+                        next.queued[idx].source = source
+                        if !text.isEmpty { next.queued[idx].text = text }
+                        if !images.isEmpty { next.queued[idx].images = images }
+                    }
+                } else {
+                    next.queued.append(QueuedMessage(
+                        queueNonce: nonce, text: text, images: images,
+                        source: source, status: .confirmed))
+                }
+            }
+
+        case "queue_state":
+            // The bridge's authoritative snapshot. ATOMIC-REPLACE the confirmed
+            // portion with `followUp` (head = next to dispatch), inheriting prior
+            // images/text for nonce-matched entries; keep this client's still-pending
+            // optimistic entries at the tail (not yet acked). Sister to
+            // sessions_snapshot's replace-not-merge. Mirrors the PWA queue_state arm.
+            let followUp = data["followUp"]?.arrayValue ?? []
+            let priorByNonce: [String: QueuedMessage] = Dictionary(
+                next.queued.map { ($0.queueNonce, $0) }, uniquingKeysWith: { a, _ in a })
+            var confirmed: [QueuedMessage] = []
+            var coveredNonces = Set<String>()
+            for (i, entry) in followUp.enumerated() {
+                guard let obj = entry.objectValue else { continue }
+                let nonce = obj["queueNonce"]?.stringValue ?? "snap-\(Int(ts))-\(i)"
+                let source: QueueSource = obj["source"]?.stringValue == "tui" ? .tui : .dashboard
+                let text = obj["text"]?.stringValue ?? priorByNonce[nonce]?.text ?? ""
+                let prior = priorByNonce[nonce]
+                confirmed.append(QueuedMessage(
+                    queueNonce: nonce, text: text, images: prior?.images ?? [],
+                    source: source, status: .confirmed))
+                if obj["queueNonce"]?.stringValue != nil { coveredNonces.insert(nonce) }
+            }
+            // Preserve genuinely-newer not-yet-acked entries (pending/failed) that the
+            // snapshot doesn't cover, in their existing order, at the tail.
+            let preserved = next.queued.filter {
+                $0.status != .confirmed && !coveredNonces.contains($0.queueNonce)
+            }
+            next.queued = confirmed + preserved
 
         case "turn_end":
             break

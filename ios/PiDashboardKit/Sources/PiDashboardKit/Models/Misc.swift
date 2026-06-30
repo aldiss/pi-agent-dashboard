@@ -6,6 +6,9 @@ public struct ModelInfo: Codable, Sendable, Equatable, Identifiable {
     public let id: String
     /// `provider/id` — the form the dashboard uses to display + set a model.
     public var qualified: String { "\(provider)/\(id)" }
+    public init(provider: String, id: String) {
+        self.provider = provider; self.id = id
+    }
 }
 
 /// Image content for message attachments. Mirrors `ImageContent`

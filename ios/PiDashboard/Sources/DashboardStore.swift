@@ -48,6 +48,8 @@ final class DashboardStore {
     private(set) var chatStates: [String: ChatSessionState] = [:]
     /// sessionId → last send failure reason (bridge absent), surfaced in ChatView.
     private(set) var sendFailures: [String: String] = [:]
+    /// sessionId → available models (populated by `models_list` after requestModels).
+    private(set) var availableModels: [String: [ModelInfo]] = [:]
     /// sessionId currently on screen — drives session_view/unview.
     private(set) var viewedSessionId: String?
 
@@ -170,13 +172,21 @@ final class DashboardStore {
             state = state.reduce(event)
             chatStates[sid] = state
 
-        case .sendPromptFailed(let sid, _, let reason):
-            sendFailures[sid] = reason ?? "Send failed — no bridge connection"
+        case .sendPromptFailed(let sid, let queueNonce, let reason):
+            // Bridge-absent / server-side failure: flip the matching queued card (by
+            // nonce) OR the optimistic bubble to failed AND raise the banner so the
+            // un-delivered message is visible.
+            markSendFailed(sid, nonce: queueNonce,
+                           reason: reason ?? "Send failed — no bridge connection")
+
+        case .modelsList(let sid, let models):
+            // Available models for the picker (replace — authoritative per request).
+            availableModels[sid] = models
 
         case .sessionStateReset(let sid):
             chatStates[sid] = ChatSessionState()
 
-        case .modelsList, .unknown:
+        case .unknown:
             break
         }
     }
@@ -229,17 +239,95 @@ final class DashboardStore {
     /// Send a prompt. SAFETY: refuses in UITest/fixture mode so the smoke suite can
     /// never mutate a live operator session (brief §4). Live send is wired but only
     /// fires against a real connected backend the operator drives.
+    ///
+    /// Send-while-idle → OPTIMISTIC user bubble (pending), confirmed by the server's
+    /// `message_start(role:user)` echo. Send-while-STREAMING → the message is QUEUED
+    /// as a follow-up (held for the agent's next turn): a pending queued card is
+    /// shown + the bridge confirms via `message_enqueued` and later dispatches it via
+    /// `message_start(queueNonce)`. A send failure flips the matching bubble/card to
+    /// failed + surfaces a banner so an undelivered message is visible.
     func sendPrompt(_ sid: String, text: String, images: [ImageContent]?) async {
         guard !isUITest else { return }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty || (images?.isEmpty == false) else { return }
-        await safeSend(.sendPrompt(sessionId: sid, text: trimmed, images: images, queueNonce: UUID().uuidString))
+
+        let nonce = UUID().uuidString
+        var state = chatStates[sid] ?? ChatSessionState()
+        let isStreaming = state.isStreaming
+        // 1) Optimistic feedback — queued card while streaming, else a user bubble.
+        if isStreaming {
+            state = state.enqueueingOptimistic(text: trimmed, images: images ?? [], nonce: nonce)
+        } else {
+            state = state.appendingOptimisticUser(
+                text: trimmed, images: images ?? [], timestamp: nowMs(), nonce: nonce)
+        }
+        chatStates[sid] = state
+        sendFailures.removeValue(forKey: sid)
+
+        // 2) Fire the send; surface a throw (not-connected / socket error) as a
+        // failed bubble/card + banner so a send that didn't land is VISIBLE.
+        do {
+            try await client.send(
+                .sendPrompt(sessionId: sid, text: trimmed, images: images, queueNonce: nonce))
+        } catch {
+            markSendFailed(sid, nonce: nonce,
+                           reason: isStreaming ? "Couldn't queue — not connected."
+                                               : "Couldn't send — not connected.")
+        }
     }
 
     func abort(_ sid: String) async {
         guard !isUITest else { return }
         await safeSend(.abort(sessionId: sid))
     }
+
+    /// Retry a `failed` queued follow-up: drop the failed card, re-send the text as a
+    /// fresh queued entry (new nonce). No-op if the nonce isn't a failed queued entry.
+    func retryQueued(_ sid: String, nonce: String) async {
+        guard !isUITest, var state = chatStates[sid],
+              let entry = state.queued.first(where: { $0.queueNonce == nonce && $0.status == .failed })
+        else { return }
+        state.queued.removeAll { $0.queueNonce == nonce }
+        chatStates[sid] = state
+        await sendPrompt(sid, text: entry.text, images: entry.images.isEmpty ? nil : entry.images)
+    }
+
+    // MARK: Model + thinking-level
+
+    /// Ask the server for the available models (reply arrives as `models_list` →
+    /// `availableModels[sid]`). Called when the picker sheet appears.
+    func requestModels(_ sid: String) async {
+        await safeSend(.requestModels(sessionId: sid))
+    }
+
+    /// Switch the session's model. The confirmation arrives via `session_updated`
+    /// (the title + checkmark update through the session registry).
+    func setModel(_ sid: String, provider: String, modelId: String) async {
+        await safeSend(.setModel(sessionId: sid, provider: provider, modelId: modelId))
+    }
+
+    /// Set the session's thinking/reasoning level (off/minimal/low/medium/high/xhigh).
+    func setThinkingLevel(_ sid: String, level: String) async {
+        await safeSend(.setThinkingLevel(sessionId: sid, level: level))
+    }
+
+    /// Flip the matching optimistic bubble OR queued card (by nonce) to failed +
+    /// raise the banner. `nonce` nil → the latest pending user bubble (failure path
+    /// from `send_prompt_failed` which doesn't always carry our nonce back).
+    private func markSendFailed(_ sid: String, nonce: String?, reason: String) {
+        if var state = chatStates[sid] {
+            if let nonce, state.queued.contains(where: { $0.queueNonce == nonce }) {
+                state = state.markingQueuedFailed(nonce: nonce)
+            } else {
+                state = state.markingLatestOptimisticFailed()
+            }
+            chatStates[sid] = state
+        }
+        sendFailures[sid] = reason
+    }
+
+    /// Epoch-ms timestamp for optimistic rows (matches the server event timebase).
+    private func nowMs() -> Double { Date().timeIntervalSince1970 * 1000 }
 
     private func safeSend(_ message: ClientMessage) async {
         guard !isUITest else { return }

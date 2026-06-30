@@ -11,6 +11,12 @@ struct ChatView: View {
     @Environment(DashboardStore.self) private var store
     @Environment(\.theme) private var theme
 
+    /// Distance (pt) of the bottom sentinel below the viewport bottom: ~0 when the
+    /// chat is scrolled to the bottom, larger when the operator has scrolled up.
+    /// Gates the non-animated auto-follow so a manual scroll-up isn't yanked back.
+    @State private var bottomDistance: CGFloat = 0
+    @State private var showModelPicker = false
+
     private var state: ChatSessionState { store.chatState(sessionId) }
     private var session: DashboardSession? { store.sessions[sessionId] }
 
@@ -18,9 +24,10 @@ struct ChatView: View {
         VStack(spacing: 0) {
             sendFailureBanner
             messages
+            queuedCards
             AdaptiveComposer(
                 isWorking: state.isStreaming,
-                queuedCount: 0,
+                queuedCount: state.activeQueuedCount,
                 serverBase: store.connectedBase,
                 serverToken: store.connectionToken,
                 onSend: { text, images in
@@ -33,40 +40,93 @@ struct ChatView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .principal) {
-                VStack(spacing: 1) {
-                    Text(title).font(.headline).foregroundStyle(theme.textPrimary).lineLimit(1)
-                    if let model = session.flatMap(Format.modelLabel) {
-                        Text(model).font(.caption2).foregroundStyle(theme.textTertiary)
+                Button { showModelPicker = true } label: {
+                    VStack(spacing: 1) {
+                        Text(title).font(.headline).foregroundStyle(theme.textPrimary).lineLimit(1)
+                        HStack(spacing: 3) {
+                            Text(session.flatMap(Format.modelLabel) ?? "Select model")
+                                .font(.caption2).foregroundStyle(theme.textTertiary)
+                            Image(systemName: "chevron.down")
+                                .font(.system(size: 8, weight: .semibold))
+                                .foregroundStyle(theme.textTertiary)
+                        }
                     }
                 }
+                .accessibilityIdentifier("chat-model-button")
             }
+        }
+        .sheet(isPresented: $showModelPicker) {
+            ModelPickerSheet(sessionId: sessionId)
+                .environment(store)
+                .environment(\.theme, theme)
+                .presentationDetents([.medium, .large])
         }
         .task { await store.openSession(sessionId) }
         .onDisappear { Task { await store.closeSession(sessionId) } }
     }
 
     private var messages: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 10) {
-                    if state.messages.isEmpty {
-                        emptyState
-                    } else {
-                        ForEach(state.messages) { message in
-                            ChatMessageRow(message: message).id(message.id)
+        GeometryReader { outer in
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 10) {
+                        if state.messages.isEmpty {
+                            emptyState
+                        } else {
+                            ForEach(state.messages) { message in
+                                ChatMessageRow(message: message).id(message.id)
+                            }
+                            if state.isStreaming { streamingIndicator }
+                            // Bottom sentinel: zero-height scroll anchor + a geometry
+                            // probe reporting its position in the fixed viewport space.
+                            Color.clear
+                                .frame(height: 1)
+                                .id("chat-bottom")
+                                .background(
+                                    GeometryReader { geo in
+                                        Color.clear.preference(
+                                            key: BottomDistanceKey.self,
+                                            value: geo.frame(in: .named("chat-viewport")).minY)
+                                    }
+                                )
                         }
-                        if state.isStreaming { streamingIndicator }
-                        Color.clear.frame(height: 1).id("chat-bottom")
                     }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 12)
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 12)
+                // Naturally stick to the bottom as content (incl. streamingText) grows
+                // — the calm replacement for the old animated scrollTo. The anchor
+                // holds the bottom on content-size changes without re-firing per row.
+                .defaultScrollAnchor(.bottom)
+                .accessibilityIdentifier("chat-scroll")
+                .onPreferenceChange(BottomDistanceKey.self) { sentinelMinY in
+                    // distance the sentinel sits BELOW the viewport bottom: ~0 (or
+                    // negative) when scrolled to the bottom, grows as the operator
+                    // scrolls up. Viewport height = outer.size.height.
+                    bottomDistance = sentinelMinY - outer.size.height
+                }
+                // Non-animated auto-follow (NO animation — animation was the jitter
+                // source). Fires on new rows AND on streamingText growth, but ONLY
+                // when already near the bottom, so a manual scroll-up to read history
+                // is never fought.
+                .onChange(of: state.messages.count) { _, _ in autoFollow(proxy) }
+                .onChange(of: state.streamingText) { _, _ in autoFollow(proxy) }
             }
-            .accessibilityIdentifier("chat-scroll")
-            .onChange(of: state.messages.count) { _, _ in
-                withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo("chat-bottom", anchor: .bottom) }
-            }
+            .coordinateSpace(name: "chat-viewport")
         }
+    }
+
+    /// Distance (pt) the bottom sentinel sits below the viewport bottom edge: ~0 at
+    /// the bottom, larger when scrolled up. Within this band counts as "near bottom".
+    private static let nearBottomThreshold: CGFloat = 160
+
+    /// Pin to the bottom WITHOUT animation, but only when the operator is already
+    /// near the bottom. The sentinel also de-realizes when scrolled far up
+    /// (LazyVStack), so the follow naturally stays off there too.
+    private func autoFollow(_ proxy: ScrollViewProxy) {
+        guard !state.messages.isEmpty else { return }
+        guard bottomDistance <= Self.nearBottomThreshold else { return }
+        proxy.scrollTo("chat-bottom", anchor: .bottom)
     }
 
     @ViewBuilder private var streamingIndicator: some View {
@@ -109,5 +169,54 @@ struct ChatView: View {
             .padding(10)
             .background(theme.accentRed.opacity(0.12))
         }
+    }
+
+    /// Compact list of queued follow-ups just above the composer (muted, with a
+    /// queue glyph) so the operator sees what's waiting for the agent's next turn.
+    /// Failed entries show a tap-to-retry. Mirrors the PWA queued-card style.
+    @ViewBuilder private var queuedCards: some View {
+        if !state.queued.isEmpty {
+            VStack(spacing: 4) {
+                ForEach(state.queued) { q in
+                    HStack(spacing: 8) {
+                        Image(systemName: q.status == .failed ? "exclamationmark.circle.fill" : "clock.arrow.circlepath")
+                            .font(.caption2)
+                            .foregroundStyle(q.status == .failed ? theme.accentRed : theme.textTertiary)
+                        Text(q.text)
+                            .font(.caption)
+                            .foregroundStyle(theme.textSecondary)
+                            .lineLimit(1)
+                        Spacer(minLength: 4)
+                        if q.status == .failed {
+                            Button("Retry") {
+                                Task { await store.retryQueued(sessionId, nonce: q.queueNonce) }
+                            }
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(theme.accentBlue)
+                        } else {
+                            Text(q.source == .tui ? "queued · tui" : "queued")
+                                .font(.caption2)
+                                .foregroundStyle(theme.textTertiary)
+                        }
+                    }
+                    .padding(.horizontal, 12).padding(.vertical, 6)
+                    .background(theme.bgTertiary.opacity(0.6))
+                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .accessibilityIdentifier("chat-queued-\(q.queueNonce)")
+                }
+            }
+            .padding(.horizontal, 8)
+            .padding(.bottom, 4)
+        }
+    }
+}
+
+/// Carries the bottom sentinel's `minY` (in the fixed viewport coordinate space) up
+/// to `ChatView`, which derives `bottomDistance` to gate the non-animated
+/// auto-follow. `reduce` keeps the last (deepest) value reported in a layout pass.
+private struct BottomDistanceKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
     }
 }

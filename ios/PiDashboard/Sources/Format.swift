@@ -23,6 +23,12 @@ enum Format {
         return "\(Int((frac * 100).rounded()))%"
     }
 
+    /// 24-hour wall-clock `HH:mm` for a chat message timestamp (device timezone).
+    /// Thin pass-through to the core `TimeFormat` (which the unit tests pin).
+    static func clockTime(fromEpochMs ms: Double) -> String {
+        TimeFormat.clockTime(fromEpochMs: ms)
+    }
+
     /// Model label trimmed to the id after `provider/` ("claude-opus-4"), + thinking.
     static func modelLabel(_ session: DashboardSession) -> String? {
         guard let model = session.model, !model.isEmpty else { return nil }

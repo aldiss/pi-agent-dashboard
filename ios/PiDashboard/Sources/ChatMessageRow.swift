@@ -9,12 +9,36 @@ struct ChatMessageRow: View {
     @Environment(\.theme) private var theme
 
     var body: some View {
-        content
-            .frame(maxWidth: .infinity, alignment: alignment)
-            .accessibilityIdentifier("chat-message-\(message.id)")
+        Group {
+            if message.role == .turnSeparator {
+                // A separator isn't a message — no timestamp.
+                content
+            } else {
+                VStack(alignment: stackAlignment, spacing: 2) {
+                    content
+                    timestampCaption
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: alignment)
+        .accessibilityIdentifier("chat-message-\(message.id)")
     }
 
     private var alignment: Alignment { message.role == .user ? .trailing : .leading }
+    private var stackAlignment: HorizontalAlignment { message.role == .user ? .trailing : .leading }
+
+    /// Subtle 24-hour timestamp shown on EVERY message row (user trailing,
+    /// everything else leading). Empty for a missing timestamp.
+    @ViewBuilder private var timestampCaption: some View {
+        let label = Format.clockTime(fromEpochMs: message.timestamp)
+        if !label.isEmpty {
+            Text(label)
+                .font(.caption2)
+                .foregroundStyle(theme.textTertiary)
+                .padding(.horizontal, message.role == .user ? 4 : 2)
+                .accessibilityIdentifier("chat-message-time")
+        }
+    }
 
     @ViewBuilder private var content: some View {
         switch message.role {
@@ -40,8 +64,31 @@ struct ChatMessageRow: View {
                     .background(theme.bgSurface)
                     .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
             }
+            deliveryFooter
         }
         .frame(maxWidth: 300, alignment: .trailing)
+    }
+
+    /// Delivery indicator under an optimistic user bubble: pending → "Sending…",
+    /// failed → "Not sent". Confirmed/normal rows show nothing.
+    @ViewBuilder private var deliveryFooter: some View {
+        switch message.delivery {
+        case .pending:
+            HStack(spacing: 4) {
+                ProgressView().controlSize(.mini).tint(theme.textTertiary)
+                Text("Sending…").font(.caption2).foregroundStyle(theme.textTertiary)
+            }
+            .accessibilityIdentifier("chat-message-pending")
+        case .failed:
+            HStack(spacing: 4) {
+                Image(systemName: "exclamationmark.circle.fill").font(.caption2)
+                Text("Not sent").font(.caption2)
+            }
+            .foregroundStyle(theme.accentRed)
+            .accessibilityIdentifier("chat-message-failed")
+        case .confirmed, .none:
+            EmptyView()
+        }
     }
 
     private var assistantText: some View {
