@@ -9,6 +9,9 @@ options:
 packages:
   PiDashboardKit:
     path: ../PiDashboardKit
+  MarkdownUI:
+    url: https://github.com/gonzalezreal/swift-markdown-ui
+    from: "2.4.0"
 
 settings:
   base:
@@ -30,6 +33,8 @@ targets:
     dependencies:
       - package: PiDashboardKit
         product: PiDashboardKit
+      - package: MarkdownUI
+        product: MarkdownUI
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: technology.blackbelt.pidashboard

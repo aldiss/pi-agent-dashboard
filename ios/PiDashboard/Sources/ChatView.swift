@@ -16,6 +16,7 @@ struct ChatView: View {
     /// Gates the non-animated auto-follow so a manual scroll-up isn't yanked back.
     @State private var bottomDistance: CGFloat = 0
     @State private var showModelPicker = false
+    @State private var lightboxImage: UIImage?
 
     private var state: ChatSessionState { store.chatState(sessionId) }
     private var session: DashboardSession? { store.sessions[sessionId] }
@@ -61,8 +62,19 @@ struct ChatView: View {
                 .environment(\.theme, theme)
                 .presentationDetents([.medium, .large])
         }
+        .fullScreenCover(item: lightboxItem) { item in
+            ImageLightbox(image: item.image) { lightboxImage = nil }
+                .background(BackdropClearBackground())
+        }
         .task { await store.openSession(sessionId) }
         .onDisappear { Task { await store.closeSession(sessionId) } }
+    }
+
+    /// Wrap the optional lightbox UIImage as an Identifiable item for `fullScreenCover(item:)`.
+    private var lightboxItem: Binding<LightboxItem?> {
+        Binding(
+            get: { lightboxImage.map(LightboxItem.init) },
+            set: { if $0 == nil { lightboxImage = nil } })
     }
 
     private var messages: some View {
@@ -74,7 +86,8 @@ struct ChatView: View {
                             emptyState
                         } else {
                             ForEach(state.messages) { message in
-                                ChatMessageRow(message: message).id(message.id)
+                                ChatMessageRow(message: message) { ui in lightboxImage = ui }
+                                    .id(message.id)
                             }
                             if state.isStreaming { streamingIndicator }
                             // Bottom sentinel: zero-height scroll anchor + a geometry
@@ -131,9 +144,7 @@ struct ChatView: View {
 
     @ViewBuilder private var streamingIndicator: some View {
         if !state.streamingText.isEmpty {
-            Text(state.streamingText)
-                .font(.callout)
-                .foregroundStyle(theme.textPrimary)
+            MarkdownText(content: state.streamingText)
                 .frame(maxWidth: .infinity, alignment: .leading)
         } else {
             HStack(spacing: 6) {
@@ -219,4 +230,21 @@ private struct BottomDistanceKey: PreferenceKey {
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = nextValue()
     }
+}
+
+/// Identifiable wrapper so a tapped `UIImage` can drive `fullScreenCover(item:)`.
+private struct LightboxItem: Identifiable {
+    let image: UIImage
+    let id = UUID()
+}
+
+/// Clears the system `fullScreenCover` white backdrop so the lightbox's own dark
+/// backdrop shows edge-to-edge (the cover host view is made transparent).
+private struct BackdropClearBackground: UIViewRepresentable {
+    func makeUIView(context: Context) -> UIView {
+        let v = UIView()
+        DispatchQueue.main.async { v.superview?.superview?.backgroundColor = .clear }
+        return v
+    }
+    func updateUIView(_ uiView: UIView, context: Context) {}
 }

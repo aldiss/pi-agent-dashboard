@@ -1,17 +1,30 @@
 import SwiftUI
 import PiDashboardKit
 
-/// Renders one reduced chat row by role. Mirrors the PWA chat's message kinds:
-/// user/assistant bubbles (markdown), thinking, tool call+result, bash output,
-/// turn separators, raw events. Identifier `chat-message-<id>` per TEST-CONTRACT.
+/// Renders one reduced chat row by role — Batch 1 rich rendering: markdown prose
+/// (MarkdownUI), expandable tool-call detail (args JSON + result), collapsible
+/// thinking, inline images with tap-to-zoom (lightbox owned by `ChatView`).
+/// Identifier `chat-message-<id>` per TEST-CONTRACT.
 struct ChatMessageRow: View {
     let message: ChatMessage
+    /// Tapping an inline image asks `ChatView` to present the full-screen lightbox.
+    var onImageTap: (UIImage) -> Void = { _ in }
     @Environment(\.theme) private var theme
+
+    @State private var toolExpanded = false
+    @State private var resultExpanded = false
+    @State private var thinkingExpanded: Bool
+
+    init(message: ChatMessage, onImageTap: @escaping (UIImage) -> Void = { _ in }) {
+        self.message = message
+        self.onImageTap = onImageTap
+        // Long thinking starts collapsed; a short aside stays open.
+        _thinkingExpanded = State(initialValue: !ChatRender.shouldCollapseThinking(message.content))
+    }
 
     var body: some View {
         Group {
             if message.role == .turnSeparator {
-                // A separator isn't a message — no timestamp.
                 content
             } else {
                 VStack(alignment: stackAlignment, spacing: 2) {
@@ -27,8 +40,6 @@ struct ChatMessageRow: View {
     private var alignment: Alignment { message.role == .user ? .trailing : .leading }
     private var stackAlignment: HorizontalAlignment { message.role == .user ? .trailing : .leading }
 
-    /// Subtle 24-hour timestamp shown on EVERY message row (user trailing,
-    /// everything else leading). Empty for a missing timestamp.
     @ViewBuilder private var timestampCaption: some View {
         let label = Format.clockTime(fromEpochMs: message.timestamp)
         if !label.isEmpty {
@@ -53,24 +64,22 @@ struct ChatMessageRow: View {
         }
     }
 
+    // MARK: user
+
     private var userBubble: some View {
         VStack(alignment: .trailing, spacing: 6) {
             if !message.images.isEmpty { imageStrip }
             if !message.content.isEmpty {
-                Text(message.content)
-                    .font(.callout)
-                    .foregroundStyle(theme.textPrimary)
+                MarkdownText(content: message.content)
                     .padding(.horizontal, 14).padding(.vertical, 10)
                     .background(theme.bgSurface)
                     .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
             }
             deliveryFooter
         }
-        .frame(maxWidth: 300, alignment: .trailing)
+        .frame(maxWidth: 320, alignment: .trailing)
     }
 
-    /// Delivery indicator under an optimistic user bubble: pending → "Sending…",
-    /// failed → "Not sent". Confirmed/normal rows show nothing.
     @ViewBuilder private var deliveryFooter: some View {
         switch message.delivery {
         case .pending:
@@ -91,22 +100,43 @@ struct ChatMessageRow: View {
         }
     }
 
+    // MARK: assistant (markdown)
+
     private var assistantText: some View {
-        markdown(message.content)
-            .font(.callout)
-            .foregroundStyle(theme.textPrimary)
-            .frame(maxWidth: .infinity, alignment: .leading)
+        VStack(alignment: .leading, spacing: 6) {
+            if !message.content.isEmpty {
+                MarkdownText(content: message.content)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            if !message.images.isEmpty { imageStrip }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
+    // MARK: thinking (collapsible)
+
     private var thinkingBlock: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Label("Thinking", systemImage: "brain")
+        VStack(alignment: .leading, spacing: thinkingExpanded ? 6 : 0) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.18)) { thinkingExpanded.toggle() }
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: "brain")
+                    Text("Thinking")
+                    Spacer()
+                    Image(systemName: thinkingExpanded ? "chevron.up" : "chevron.down")
+                }
                 .font(.caption2.weight(.medium))
                 .foregroundStyle(theme.textTertiary)
-            Text(message.content)
-                .font(.caption)
-                .foregroundStyle(theme.textTertiary)
-                .italic()
+            }
+            .accessibilityIdentifier("chat-thinking-toggle")
+            if thinkingExpanded {
+                Text(message.content)
+                    .font(.caption)
+                    .foregroundStyle(theme.textTertiary)
+                    .italic()
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -114,29 +144,48 @@ struct ChatMessageRow: View {
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 
+    // MARK: tool (expandable)
+
     private var toolCard: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 6) {
-                Image(systemName: toolIcon).font(.caption)
-                Text(message.toolName ?? "tool").font(.caption.weight(.semibold)).monospaced()
-                Spacer()
-                toolStatusBadge
-                if let d = message.duration, d > 0 {
-                    Text("\(Int(d / 1000))s").font(.caption2).foregroundStyle(theme.textTertiary)
+        VStack(alignment: .leading, spacing: toolExpanded ? 8 : 0) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.18)) { toolExpanded.toggle() }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: toolIcon).font(.caption)
+                    Text(message.toolName ?? "tool").font(.caption.weight(.semibold)).monospaced()
+                    Spacer()
+                    toolStatusBadge
+                    if let d = message.duration, d > 0 {
+                        Text("\(Int(d / 1000))s").font(.caption2).foregroundStyle(theme.textTertiary)
+                    }
+                    Image(systemName: toolExpanded ? "chevron.up" : "chevron.down")
+                        .font(.caption2)
                 }
+                .foregroundStyle(theme.textSecondary)
             }
-            .foregroundStyle(theme.textSecondary)
-            if let result = message.result, !result.isEmpty {
+            .accessibilityIdentifier("chat-tool-toggle")
+
+            if toolExpanded {
+                let argsText = ChatRender.prettyArgs(message.args)
+                if !argsText.isEmpty {
+                    sectionLabel("Input")
+                    codeBox(argsText, lineLimit: nil)
+                }
+                if let result = message.result, !result.isEmpty {
+                    sectionLabel("Output")
+                    toolResultBox(result)
+                }
+                if !message.images.isEmpty { imageStrip }
+            } else if let result = message.result, !result.isEmpty {
+                // Collapsed: a one-line peek at the result.
                 Text(result)
-                    .font(.caption.monospaced())
-                    .foregroundStyle(theme.textSecondary)
-                    .lineLimit(12)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(theme.textTertiary)
+                    .lineLimit(1)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(8)
-                    .background(theme.bgCode)
-                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .padding(.top, 4)
             }
-            if !message.images.isEmpty { imageStrip }
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -145,15 +194,54 @@ struct ChatMessageRow: View {
         .overlay(RoundedRectangle(cornerRadius: 10).stroke(theme.borderPrimary, lineWidth: 1))
     }
 
+    private func sectionLabel(_ text: String) -> some View {
+        Text(text)
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(theme.textTertiary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func codeBox(_ text: String, lineLimit: Int?) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            Text(text)
+                .font(.caption.monospaced())
+                .foregroundStyle(theme.textSecondary)
+                .lineLimit(lineLimit)
+                .padding(8)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(theme.bgCode)
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+
+    @ViewBuilder private func toolResultBox(_ result: String) -> some View {
+        let (visible, clipped) = ChatRender.truncated(result, maxLines: 30)
+        VStack(alignment: .leading, spacing: 4) {
+            codeBox(resultExpanded ? result : visible, lineLimit: nil)
+            if clipped {
+                Button(resultExpanded ? "Show less" : "Show more") {
+                    withAnimation(.easeInOut(duration: 0.15)) { resultExpanded.toggle() }
+                }
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(theme.accentBlue)
+                .accessibilityIdentifier("chat-tool-showmore")
+            }
+        }
+    }
+
+    // MARK: bash / command / raw
+
     private var bashCard: some View {
         VStack(alignment: .leading, spacing: 4) {
             if let cmd = message.args["command"]?.stringValue {
                 Text("$ \(cmd)").font(.caption.monospaced()).foregroundStyle(theme.accentGreen)
             }
-            Text(message.content)
-                .font(.caption.monospaced())
-                .foregroundStyle(theme.textSecondary)
-                .lineLimit(16)
+            ScrollView(.horizontal, showsIndicators: false) {
+                Text(message.content)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(theme.textSecondary)
+                    .lineLimit(16)
+            }
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -177,10 +265,12 @@ struct ChatMessageRow: View {
 
     private var rawCard: some View {
         DisclosureGroup {
-            Text(message.content)
-                .font(.caption2.monospaced())
-                .foregroundStyle(theme.textTertiary)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            ScrollView(.horizontal, showsIndicators: false) {
+                Text(message.content)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(theme.textTertiary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
         } label: {
             Text(message.toolName ?? "event")
                 .font(.caption2.weight(.medium))
@@ -191,15 +281,21 @@ struct ChatMessageRow: View {
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 
+    // MARK: images
+
     private var imageStrip: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 6) {
                 ForEach(Array(message.images.enumerated()), id: \.offset) { _, img in
                     if let data = Data(base64Encoded: img.data), let ui = UIImage(data: data) {
-                        Image(uiImage: ui)
-                            .resizable().scaledToFill()
-                            .frame(width: 120, height: 120)
-                            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                        Button { onImageTap(ui) } label: {
+                            Image(uiImage: ui)
+                                .resizable().scaledToFill()
+                                .frame(width: 140, height: 140)
+                                .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                                .overlay(RoundedRectangle(cornerRadius: 10).stroke(theme.borderPrimary, lineWidth: 1))
+                        }
+                        .accessibilityIdentifier("chat-image")
                     }
                 }
             }
@@ -225,18 +321,6 @@ struct ChatMessageRow: View {
         case "write", "edit": return "pencil"
         case "grep", "glob": return "magnifyingglass"
         default: return "wrench.and.screwdriver"
-        }
-    }
-
-    /// Markdown when it parses; plain text otherwise (assistant prose is markdown
-    /// in the PWA). Uses SwiftUI's built-in `AttributedString(markdown:)`.
-    @ViewBuilder private func markdown(_ text: String) -> some View {
-        if let attributed = try? AttributedString(
-            markdown: text,
-            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)) {
-            Text(attributed)
-        } else {
-            Text(text)
         }
     }
 }

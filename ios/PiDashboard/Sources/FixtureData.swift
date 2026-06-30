@@ -78,39 +78,83 @@ enum FixtureData {
         return Snapshot(sessions: sessions, orders: orders, pinned: pinned)
     }
 
-    /// A scripted chat reduced through the real reducer — user prompt, thinking,
-    /// assistant text, a tool call+result, and turn stats. Renders every row kind.
+    /// A scripted chat reduced through the real reducer — rich markdown prose
+    /// (headings/lists/inline+fenced code/links), a tool call with args + multi-line
+    /// result, an inline image, and thinking. Exercises Batch-1 rich rendering.
     static func chatState() -> ChatSessionState {
         func ev(_ type: String, _ data: [String: JSONValue], _ ts: Double) -> DashboardEvent {
             DashboardEvent(eventType: type, timestamp: ts, data: data)
         }
+        let assistantMarkdown = """
+        ## Plan: native composer
+
+        I'll wire the SwiftUI composer to the **core** hysteresis rule. Steps:
+
+        1. Reuse `ComposerLayout.isMultiline` (no re-derive)
+        2. Map `DashboardTheme` tokens → `Color`
+        3. Verify with `swift test`
+
+        Inline code like `clampedHeight(text:measured:)` stays mono. See the
+        [composer spec](https://example.com/spec) for the exact constants.
+
+        ```swift
+        func isMultiline(prev: Bool, text: String, height: Double) -> Bool {
+            if text.contains("\\n") { return true }
+            return prev ? text.count > 20 : height > 45 && text.count > 20
+        }
+        ```
+
+        > Note: Enter inserts a newline — never sends.
+        """
+        let toolResult = """
+        Building for debugging...
+        Compiling ComposerLayout.swift
+        Compiling EventReducer.swift
+        Test Suite 'All tests' started
+        Executed 174 tests, with 0 failures (0 unexpected) in 0.13s
+        ** BUILD SUCCEEDED **
+        """
         let events: [DashboardEvent] = [
             ev("message_start", ["message": .object(["role": .string("user"),
-                "content": .string("Port the mobile composer to native SwiftUI")])], 1),
+                "content": .string("Port the **mobile composer** to native SwiftUI — keep the hysteresis.")])], 1),
             ev("agent_start", [:], 2),
             ev("message_update", ["assistantMessageEvent": .object(["type": .string("thinking_start")])], 3),
             ev("message_update", ["assistantMessageEvent": .object([
                 "type": .string("thinking_delta"),
-                "delta": .string("The hysteresis rule lives in ComposerLayout — reuse it.")])], 4),
+                "delta": .string("The hysteresis rule lives in ComposerLayout — reuse it rather than re-deriving the 45/20 constants in the view. Map the theme tokens to Color and gate send on canSend. Then a swift test pass confirms the floor is intact before I touch the simulator build.")])], 4),
             ev("message_update", ["assistantMessageEvent": .object(["type": .string("thinking_end")])], 9),
             ev("message_start", ["message": .object(["role": .string("assistant")])], 10),
             ev("message_update", ["message": .object(["role": .string("assistant"),
-                "content": .array([.object(["type": .string("text"),
-                    "text": .string("I'll wire the native composer to `ComposerLayout.isMultiline`. Running a check first:")])])])], 11),
+                "content": .array([.object(["type": .string("text"), "text": .string(assistantMarkdown)])])])], 11),
             ev("tool_execution_start", ["toolCallId": .string("t1"), "toolName": .string("bash"),
-                "args": .object(["command": .string("swift test")])], 12),
+                "args": .object(["command": .string("swift test"), "cwd": .string("ios/PiDashboardKit")])], 12),
             ev("tool_execution_end", ["toolCallId": .string("t1"),
-                "result": .string("Executed 50 tests, with 0 failures"), "isError": .bool(false)], 18),
+                "result": .string(toolResult), "isError": .bool(false)], 18),
             ev("message_end", ["message": .object(["role": .string("assistant"),
                 "content": .array([
-                    .object(["type": .string("text"), "text": .string("I'll wire the native composer to `ComposerLayout.isMultiline`. Running a check first:")]),
+                    .object(["type": .string("text"), "text": .string(assistantMarkdown)]),
                     .object(["type": .string("toolCall"), "id": .string("t1")]),
                 ])])], 19),
+            // An assistant image (1×1 teal PNG fixture) to exercise inline image + lightbox.
+            ev("message_start", ["message": .object(["role": .string("assistant")])], 20),
+            ev("message_end", ["message": .object(["role": .string("assistant"),
+                "content": .array([.object(["type": .string("text"),
+                    "text": .string("Here's the rendered composer:")])])])], 21),
+            ev("tool_execution_start", ["toolCallId": .string("t2"), "toolName": .string("Read"),
+                "args": .object(["file": .string("composer.png")])], 22),
+            ev("tool_execution_end", ["toolCallId": .string("t2"), "isError": .bool(false),
+                "images": .array([.object([
+                    "data": .string(tealPNGBase64), "mimeType": .string("image/png")])])], 23),
             ev("stats_update", ["turnUsage": .object([
                 "input": .number(8200), "output": .number(540),
                 "cacheRead": .number(64000), "cacheWrite": .number(1200)]),
-                "contextUsage": .object(["tokens": .number(84000), "contextWindow": .number(200000)])], 20),
+                "contextUsage": .object(["tokens": .number(84000), "contextWindow": .number(200000)])], 24),
         ]
         return ChatSessionState().reduce(events: events)
     }
+
+    /// A minimal valid PNG (solid teal, 64×64) base64 — a real decodable image for
+    /// the inline-image + lightbox fixture (no network).
+    private static let tealPNGBase64 =
+        "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAAZklEQVR42u3QQREAAAQAMCH0f8qgHTmcPVZgkV3zWQgQIECAAAECBAgQIECAAAECBAgQIECAAAECBAgQIECAAAECBAgQIECAAAECBAgQIECAAAECBAgQIECAAAECBAgQIECAAAH3LVKKEkosmiMkAAAAAElFTkSuQmCC"
 }

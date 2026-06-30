@@ -1,87 +1,73 @@
-# CC-BATCH-STATUS — chat UX batch (scroll · send · timestamps · queue · model-picker)
+# CC-BATCH-STATUS — Parity Batch 1: rich chat rendering
 
-Branch `feat/native-ios-tests`. Owner: cc-ios-build. Five operator-reported items,
-committed together. NOT reinstalled — SwiftPilot installs the whole batch on BOTH
-iPhones together. `swift test` 132 → **167 green**; `xcodebuild generic/iOS
-Simulator` **BUILD SUCCEEDED**.
+Branch `feat/native-ios-tests`. Owner: cc-ios-build. First parity batch — the chat
+rendered plain text; now it renders like the PWA. NOT reinstalled — SwiftPilot
+verifies (screenshots) + installs on the operator's iPhone(s), testing against the
+isolated server (`http://127.0.0.1:8001` / Tailscale :8001). Team `ZPD66G9CB6`
+preserved; no AI attribution; `qa-e2e/**` + test-CC tests untouched.
 
-## 1. Streaming scroll jitter (ChatView)
-Root cause: an ANIMATED `scrollTo("chat-bottom")` re-fired on every message-count
-change during a streaming turn → overshoot/bounce, never smoothly following
-`streamingText`. Fix: `.defaultScrollAnchor(.bottom)` (natural bottom-pin as content
-grows) + a NON-animated auto-follow on BOTH `messages.count` AND `streamingText`,
-gated to only follow when already near the bottom (a `BottomDistanceKey` geometry
-probe vs the viewport) so a manual scroll-up isn't yanked back. No animation on the
-follow — that was the jitter source.
+## What now renders richly
+1. **Markdown** (assistant + user + streaming text) via **MarkdownUI**
+   (`gonzalezreal/swift-markdown-ui` 2.4.x, MIT) — headings, lists, bold/italic,
+   blockquotes, links, inline code, **fenced code blocks**, tables. Themed to the
+   dark palette (`MarkdownText.swift` maps `DashboardTheme` tokens → MarkdownUI
+   `Theme`). Replaced the prior inline-only `AttributedString(markdown:)`.
+2. **Code blocks** — monospaced on `bgCode`, bordered, **horizontally scrollable**
+   for long lines (matches the official MarkdownUI codeBlock idiom).
+3. **Expandable tool calls** — collapsed = compact row (icon + name + status +
+   duration + 1-line result peek); tap the chevron → **Input** (pretty-printed args
+   JSON) + **Output** (`result`, monospaced, h-scroll, truncated at 30 lines with a
+   "Show more"). Pure helpers (`ChatRender.prettyArgs` / `.truncated`) are unit-tested.
+4. **Inline images + lightbox** — `message.images` render as rounded capped
+   thumbnails; tap → full-screen **`ImageLightbox`** (pinch-zoom via
+   `MagnificationGesture`, drag-pan when zoomed, double-tap zoom, swipe-down/tap to
+   dismiss, dark backdrop). Owned by `ChatView` via `.fullScreenCover(item:)`.
+5. **Collapsible thinking** — muted "Thinking" header + chevron; **default collapsed
+   when long** (`ChatRender.shouldCollapseThinking`, 280-char threshold; unit-tested),
+   open for short asides.
+6. **Tappable links** — open in Safari (MarkdownUI link handling + `.tint(accentBlue)`).
 
-## 2. Optimistic send + dedup + surfaced failures (DashboardStore + reducer)
-- **Optimistic echo**: `sendPrompt` appends the user bubble (`delivery: .pending`)
-  the instant Send is tapped — shows immediately like the PWA.
-- **Dedup**: the server's `message_start(role:user)` echo CONFIRMS the matching
-  pending bubble in place (trimmed-content match, most-recent-first) instead of
-  appending a duplicate → no double bubble.
-- **Surfaced failures**: `client.send` throw OR `send_prompt_failed` flips the bubble
-  to `.failed` + sets `sendFailures[sid]` (was silently swallowed). Failed bubbles
-  show "Not sent"; pending show "Sending…".
-- Core helpers (testable): `appendingOptimisticUser`, `markingLatestOptimisticFailed`,
-  `hasPendingOptimisticUser`; reducer dedup in the user arm.
-
-## 3. Per-message timestamps (all rows)
-`TimeFormat.clockTime(fromEpochMs:)` → 24-hour `HH:mm` (POSIX-fixed 24h, device
-timezone), in the CORE so it's unit-tested; `Format.clockTime` is the app
-pass-through. Rendered as a subtle `caption2`/`textTertiary` caption on EVERY
-`ChatMessageRow` variant (user trailing; assistant/tool/thinking/bash/cmd/raw
-leading; separator excluded). `TimeFormat.isNewDay` + `shortDate` available for an
-optional day divider.
-
-## 4. Follow-up QUEUE (send-while-streaming) — PWA parity
-- Core: `QueuedMessage{queueNonce,text,images,source,status}` + `queued: []` on
-  `ChatSessionState`. `enqueueingOptimistic`, `markingQueuedFailed`,
-  `activeQueuedCount`.
-- Reducer arms (events arrive via `event_forward`): `message_enqueued`
-  (confirm dashboard nonce / append tui-or-unknown), `queue_state` (authoritative
-  atomic-REPLACE of the confirmed portion by `followUp` order, pending kept at tail),
-  `message_start(queueNonce)` DEQUEUE into a committed bubble. `send_prompt_failed`
-  (a ServerMessage) → store marks the queued card failed.
-- Store: `sendPrompt` branches on `isStreaming` → enqueue vs optimistic-bubble.
-  `retryQueued` re-sends a failed card. Composer `queuedCount` wired to
-  `state.activeQueuedCount` (was hardcoded 0). Queued cards rendered above the
-  composer (muted + queue glyph; failed → tap-to-retry).
-
-## 5. Model + thinking-level picker (PWA ModelSelector + ModelReasoningSheet)
-- Store: `availableModels[sid]` (populated by `models_list`, previously ignored);
-  `requestModels` / `setModel` / `setThinkingLevel` via `safeSend`. Current
-  model/thinking read from `sessions[sid]` (updated by `session_updated`).
-- UI: nav title is now a tappable button (chevron) → `ModelPickerSheet`
-  (id `model-picker`): `requestModels` on appear, searchable + provider-chip-filtered
-  list of `provider/id` with the current model checkmarked (`model-row-<provider>-<id>`),
-  + a thinking-level grid (off/minimal/low/medium/high/xhigh, current highlighted).
-  Confirmation flows back through `session_updated` → title + checkmark update.
+Deferred (later batches, per brief): rich diffs, mermaid, markdown search,
+syntax-highlighting (code is monospaced-but-unhighlighted for now — still a big jump).
 
 ## Files
 | File | Change |
 |---|---|
-| `…/Chat/EventReducer.swift` | `DeliveryStatus` + optimistic helpers + dedup; `QueuedMessage` + queue helpers + `message_enqueued`/`queue_state`/dequeue arms |
-| `…/Chat/TimeFormat.swift` | **new** — `clockTime`/`shortDate`/`isNewDay` (pure) |
-| `…/Models/Misc.swift` | `ModelInfo` public init |
-| `ios/PiDashboard/Sources/ChatView.swift` | scroll fix + queued cards + tappable model title + sheet |
-| `ios/PiDashboard/Sources/ChatMessageRow.swift` | timestamp on every row + delivery footer |
-| `ios/PiDashboard/Sources/DashboardStore.swift` | optimistic/queue send + failures + retry + model methods + `availableModels` |
-| `ios/PiDashboard/Sources/ModelPickerSheet.swift` | **new** — model + thinking picker |
-| `ios/PiDashboard/Sources/Format.swift` | `clockTime` pass-through |
-| Tests (new) | `OptimisticEchoTests` (10), `TimeFormatTests` (7), `QueueReducerTests` (13), `ModelPickerWireTests` (6) |
+| `ios/PiDashboard/project.yml` | + MarkdownUI SwiftPM package + app-target dep (team/signing preserved) |
+| `ios/PiDashboard/Sources/MarkdownText.swift` | **new** — dark-themed MarkdownUI renderer (headings/lists/links/inline+fenced code/blockquote) |
+| `ios/PiDashboard/Sources/ImageLightbox.swift` | **new** — full-screen zoom/pan/dismiss image viewer |
+| `ios/PiDashboard/Sources/ChatMessageRow.swift` | rewired: markdown bubbles, expandable tool detail, collapsible thinking, tappable images |
+| `ios/PiDashboard/Sources/ChatView.swift` | lightbox `.fullScreenCover`, `onImageTap` wiring, markdown streaming text |
+| `ios/PiDashboard/Sources/FixtureData.swift` | enriched seed chat (markdown/code/tool args+result/inline image) for verification |
+| `ios/PiDashboardKit/Sources/.../Chat/ChatRender.swift` | **new (core, pure)** — `prettyArgs`, `shouldCollapseThinking`, `truncated` |
+| `ios/PiDashboardKit/Tests/.../ChatRenderTests.swift` | **new** — 7 tests for the pure helpers |
 
-Boundaries: app + `Chat/**` reducer/state + tests only. No `qa-e2e/**` / test-CC
-tests touched. Composer hysteresis + send/stop/attach + voice mic all intact.
+## Build / test (real)
+```
+# core floor (cd ios/PiDashboardKit && swift test)
+Executed 174 tests, with 0 failures (0 unexpected)     # 167 → +7 ChatRender
 
-## On-device test steps for SwiftPilot
-1. Install the batch on both iPhones (no reinstall done here). Connect to the Mac URL.
-2. **Scroll**: open a streaming session → the chat follows the stream calmly (no
-   up/down jitter); scroll up mid-stream → it does NOT yank you back to the bottom.
-3. **Send**: send while idle → bubble appears instantly with a time; if the bridge is
-   down it shows "Not sent". Server echo doesn't double the bubble.
-4. **Timestamps**: every row (user/assistant/tool/…) shows `HH:mm`.
-5. **Queue**: send WHILE the agent is streaming → a "N queued" badge + a queued card;
-   when the agent picks it up it dequeues into a real message.
-6. **Model**: tap the title (claude-… · medium ⌄) → picker → pick a different model →
-   title updates + the agent uses it; change thinking level likewise.
+# app build (cd ios/PiDashboard && xcodegen generate && xcodebuild … build)
+xcodebuild -project PiDashboard.xcodeproj -scheme PiDashboard \
+  -destination 'generic/platform=iOS Simulator' build
+** BUILD SUCCEEDED **          # MarkdownUI + cmark-gfm resolved + compiled
+```
+Per-piece screenshotting was skipped this batch by operator direction (host load
+~500 → sim builds crawling); SwiftPilot does the verification screenshots. The build
+compiles clean and the seed chat (Joan) carries markdown + code + a tool call w/
+args+result + an inline image so the render is visible on first open.
+
+## On-device check steps for SwiftPilot
+1. `cd ios/PiDashboard && xcodegen generate` (re-resolves MarkdownUI from project.yml),
+   re-sign + install (team `ZPD66G9CB6`). Connect to the isolated server (:8001).
+2. Open a session with real assistant output → confirm **markdown** (headings, lists,
+   **bold**, links) + **fenced code** render (mono on a code background, h-scroll).
+3. Tap a **tool row** → it expands to show Input (args JSON) + Output (result); long
+   results show "Show more".
+4. A message with an **image** → tap it → full-screen lightbox; pinch-zoom, drag,
+   swipe-down to dismiss.
+5. A long **thinking** block is collapsed by default → tap to expand.
+6. Tap a **link** → opens Safari.
+
+Everything from prior batches (composer hysteresis, voice/parakeet, send-optimistic
++ queue + timestamps + model-picker) intact; `swift test` green.
