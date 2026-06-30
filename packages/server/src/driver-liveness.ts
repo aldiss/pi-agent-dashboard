@@ -41,6 +41,8 @@ export interface DriverLiveness {
   alive: boolean;
   /** The registry's clean themed-name (e.g. "Don") when alive — overrides the stale session_info name. */
   name?: string;
+  /** The registry pid that was kill-0'd alive. Present only when `alive` — lets the sweep / resurrect endpoint rebind `session.pid`. */
+  pid?: number;
 }
 
 /** Canonical messenger-registry dir. Overridable for tests via PI_MESSENGER_REGISTRY_DIR. */
@@ -84,7 +86,11 @@ export function resolveDriverLiveness(sessionId: string): DriverLiveness {
     if (entry?.sessionId === sessionId) {
       // UUID-join hit. kill -0 the pid (C2: the sessionId match scopes pid-reuse).
       if (typeof entry.pid === "number" && pidAlive(entry.pid)) {
-        return { alive: true, name: typeof entry.name === "string" ? entry.name : undefined };
+        return {
+          alive: true,
+          name: typeof entry.name === "string" ? entry.name : undefined,
+          pid: entry.pid,
+        };
       }
       return { alive: false }; // bound but dead → genuinely ended
     }

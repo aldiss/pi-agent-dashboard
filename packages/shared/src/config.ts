@@ -12,6 +12,13 @@ export const CONFIG_FILE = path.join(CONFIG_DIR, "config.json");
 export type SpawnStrategy = "tmux" | "headless";
 
 /**
+ * Default cadence (ms) for the Component-A display-resurrection sweep
+ * (session-resurrection design-pass §3-A, ratified 20s). `0` disables.
+ * Single source of truth — consumed by server.ts + cli.ts buildConfig.
+ */
+export const DEFAULT_RESURRECTION_SWEEP_MS = 20000;
+
+/**
  * Policy applied when a bridge re-registers a session after a dashboard
  * restart (i.e. the `session_register` carries `registerReason: "reattach"`).
  *
@@ -256,6 +263,12 @@ export interface DashboardConfig {
   /** Model proxy configuration (OpenAI/Anthropic-compatible /v1/* endpoints). */
   modelProxy: ModelProxyConfig;
   /**
+   * Cadence (ms) for the Component-A display-resurrection sweep. Default
+   * {@link DEFAULT_RESURRECTION_SWEEP_MS} (20000). `0` disables the periodic
+   * sweep. See session-resurrection design-pass §3-A.
+   */
+  resurrectionSweepMs: number;
+  /**
    * Push notification configuration.
    * Default: {enabled: false, coalesceWindowMs: 30_000}.
    * See change: add-server-push-notifications.
@@ -304,6 +317,7 @@ const DEFAULTS: DashboardConfig = {
   reattachPlacement: DEFAULT_REATTACH_PLACEMENT,
   spawnRegisterTimeoutMs: 30000,
   push: { ...DEFAULT_PUSH_CONFIG },
+  resurrectionSweepMs: DEFAULT_RESURRECTION_SWEEP_MS,
 };
 
 /**
@@ -622,6 +636,12 @@ export function loadConfig(): DashboardConfig {
       spawnRegisterTimeoutMs: clampSpawnRegisterTimeoutMs(parsed.spawnRegisterTimeoutMs),
       modelProxy: parseModelProxyConfig(parsed.modelProxy),
       push: parsePushConfig(parsed.push),
+      // `0` disables the sweep; any other non-negative number is honored; a
+      // missing / malformed value falls back to the 20s default.
+      resurrectionSweepMs:
+        typeof parsed.resurrectionSweepMs === "number" && Number.isFinite(parsed.resurrectionSweepMs) && parsed.resurrectionSweepMs >= 0
+          ? parsed.resurrectionSweepMs
+          : DEFAULT_RESURRECTION_SWEEP_MS,
     };
 
     // Compute resolvedTrustedNetworks: merge trustedNetworks + auth.bypassHosts
