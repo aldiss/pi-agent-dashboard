@@ -10,6 +10,10 @@ import PiDashboardKit
 struct AdaptiveComposer: View {
     let isWorking: Bool
     let queuedCount: Int
+    /// The dashboard the app is connected to — used to build the parakeet voice
+    /// sidecar URLs. Passed from `DashboardStore` via `ChatView`; never hardcoded.
+    let serverBase: URL?
+    let serverToken: String?
     let onSend: (String, [ImageContent]) -> Void
     let onStop: () -> Void
 
@@ -20,7 +24,7 @@ struct AdaptiveComposer: View {
     @State private var measuredHeight: Double = ComposerLayout.minHeight
     @State private var images: [ImageContent] = []
     @State private var photoItems: [PhotosPickerItem] = []
-    @State private var speech = SpeechTranscriber()
+    @State private var voice = VoiceRecorder()
     @State private var micPulse = false
 
     private var canSend: Bool {
@@ -30,8 +34,8 @@ struct AdaptiveComposer: View {
     var body: some View {
         VStack(spacing: 8) {
             if queuedCount > 0 { queueBadge }
-            if speech.permissionDenied { micPermissionHint }
-            else if let err = speech.errorMessage { micErrorHint(err) }
+            if voice.permissionDenied { micPermissionHint }
+            else if let err = voice.errorMessage { micErrorHint(err) }
             if !images.isEmpty { imagePreview }
             card
         }
@@ -45,6 +49,12 @@ struct AdaptiveComposer: View {
         .overlay(alignment: .topLeading) { composerMarkers }
         .onChange(of: text) { _, _ in recomputeLayout() }
         .onChange(of: photoItems) { _, items in Task { await loadImages(items) } }
+        .onAppear {
+            voice.configure(base: serverBase, token: serverToken)
+            voice.onAppear()
+        }
+        .onChange(of: serverBase) { _, base in voice.configure(base: base, token: serverToken) }
+        .onDisappear { voice.onDisappear() }
     }
 
     /// Zero-size a11y markers: `mobile-composer` (outer container handle) and
@@ -145,41 +155,60 @@ struct AdaptiveComposer: View {
         }
     }
 
-    /// Tap-to-talk mic — mirrors the PWA `PushToTalkButton` slot (right controls,
-    /// before Send, 40×40). Idle: outline mic on tertiary fill. Recording: filled
-    /// red with a pulsing ring + waveform glyph. Live transcript appends to the
-    /// draft via the core `TranscriptAppender`.
+    /// Tap-to-talk mic — records audio + uploads to the parakeet sidecar (mirrors
+    /// the PWA `PushToTalkButton` slot: right controls, before Send, 40×40). Phases:
+    /// idle (`mic.fill`) → recording (accent pulse ring + `waveform`) → uploading
+    /// (spinner). Disabled until the sidecar reports healthy.
     private var micButton: some View {
         Button(action: toggleMic) {
             ZStack {
                 Circle()
-                    .fill(speech.isRecording ? theme.accentRed : theme.bgTertiary)
+                    .fill(voice.isRecording ? theme.accentBlue : theme.bgTertiary)
                     .frame(width: 40, height: 40)
-                if speech.isRecording {
+                if voice.isRecording {
                     Circle()
-                        .stroke(theme.accentRed.opacity(0.5), lineWidth: 2)
+                        .stroke(theme.accentBlue.opacity(0.5), lineWidth: 2)
                         .frame(width: 40, height: 40)
                         .scaleEffect(micPulse ? 1.35 : 1.0)
                         .opacity(micPulse ? 0 : 0.8)
                 }
-                Image(systemName: speech.isRecording ? "waveform" : "mic.fill")
-                    .font(.system(size: 16, weight: .medium))
-                    .foregroundStyle(speech.isRecording ? .white : theme.textSecondary)
+                micGlyph
             }
+            .opacity(voice.micEnabled ? 1 : 0.4)
         }
+        .disabled(!voice.micEnabled && !voice.isRecording && !voice.isUploading)
         .accessibilityIdentifier("mobile-composer-mic")
-        .accessibilityValue(speech.isRecording ? "recording" : "idle")
-        .accessibilityLabel(speech.isRecording ? "Stop recording" : "Record voice")
+        .accessibilityValue(micAccessibilityValue)
+        .accessibilityLabel(voice.isRecording ? "Stop recording" :
+            (voice.micEnabled ? "Record voice" : "Voice service starting"))
         .onAppear { micPulse = false }
-        .animation(speech.isRecording
+        .animation(voice.isRecording
             ? .easeOut(duration: 1.0).repeatForever(autoreverses: false)
             : .default, value: micPulse)
+    }
+
+    @ViewBuilder private var micGlyph: some View {
+        if voice.isUploading {
+            ProgressView().controlSize(.small).tint(theme.textSecondary)
+        } else {
+            Image(systemName: voice.isRecording ? "waveform" : "mic.fill")
+                .font(.system(size: 16, weight: .medium))
+                .foregroundStyle(voice.isRecording ? .white : theme.textSecondary)
+        }
+    }
+
+    private var micAccessibilityValue: String {
+        switch voice.phase {
+        case .recording: return "recording"
+        case .uploading: return "uploading"
+        case .idle: return voice.micEnabled ? "idle" : "disabled"
+        }
     }
 
     private var micPermissionHint: some View {
         HStack(spacing: 8) {
             Image(systemName: "mic.slash.fill").font(.caption)
-            Text("Microphone or speech access is off.").font(.caption)
+            Text("Microphone access is off.").font(.caption)
             Spacer(minLength: 4)
             Button("Settings") {
                 if let url = URL(string: UIApplication.openSettingsURLString) {
@@ -270,17 +299,14 @@ struct AdaptiveComposer: View {
         onStop()
     }
 
-    /// Tap-to-talk: toggles recording. Live partial transcripts are composed onto
-    /// the CURRENT draft (held as the recording base) via the core appender and
-    /// pushed into `text`, so the field grows as the operator speaks. The pulse
-    /// animation flag flips on start so the ring loops while recording.
+    /// Tap-to-talk: idle → record → (tap) stop+upload → transcript appended to the
+    /// draft via the core `TranscriptAppender`. The pulse flag flips on so the ring
+    /// loops while recording.
     private func toggleMic() {
         let recordingBase = text
-        speech.toggle(base: recordingBase) { composed in
+        voice.toggle(base: recordingBase) { composed in
             text = composed
         }
-        // Kick the pulse loop on the next runloop tick so the repeatForever
-        // animation (bound to `micPulse`) begins once `isRecording` is true.
         micPulse = false
         DispatchQueue.main.async { micPulse = true }
     }

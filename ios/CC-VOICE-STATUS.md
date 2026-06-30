@@ -1,47 +1,56 @@
-# CC-VOICE-STATUS — native voice-input (push-to-talk mic) for the composer
+# CC-VOICE-STATUS — composer voice-input: on-device Speech → PARAKEET backend
 
-Branch `feat/native-ios-tests` (the LIVE/installed superset). Owner: cc-ios-build.
-Adds a native on-device speech→text mic to the composer, matching the PWA mic UX.
-SwiftPilot re-signs + installs on the real iPhone and verifies Russian dictation
-end-to-end on-device (the simulator can build + launch but mic/recognition is
-limited — no faked device transcription here).
+Branch `feat/native-ios-tests`. Owner: cc-ios-build. Operator decision ("I don't
+need inbuilt.. I need parakeet"): the SFSpeechRecognizer on-device mic shipped in
+commit f461142 is **replaced** with a mic that records audio and POSTs it to the
+dashboard's **parakeet voice sidecar** — the exact backend the PWA uses (tuned for
+Russian). SwiftPilot re-signs + installs on the iPhone and verifies Russian
+dictation end-to-end (the sidecar is verified live: `{"healthy":true,"engine":"parakeet"}`).
 
-## What was added
-- **Tap-to-talk mic** in `AdaptiveComposer`'s right controls group, **before Send**,
-  same 40×40 sizing as attach/send. Idle = `mic.fill` on tertiary fill; recording =
-  filled red with a pulsing ring + `waveform` glyph.
-- **Live on-device transcription** via the iOS Speech framework (`SFSpeechRecognizer`
-  + `AVAudioEngine`). Partial results stream into the draft as the operator speaks;
-  tap again stops + finalizes.
-- **Russian support**: recognizer locale prefers `ru-RU` when supported, else the
-  device locale (pure `SpeechLocalePicker`, unit-tested). On-device preferred
-  (`requiresOnDeviceRecognition = true` when `supportsOnDeviceRecognition`).
-- **Transcript append** matches the PWA `handleTranscript` (leading space only when
-  the draft is non-empty and doesn't already end in space/newline) — pure
-  `TranscriptAppender`, unit-tested. Live dictation holds the draft as a fixed base
-  and feeds the growing partial, so the field shows `base + partial` in place.
-- **Permissions**: requests `SFSpeechRecognizer.requestAuthorization` +
-  `AVAudioApplication.requestRecordPermission` on first mic tap. Denial → inline hint
-  with a **Settings** deep-link; never crashes. Engine/availability errors → a quiet
-  inline banner, no crash.
+## What changed (Speech → parakeet)
+- **Removed** the on-device path: deleted `SpeechTranscriber.swift`
+  (SFSpeechRecognizer + AVAudioEngine live transcription), removed
+  `SpeechLocalePicker` from the core, and dropped
+  `NSSpeechRecognitionUsageDescription` from `project.yml` + `Info.plist`.
+  **Kept** `NSMicrophoneUsageDescription` (parakeet needs mic only).
+- **Added** a record→upload mic: `AVAudioRecorder` → temp **m4a** (AAC, mono,
+  16 kHz) → `multipart/form-data` POST (field `audio`, `recording.m4a`, `audio/mp4`)
+  to `<serverBase>/api/plugins/voice-input/transcribe`, Bearer when a token exists,
+  120s timeout. Response `{ transcript }` is trimmed and appended to the draft.
+- **Health gate**: polls `<serverBase>/api/plugins/voice-input/health` every 5s while
+  the composer is on screen; the mic is disabled (40% + "Voice service starting…")
+  until `{"healthy":true}`.
+- **Server wiring**: `serverBase` + `token` come from `DashboardStore`
+  (`connectedBase` / `connectionToken`) via `ChatView` — NOT hardcoded. On the
+  phone this is the Mac's Tailscale/LAN URL, which proxies to its local sidecar.
+- **UX (mirrors PWA PushToTalkButton)**: idle (`mic.fill`) → recording (calm
+  **accent-blue** pulse ring + `waveform`, NOT red) → uploading (spinner) → idle.
+  Errors show inline + auto-clear after ~6s. Safety: 10-min max-record auto-stop;
+  background mid-record flushes the upload; min-size guard skips empty clips.
+- **Kept intact**: composer hysteresis (`ComposerLayout`), send/queue/stop, attach
+  (PhotosUI), haptics. The mic is the same slot/sizing (right controls, before Send).
 
 ## Files touched
-| File | Owner-scope | Change |
-|---|---|---|
-| `ios/PiDashboardKit/Sources/PiDashboardKit/Chat/VoiceInput.swift` | core (new, allowed) | Pure `TranscriptAppender.append` + `SpeechLocalePicker.preferred`. UI-free. |
-| `ios/PiDashboardKit/Tests/PiDashboardKitTests/VoiceInputTests.swift` | core test (new) | 9 tests pinning append semantics + Russian-preference rule. |
-| `ios/PiDashboard/Sources/SpeechTranscriber.swift` | app (new) | `@MainActor @Observable` Speech+AVAudioEngine engine: permissions, on-device, live partials, locale, graceful errors. |
-| `ios/PiDashboard/Sources/AdaptiveComposer.swift` | app | Mic button + recording state + denial/error hints, wired to `SpeechTranscriber` and the core appender. Hysteresis/send/queue/stop/attach/haptics untouched. |
-| `ios/PiDashboard/project.yml` | app | `info.properties`: `NSMicrophoneUsageDescription` + `NSSpeechRecognitionUsageDescription` (durable source of truth — Info.plist is xcodegen-generated + gitignored). |
-| `ios/PiDashboard/Sources/Info.plist` | app (gitignored, regenerated) | Same two keys mirrored on disk; xcodegen regenerates with both present. |
+| File | Change |
+|---|---|
+| `ios/PiDashboardKit/Sources/PiDashboardKit/Voice/VoiceTranscriber.swift` | **new (core)** — pure transcribe/health URL builders, multipart framing, auth header, `{transcript,engine_used,duration_ms}` + health decode. |
+| `ios/PiDashboardKit/Tests/PiDashboardKitTests/VoiceTranscriberTests.swift` | **new** — 19 tests: URLs (incl. trailing-slash + Tailscale), multipart bytes, Bearer present/absent, transcript success/empty/malformed, health 200/503/garbage. |
+| `ios/PiDashboardKit/Sources/PiDashboardKit/Chat/VoiceInput.swift` | Removed `SpeechLocalePicker`; kept `TranscriptAppender` (still the draft-join rule). |
+| `ios/PiDashboardKit/Tests/PiDashboardKitTests/VoiceInputTests.swift` | Dropped locale tests; kept/expanded append-rule tests. |
+| `ios/PiDashboard/Sources/VoiceRecorder.swift` | **new (app)** — `@MainActor @Observable` record→upload engine + health poll + phases + safety. |
+| `ios/PiDashboard/Sources/SpeechTranscriber.swift` | **deleted** (dead on-device code). |
+| `ios/PiDashboard/Sources/AdaptiveComposer.swift` | Mic rewired to `VoiceRecorder`; phases idle/recording(accent)/uploading; health-gated; takes `serverBase`/`serverToken`. |
+| `ios/PiDashboard/Sources/ChatView.swift` | Passes `store.connectedBase` + `store.connectionToken` to the composer. |
+| `ios/PiDashboard/Sources/DashboardStore.swift` | Exposes `connectedBase` + `connectionToken`. |
+| `ios/PiDashboard/project.yml` + `Sources/Info.plist` | Removed speech key; kept mic key. (Signing/team `ZPD66G9CB6` is the operator's edit — preserved, not mine.) |
 
-Accessibility id for the mic: `mobile-composer-mic` (value `recording`/`idle`) — for
-the cc-ios-tests suite. No `qa-e2e/**` or existing tests modified.
+Mic a11y id `mobile-composer-mic` (value `idle`/`recording`/`uploading`/`disabled`).
+No `qa-e2e/**` or test-CC tests touched.
 
 ## Build / test output (real)
 ```
 # core floor (cd ios/PiDashboardKit && swift test)
-Executed 118 tests, with 0 failures (0 unexpected)        # +9 VoiceInput tests, all green
+Executed 132 tests, with 0 failures (0 unexpected)   # was 118: −6 locale, +1 append, +19 transcriber
 
 # app build (cd ios/PiDashboard && xcodegen generate && xcodebuild … build)
 Created project at …/PiDashboard.xcodeproj
@@ -49,33 +58,30 @@ xcodebuild -project PiDashboard.xcodeproj -scheme PiDashboard \
   -destination 'generic/platform=iOS Simulator' build
 ** BUILD SUCCEEDED **
 ```
-- Mic render verified visually: ran an EPHEMERAL UITest (since removed, not
-  committed) through the `-uitest` fixture flow → composer shows
-  `[+] Message … [mic] [↑]`, mic before Send, 40×40, tertiary fill — PWA parity.
-  Screenshot confirmed the layout (single-row composer intact).
+- Mic render verified visually via an EPHEMERAL UITest (since removed, not
+  committed): composer shows `[+] Message … [mic] [↑]`, mic before Send, 40×40. In
+  `-uitest` fixture mode there's no live sidecar, so the mic correctly renders
+  disabled (health gate) — confirming the gate works.
+- SFSpeech removal confirmed: `grep NSSpeechRecognitionUsageDescription` → 0 in both
+  `project.yml` and `Info.plist`; `NSMicrophoneUsageDescription` → present.
 
-## Known pre-existing warning (NOT introduced here, NOT mine to fix)
-`AdaptiveComposer.swift` `attachButton` (PhotosPicker label closure) emits 2 Swift6
-warnings: `main actor-isolated property 'theme' can not be referenced from a Sendable
-closure` (lines ~113/115). Pre-exists the mic change (it's in the photo-picker label,
-untouched). Build still succeeds. Flagging per brief boundary — not editing it as part
-of this feature.
+## On-device test steps for SwiftPilot (device-only — sim can't record/recognize)
+1. `cd ios/PiDashboard && xcodegen generate`; re-sign + install (Team `ZPD66G9CB6`).
+2. Connect the app to the Mac (Tailscale/LAN URL, e.g. `http://<mac>:8000`) so
+   `connectedBase` resolves; confirm the sidecar is up
+   (`GET …/api/plugins/voice-input/health` → `{"healthy":true,"engine":"parakeet"}`).
+   The mic enables once health is green (else it shows "Voice service starting…").
+3. Open a session → composer. Tap the **mic** (right of attach, left of Send).
+   First tap prompts **Microphone** only — Allow.
+4. Mic shows the **accent-blue pulse** while recording. Dictate in **Russian** (e.g.
+   "пингани сервер и покажи логи"). Tap again → **spinner** (uploading) → the
+   Russian transcript appends into the field (leading space if the draft had text).
+5. Empty/short clip → inline "No speech detected — try again." / "Recording too
+   short" — nothing inserted, no crash. Deny mic in Settings → inline
+   "Microphone access is off." + Settings button.
+6. Confirm hysteresis still flips single-row⇄multiline and send/attach unaffected.
 
-## On-device test steps for SwiftPilot (real device — sim can't do recognition)
-1. Re-sign + install on the iPhone 14 Pro Max (Team NFHTWP9462, automatic). The two
-   usage-description keys are in `project.yml` → regenerate the project first
-   (`cd ios/PiDashboard && xcodegen generate`) so the generated Info.plist carries them.
-2. Open a session → composer. Tap the **mic** (right of attach, left of Send).
-3. First tap: iOS prompts for **Microphone** + **Speech Recognition** — Allow both.
-4. Mic turns **red + pulsing**. Dictate in **Russian** (e.g. "пингани сервер и покажи
-   логи"). Expect Cyrillic text streaming into the field live as you speak.
-5. Tap the mic again → recording stops, final transcript committed. Confirm the text is
-   appended (with a separating space if the draft already had content), focus retained,
-   and the composer still flips single-row⇄multiline by length (hysteresis intact).
-6. Deny-path check: Settings → the app → toggle Microphone OFF → tap mic → expect the
-   inline "Microphone or speech access is off." hint with a **Settings** button, no crash.
-
-## Acceptance (self, per brief "Verify")
-- `xcodegen generate` → clean. `xcodebuild … 'generic/platform=iOS Simulator' build`
-  → **BUILD SUCCEEDED**. `swift test` → **118/118 green**. Hysteresis/send/attach
-  untouched (mic is additive in the controls cluster).
+## Acceptance (self)
+- `xcodegen generate` clean · `xcodebuild 'generic/platform=iOS Simulator' build`
+  **BUILD SUCCEEDED** · `swift test` **132/132 green** · SFSpeech code + speech
+  permission removed · hysteresis/send/attach intact.

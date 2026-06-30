@@ -57,6 +57,15 @@ final class DashboardStore {
     private var reconnectAttempt = 0
     private let isUITest: Bool
 
+    /// The dashboard base URL the app is connected to (for building sidecar URLs
+    /// like the parakeet voice endpoint). Falls back to the entered URL string so a
+    /// `-uitest` fixture session (which skips the real `connect`) still resolves one.
+    var connectedBase: URL? {
+        base ?? URL(string: serverURLString.trimmingCharacters(in: .whitespaces))
+    }
+    /// The bearer token for the connected server, if any.
+    var connectionToken: String? { token.isEmpty ? nil : token }
+
     init() {
         isUITest = ProcessInfo.processInfo.arguments.contains("-uitest")
     }

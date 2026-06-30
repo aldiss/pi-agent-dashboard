@@ -21,6 +21,8 @@ struct ChatView: View {
             AdaptiveComposer(
                 isWorking: state.isStreaming,
                 queuedCount: 0,
+                serverBase: store.connectedBase,
+                serverToken: store.connectionToken,
                 onSend: { text, images in
                     Task { await store.sendPrompt(sessionId, text: text, images: images.isEmpty ? nil : images) }
                 },
