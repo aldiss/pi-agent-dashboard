@@ -6,6 +6,11 @@ import XCTest
 /// small, robust helpers the flow specs build on.
 ///
 /// Run: see qa-e2e/README.md for the exact `xcodebuild test` invocation.
+///
+/// `@MainActor`-isolated: `XCUIApplication` / `XCUIElement` / `XCTestCase` driver
+/// APIs are main-actor-isolated under Swift 6 strict concurrency (the app target
+/// sets SWIFT_VERSION 6.0), so the whole UITest hierarchy must be too.
+@MainActor
 class PiDashboardUITestCase: XCTestCase {
     var app: XCUIApplication!
 
@@ -37,6 +42,19 @@ class PiDashboardUITestCase: XCTestCase {
     }
 
     func exists(_ id: String) -> Bool { el(id).exists }
+
+    /// Poll until the element with `id` no longer exists (a filter dropped it).
+    /// A deadline poll — NOT `expectation(for:evaluatedWith:)`, whose `NSPredicate`
+    /// is evaluated off the main actor and would capture this non-Sendable test
+    /// case (a Swift 6 strict-concurrency hard error).
+    func waitForGone(_ id: String, _ timeout: TimeInterval = 6) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if !el(id).exists { return true }
+            usleep(150_000) // 0.15s
+        }
+        return !el(id).exists
+    }
 
     /// The element carrying the composer layout value (`single-row`/`multiline`) —
     /// the dedicated `mobile-composer-card` a11y marker (TEST-CONTRACT §A).

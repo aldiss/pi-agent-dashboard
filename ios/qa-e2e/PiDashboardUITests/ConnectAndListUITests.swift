@@ -3,6 +3,7 @@ import XCTest
 /// F1–F3: Connect → Session list parity → Open session.
 /// Driven entirely through the TEST-CONTRACT §A accessibility identifiers against
 /// the hermetic `-uitest` fixture snapshot (no live operator session touched).
+@MainActor
 final class ConnectAndListUITests: PiDashboardUITestCase {
 
     // MARK: F1 — Connect

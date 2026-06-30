@@ -1,6 +1,7 @@
 import XCTest
 
 /// F6 (connection banner) + F7 (filters), driven through the §A identifiers.
+@MainActor
 final class BannerAndFiltersUITests: PiDashboardUITestCase {
 
     private func enterList() {
@@ -29,9 +30,11 @@ final class BannerAndFiltersUITests: PiDashboardUITestCase {
     /// rather than failing — the spec is authored + ready for when the hook lands.
     func testF6_BannerAppearsWhenReconnecting() throws {
         launch(["-uitest", "-uitest-reconnecting"])
-        // give the list a moment; the banner lives above MainView.
-        _ = waitFor("session-list", 10)
-        if !el("connection-banner").waitForExistence(timeout: 4) {
+        // Non-asserting wait for the shell to come up (this is the first test on a
+        // cold sim; do NOT hard-require session-list — the banner can render over
+        // ConnectView too, and the hook may not be wired at all).
+        _ = el("session-list").waitForExistence(timeout: 15)
+        if !el("connection-banner").waitForExistence(timeout: 5) {
             throw XCTSkip("""
             connection-banner not shown under -uitest-reconnecting. PENDING build-session hook: \
             DashboardStore should enter `.reconnecting` when launched with the \
@@ -58,9 +61,7 @@ final class BannerAndFiltersUITests: PiDashboardUITestCase {
 
         // Cartographer remains; Joan is filtered out.
         XCTAssertTrue(waitFor("session-card-fix-cartographer", 6).exists, "match retained")
-        let joanGone = NSPredicate(format: "exists == false")
-        expectation(for: joanGone, evaluatedWith: el("session-card-fix-joan"))
-        waitForExpectations(timeout: 6)
+        XCTAssertTrue(waitForGone("session-card-fix-joan", 6), "non-match filtered out")
         attach("F7-search")
 
         // clearing the query restores Joan.
@@ -90,8 +91,17 @@ final class BannerAndFiltersUITests: PiDashboardUITestCase {
             usleep(150_000)
         }
         XCTAssertTrue(clearedHeaders, "directory headers removed when Folders is OFF")
-        // cards themselves are still present (flattened, not filtered out).
-        XCTAssertTrue(exists("session-card-fix-cartographer"), "cards remain after flattening")
+        // cards themselves are still present (flattened, not FILTERED out). Assert
+        // ANY card remains — not a specific one: after the reflow a particular row
+        // can sit below the fold, and the LazyVStack won't expose an off-screen row
+        // to the a11y tree (that raced the earlier `fix-cartographer`-specific check).
+        var cardsRemain = false
+        let deadline2 = Date().addingTimeInterval(6)
+        while Date() < deadline2 {
+            if !sessionCardIdentifiers().isEmpty { cardsRemain = true; break }
+            usleep(150_000)
+        }
+        XCTAssertTrue(cardsRemain, "cards remain after flattening (folders only regroup, never filter)")
         attach("F7-folders-off")
     }
 

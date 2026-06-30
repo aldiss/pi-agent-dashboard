@@ -4,6 +4,7 @@ import XCTest
 /// through the §A identifiers against the fixture snapshot. These assert the SAME
 /// behavior `ComposerLayout` pins at the unit layer, but end-to-end through the
 /// real SwiftUI composer + UITextView.
+@MainActor
 final class ComposerUITests: PiDashboardUITestCase {
 
     /// Open the first driver session's chat and return once the composer is up.
@@ -91,15 +92,26 @@ final class ComposerUITests: PiDashboardUITestCase {
 
     // MARK: helpers
 
-    /// Robustly clear a UITextView regardless of autocorrect-mutated length:
-    /// select-all then delete.
+    /// Robustly drain a UITextView to empty. The real-target run revealed BOTH
+    /// failure modes of the naive approaches:
+    ///   • NOT re-tapping → the field loses keyboard focus after the assertions, so
+    ///     `typeText(delete…)` fails with "Neither element nor any descendant has
+    ///     keyboard focus".
+    ///   • A plain `tap()` on a WRAPPED multi-line UITextView lands the caret where
+    ///     the tap hit (mid-text) → backspaces leave a trailing tail → stays multiline.
+    /// Fix: tap the BOTTOM-RIGHT corner each iteration — that regains focus AND lands
+    /// the caret at the end of the text (empty space past the last glyph snaps the
+    /// caret to the final character), so a generous backspace run drains fully. Poll
+    /// the value (re-read each pass) until empty (empty UITextView reports its
+    /// placeholder "Message") or a hard cap.
     private func clearTextView(_ tv: XCUIElement) {
-        tv.tap()
-        // a long press brings up the edit menu with Select All on iOS; simpler +
-        // deterministic: drive deletes for a generous upper bound on the content.
-        let current = (tv.value as? String) ?? ""
-        if !current.isEmpty {
-            tv.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: current.count + 2))
+        for _ in 0..<16 {
+            let current = (tv.value as? String) ?? ""
+            if current.isEmpty || current == "Message" { return }
+            // bottom-right → focus + caret-at-end on a wrapped field.
+            tv.coordinate(withNormalizedOffset: CGVector(dx: 0.97, dy: 0.92)).tap()
+            let n = max(current.count + 6, 12)
+            tv.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: n))
         }
     }
 }

@@ -102,22 +102,27 @@ preferred.
 cd ios/PiDashboard
 xcodegen generate          # regenerate PiDashboard.xcodeproj from project.yml
 
-# pick a booted iOS 26.3 simulator (the regression floor device family)
+# pick a booted iOS 26.3.1 simulator (the regression floor device family).
+# destination-by-ID is the most robust (name+OS can drift across Xcode point
+# releases — OS is 26.3.1, not 26.3); grab the id from:
 xcrun simctl list devices available | grep iPhone
 
 xcodebuild test \
   -project PiDashboard.xcodeproj \
   -scheme PiDashboard \
-  -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.3' \
+  -destination 'platform=iOS Simulator,id=D19C5CF4-BF12-471D-9896-4975F33C1825' \
   -only-testing:PiDashboardUITests \
   2>&1 | tee /tmp/ios-uitest.log
 ```
+
+(Equivalent by name+OS if the id differs on your machine:
+`-destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.3.1'`.)
 
 Run a single flow:
 
 ```bash
 xcodebuild test -project PiDashboard.xcodeproj -scheme PiDashboard \
-  -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=26.3' \
+  -destination 'platform=iOS Simulator,id=D19C5CF4-BF12-471D-9896-4975F33C1825' \
   -only-testing:PiDashboardUITests/ComposerUITests/testF4_ComposerHysteresisSingleRowMultilineRevert
 ```
 
@@ -127,16 +132,25 @@ Screenshots captured by each flow are attached to the `.xcresult` bundle
 ### Standalone type-check (no app target — what the test CC verifies pre-integration)
 
 The specs reference only `XCTest` / `XCUIApplication` API (no app symbols), so they
-type-check against the simulator SDK without the app:
+type-check against the simulator SDK without the app. **Critically, pass
+`-swift-version 6 -strict-concurrency=complete`** — the app target sets
+`SWIFT_VERSION 6.0`, and a plain typecheck (no flags) runs Swift 5 mode and will
+MISS main-actor-isolation errors that the real target enforces (this exact gap let
+a `@MainActor` regression through once):
 
 ```bash
 cd ios/qa-e2e/PiDashboardUITests
 SDK="$(xcrun --sdk iphonesimulator --show-sdk-path)"
 FW="$(xcrun --sdk iphonesimulator --show-sdk-platform-path)/Developer/Library/Frameworks"
 LIB="$(xcrun --sdk iphonesimulator --show-sdk-platform-path)/Developer/usr/lib"
-xcrun swiftc -typecheck -sdk "$SDK" -target arm64-apple-ios17.0-simulator -F "$FW" -I "$LIB" *.swift
+xcrun swiftc -typecheck -swift-version 6 -strict-concurrency=complete \
+  -sdk "$SDK" -target arm64-apple-ios17.0-simulator -F "$FW" -I "$LIB" *.swift
 # exit 0, 0 errors, 0 warnings
 ```
+
+This still isn't a substitute for the real `xcodebuild test` above (only the target
+build exercises the full UITest-runner link + run) — but it now catches the same
+class of strict-concurrency errors pre-integration.
 
 ### Pending build-session hook (F6 positive path)
 

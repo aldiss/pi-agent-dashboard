@@ -71,20 +71,53 @@ $ cd ios/qa-e2e && node capture-fixtures.mjs
 - Seed fixtures (`sessions-sample.json`, `health.json`, `ws-snapshot-sample.json`)
   left untouched — only the 2 new files added.
 
-### Gate 3 — XCUITest e2e specs for ALL F1–F7 + run README
+### Gate 3 — XCUITest e2e specs for ALL F1–F7, RUN GREEN in the real target
 
 Authored in `ios/qa-e2e/PiDashboardUITests/` (12 test methods across F1–F7),
 driving the app via TEST-CONTRACT §A identifiers in the hermetic `-uitest` fixture
-mode (never touches a live session). **Type-check clean against the simulator
-XCTest SDK** (the test-CC's pre-integration verification):
+mode (never touches a live session). SwiftPilot wired qa-e2e into
+`ios/PiDashboard/project.yml` (the `PiDashboardUITests` target sources both the
+build-CC smoke and this suite); the full target builds + runs on the iOS 26.3.1
+simulator.
+
+**Correction (integration finding).** The first hand-off claimed "type-checks
+clean" from a standalone `swiftc -typecheck` — but that ran Swift 5 mode and MISSED
+the `@MainActor` isolation errors the real target enforces (it sets
+`SWIFT_VERSION 6.0`). SwiftPilot's integration run surfaced a hard
+strict-concurrency error (`expectation(for:evaluatedWith:)` sending a non-Sendable
+test case) + many main-actor warnings. **Fix:** `@MainActor` on the base
+`PiDashboardUITestCase` + all 3 spec classes, and the off-actor `NSPredicate`
+expectation replaced with a Sendable-safe deadline poll (`waitForGone`). The
+standalone check now passes the target's flags (`-swift-version 6
+-strict-concurrency=complete`) so this gap can't recur — but the authoritative
+verification is the real `xcodebuild test` below, not a standalone typecheck.
 
 ```
-$ cd ios/qa-e2e/PiDashboardUITests && xcrun swiftc -typecheck -sdk <iphonesimulator> \
-    -target arm64-apple-ios17.0-simulator -F <platform-frameworks> -I <platform-lib> *.swift
-=== exit: 0 ===
-errors: 0
-warnings: 0
+$ cd ios/PiDashboard && xcodegen generate && xcodebuild test \
+    -project PiDashboard.xcodeproj -scheme PiDashboard \
+    -destination 'platform=iOS Simulator,id=D19C5CF4-BF12-471D-9896-4975F33C1825' \
+    -only-testing:PiDashboardUITests
+...
+Test Case 'ConnectAndListUITests testF1_ConnectEntersSessionList'        passed
+Test Case 'ConnectAndListUITests testF1_UnreachableServerShowsError'     passed
+Test Case 'ConnectAndListUITests testF2_ListShowsTiersAndCardFields'     passed
+Test Case 'ConnectAndListUITests testF3_OpenSessionShowsChatAndComposer' passed
+Test Case 'ComposerUITests testF4_ComposerHysteresisSingleRowMultilineRevert' passed
+Test Case 'ComposerUITests testF4_NewlineForcesMultilineAndNeverSends'   passed
+Test Case 'ComposerUITests testF5_SendButtonGating'                      passed
+Test Case 'BannerAndFiltersUITests testF6_NoBannerWhileConnected'        passed
+Test Case 'BannerAndFiltersUITests testF6_BannerAppearsWhenReconnecting' skipped  (pending -uitest-reconnecting hook)
+Test Case 'BannerAndFiltersUITests testF7_SearchNarrowsCards'            passed
+Test Case 'BannerAndFiltersUITests testF7_FoldersToggleFlattensDirectoryGroups' passed
+Test Case 'BannerAndFiltersUITests testF7_HideStaleToggleFlipsState'     passed
+Test Case 'PiDashboardSmokeUITests testSmokeConnectListChatComposerHysteresis' passed  (build-CC smoke — not regressed)
+	 Executed 13 tests, with 1 test skipped and 0 failures (0 unexpected) in 171.3s
+** TEST SUCCEEDED **
 ```
+
+**12 passed + 1 skipped, 0 failures** — all 11 of this session's F1–F7 e2e methods
+that have a runnable assertion pass, F6-positive skips on the documented pending
+hook, and the build-CC smoke still passes (the `@MainActor` fix did not regress it).
 
 | File | Flows | Methods |
 |---|---|---|
@@ -92,8 +125,10 @@ warnings: 0
 | `ComposerUITests.swift` | F4 hysteresis single-row⇄multiline + newline, F5 send gating | 3 |
 | `BannerAndFiltersUITests.swift` | F6 connection banner, F7 search/folders/hide-stale | 5 |
 
-They **compile + run after SwiftPilot integrates the app branch** (the XCUITest
-target needs the simulator app). Run command + project.yml wiring: `qa-e2e/README.md`.
+F6-positive (`testF6_BannerAppearsWhenReconnecting`) SKIPS pending the
+cc-ios-build-owned `-uitest-reconnecting` `DashboardStore` hook (below). The
+build-CC smoke (`PiDashboardSmokeUITests`) still passes — the `@MainActor` change
+did not regress it. Run command + project.yml wiring: `qa-e2e/README.md`.
 
 ### Gate 4 — `ios/PARITY.md` populated across MVP surfaces
 
@@ -103,14 +138,35 @@ List / Lifecycle / Chat / Composer / Status / Theme + the deferred set, with a
 
 ---
 
-## What's authored-but-pending-integration
+## Status of the e2e suite (post-integration)
 
-- **All XCUITest e2e (F1–F7)** — authored + type-check clean; RUN is pending the
-  app-branch merge (simulator target). README documents the exact `xcodebuild test`
-  invocation + `project.yml` source-path wiring.
-- **F6 positive path** (`testF6_BannerAppearsWhenReconnecting`) — needs a small
-  build-session hook (see Reports to SwiftPilot). Authored; SKIPS with a clear note
-  until the hook lands. F6-negative runs today.
+- **All XCUITest e2e (F1–F7)** — RUN GREEN in the integrated `PiDashboardUITests`
+  target (12 passed + 1 skipped, 0 failures; see Gate 3). No longer pending.
+- **F6 positive path** (`testF6_BannerAppearsWhenReconnecting`) — SKIPS pending a
+  small build-session hook (see Reports to SwiftPilot). F6-negative runs green.
+
+## Integration findings fixed this session (the SwiftPilot bug report)
+
+1. **Swift 6 strict-concurrency compile errors (FIXED).** The XCUITest classes
+   failed to compile in the real target (`SWIFT_VERSION 6.0`): `XCUIElement` /
+   `XCTestCase` APIs are `@MainActor`-isolated, and `expectation(for:evaluatedWith:)`
+   raised a hard "sending non-Sendable BannerAndFiltersUITests risks data races".
+   My pre-integration `swiftc -typecheck` MISSED it (Swift 5 mode). Fix: `@MainActor`
+   on the base + 3 spec classes; the off-actor `NSPredicate` expectation replaced
+   with a Sendable-safe deadline poll (`waitForGone`). The README's standalone check
+   now passes `-swift-version 6 -strict-concurrency=complete` so the gap can't recur.
+2. **3 test-robustness failures surfaced by the real run (FIXED).** None were app
+   bugs — the underlying behaviors pass via sibling assertions:
+   - *F4-revert*: `clearTextView` lost keyboard focus (no re-tap) on one path and
+     left a mid-caret tail (plain re-tap) on the other → composer stayed multiline.
+     Fix: tap the textarea's bottom-right corner each pass (regains focus + lands the
+     caret at the end of the wrapped text), then drain with a re-reading delete loop.
+   - *F7-folders*: asserted a SPECIFIC card after the flatten reflow; a `LazyVStack`
+     won't expose an off-screen row. Fix: assert ANY card remains (folders regroup,
+     never filter).
+   - *F6-positive*: a hard `waitFor("session-list")` precondition timed out on the
+     cold-sim first-run before reaching the skip. Fix: non-asserting wait, then poll
+     the banner and skip cleanly if the (unwired) hook is absent.
 
 ## Reports to SwiftPilot (no owned code changed — reported, not patched)
 
@@ -121,7 +177,10 @@ List / Lifecycle / Chat / Composer / Status / Theme + the deferred set, with a
    fails, until wired. App-target change → cc-ios-build owned.
 2. **No bugs found in owned core.** The seed core (`PiDashboardKit/Sources`) and the
    app target decode/reduce real captured payloads faithfully — 108 green tests incl.
-   a real 68-event replay. Nothing required an owned-code fix.
+   a real 68-event replay, + 12 green e2e flows. Nothing required an owned-code fix.
+3. **`project.yml` wiring** (`PiDashboardUITests` sources `../qa-e2e/PiDashboardUITests`)
+   is SwiftPilot-authored + build-CC owned; left uncommitted in this worktree (not
+   mine to commit). The e2e suite runs green against it.
 
 ## Ownership ledger (brief §4)
 
