@@ -15,10 +15,10 @@ settings:
     MARKETING_VERSION: "0.1.0"
     CURRENT_PROJECT_VERSION: "1"
     SWIFT_VERSION: "6.0"
-    DEVELOPMENT_TEAM: ""
+    DEVELOPMENT_TEAM: "NFHTWP9462"
     CODE_SIGN_STYLE: Automatic
-    CODE_SIGNING_REQUIRED: "NO"
-    CODE_SIGNING_ALLOWED: "NO"
+    CODE_SIGNING_REQUIRED: "YES"
+    CODE_SIGNING_ALLOWED: "YES"
 
 targets:
   PiDashboard:
@@ -49,6 +49,8 @@ targets:
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
         NSPhotoLibraryUsageDescription: "Attach photos from your library to a pi session message."
+        NSMicrophoneUsageDescription: "Record voice to dictate a message to your pi session."
+        NSSpeechRecognitionUsageDescription: "Transcribe your voice into the message composer."
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
           NSAllowsLocalNetworking: true

@@ -20,6 +20,8 @@ struct AdaptiveComposer: View {
     @State private var measuredHeight: Double = ComposerLayout.minHeight
     @State private var images: [ImageContent] = []
     @State private var photoItems: [PhotosPickerItem] = []
+    @State private var speech = SpeechTranscriber()
+    @State private var micPulse = false
 
     private var canSend: Bool {
         ComposerLayout.canSend(text: text, imageCount: images.count, disabled: false)
@@ -28,6 +30,8 @@ struct AdaptiveComposer: View {
     var body: some View {
         VStack(spacing: 8) {
             if queuedCount > 0 { queueBadge }
+            if speech.permissionDenied { micPermissionHint }
+            else if let err = speech.errorMessage { micErrorHint(err) }
             if !images.isEmpty { imagePreview }
             card
         }
@@ -116,6 +120,7 @@ struct AdaptiveComposer: View {
 
     private var controlCluster: some View {
         HStack(spacing: 8) {
+            micButton
             if isWorking {
                 Button(action: stop) {
                     Image(systemName: "stop.fill")
@@ -138,6 +143,71 @@ struct AdaptiveComposer: View {
             .disabled(!canSend)
             .accessibilityIdentifier("mobile-composer-send")
         }
+    }
+
+    /// Tap-to-talk mic — mirrors the PWA `PushToTalkButton` slot (right controls,
+    /// before Send, 40×40). Idle: outline mic on tertiary fill. Recording: filled
+    /// red with a pulsing ring + waveform glyph. Live transcript appends to the
+    /// draft via the core `TranscriptAppender`.
+    private var micButton: some View {
+        Button(action: toggleMic) {
+            ZStack {
+                Circle()
+                    .fill(speech.isRecording ? theme.accentRed : theme.bgTertiary)
+                    .frame(width: 40, height: 40)
+                if speech.isRecording {
+                    Circle()
+                        .stroke(theme.accentRed.opacity(0.5), lineWidth: 2)
+                        .frame(width: 40, height: 40)
+                        .scaleEffect(micPulse ? 1.35 : 1.0)
+                        .opacity(micPulse ? 0 : 0.8)
+                }
+                Image(systemName: speech.isRecording ? "waveform" : "mic.fill")
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundStyle(speech.isRecording ? .white : theme.textSecondary)
+            }
+        }
+        .accessibilityIdentifier("mobile-composer-mic")
+        .accessibilityValue(speech.isRecording ? "recording" : "idle")
+        .accessibilityLabel(speech.isRecording ? "Stop recording" : "Record voice")
+        .onAppear { micPulse = false }
+        .animation(speech.isRecording
+            ? .easeOut(duration: 1.0).repeatForever(autoreverses: false)
+            : .default, value: micPulse)
+    }
+
+    private var micPermissionHint: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "mic.slash.fill").font(.caption)
+            Text("Microphone or speech access is off.").font(.caption)
+            Spacer(minLength: 4)
+            Button("Settings") {
+                if let url = URL(string: UIApplication.openSettingsURLString) {
+                    UIApplication.shared.open(url)
+                }
+            }
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(theme.accentBlue)
+        }
+        .foregroundStyle(theme.textSecondary)
+        .padding(.horizontal, 12).padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(theme.bgTertiary)
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .accessibilityIdentifier("mobile-composer-mic-denied")
+    }
+
+    private func micErrorHint(_ message: String) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill").font(.caption)
+            Text(message).font(.caption)
+            Spacer(minLength: 4)
+        }
+        .foregroundStyle(theme.accentOrange)
+        .padding(.horizontal, 12).padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(theme.bgTertiary)
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
     private var queueBadge: some View {
@@ -198,6 +268,21 @@ struct AdaptiveComposer: View {
     private func stop() {
         UINotificationFeedbackGenerator().notificationOccurred(.warning)
         onStop()
+    }
+
+    /// Tap-to-talk: toggles recording. Live partial transcripts are composed onto
+    /// the CURRENT draft (held as the recording base) via the core appender and
+    /// pushed into `text`, so the field grows as the operator speaks. The pulse
+    /// animation flag flips on start so the ring loops while recording.
+    private func toggleMic() {
+        let recordingBase = text
+        speech.toggle(base: recordingBase) { composed in
+            text = composed
+        }
+        // Kick the pulse loop on the next runloop tick so the repeatForever
+        // animation (bound to `micPulse`) begins once `isRecording` is true.
+        micPulse = false
+        DispatchQueue.main.async { micPulse = true }
     }
 
     private func loadImages(_ items: [PhotosPickerItem]) async {
