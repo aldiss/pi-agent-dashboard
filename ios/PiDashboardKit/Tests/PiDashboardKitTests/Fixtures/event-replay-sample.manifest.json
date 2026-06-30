@@ -1,0 +1,17 @@
+{
+ "capturedAtMs": 1782804062792,
+ "sourceHost": "http://localhost:8000",
+ "sessionId": "019efa7a-cac9-7b1c-bf79-7c4b98f5a5cc",
+ "eventCount": 68,
+ "isLast": true,
+ "eventTypes": {
+  "model_select": 1,
+  "message_start": 5,
+  "message_update": 36,
+  "message_end": 9,
+  "stats_update": 9,
+  "tool_execution_start": 4,
+  "tool_execution_end": 4
+ },
+ "note": "Read-only capture (subscribe-only). Refresh via qa-e2e/capture-fixtures.mjs."
+}
