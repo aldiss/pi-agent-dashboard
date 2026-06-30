@@ -130,6 +130,10 @@ export interface ServerConfig {
   /** Cadence (ms) for the Component-A display-resurrection sweep. Default 20000; 0 disables.
    *  See session-resurrection design-pass §3-A. */
   resurrectionSweepMs?: number;
+  /** Post-respawn VERIFY-gate seam for the resurrect endpoint (build-gate item 2).
+   *  Injected by tests to drive the 5-assertion gate deterministically; production
+   *  omits it → the endpoint builds the real-oracle gate. See change: unend-mechanism-v2. */
+  resurrectVerify?: (sessionId: string) => Promise<import("./resurrection-verify.js").VerifyResult>;
 }
 
 export interface DashboardServer {
@@ -835,6 +839,13 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
     bootstrapQueue,
     pendingResumeIntents,
     pendingAttachRegistry,
+    // Runtime pi-gateway port for the resurrect respawn's dashboard-pin. This
+    // is `config.piPort` — the value passed to `piGateway.start()` below, which
+    // honors a `--pi-port <N>` CLI override (NOT the config-file default). The
+    // session-api handler prefers the live `piGateway.address()` and falls back
+    // to this. See change: pin-on-resurrect.
+    serverPiPort: config.piPort,
+    ...(config.resurrectVerify ? { resurrectVerify: config.resurrectVerify } : {}),
   });
 
   // Register route modules

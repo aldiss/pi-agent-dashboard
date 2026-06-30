@@ -75,6 +75,29 @@ export interface SessionOptions {
    * See change: worktree-session-spawn.
    */
   preSpawnHook?: (ctx: { cwd: string; branch?: string; label?: string }) => Promise<string> | string;
+  /**
+   * §19 interactive-resume identity (design-pass §3-A, dl-3452). When set AND
+   * the mechanism is interactive (tmux / wsl-tmux / wt), pi is invoked with
+   * `--name <agentName>` and the spawn env carries `PI_AGENT_NAME=<agentName>`,
+   * so the resumed driver rebinds its themed mesh identity. Carried ONLY by the
+   * resurrect respawn (the proven §19 form) — never the headless RPC form,
+   * which has no TTY identity to bind, and which never takes a model arg.
+   * See change: unend-mechanism-v2.
+   */
+  agentName?: string;
+  /**
+   * Dashboard-pin URL for the spawned bridge (env-independent anti-cross-wire).
+   * When set, the spawn env carries `PI_DASHBOARD_URL=<url>` so the spawned
+   * pi's bridge captures it as `pinnedUrl` (bridge.ts initBridge) → the
+   * ISOLATION GUARD in server-auto-start.ts fires → NO mDNS discovery → NO
+   * `updateUrl` migration to a DIFFERENT local dashboard. Carried by the
+   * resurrect respawn so it deterministically binds the SPAWNING server's own
+   * gateway, even on a multi-dashboard host. Sister to `agentName`: like
+   * PI_AGENT_NAME it must ALSO ride inline in the tmux command string for the
+   * new-window-into-existing-session case (tmux new-window inherits the tmux
+   * SERVER's env, not this caller's). See change: pin-on-resurrect.
+   */
+  pinDashboardUrl?: string;
 }
 
 export interface SpawnResult {
@@ -116,16 +139,30 @@ export interface SpawnResult {
  */
 export function buildSpawnEnv(
   baseEnv: NodeJS.ProcessEnv = process.env,
-  opts?: { spawnToken?: string },
+  opts?: { spawnToken?: string; agentName?: string; pinDashboardUrl?: string },
 ): NodeJS.ProcessEnv {
   const env = prependManagedNodeToPath(resolver.buildSpawnEnv(baseEnv));
+  const extra: NodeJS.ProcessEnv = {};
   if (opts?.spawnToken) {
     // Inject the correlation token so the bridge inside the spawned pi
     // process can read it and echo back in `session_register`.
     // See change: spawn-correlation-token.
-    return { ...env, PI_DASHBOARD_SPAWN_TOKEN: opts.spawnToken };
+    extra.PI_DASHBOARD_SPAWN_TOKEN = opts.spawnToken;
   }
-  return env;
+  if (opts?.agentName) {
+    // §19 identity-binding: the resumed driver reads PI_AGENT_NAME to rebind
+    // its themed mesh identity (sister to the --name flag).
+    // See change: unend-mechanism-v2.
+    extra.PI_AGENT_NAME = opts.agentName;
+  }
+  if (opts?.pinDashboardUrl) {
+    // Dashboard-pin: the spawned bridge captures this as `pinnedUrl` → the
+    // ISOLATION GUARD suppresses mDNS discovery + `updateUrl`, so the respawn
+    // deterministically binds the spawning server's own gateway (no cross-wire
+    // to a sibling local dashboard). See change: pin-on-resurrect.
+    extra.PI_DASHBOARD_URL = opts.pinDashboardUrl;
+  }
+  return Object.keys(extra).length ? { ...env, ...extra } : env;
 }
 
 /**
@@ -150,19 +187,39 @@ export function buildHeadlessArgs(options?: SessionOptions): string[] {
  * no `--mode rpc`; just session/fork flags when provided.
  */
 export function buildInteractivePiArgs(options?: SessionOptions): string[] {
-  return sessionFlagsToArgv(options ?? {});
+  const identityArgv = options?.agentName ? ["--name", options.agentName] : [];
+  return [...identityArgv, ...sessionFlagsToArgv(options ?? {})];
 }
 
 /**
  * Build a tmux shell command string to run pi in a new tmux window/session.
  * Kept as a string (not argv) because tmux is invoked via `execSync(cmd)`.
+ *
+ * §19 identity: when `options.agentName` is set, pi gets `--name <agentName>`
+ * and the command is prefixed with `PI_AGENT_NAME=<agentName>` inline. The
+ * inline env-prefix is REQUIRED (not the spawn env alone): `tmux new-window`
+ * into an existing `pi-dashboard` session inherits the tmux SERVER's env, not
+ * this caller's, so the var must ride inside the command string to reach pi.
+ * See change: unend-mechanism-v2.
+ *
+ * Dashboard-pin: when `options.pinDashboardUrl` is set, the same inline-prefix
+ * rule applies — `PI_DASHBOARD_URL=<url>` rides inside the command string so it
+ * reaches the spawned bridge in the new-window-into-existing-session case. The
+ * bridge captures it as `pinnedUrl` → ISOLATION GUARD → no mDNS cross-wire.
+ * See change: pin-on-resurrect.
  */
 export function buildTmuxCommand(cwd: string, sessionExists: boolean, options?: SessionOptions): string {
   const safeCwd = shellEscape(cwd);
-  const flags = sessionFlagsToArgv(options ?? {})
+  const identityArgv = options?.agentName ? ["--name", options.agentName] : [];
+  const flags = [...identityArgv, ...sessionFlagsToArgv(options ?? {})]
     .map(shellEscape)
     .join(" ");
-  const piCmd = flags ? `cd ${safeCwd} && pi ${flags}` : `cd ${safeCwd} && pi`;
+  const envPairs: string[] = [];
+  if (options?.agentName) envPairs.push(`PI_AGENT_NAME=${shellEscape(options.agentName)}`);
+  if (options?.pinDashboardUrl) envPairs.push(`PI_DASHBOARD_URL=${shellEscape(options.pinDashboardUrl)}`);
+  const envPrefix = envPairs.length ? `${envPairs.join(" ")} ` : "";
+  const piInvoke = flags ? `${envPrefix}pi ${flags}` : `${envPrefix}pi`;
+  const piCmd = `cd ${safeCwd} && ${piInvoke}`;
   if (sessionExists) {
     return `tmux new-window -t pi-dashboard -c ${safeCwd} "${piCmd}"`;
   }
@@ -362,10 +419,13 @@ export async function spawnPiSession(
 function spawnTmux(cwd: string, options?: SessionOptions): SpawnResult {
   const exists = dashboardSessionExists();
   const cmd = buildTmuxCommand(cwd, exists, options);
-  // Pass env explicitly so PI_DASHBOARD_SPAWN_TOKEN reaches the tmux pane's
-  // pi process (tmux inherits the caller's env into new windows/sessions).
-  // See change: spawn-correlation-token.
-  const env = buildSpawnEnv(process.env, { spawnToken: options?.spawnToken });
+  // Pass env explicitly so PI_DASHBOARD_SPAWN_TOKEN + PI_AGENT_NAME +
+  // PI_DASHBOARD_URL reach the tmux pane's pi process (tmux inherits the
+  // caller's env into new windows/sessions; the §19 PI_AGENT_NAME and the
+  // PI_DASHBOARD_URL pin also ride inline in `cmd` for the
+  // new-window-into-existing-session case — see buildTmuxCommand).
+  // See changes: spawn-correlation-token, unend-mechanism-v2, pin-on-resurrect.
+  const env = buildSpawnEnv(process.env, { spawnToken: options?.spawnToken, agentName: options?.agentName, pinDashboardUrl: options?.pinDashboardUrl });
   try {
     execSync(cmd, { stdio: "ignore", env });
     return {
@@ -381,7 +441,7 @@ function spawnTmux(cwd: string, options?: SessionOptions): SpawnResult {
 function spawnWslTmux(cwd: string, options?: SessionOptions): SpawnResult {
   try {
     const cmd = `wsl ${buildTmuxCommand(cwd, false, options)}`;
-    const env = buildSpawnEnv(process.env, { spawnToken: options?.spawnToken });
+    const env = buildSpawnEnv(process.env, { spawnToken: options?.spawnToken, agentName: options?.agentName, pinDashboardUrl: options?.pinDashboardUrl });
     execSync(cmd, { stdio: "ignore", env });
     return { success: true, dashboardSpawned: true, message: "Pi session spawned via WSL tmux" };
   } catch (err: any) {
@@ -406,7 +466,7 @@ async function spawnWt(cwd: string, options?: SessionOptions): Promise<SpawnResu
     cmd: wt,
     args,
     cwd,
-    env: buildSpawnEnv(process.env, { spawnToken: options?.spawnToken }),
+    env: buildSpawnEnv(process.env, { spawnToken: options?.spawnToken, agentName: options?.agentName, pinDashboardUrl: options?.pinDashboardUrl }),
   });
 
   if (!r.ok) {

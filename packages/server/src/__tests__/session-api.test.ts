@@ -3,10 +3,23 @@
  */
 import { describe, it, expect, afterAll, beforeAll, vi } from "vitest";
 import { createServer, type DashboardServer } from "../server.js";
+import { spawnPiSession } from "../process-manager.js";
+
+const mockSpawnPiSession = vi.mocked(spawnPiSession);
 
 const httpPort = 19200;
 const piPort = 19201;
 let server: DashboardServer;
+
+// Injectable post-respawn VERIFY-gate seam (build-gate item 2). Default passes;
+// individual tests override `verifyImpl` to exercise the gate-rejection path.
+// The real-oracle gate + 5-variant RED-arm live in resurrection-verify.test.ts.
+let verifyImpl: (sessionId: string) => Promise<import("../resurrection-verify.js").VerifyResult> = async () => ({
+  ok: true,
+  retried: false,
+  attempts: 1,
+});
+const verifyCalls: string[] = [];
 
 // Mock spawnPiSession to avoid actually spawning processes
 vi.mock("../process-manager.js", async (importOriginal) => {
@@ -51,6 +64,10 @@ describe("Session Control REST API", () => {
       shutdownIdleSeconds: 999,
       tunnel: false,
     editor: { idleTimeoutMinutes: 10, maxInstances: 3 },
+      resurrectVerify: (sessionId: string) => {
+        verifyCalls.push(sessionId);
+        return verifyImpl(sessionId);
+      },
     });
     await server.start();
   });
@@ -142,16 +159,68 @@ describe("Session Control REST API", () => {
     expect((await res.json()).error).toMatch(/read-only/);
   });
 
-  it("POST /api/session/:id/resurrect — truly-ended (no bridge, dead driver) → respawn", async () => {
+  it("POST /api/session/:id/resurrect — truly-ended (no bridge, dead driver) → respawn + verify", async () => {
     // No :9999 bridge in this test server + fresh HOME means resolveDriverLiveness
-    // returns {alive:false} → case 3 (clean continue respawn). spawnPiSession is mocked.
+    // returns {alive:false} → case 3 (clean continue respawn). spawnPiSession is
+    // mocked; the post-respawn verify gate is injected (passes) so the endpoint
+    // returns success only after the gate runs. See change: unend-mechanism-v2.
+    verifyImpl = async () => ({ ok: true, retried: false, attempts: 1 });
+    verifyCalls.length = 0;
     registerSession("ended-resurrect", { sessionFile: "/path/ended.jsonl" });
     server.sessionManager.update("ended-resurrect", { status: "ended", endedAt: Date.now() });
     const res = await postJson("/api/session/ended-resurrect/resurrect");
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body.success).toBe(true);
-    expect(body.data).toMatchObject({ resurrected: true, mode: "respawn" });
+    expect(body.data).toMatchObject({ resurrected: true, mode: "respawn", verified: true });
+    // The gate MUST have run for this session (no spawn-and-hope).
+    expect(verifyCalls).toContain("ended-resurrect");
+  });
+
+  it("POST /api/session/:id/resurrect — respawn is PINNED to this server's runtime pi-gateway port", async () => {
+    // ENV-INDEPENDENT ANTI-CROSS-WIRE PIN (change: pin-on-resurrect). The
+    // resurrect respawn MUST carry pinDashboardUrl = ws://localhost:<runtime
+    // piPort> so the spawned bridge captures `pinnedUrl` → ISOLATION GUARD →
+    // no mDNS migration to a sibling local dashboard. The port MUST be the
+    // RUNTIME gateway port (piGateway.address() === piPort here), not a
+    // config-file default.
+    verifyImpl = async () => ({ ok: true, retried: false, attempts: 1 });
+    mockSpawnPiSession.mockClear();
+    registerSession("pinned-resurrect", { sessionFile: "/path/pinned.jsonl" });
+    server.sessionManager.update("pinned-resurrect", { status: "ended", endedAt: Date.now() });
+    const res = await postJson("/api/session/pinned-resurrect/resurrect");
+    expect(res.status).toBe(200);
+    expect(mockSpawnPiSession).toHaveBeenCalledTimes(1);
+    const [, opts] = mockSpawnPiSession.mock.calls[0]!;
+    expect(opts).toMatchObject({
+      sessionFile: "/path/pinned.jsonl",
+      mode: "continue",
+      strategy: "tmux",
+      pinDashboardUrl: `ws://localhost:${piPort}`,
+    });
+  });
+
+  it("POST /api/session/:id/resurrect — verify gate REJECTS a non-interactable respawn → 503", async () => {
+    // Respawn 'succeeds' (mocked) but the gate's real oracle finds the session
+    // not interactable → the endpoint surfaces a LOUD 503, never a false-green.
+    // This is the v1-incident guard: 'started' ≠ 'interactable'.
+    verifyImpl = async () => ({
+      ok: false,
+      failedAssertion: "model-changeable",
+      detail: "set_model produced no observed session.model change (model-unreachable)",
+      retried: true,
+      attempts: 2,
+    });
+    registerSession("verify-reject", { sessionFile: "/path/reject.jsonl" });
+    server.sessionManager.update("verify-reject", { status: "ended", endedAt: Date.now() });
+    const res = await postJson("/api/session/verify-reject/resurrect");
+    expect(res.status).toBe(503);
+    const body = await res.json();
+    expect(body.success).toBe(false);
+    expect(body.error).toMatch(/verify gate REJECTED/);
+    expect(body.error).toMatch(/model-changeable/);
+    // Restore the default passing gate for any later tests.
+    verifyImpl = async () => ({ ok: true, retried: false, attempts: 1 });
   });
 
   it("POST /api/session/:id/resurrect — 400 when session file is unknown (truly-ended path)", async () => {

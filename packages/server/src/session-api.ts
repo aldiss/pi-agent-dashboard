@@ -26,6 +26,11 @@ import type { BootstrapStateStore } from "./bootstrap-state.js";
 import type { BootstrapQueue } from "./bootstrap-queue.js";
 import { attachRenameTarget, detachShouldClearName } from "./proposal-attach-naming.js";
 import { FORK_DEGRADED_TO_NEW_MESSAGE, FORK_DEGRADED_TO_NEW_CODE } from "./browser-handlers/session-action-handler.js";
+import {
+  verifyResurrection,
+  createProductionProbes,
+  type VerifyResult,
+} from "./resurrection-verify.js";
 
 export interface SessionApiDeps {
   sessionManager: SessionManager;
@@ -54,6 +59,31 @@ export interface SessionApiDeps {
    * See change: fix-fork-empty-session-silent-timeout.
    */
   pendingAttachRegistry?: import("./pending-attach-registry.js").PendingAttachRegistry;
+  /**
+   * Post-respawn VERIFY gate seam (design-pass §3-B; build-gate item 2).
+   * Injected by tests to drive the 5-assertion gate deterministically; in
+   * production, omitted → the endpoint builds the real-oracle gate
+   * (`createProductionProbes` + `verifyResurrection`). Receives the resurrected
+   * session id; resolves the gate verdict. The resurrect endpoint returns
+   * success for cases 2/3 ONLY when this resolves `ok:true`.
+   * See change: unend-mechanism-v2.
+   */
+  resurrectVerify?: (sessionId: string) => Promise<VerifyResult>;
+  /**
+   * Runtime pi-gateway port of THIS server, threaded from `ServerConfig.piPort`
+   * in server.ts. Used by the resurrect respawn to pin the spawned bridge to
+   * the SPAWNING server's own gateway (`PI_DASHBOARD_URL=ws://localhost:<port>`)
+   * so it can't mDNS-migrate to a sibling local dashboard.
+   *
+   * ⚠ MUST be the RUNTIME port, not `loadConfig().piPort`: when the server is
+   * started with `--pi-port <N>` overriding the config file, the file value can
+   * differ from `<N>` — pinning to the wrong port would RE-INTRODUCE the exact
+   * cross-wire bug this fixes. `config.piPort` (the value passed to
+   * `piGateway.start()`) is the runtime port; the handler prefers the live
+   * `piGateway.address()` (the actually-bound socket) and falls back to this.
+   * See change: pin-on-resurrect.
+   */
+  serverPiPort?: number;
 }
 
 type IdParams = { Params: { id: string } };
@@ -117,6 +147,18 @@ function getSessionOrFail(sessionManager: SessionManager, id: string): { session
 
 export function registerSessionApi(fastify: FastifyInstance, deps: SessionApiDeps) {
   const { sessionManager, piGateway, browserGateway, pendingForkRegistry, pendingDashboardSpawns, bootstrapState, bootstrapQueue, pendingResumeIntents, pendingAttachRegistry } = deps;
+
+  // Post-respawn VERIFY gate (build-gate item 2). Production default wires the
+  // real oracles (createProductionProbes: kill-0 + :9999 isSessionConnected +
+  // sendToSession-boolean + observed session.model change). Tests inject
+  // `deps.resurrectVerify` to drive the 5 assertions deterministically.
+  // See change: unend-mechanism-v2.
+  const runResurrectVerify =
+    deps.resurrectVerify ??
+    ((sessionId: string) =>
+      verifyResurrection(
+        createProductionProbes({ sessionId, sessionManager, piGateway }),
+      ));
 
   /**
    * Gate pi-dependent operations on bootstrap status. Returns:
@@ -302,13 +344,43 @@ export function registerSessionApi(fastify: FastifyInstance, deps: SessionApiDep
       // off the same shape. Mirrors the resume endpoint's bookkeeping: tag the
       // user-resume intent "front", register the headless pid, stamp
       // pendingDashboardSpawns. Callers guard `session.sessionFile` first.
+      //
+      // §19 INTERACTIVE FORM — FORCED (design-pass §3-A, §4a item 4): the
+      // respawn uses `strategy:"tmux"`, OVERRIDING `loadConfig().spawnStrategy`
+      // (which defaults to "headless"). The headless `--mode rpc` form is the
+      // one that crashed on the real Cartographer-2; the §19 interactive tmux
+      // form (`PI_AGENT_NAME=<N> pi --name <N> --session <file>`, NO --model,
+      // NO --mode rpc) is the ONE proven to restore a bridge-connected +
+      // writable + model-changeable session. The themed identity comes from the
+      // live messenger-registry name (case 2) or the session's display name.
+      // See change: unend-mechanism-v2.
+      const respawnAgentName = liveness.name ?? session.name ?? undefined;
+      // ENV-INDEPENDENT ANTI-CROSS-WIRE PIN (see change: pin-on-resurrect).
+      // Pin the respawn's bridge to THIS server's own gateway so a
+      // multi-dashboard host (e.g. prod :8000 + :8001 both mDNS-advertising)
+      // can't migrate the respawned session to a sibling dashboard via mDNS
+      // discovery → `updateUrl`. With PI_DASHBOARD_URL set, the spawned bridge
+      // captures it as `pinnedUrl` and the ISOLATION GUARD in
+      // server-auto-start.ts short-circuits discovery entirely.
+      //
+      // ⚠ CRITICAL: source the RUNTIME pi-gateway port, NEVER
+      // `loadConfig().piPort`. The live `piGateway.address()` is the
+      // actually-bound socket port (ground truth even under ephemeral :0);
+      // `deps.serverPiPort` (threaded from `ServerConfig.piPort` = the value
+      // passed to `piGateway.start()`, which honors a `--pi-port <N>` CLI
+      // override) is the fallback. The config-FILE port can differ from the
+      // runtime port → pinning to it would re-introduce the cross-wire bug.
+      const runtimePiPort = piGateway.address() ?? deps.serverPiPort;
+      const pinDashboardUrl =
+        typeof runtimePiPort === "number" ? `ws://localhost:${runtimePiPort}` : undefined;
       const doRespawnContinue = async (): Promise<import("./process-manager.js").SpawnResult> => {
         pendingResumeIntents?.record(id, "front");
-        const config = loadConfig();
         const spawnResult = await spawnPiSession(session.cwd, {
           sessionFile: session.sessionFile!,
           mode: "continue",
-          strategy: config.spawnStrategy,
+          strategy: "tmux",
+          ...(respawnAgentName ? { agentName: respawnAgentName } : {}),
+          ...(pinDashboardUrl ? { pinDashboardUrl } : {}),
         });
         if (spawnResult.process && spawnResult.pid) {
           browserGateway.headlessPidRegistry.register(
@@ -342,7 +414,21 @@ export function registerSessionApi(fastify: FastifyInstance, deps: SessionApiDep
                 : `respawn failed after takeover${takeover.spawnResult ? `: ${takeover.spawnResult.message}` : ""}`,
           } satisfies ApiResponse;
         }
-        return { success: true, data: { resurrected: true, mode: "respawn" } } satisfies ApiResponse<{ resurrected: boolean; mode: string }>;
+        // POST-RESPAWN VERIFY (build-gate item 2): the respawn process started,
+        // but "started" ≠ "interactable" (the exact v1 false-green). Assert the
+        // 5 real oracles before returning success; on failure (after the gate's
+        // internal retry) surface a LOUD actionable error, never silent success.
+        const verify2 = await runResurrectVerify(id);
+        if (!verify2.ok) {
+          reply.code(503);
+          return {
+            success: false,
+            error:
+              `respawn started but verify gate REJECTED it: assertion "${verify2.failedAssertion}" ` +
+              `failed — ${verify2.detail}. Session is NOT fully interactable.`,
+          } satisfies ApiResponse;
+        }
+        return { success: true, data: { resurrected: true, mode: "respawn", verified: true } } satisfies ApiResponse<{ resurrected: boolean; mode: string; verified: boolean }>;
       }
 
       // ── case 3: truly-ended → clean continue respawn ─────────────────
@@ -355,7 +441,18 @@ export function registerSessionApi(fastify: FastifyInstance, deps: SessionApiDep
         reply.code(500);
         return { success: false, error: respawn.message } satisfies ApiResponse;
       }
-      return { success: true, data: { resurrected: true, mode: "respawn" } } satisfies ApiResponse<{ resurrected: boolean; mode: string }>;
+      // POST-RESPAWN VERIFY (build-gate item 2) — same gate as case 2.
+      const verify3 = await runResurrectVerify(id);
+      if (!verify3.ok) {
+        reply.code(503);
+        return {
+          success: false,
+          error:
+            `respawn started but verify gate REJECTED it: assertion "${verify3.failedAssertion}" ` +
+            `failed — ${verify3.detail}. Session is NOT fully interactable.`,
+        } satisfies ApiResponse;
+      }
+      return { success: true, data: { resurrected: true, mode: "respawn", verified: true } } satisfies ApiResponse<{ resurrected: boolean; mode: string; verified: boolean }>;
     },
   );
 

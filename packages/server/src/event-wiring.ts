@@ -12,6 +12,7 @@ import type { DirectoryService } from "./directory-service.js";
 import { extractSessionUpdates, isActivityEvent, isUnreadTrigger, isPushTrigger, type PushTriggerOptions } from "./event-status-extraction.js";
 import type { ViewedSessionTracker } from "./viewed-session-tracker.js";
 import { setCatalogueForSession } from "./provider-catalogue-cache.js";
+import { setModelsForSession } from "./session-models-cache.js";
 import type { PushDispatcher } from "./push/push-dispatcher.js";
 import type { PushPrefs } from "./push/push-types.js";
 import { spawnPiSession } from "./process-manager.js";
@@ -721,6 +722,10 @@ export function wireEvents(deps: EventWiringDeps): void {
     }
 
     if (msg.type === "models_list") {
+      // Cache the session's model catalogue (the resurrection verify-gate's
+      // alt-model resolver reads it — same source as the dashboard picker,
+      // no pi-ai dependency). See change: unend-mechanism-v2.
+      setModelsForSession(sessionId, msg.models);
       // Broadcast to all browsers (not just subscribers) so model selector
       // is available even before the user opens the session
       browserGateway.broadcastToAll({

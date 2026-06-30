@@ -54,6 +54,40 @@ describe("Process Manager", () => {
       expect(cmd).toContain("cd /home/user/project &&");
     });
 
+    // ── pin-on-resurrect: PI_DASHBOARD_URL inline env-prefix ───────────────
+    it("should carry PI_DASHBOARD_URL inline when pinDashboardUrl is set", () => {
+      const cmd = buildTmuxCommand("/home/user/project", true, {
+        sessionFile: "/path/to/session.jsonl",
+        mode: "continue",
+        pinDashboardUrl: "ws://localhost:9999",
+      });
+      // The pin MUST ride inline in the command string (tmux new-window inherits
+      // the tmux SERVER's env, not this caller's). Still no --model.
+      expect(cmd).toContain("PI_DASHBOARD_URL=ws://localhost:9999");
+      expect(cmd).toContain("--session /path/to/session.jsonl");
+      expect(cmd).not.toContain("--model");
+    });
+
+    it("should carry PI_DASHBOARD_URL alongside PI_AGENT_NAME inline", () => {
+      const cmd = buildTmuxCommand("/home/user/project", true, {
+        sessionFile: "/path/to/session.jsonl",
+        mode: "continue",
+        agentName: "Pete",
+        pinDashboardUrl: "ws://localhost:9997",
+      });
+      expect(cmd).toContain("PI_AGENT_NAME=Pete");
+      expect(cmd).toContain("PI_DASHBOARD_URL=ws://localhost:9997");
+      expect(cmd).toContain("--name Pete");
+    });
+
+    it("should omit PI_DASHBOARD_URL when pinDashboardUrl is unset", () => {
+      const cmd = buildTmuxCommand("/home/user/project", true, {
+        sessionFile: "/path/to/session.jsonl",
+        mode: "continue",
+      });
+      expect(cmd).not.toContain("PI_DASHBOARD_URL");
+    });
+
     it("should include --session flag for continue mode", () => {
       const cmd = buildTmuxCommand("/home/user/project", true, {
         sessionFile: "/path/to/session.jsonl",
@@ -225,6 +259,17 @@ describe("Process Manager", () => {
       const parts = env.PATH!.split(":");
       const managedCount = parts.filter(p => p === managedBin).length;
       expect(managedCount).toBe(1);
+    });
+
+    // ── pin-on-resurrect: PI_DASHBOARD_URL injection ───────────────────────
+    it("should inject PI_DASHBOARD_URL when pinDashboardUrl is set", () => {
+      const env = buildSpawnEnv({ PATH: "/usr/bin" }, { pinDashboardUrl: "ws://localhost:9999" });
+      expect(env.PI_DASHBOARD_URL).toBe("ws://localhost:9999");
+    });
+
+    it("should not set PI_DASHBOARD_URL when pinDashboardUrl is absent", () => {
+      const env = buildSpawnEnv({ PATH: "/usr/bin" }, { spawnToken: "tok" });
+      expect(env.PI_DASHBOARD_URL).toBeUndefined();
     });
   });
 
