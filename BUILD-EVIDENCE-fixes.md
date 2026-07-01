@@ -82,6 +82,7 @@ crash-form on large logs):
 - REST `POST /api/session/:id/resume`  — `session-api.ts` (was ~703)
 - prompt-auto-resume (ended-branch)    — `session-action-handler.ts` `handleSendPrompt` (was ~223)
 - WS `handleResumeSession`             — `session-action-handler.ts` (was ~364, the primary Resume button)
+- `handleHeadlessReload` (`/reload`)   — `session-action-handler.ts` (the 5th path — found in the Fix-11 AMEND below)
 
 **Fix (own-hand).**
 - New `packages/server/src/resume-spawn-options.ts` — single source of the §19 resume shape:
@@ -134,6 +135,46 @@ silently degrading.
 
 ### Regression after Fix-11: **155/155** (142 + 9 new + 4 spawn-handler) + **60/60** resume/handler suites
 (incl. `auto-resume.test.ts` which exercises the converted `handleSendPrompt`). Zero regressions.
+
+### Fix-11 AMEND (5th path — Pete strict-spec QA + two-key: Bert concur, Alice harden) — `handleHeadlessReload`
+
+**The gap.** Fix-11's original inventory was 4 paths; it MISSED a 5th real session-RESUME:
+`handleHeadlessReload` (`session-action-handler.ts`, the headless `/reload` handler). It respawned
+`mode:"continue"` + existing `sessionFile` with `strategy:"headless"` = the `--mode rpc` crash-class on a
+session-file replay. The ADJACENT prompt-auto-resume was already hardened; this sibling slipped the inventory.
+
+**Fix (own-hand) — all of the two-key ruling, not a naive builder-swap:**
+1. **HARDEN the respawn** — replaced `{sessionFile, mode:"continue", strategy:"headless"}` with the §19
+   interactive form via `buildInteractiveResumeOptions` (`strategy:"tmux"` + `requireInteractive:true` + pin +
+   `agentName`) — same shape as the sibling. Fails loud (`INTERACTIVE_UNAVAILABLE`) if tmux unavailable, never
+   silent degrade (composes with Fix-10).
+2. **EXPLICIT no-headless-register (Bert)** — the detached interactive respawn is deliberately NOT tracked in
+   `headlessPidRegistry`. That registry is the routing key for `shouldInterceptReload`; registering the
+   converted session as headless would (a) wrongly route a future `/reload` back here, and (b) let a
+   pid-carrying spawnResult mis-tag it. Made explicit (a `console.warn` invariant-guard replaces the incidental
+   `if (pid && process) register`), not incidental.
+3. **KILL-PATH (Bert verify)** — `handleHeadlessReload` is reachable ONLY when `shouldInterceptReload` was true
+   = `getPid !== undefined` = a **headless** predecessor. So `killBySessionId` (kills headless-registry pids)
+   always covers the predecessor; an interactive predecessor is structurally unreachable here. Documented; no
+   code needed.
+4. **/RELOAD-ROUTING COHERENCE (Alice)** — because the interactive respawn isn't headless-registered,
+   `getPid` returns undefined → `shouldInterceptReload` is false → a subsequent `/reload` routes to the TUI
+   `/__dashboard_reload` path, NOT back to `handleHeadlessReload`. Self-consistent via the registry-as-routing-
+   key; **no caller change needed**. Proven by the existing "non-headless (tmux) session forwards to the bridge"
+   test.
+5. **Stale-entry clear** — `killBySessionId` at the top already deletes the old headless entry; no stale entry
+   after the interactive respawn.
+
+**Test flipped** (`session-action-handler-headless-reload.test.ts`, 11/11 green): the happy path now asserts
+the §19 interactive form (`strategy:"tmux"` + `requireInteractive:true` + `agentName`, and NOT
+`strategy:"headless"`) + asserts the reload is NOT headless-registered; the concurrent-calls test asserts both
+respawn interactive with zero registers + the pid mapping ends cleared; a new fail-loud case asserts
+`INTERACTIVE_UNAVAILABLE` surfaces as error feedback + ends the session (no silent headless degrade); the
+routing-coherence cases (interactive → TUI forward) stay green.
+
+**Regression after the amend:** 15 fix suites **217/217**, incl. `harden-headless-resume-paths` (structural
+repo-lint still green — more sites now route through the builder) + all resume/spawn/api suites. Zero
+regressions. Amend scoped tightly to `handleHeadlessReload` + its test; Fix-10/W1b/W4 + debt files untouched.
 
 ---
 

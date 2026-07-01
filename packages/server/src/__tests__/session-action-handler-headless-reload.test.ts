@@ -54,6 +54,10 @@ function makeCtx(
     },
     piGateway: {
       sendToSession: vi.fn().mockReturnValue(true),
+      // Fix-11 amend: handleHeadlessReload's §19 respawn resolves the anti-cross-
+      // wire pin via resolvePinDashboardUrl(ctx.piGateway). A null address →
+      // no pin (no serverPiPort here); the no-crash guard keeps it safe.
+      address: () => null,
     },
     headlessPidRegistry: {
       getPid: (sid: string) => pidBySession[sid],
@@ -106,16 +110,16 @@ function findFeedback(events: InsertedEvent[]) {
     .map((e) => e.event.data);
 }
 
-describe("handleHeadlessReload — happy path", () => {
+describe("handleHeadlessReload — happy path (Fix-11 amend: §19 interactive resume)", () => {
   beforeEach(() => vi.clearAllMocks());
   afterEach(() => vi.restoreAllMocks());
 
-  it("kills old pi, spawns new pi, registers new PID, emits started+completed", async () => {
+  it("kills old pi, respawns via §19 interactive form (NOT headless), does NOT headless-register, emits started+completed", async () => {
+    // A §19 interactive (tmux) respawn is detached — no pid/process.
     (spawnPiSession as any).mockResolvedValueOnce({
       success: true,
-      pid: 9999,
-      process: { _fake: true },
-      message: "ok",
+      message: "Pi session spawned in tmux (new window)",
+      dashboardSpawned: true,
     });
 
     const { ctx, killCalls, registerCalls, insertedEvents } = makeCtx({
@@ -123,6 +127,7 @@ describe("handleHeadlessReload — happy path", () => {
       sessions: {
         S1: {
           id: "S1",
+          name: "Pete",
           cwd: "/home/u/proj",
           sessionFile: "/home/u/proj/.pi/sessions/abc.jsonl",
           status: "active",
@@ -138,18 +143,21 @@ describe("handleHeadlessReload — happy path", () => {
     // Kill came before spawn
     expect(killCalls).toEqual(["S1"]);
     expect(spawnPiSession).toHaveBeenCalledTimes(1);
-    expect(spawnPiSession).toHaveBeenCalledWith(
-      "/home/u/proj",
-      expect.objectContaining({
-        sessionFile: "/home/u/proj/.pi/sessions/abc.jsonl",
-        mode: "continue",
-        strategy: "headless",
-      }),
-    );
+    // Fix-11 amend: the sessionFile-replay MUST use the §19 interactive form —
+    // strategy:"tmux" + requireInteractive:true, NEVER hardcoded "headless".
+    const spawnArgs = (spawnPiSession as any).mock.calls[0][1];
+    expect(spawnArgs.strategy).toBe("tmux");
+    expect(spawnArgs.requireInteractive).toBe(true);
+    expect(spawnArgs.sessionFile).toBe("/home/u/proj/.pi/sessions/abc.jsonl");
+    expect(spawnArgs.mode).toBe("continue");
+    expect(spawnArgs.agentName).toBe("Pete"); // §19 identity from the session name
+    // Falsifiable: the crash-class strategy must NOT appear.
+    expect(spawnArgs.strategy).not.toBe("headless");
 
-    // New PID registered
-    expect(registerCalls).toHaveLength(1);
-    expect(registerCalls[0].pid).toBe(9999);
+    // EXPLICIT no-headless-register: the interactive session is NOT tracked in
+    // the headless-pid registry (that's the routing key for shouldInterceptReload;
+    // a future /reload must route to the TUI path, not back here).
+    expect(registerCalls).toHaveLength(0);
 
     // Feedback sequence: started → completed
     const feedback = findFeedback(insertedEvents);
@@ -300,16 +308,16 @@ describe("handleHeadlessReload — missing session file", () => {
   });
 });
 
-describe("handleHeadlessReload — concurrent calls", () => {
+describe("handleHeadlessReload — concurrent calls (Fix-11 amend)", () => {
   beforeEach(() => vi.clearAllMocks());
   afterEach(() => vi.restoreAllMocks());
 
-  it("two back-to-back /reload calls still register exactly one live PID (the second)", async () => {
-    let nextPid = 7001;
+  it("two back-to-back /reload calls both respawn interactive; neither headless-registers", async () => {
+    // Interactive respawns are detached (no pid/process).
     (spawnPiSession as any).mockImplementation(async () => ({
       success: true,
-      pid: nextPid++,
-      process: { _fake: true },
+      message: "Pi session spawned in tmux (new window)",
+      dashboardSpawned: true,
     }));
 
     const { ctx, killCalls, registerCalls, pidBySession } = makeCtx({
@@ -317,6 +325,7 @@ describe("handleHeadlessReload — concurrent calls", () => {
       sessions: {
         S1: {
           id: "S1",
+          name: "Pete",
           cwd: "/p",
           sessionFile: "/p/s.jsonl",
           status: "active",
@@ -342,10 +351,52 @@ describe("handleHeadlessReload — concurrent calls", () => {
     expect(killCalls.length).toBeGreaterThanOrEqual(1);
     expect(killCalls.length).toBeLessThanOrEqual(2);
 
-    // Both calls spawned, but registry ended with one live PID (the later one).
+    // Both calls spawned interactive, but NEITHER headless-registered — and the
+    // headless pid mapping ends CLEARED (killBySessionId nulled it; no re-add),
+    // so a subsequent /reload routes to the TUI path, not back here.
     expect(spawnPiSession).toHaveBeenCalledTimes(2);
-    expect(registerCalls).toHaveLength(2);
-    expect(pidBySession.S1).toBe(registerCalls[registerCalls.length - 1].pid);
+    expect(registerCalls).toHaveLength(0);
+    expect(pidBySession.S1).toBeUndefined();
+  });
+});
+
+describe("handleHeadlessReload — fail-loud when tmux unavailable (Fix-11 amend)", () => {
+  beforeEach(() => vi.clearAllMocks());
+  afterEach(() => vi.restoreAllMocks());
+
+  it("surfaces INTERACTIVE_UNAVAILABLE as error feedback + ends the session (no silent headless degrade)", async () => {
+    // Compose with Fix-10: the §19 form fails loud when no interactive terminal
+    // can be resolved — spawnPiSession returns the INTERACTIVE_UNAVAILABLE code.
+    (spawnPiSession as any).mockResolvedValueOnce({
+      success: false,
+      code: "INTERACTIVE_UNAVAILABLE",
+      message:
+        "interactive session-resume required but no interactive terminal " +
+        "(tmux / Windows Terminal / WSL-tmux) could be resolved on this host.",
+    });
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const { ctx, registerCalls, sessionUpdates, insertedEvents } = makeCtx({
+      pidBySession: { S1: 1234 },
+      sessions: {
+        S1: { id: "S1", name: "Pete", cwd: "/p", sessionFile: "/p/s.jsonl", status: "active" },
+      },
+    });
+
+    await handleHeadlessReload(
+      { type: "send_prompt", sessionId: "S1", text: "/reload" } as any,
+      ctx,
+    );
+
+    // Never headless-registered on the fail-loud path either.
+    expect(registerCalls).toHaveLength(0);
+    // Session marked ended + error feedback carries the loud message.
+    expect(sessionUpdates.some((u) => u.id === "S1" && u.updates.status === "ended")).toBe(true);
+    const feedback = findFeedback(insertedEvents);
+    expect(feedback[feedback.length - 1].status).toBe("error");
+    expect(String(feedback[feedback.length - 1].message)).toMatch(/interactive session-resume required|tmux/i);
+
+    errSpy.mockRestore();
   });
 });
 
