@@ -1,4 +1,6 @@
 import React, { useEffect, useRef } from "react";
+import { Icon } from "@mdi/react";
+import { mdiClose } from "@mdi/js";
 import { DialogPortal } from "./DialogPortal.js";
 import { useZoomPan } from "../hooks/useZoomPan.js";
 import type { UnfurlHighlight } from "../lib/unfurl-directive.js";
@@ -55,7 +57,9 @@ function PlainLightbox({ src, alt, onClose }: { src: string; alt: string; onClos
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
 
-  // Close on Escape + backdrop click (document listeners for portal compat)
+  // Close on Escape + backdrop click + the close button (document listeners for
+  // portal compat: DialogPortal renders outside the React root, so React onClick
+  // is unreliable here — native listeners are the proven pattern in this file).
   useEffect(() => {
     const handleKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onCloseRef.current();
@@ -63,6 +67,12 @@ function PlainLightbox({ src, alt, onClose }: { src: string; alt: string; onClos
     const handleClick = (e: MouseEvent) => {
       const target = e.target as HTMLElement;
       if (target?.dataset?.testid === BACKDROP_ID) {
+        onCloseRef.current();
+        return;
+      }
+      // The close button lives inside the backdrop; a tap may land on its inner
+      // icon, so match the nearest close-button ancestor.
+      if (target?.closest?.('[data-testid="lightbox-close"]')) {
         onCloseRef.current();
       }
     };
@@ -82,6 +92,22 @@ function PlainLightbox({ src, alt, onClose }: { src: string; alt: string; onClos
         data-testid="lightbox-backdrop"
         className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/80 cursor-zoom-out"
       >
+        {/* Always-visible close affordance. Critical on mobile / PWA: there is no
+            Esc key, and the backdrop margin around a full-screen photo is too thin
+            to tap reliably (the photo itself is the zoom/pan target). Without this
+            the only escape was force-quitting the app. */}
+        <button
+          type="button"
+          aria-label="Close image"
+          data-testid="lightbox-close"
+          className="fixed z-[10000] flex items-center justify-center w-11 h-11 rounded-full border border-white/25 bg-black/55 text-white/90 backdrop-blur-sm transition-colors hover:bg-black/80 hover:text-white cursor-pointer"
+          style={{
+            top: "calc(env(safe-area-inset-top, 0px) + 12px)",
+            right: "calc(env(safe-area-inset-right, 0px) + 12px)",
+          }}
+        >
+          <Icon path={mdiClose} size={1} />
+        </button>
         <div
           className="relative max-w-[90vw] max-h-[90vh] cursor-grab active:cursor-grabbing"
           onWheel={handlers.onWheel}

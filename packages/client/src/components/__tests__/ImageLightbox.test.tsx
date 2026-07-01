@@ -48,6 +48,17 @@ describe("ImageLightbox", () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
+  it("renders an always-visible close button and calls onClose when it is clicked", () => {
+    const onClose = vi.fn();
+    render(
+      <ImageLightbox src="data:image/png;base64,abc" alt="test" onClose={onClose} />
+    );
+    const closeBtn = document.body.querySelector("[data-testid='lightbox-close']");
+    expect(closeBtn).not.toBeNull();
+    fireEvent.click(closeBtn!);
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
   it("does NOT call onClose when image is clicked", () => {
     const onClose = vi.fn();
     render(
