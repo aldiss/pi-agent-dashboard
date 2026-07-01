@@ -349,6 +349,27 @@ final class DashboardStore {
             markSendFailed(sid, nonce: nonce,
                            reason: isStreaming ? "Couldn't queue — not connected."
                                                : "Couldn't send — not connected.")
+            return
+        }
+
+        // 3) ACK SAFETY-NET (DF#1): the send left the socket with no error, but the
+        // server's user `message_start` echo may never nonce/text-match this bubble
+        // (bridge committed straight to work, whitespace/skill drift) — leaving it
+        // stuck "Sending…". After a grace window, if the `optim-<nonce>` bubble is
+        // STILL pending, reconcile it to CONFIRMED (the message WAS sent — never
+        // false-mark failed here; only a throw / `send_prompt_failed` fails it). The
+        // streaming/queued path has its own `message_enqueued`/`queue_state`
+        // reconciliation, so this net targets the non-streaming bubble.
+        if !isStreaming {
+            Task { [weak self] in
+                try? await Task.sleep(for: .seconds(10))
+                guard let self else { return }
+                guard var st = self.chatStates[sid],
+                      st.messages.contains(where: { $0.id == "optim-\(nonce)" && $0.delivery == .pending })
+                else { return }
+                st = st.reconcilePendingToConfirmed(nonce: nonce)
+                self.chatStates[sid] = st
+            }
         }
     }
 

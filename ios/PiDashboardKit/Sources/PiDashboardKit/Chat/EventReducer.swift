@@ -169,6 +169,40 @@ public struct ChatSessionState: Sendable, Equatable {
         return next
     }
 
+    /// Confirm the optimistic bubble that carries `nonce` — matched by its stable
+    /// `optim-<nonce>` id, NOT by fragile text. The primary reconcile path: the
+    /// server's `message_start`/`message_enqueued` echo carries the client-minted
+    /// `queueNonce`, so we clear "Sending…" on the RIGHT bubble even when two sends
+    /// share identical text. Adopts the server timestamp + any images it carried.
+    /// Returns `(state, matched)` — `matched == false` means no such optimistic
+    /// bubble (caller falls back to text-match / appends). Pure.
+    public func confirmingOptimisticUser(nonce: String, timestamp: Double,
+                                         images: [ImageContent] = []) -> (state: ChatSessionState, matched: Bool) {
+        guard let idx = messages.firstIndex(where: {
+            $0.id == "optim-\(nonce)" && $0.role == .user && $0.delivery == .pending
+        }) else { return (self, false) }
+        var next = self
+        next.messages[idx].delivery = .confirmed
+        next.messages[idx].timestamp = timestamp
+        if !images.isEmpty { next.messages[idx].images = images }
+        return (next, true)
+    }
+
+    /// Ack safety-net reconcile: flip a STILL-`pending` `optim-<nonce>` bubble to
+    /// `.confirmed` WITHOUT failing it. Called by the store ~10s after a send that
+    /// threw no error but whose server echo never text/nonce-matched (bridge
+    /// committed straight to work, whitespace/skill-envelope drift, …). The message
+    /// WAS sent, so never mark `.failed` here. Idempotent: no-op if already
+    /// confirmed / absent. Pure.
+    public func reconcilePendingToConfirmed(nonce: String) -> ChatSessionState {
+        guard let idx = messages.firstIndex(where: {
+            $0.id == "optim-\(nonce)" && $0.role == .user && $0.delivery == .pending
+        }) else { return self }
+        var next = self
+        next.messages[idx].delivery = .confirmed
+        return next
+    }
+
     /// Whether any optimistic user bubble is still awaiting confirmation.
     public var hasPendingOptimisticUser: Bool {
         messages.contains { $0.role == .user && $0.delivery == .pending }
@@ -231,14 +265,24 @@ public struct ChatSessionState: Sendable, Equatable {
                 // queued follow-up was just pulled into work — remove it from
                 // queued[] (it becomes the committed user bubble below). Absent
                 // queueNonce = a turn-initiating message (no dequeue).
-                if let dispatched = data["queueNonce"]?.stringValue {
+                let dispatchedNonce = data["queueNonce"]?.stringValue
+                if let dispatched = dispatchedNonce {
                     next.queued.removeAll { $0.queueNonce == dispatched }
                 }
-                // DEDUP: the server echoes a dashboard-sent prompt back as
-                // message_start(role:user). If we already rendered it optimistically
-                // (pending, identical trimmed content), CONFIRM that row in place
-                // instead of appending a second identical bubble. Match the most
-                // recent pending user row so repeated identical sends still pair 1:1.
+                // CONFIRM BY NONCE (primary): the server echo carries the client-
+                // minted queueNonce, so confirm the exact `optim-<nonce>` bubble by
+                // id — robust to identical-text sends and whitespace/skill drift that
+                // the text-match below can't handle (the "stuck Sending…" root cause).
+                if let dispatched = dispatchedNonce {
+                    let (confirmed, matched) = next.confirmingOptimisticUser(
+                        nonce: dispatched, timestamp: ts, images: images)
+                    if matched { next = confirmed; break }
+                }
+                // DEDUP (fallback): no nonce match — the server echoes a dashboard-
+                // sent prompt back as message_start(role:user). If we already rendered
+                // it optimistically (pending, identical trimmed content), CONFIRM that
+                // row in place instead of appending a second identical bubble. Match
+                // the most recent pending user row so repeated identical sends pair 1:1.
                 let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
                 if let idx = next.messages.lastIndex(where: {
                     $0.role == .user && $0.delivery == .pending
