@@ -26,6 +26,28 @@ class PiDashboardUITestCase: XCTestCase {
         return app
     }
 
+    /// Launch hermetically in `-uitest` fixture mode with initial `UserDefaults`
+    /// values FORCED via the NSArgumentDomain (highest-precedence on read, volatile
+    /// per-launch, never written to disk). This lets a spec pin state that the app
+    /// reads once at init — the persisted theme mode (`ThemeController`) and the
+    /// hide-ended toggle (`DashboardStore.hideEnded`) — WITHOUT any app-side test
+    /// hook and WITHOUT leaking into a sibling test. `didSet` persistence does not
+    /// fire on init, so the on-disk store stays clean; a later in-app toggle writes
+    /// the standard domain but the arg domain still shadows it on the NEXT launch.
+    ///
+    /// - Parameters:
+    ///   - themeMode: `"system"`/`"dark"`/`"light"` → `pi.dashboard.themeMode`.
+    ///   - hideEnded: forces `pi.dashboard.hideEnded` (`YES`/`NO`).
+    @discardableResult
+    func launchForcing(themeMode: String? = nil, hideEnded: Bool? = nil,
+                       extra: [String] = []) -> XCUIApplication {
+        var args = ["-uitest"]
+        if let themeMode { args += ["-pi.dashboard.themeMode", themeMode] }
+        if let hideEnded { args += ["-pi.dashboard.hideEnded", hideEnded ? "YES" : "NO"] }
+        args += extra
+        return launch(args)
+    }
+
     // MARK: element lookup (identifier-first, type-agnostic)
 
     /// First element with `id` across ANY element type — SwiftUI promotes custom
@@ -42,6 +64,37 @@ class PiDashboardUITestCase: XCTestCase {
     }
 
     func exists(_ id: String) -> Bool { el(id).exists }
+
+    /// Poll until `id` EXISTS (returns true) or the deadline passes (returns false) —
+    /// the positive twin of `waitForGone`, without asserting. Same Sendable-safe
+    /// deadline-poll shape (no self-capturing NSPredicate) that keeps Swift 6
+    /// strict-concurrency clean.
+    func waitForAppear(_ id: String, _ timeout: TimeInterval = 6) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if el(id).exists { return true }
+            usleep(150_000) // 0.15s
+        }
+        return el(id).exists
+    }
+
+    // MARK: shared flow helpers (connect → list → open a chat)
+
+    /// Connect via the prefilled localhost default and land on the session list.
+    /// The single entry every list/chat flow shares. Assumes a `-uitest` launch.
+    @discardableResult
+    func connectAndEnterList() -> XCUIElement {
+        waitFor("connect-submit").tap()
+        return waitFor("session-list")
+    }
+
+    /// From the session list, tap a `session-card-<id>` and wait for the chat surface
+    /// (`chat-scroll` + `mobile-composer`) to mount. Returns once the composer is up.
+    func openChat(cardId: String) {
+        waitFor(cardId, 8).tap()
+        _ = waitFor("chat-scroll", 10)
+        _ = waitFor("mobile-composer", 10)
+    }
 
     /// Poll until the element with `id` no longer exists (a filter dropped it).
     /// A deadline poll — NOT `expectation(for:evaluatedWith:)`, whose `NSPredicate`
