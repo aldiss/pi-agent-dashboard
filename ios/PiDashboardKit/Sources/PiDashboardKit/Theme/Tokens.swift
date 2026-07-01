@@ -79,12 +79,15 @@ public enum DashboardTheme {
         accentCyan: "#06b6d4"
     )
 
-    /// LIGHT palette — every bg/text/border lifted verbatim from the PWA
-    /// `index.css [data-theme="light"]` block. Accents INHERIT the dark values (the
-    /// PWA light block only overrides `accent-primary` → #2563eb; blue/green/yellow/
-    /// red/purple/orange/cyan stay the same so the semantic session/chat color
-    /// language reads identically in both modes). `borderSubtle` is the PWA's
-    /// `rgba(0,0,0,0.06)`; the `Color(hex:)` mapper parses the `rgba(...)` form.
+    /// LIGHT palette — bg/text/border lifted from the PWA `index.css
+    /// [data-theme="light"]` block. Accents are DARKENED from the dark values to meet
+    /// WCAG AA on the white background (Cluster 3): pure green/amber/cyan/orange on
+    /// `#ffffff` fail 3:1, and `textFaint #d0d0d0` was ~1.5:1 (near-invisible). The
+    /// darkened hues (Tailwind 600/700 family) stay recognizable — green reads green,
+    /// red reads red — while clearing 4.5:1 as chip/status text. The semantic status
+    /// accents (`statusActive` etc.) alias these, so every status dot / chip / badge /
+    /// pill / banner is fixed at once. DARK is a separate literal → untouched.
+    /// `borderSubtle` is the PWA's `rgba(0,0,0,0.06)`; `Color(hex:)` parses that form.
     public static let light = ThemePalette(
         bgPrimary: "#ffffff",
         bgSecondary: "#fafafa",
@@ -92,21 +95,21 @@ public enum DashboardTheme {
         bgSurface: "#e0e0e0",
         bgSelected: "#e8e8e8",
         bgCode: "#f5f5f5",
-        textPrimary: "#1a1a1a",
-        textSecondary: "#444444",
-        textTertiary: "#777777",
-        textFaint: "#d0d0d0",
+        textPrimary: "#1a1a1a",   // 17.4:1
+        textSecondary: "#444444", // 9.7:1
+        textTertiary: "#777777",  // 4.48:1
+        textFaint: "#6b6b6b",     // 5.33:1 (was #d0d0d0 = 1.54:1 — the worst offender)
         borderPrimary: "#e0e0e0",
         borderSecondary: "#cccccc",
         borderSubtle: "rgba(0,0,0,0.06)",
-        accentPrimary: "#2563eb",
-        accentBlue: "#3b82f6",
-        accentGreen: "#22c55e",
-        accentRed: "#ef4444",
-        accentOrange: "#f97316",
-        accentYellow: "#eab308",
-        accentPurple: "#a855f7",
-        accentCyan: "#06b6d4"
+        accentPrimary: "#2563eb", // blue-600, 5.17:1
+        accentBlue: "#2563eb",    // blue-600 (was #3b82f6 = 3.68 → text-safe)
+        accentGreen: "#15803d",   // green-700, 5.02:1 (was #22c55e = 2.28)
+        accentRed: "#dc2626",     // red-600, 4.83:1 (was #ef4444 = 3.76)
+        accentOrange: "#c2410c",  // orange-700, 5.18:1 (was #f97316 = 2.80)
+        accentYellow: "#b45309",  // amber-700, 5.02:1 (was #eab308 = 1.92)
+        accentPurple: "#9333ea",  // purple-600, 5.38:1 (was #a855f7 = 3.96)
+        accentCyan: "#0e7490"     // cyan-700, 5.36:1 (was #06b6d4 = 2.43)
     )
 
     /// Status chip accent mapping (active→green, streaming→blue, idle→muted,

@@ -34,19 +34,23 @@ final class ThemeModeTests: XCTestCase {
         XCTAssertEqual(l.accentPrimary, "#2563eb", "light overrides accent-primary")
     }
 
-    /// The semantic accents INHERIT the dark values in light mode (the PWA light
-    /// block leaves them untouched) — so the session/chat color language is stable.
-    func testLightInheritsSemanticAccents() {
+    /// Cluster 3: the light-mode semantic accents are DARKENED from the dark values
+    /// (no longer inherited) so they meet WCAG AA on white. This replaces the prior
+    /// "inherits verbatim" contract — pure green/amber/cyan on #ffffff failed 3:1.
+    func testLightAccentsDarkenedForAA() {
         let l = DashboardTheme.light, d = DashboardTheme.dark
-        XCTAssertEqual(l.accentBlue, d.accentBlue)
-        XCTAssertEqual(l.accentGreen, d.accentGreen)
-        XCTAssertEqual(l.accentRed, d.accentRed)
-        XCTAssertEqual(l.accentYellow, d.accentYellow)
-        XCTAssertEqual(l.accentPurple, d.accentPurple)
-        XCTAssertEqual(l.accentCyan, d.accentCyan)
-        // Semantic status accents therefore also match across modes.
-        XCTAssertEqual(l.statusActive, d.statusActive)
-        XCTAssertEqual(l.statusWorking, d.statusWorking)
+        // Each accent DIFFERS from dark (darkened) — the intentional break.
+        XCTAssertNotEqual(l.accentGreen, d.accentGreen)
+        XCTAssertNotEqual(l.accentYellow, d.accentYellow)
+        XCTAssertNotEqual(l.accentCyan, d.accentCyan)
+        XCTAssertNotEqual(l.accentOrange, d.accentOrange)
+        // The darkened light accents each meet AA (≥3:1 UI) on the light bg; the dark
+        // ones (bright) do NOT on white — proving the fix.
+        XCTAssertTrue(Contrast.meetsAA(foreground: l.accentGreen, background: l.bgPrimary, largeOrUI: true))
+        XCTAssertFalse(Contrast.meetsAA(foreground: d.accentGreen, background: l.bgPrimary, largeOrUI: true),
+                       "the OLD (dark) green would have failed on white")
+        // accentPrimary stays blue-600 in both (it was already AA).
+        XCTAssertEqual(l.accentPrimary, "#2563eb")
     }
 
     /// Light and dark are genuinely different palettes (guards against a copy-paste
