@@ -26,11 +26,14 @@ final class DashboardStore {
     // Connection
     private(set) var phase: ConnectionPhase = .idle
     private(set) var health: HealthStatus?
-    var serverURLString = "http://localhost:8000"
-    var token = ""
+    var serverURLString: String
+    var token: String
     /// Set once a successful connect has entered the dashboard — keeps MainView
     /// mounted across transient drops (only the banner changes).
     private(set) var hasEnteredDashboard = false
+    /// True while a launch auto-connect (to a persisted server) is in flight — the
+    /// root shows a splash instead of the connect form during this window.
+    private(set) var isAutoConnecting = false
 
     // Registry
     private(set) var sessions: [String: DashboardSession] = [:]
@@ -55,6 +58,8 @@ final class DashboardStore {
 
     private let client = DashboardClient()
     private var consumeTask: Task<Void, Never>?
+    private var bootstrapTask: Task<Void, Never>?
+    private var didBootstrap = false
     private var base: URL?
     private var reconnectAttempt = 0
     private let isUITest: Bool
@@ -70,6 +75,16 @@ final class DashboardStore {
 
     init() {
         isUITest = ProcessInfo.processInfo.arguments.contains("-uitest")
+        if isUITest {
+            // Hermetic: the e2e/smoke suites pin the localhost default + empty token.
+            serverURLString = "http://localhost:8000"
+            token = ""
+        } else {
+            // Fresh install → baked-in default; otherwise the last persisted server.
+            let prefs = ConnectionPreferences.load()
+            serverURLString = prefs.serverURL
+            token = prefs.token ?? ""
+        }
     }
 
     // MARK: Connect
@@ -92,7 +107,39 @@ final class DashboardStore {
             phase = .failed("Unreachable — is the dashboard running?")
             return
         }
+        // If a bootstrap auto-connect was cancelled mid-probe (operator tapped
+        // "Change server"), don't enter the dashboard behind their back.
+        if Task.isCancelled { return }
+        // Reached only on a good probe: remember this server so the next launch
+        // auto-connects to it (skips the connect form).
+        ConnectionPreferences.save(serverURL: serverURLString, token: token.isEmpty ? nil : token)
         startStream(base: url)
+    }
+
+    /// Called once from the root on first appear. If a server was persisted from a
+    /// prior successful connect, auto-connect to it — the root shows a splash and
+    /// skips the connect form. A fresh install (no stored server) is a no-op, so the
+    /// editable connect form is shown. Never runs under `-uitest`.
+    func bootstrap() {
+        guard !isUITest, !didBootstrap else { return }
+        didBootstrap = true
+        guard ConnectionPreferences.hasStoredServer() else { return }
+        isAutoConnecting = true
+        bootstrapTask = Task { [weak self] in
+            guard let self else { return }
+            await self.connect()
+            self.isAutoConnecting = false
+        }
+    }
+
+    /// Escape hatch from the auto-connect splash back to the editable connect form:
+    /// cancels an in-flight bootstrap and drops to `.idle` so the operator can edit
+    /// the server URL / token.
+    func showConnectForm() {
+        bootstrapTask?.cancel()
+        bootstrapTask = nil
+        isAutoConnecting = false
+        disconnect()
     }
 
     private func startStream(base: URL) {
