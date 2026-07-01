@@ -52,6 +52,14 @@ extension Color {
 struct Theme {
     let palette: ThemePalette
     static let dark = Theme(palette: DashboardTheme.dark)
+    static let light = Theme(palette: DashboardTheme.light)
+
+    /// Resolve the theme the UI renders from the operator's mode + the current OS
+    /// appearance (for `.system`). Thin `Color`-layer wrapper over the core's pure
+    /// `DashboardTheme.resolvePalette`.
+    static func resolve(_ mode: ThemeMode, systemIsDark: Bool) -> Theme {
+        Theme(palette: DashboardTheme.resolvePalette(mode, systemIsDark: systemIsDark))
+    }
 
     var bgPrimary: Color { Color(hex: palette.bgPrimary) }
     var bgSecondary: Color { Color(hex: palette.bgSecondary) }

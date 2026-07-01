@@ -1,16 +1,47 @@
 import SwiftUI
 import PiDashboardKit
+import Observation
+
+/// Holds the operator's persisted theme preference and drives the live theme. The
+/// SwiftUI tree resolves the concrete `Theme` from `mode` + the OS appearance, so a
+/// change here re-themes the whole app instantly. Persists on set via `ThemeModeStore`.
+@MainActor
+@Observable
+final class ThemeController {
+    var mode: ThemeMode {
+        didSet { ThemeModeStore.save(mode) }
+    }
+    init() { mode = ThemeModeStore.load() }
+
+    /// `preferredColorScheme` for the scene: nil for `.system` (follow the OS),
+    /// else the pinned scheme.
+    var colorSchemeOverride: ColorScheme? {
+        switch mode {
+        case .system: return nil
+        case .dark:   return .dark
+        case .light:  return .light
+        }
+    }
+}
 
 @main
 struct PiDashboardApp: App {
     @State private var store = DashboardStore()
+    @State private var themeController = ThemeController()
+    @Environment(\.colorScheme) private var systemColorScheme
 
     var body: some Scene {
         WindowGroup {
+            // Resolve the palette from the operator's mode + the OS appearance. For
+            // `.system` this tracks `systemColorScheme` live; for a pinned mode the
+            // `preferredColorScheme` below forces the scene so the two agree.
+            let systemIsDark = themeController.colorSchemeOverride.map { $0 == .dark }
+                ?? (systemColorScheme == .dark)
             RootView()
                 .environment(store)
-                .environment(\.theme, .dark)
-                .preferredColorScheme(.dark)
+                .environment(themeController)
+                .environment(\.theme, Theme.resolve(themeController.mode, systemIsDark: systemIsDark))
+                .preferredColorScheme(themeController.colorSchemeOverride)
         }
     }
 }

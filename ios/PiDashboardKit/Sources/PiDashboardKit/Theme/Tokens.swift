@@ -79,6 +79,36 @@ public enum DashboardTheme {
         accentCyan: "#06b6d4"
     )
 
+    /// LIGHT palette — every bg/text/border lifted verbatim from the PWA
+    /// `index.css [data-theme="light"]` block. Accents INHERIT the dark values (the
+    /// PWA light block only overrides `accent-primary` → #2563eb; blue/green/yellow/
+    /// red/purple/orange/cyan stay the same so the semantic session/chat color
+    /// language reads identically in both modes). `borderSubtle` is the PWA's
+    /// `rgba(0,0,0,0.06)`; the `Color(hex:)` mapper parses the `rgba(...)` form.
+    public static let light = ThemePalette(
+        bgPrimary: "#ffffff",
+        bgSecondary: "#fafafa",
+        bgTertiary: "#f0f0f0",
+        bgSurface: "#e0e0e0",
+        bgSelected: "#e8e8e8",
+        bgCode: "#f5f5f5",
+        textPrimary: "#1a1a1a",
+        textSecondary: "#444444",
+        textTertiary: "#777777",
+        textFaint: "#d0d0d0",
+        borderPrimary: "#e0e0e0",
+        borderSecondary: "#cccccc",
+        borderSubtle: "rgba(0,0,0,0.06)",
+        accentPrimary: "#2563eb",
+        accentBlue: "#3b82f6",
+        accentGreen: "#22c55e",
+        accentRed: "#ef4444",
+        accentOrange: "#f97316",
+        accentYellow: "#eab308",
+        accentPurple: "#a855f7",
+        accentCyan: "#06b6d4"
+    )
+
     /// Status chip accent mapping (active→green, streaming→blue, idle→muted,
     /// ended→faint). Mirrors the dashboard's status-chip coloring.
     public static func statusColor(_ status: String?, _ p: ThemePalette = dark) -> String {

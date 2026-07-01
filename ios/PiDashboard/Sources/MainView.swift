@@ -5,8 +5,10 @@ import PiDashboardKit
 /// ConnectionBanner pinned at the top for disconnect/reconnect states.
 struct MainView: View {
     @Environment(DashboardStore.self) private var store
+    @Environment(ThemeController.self) private var themeController
     @Environment(\.theme) private var theme
     @State private var showNewSession = false
+    @State private var showSettings = false
 
     var body: some View {
         NavigationStack {
@@ -19,8 +21,16 @@ struct MainView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbarBackground(theme.bgSecondary, for: .navigationBar)
             .toolbarBackground(.visible, for: .navigationBar)
-            .toolbarColorScheme(.dark, for: .navigationBar)
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button {
+                        showSettings = true
+                    } label: {
+                        Image(systemName: "gearshape")
+                            .foregroundStyle(theme.textSecondary)
+                    }
+                    .accessibilityIdentifier("settings-button")
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
                         showNewSession = true
@@ -36,6 +46,12 @@ struct MainView: View {
                     .environment(store)
                     .environment(\.theme, theme)
                     .presentationDetents([.medium, .large])
+            }
+            .sheet(isPresented: $showSettings) {
+                SettingsView()
+                    .environment(store)
+                    .environment(themeController)
+                    .environment(\.theme, theme)
             }
         }
         .tint(theme.accentBlue)
