@@ -63,6 +63,22 @@ public struct ProcessMetrics: Codable, Sendable, Equatable {
     public var updatedAt: Double?
 }
 
+/// One active child process detected by the bridge process scanner. Faithful mirror
+/// of an entry in `DashboardSession.processes` (`packages/shared/src/types.ts`):
+/// `{ pid, pgid, command, elapsedMs }`. DISPLAY-ONLY in the native card — `pgid` is
+/// carried for wire-fidelity but no kill action is wired this increment (parity B4).
+public struct ProcessEntry: Codable, Sendable, Equatable, Identifiable {
+    public var pid: Int
+    public var pgid: Int
+    public var command: String
+    public var elapsedMs: Double
+    public var id: Int { pid }
+
+    public init(pid: Int, pgid: Int, command: String, elapsedMs: Double) {
+        self.pid = pid; self.pgid = pgid; self.command = command; self.elapsedMs = elapsedMs
+    }
+}
+
 /// A dashboard session representing a connected pi instance.
 ///
 /// Faithful Codable mirror of `DashboardSession` in `packages/shared/src/types.ts`.
@@ -109,6 +125,8 @@ public struct DashboardSession: Codable, Sendable, Identifiable, Equatable {
     public var progress: DriverProgress?
     public var nextEngagement: DriverNextEngagement?
     public var processMetrics: ProcessMetrics?
+    /// Active child processes from the bridge scanner (display-only in the card).
+    public var processes: [ProcessEntry]?
 
     public var sourceEnum: SessionSource? { source.flatMap(SessionSource.init(rawValue:)) }
     public var statusEnum: SessionStatus? { status.flatMap(SessionStatus.init(rawValue:)) }

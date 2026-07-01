@@ -129,23 +129,15 @@ struct SessionCard: View {
 
                 ContextBar(session: session)
 
+                statsRow
+
                 if session.progress != nil || session.nextEngagement != nil {
                     driverRow
                 }
 
-                HStack(spacing: 10) {
-                    if let branch = session.gitBranch, !branch.isEmpty {
-                        Label(branch, systemImage: "arrow.triangle.branch")
-                            .font(.caption2)
-                            .foregroundStyle(theme.accentBlue)
-                            .lineLimit(1)
-                    }
-                    Spacer()
-                    let age = Format.relativeAge(fromEpochMs: max(session.lastActivityAt ?? 0, session.startedAt ?? 0))
-                    if !age.isEmpty {
-                        Text(age).font(.caption2).foregroundStyle(theme.textTertiary)
-                    }
-                }
+                processList
+
+                gitAndAgeRow
             }
             .padding(12)
         }
@@ -156,6 +148,97 @@ struct SessionCard: View {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .stroke(theme.borderPrimary, lineWidth: 1)
         )
+    }
+
+    // MARK: stats row (tokens + cost) — compact, alongside the context bar above
+
+    @ViewBuilder private var statsRow: some View {
+        let tokens = StatsFormat.totalTokensCompact(in: session.tokensIn, out: session.tokensOut)
+        let cost = StatsFormat.cost(session.cost)
+        if tokens != nil || cost != nil {
+            HStack(spacing: 10) {
+                if let tokens {
+                    Label(tokens, systemImage: "number")
+                        .font(.caption2)
+                        .foregroundStyle(theme.textTertiary)
+                        .accessibilityIdentifier("card-tokens")
+                }
+                if let cost {
+                    Label(cost, systemImage: "dollarsign.circle")
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(theme.accentGreen)
+                        .accessibilityIdentifier("card-cost")
+                }
+                Spacer(minLength: 0)
+            }
+            .labelStyle(.titleAndIcon)
+        }
+    }
+
+    // MARK: process list (display-only, capped) — child processes from the scanner
+
+    /// Max process rows shown inline before collapsing the rest into a "+N more"
+    /// line. Keeps a busy session's card compact. DISPLAY-ONLY — no kill action.
+    private static let maxProcessRows = 3
+
+    @ViewBuilder private var processList: some View {
+        if let procs = session.processes, !procs.isEmpty {
+            VStack(alignment: .leading, spacing: 3) {
+                ForEach(procs.prefix(Self.maxProcessRows)) { proc in
+                    HStack(spacing: 6) {
+                        Image(systemName: "gearshape").font(.system(size: 9)).foregroundStyle(theme.textTertiary)
+                        Text(StatsFormat.truncateCommand(proc.command, maxLen: 30))
+                            .font(.caption2.monospaced())
+                            .foregroundStyle(theme.textSecondary)
+                            .lineLimit(1)
+                        Spacer(minLength: 4)
+                        Text(StatsFormat.elapsed(proc.elapsedMs))
+                            .font(.caption2)
+                            .foregroundStyle(theme.textTertiary)
+                    }
+                }
+                if procs.count > Self.maxProcessRows {
+                    Text("+\(procs.count - Self.maxProcessRows) more")
+                        .font(.caption2)
+                        .foregroundStyle(theme.textTertiary)
+                }
+            }
+            .padding(.leading, 2)
+            .accessibilityIdentifier("card-process-list")
+        }
+    }
+
+    // MARK: git badge + PR + last-activity age
+
+    @ViewBuilder private var gitAndAgeRow: some View {
+        HStack(spacing: 8) {
+            if let branch = session.gitBranch, !branch.isEmpty {
+                badge(icon: "arrow.triangle.branch", text: branch, tint: theme.accentBlue)
+                    .accessibilityIdentifier("card-git-branch")
+                if let pr = session.gitPrNumber {
+                    badge(icon: "arrow.triangle.pull", text: "#\(pr)", tint: theme.accentPurple)
+                        .accessibilityIdentifier("card-git-pr")
+                }
+            }
+            Spacer(minLength: 0)
+            let age = Format.relativeAge(fromEpochMs: max(session.lastActivityAt ?? 0, session.startedAt ?? 0))
+            if !age.isEmpty {
+                Text(age).font(.caption2).foregroundStyle(theme.textTertiary)
+            }
+        }
+    }
+
+    /// A compact tinted chip (icon + label) — the card's meta-badge shape, reusing
+    /// the shared semantic accents (color batch 1).
+    private func badge(icon: String, text: String, tint: Color) -> some View {
+        Label(text, systemImage: icon)
+            .font(.caption2.weight(.medium))
+            .foregroundStyle(tint)
+            .lineLimit(1)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 2)
+            .background(tint.opacity(0.14))
+            .clipShape(Capsule())
     }
 
     @ViewBuilder private var driverRow: some View {

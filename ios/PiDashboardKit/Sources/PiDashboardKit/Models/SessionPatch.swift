@@ -30,6 +30,7 @@ public struct SessionPatch: Codable, Sendable, Equatable {
     public var progress: DriverProgress?
     public var nextEngagement: DriverNextEngagement?
     public var processMetrics: ProcessMetrics?
+    public var processes: [ProcessEntry]?
     public var worktree: Worktree?
     public var groupCwd: String?
 
@@ -59,6 +60,7 @@ public struct SessionPatch: Codable, Sendable, Equatable {
         if let v = progress { s.progress = v }
         if let v = nextEngagement { s.nextEngagement = v }
         if let v = processMetrics { s.processMetrics = v }
+        if let v = processes { s.processes = v }
         if let v = worktree { s.worktree = v }
         if let v = groupCwd { s.groupCwd = v }
     }
