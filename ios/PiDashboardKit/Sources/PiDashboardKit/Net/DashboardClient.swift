@@ -23,6 +23,13 @@ public actor DashboardClient {
     private var task: URLSessionWebSocketTask?
     private var continuation: AsyncStream<ServerMessage>.Continuation?
     public private(set) var state: ConnectionState = .disconnected
+    /// Per-connection liveness tracker (DF#4). Detects a half-open socket that
+    /// `receive()` never surfaces as an error. Reset on each `connect`.
+    private var keepalive: KeepaliveMonitor?
+
+    /// Monotonic-ish clock for keepalive timing — reference-date seconds. Only
+    /// differences matter; wall-clock jumps are tolerable for a ~22s heartbeat.
+    private func nowSeconds() -> TimeInterval { Date().timeIntervalSinceReferenceDate }
 
     public init(session: URLSession = URLSession(configuration: .default)) {
         self.session = session
@@ -69,15 +76,18 @@ public actor DashboardClient {
         }
         let socket = session.webSocketTask(with: req)
         self.task = socket
+        self.keepalive = KeepaliveMonitor(startedAt: nowSeconds())
         let stream = AsyncStream<ServerMessage> { cont in self.continuation = cont }
         socket.resume()
         Task { await self.receiveLoop(socket: socket) }
+        Task { await self.keepaliveLoop(socket: socket) }
         return stream
     }
 
     public func disconnect() {
         task?.cancel(with: .goingAway, reason: nil)
         task = nil
+        keepalive = nil
         continuation?.finish()
         continuation = nil
         state = .disconnected
@@ -132,6 +142,7 @@ public actor DashboardClient {
             do {
                 let message = try await socket.receive()
                 guard socket === task else { return }  // superseded by a reconnect
+                keepalive?.recordActivity(at: nowSeconds())  // any frame = liveness
                 if state != .connected { state = .connected }
                 switch message {
                 case .string(let text): emit(Data(text.utf8))
@@ -146,6 +157,46 @@ public actor DashboardClient {
                 return
             }
         }
+    }
+
+    /// Keepalive heartbeat (DF#4) bound to its socket. Every `pingInterval` it sends a
+    /// WS ping; a pong (or any received frame) refreshes liveness via `KeepaliveMonitor`.
+    /// If nothing comes back for `pingInterval + pongDeadline`, the socket is declared
+    /// DEAD — the half-open case `receive()` never surfaces — and the stream is torn
+    /// down so `DashboardStore` observes end-of-stream and reconnects. Identity-gated
+    /// on `socket === task`, so a superseded loop exits silently.
+    private func keepaliveLoop(socket: URLSessionWebSocketTask) async {
+        while socket === task {
+            // Dead? (no life for a full ping+deadline window) → tear down + reconnect.
+            if keepalive?.isDead(now: nowSeconds()) == true {
+                guard socket === task else { return }
+                state = .failed("keepalive timeout")
+                continuation?.finish()
+                continuation = nil
+                task?.cancel(with: .abnormalClosure, reason: nil)
+                if socket === task { task = nil; keepalive = nil }
+                return
+            }
+            // Ping due? Send one + stamp the cadence; the pong refreshes liveness.
+            if keepalive?.shouldPing(now: nowSeconds()) == true {
+                keepalive?.recordPingSent(at: nowSeconds())
+                socket.sendPing { [weak self] error in
+                    guard error == nil else { return } // no pong → death rule trips
+                    Task { await self?.recordPong(socket: socket) }
+                }
+            }
+            // Sleep until the next ping is due (never longer than the deadline so the
+            // death check runs promptly).
+            let wait = min(keepalive?.secondsUntilNextPing(now: nowSeconds()) ?? 22,
+                           keepalive?.pongDeadline ?? 10)
+            try? await Task.sleep(for: .seconds(max(1, wait)))
+        }
+    }
+
+    /// A pong reply arrived — refresh liveness (identity-gated on the live socket).
+    private func recordPong(socket: URLSessionWebSocketTask) {
+        guard socket === task else { return }
+        keepalive?.recordActivity(at: nowSeconds())
     }
 
     private func emit(_ data: Data) {

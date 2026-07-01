@@ -181,8 +181,23 @@ final class DashboardStore {
         try? await Task.sleep(for: .seconds(delay))
         if Task.isCancelled { return }
         startStream(base: base)
-        // Re-subscribe to the on-screen session after a reconnect.
-        if let sid = viewedSessionId { await subscribe(sid) }
+        // Re-subscribe AND re-view the on-screen session so BOTH live events and the
+        // viewed-state resume after a reconnect (DF#4: the old path only re-subscribed,
+        // so `session_view` was never re-sent and the server thought nobody was
+        // watching). `openSession` does subscribe + session_view together.
+        if let sid = viewedSessionId { await openSession(sid) }
+    }
+
+    /// Foreground revalidation (DF#4): when the app returns to `.active` the socket
+    /// may be silently half-open (suspended in the background, peer/NAT dropped it).
+    /// Force a fresh reconnect — restart the stream + re-subscribe/re-view — so a
+    /// stale view revives immediately instead of waiting for the keepalive deadline.
+    /// No-op unless we've entered the dashboard on a real (non-UITest) connection.
+    func revalidate() {
+        guard !isUITest, hasEnteredDashboard, let base else { return }
+        phase = .reconnecting
+        startStream(base: base)
+        if let sid = viewedSessionId { Task { await openSession(sid) } }
     }
 
     func disconnect() {
@@ -196,7 +211,6 @@ final class DashboardStore {
     // MARK: Message application
 
     private func apply(_ message: ServerMessage) {
-        reconnectAttempt = 0
         switch message {
         case .sessionsSnapshot(let snap, let ord):
             // REPLACE (not merge) — drops stale ids, faithful to the contract.
@@ -206,6 +220,10 @@ final class DashboardStore {
             orders = ord
             phase = .connected
             hasEnteredDashboard = true
+            // Backoff resets ONLY on this real ready condition (DF#4 #5) — a fresh
+            // snapshot proves the reconnect fully succeeded. Resetting on any stray
+            // frame (the old behavior) let a flapping socket keep short-cycling.
+            reconnectAttempt = 0
 
         case .sessionAdded(let session, _):
             sessions[session.id] = session

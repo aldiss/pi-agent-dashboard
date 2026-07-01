@@ -29,6 +29,7 @@ struct PiDashboardApp: App {
     @State private var store = DashboardStore()
     @State private var themeController = ThemeController()
     @Environment(\.colorScheme) private var systemColorScheme
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
         WindowGroup {
@@ -42,6 +43,13 @@ struct PiDashboardApp: App {
                 .environment(themeController)
                 .environment(\.theme, Theme.resolve(themeController.mode, systemIsDark: systemIsDark))
                 .preferredColorScheme(themeController.colorSchemeOverride)
+                // DF#4 foreground-reconnect: returning to `.active` (from background/
+                // inactive) may find the socket silently half-open — a backgrounded WS
+                // is often dropped by the OS/NAT. Revalidate so the stream + viewed
+                // state revive immediately, without waiting for the keepalive deadline.
+                .onChange(of: scenePhase) { old, new in
+                    if new == .active && old != .active { store.revalidate() }
+                }
         }
     }
 }
