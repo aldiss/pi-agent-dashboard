@@ -89,6 +89,22 @@ describe("Fix-11: resolvePinDashboardUrl (runtime port, not config)", () => {
   it("undefined when neither resolvable (→ no pin, no crash)", () => {
     expect(resolvePinDashboardUrl({ address: () => null }, undefined)).toBeUndefined();
   });
+
+  // Regression (pre-architect gate): a caller passing a partial gateway without
+  // a callable `.address()` (e.g. a lean test mock, or a degraded call site)
+  // must NOT crash — the JSDoc promises no-crash — AND must STILL resolve the
+  // pin via serverPiPort when a runtime port exists (never silently drop the
+  // anti-cross-wire pin while a port is available).
+  it("does NOT crash when gateway lacks .address(); still resolves via serverPiPort", () => {
+    const partial = {} as unknown as { address: () => number | null };
+    expect(() => resolvePinDashboardUrl(partial, 9997)).not.toThrow();
+    expect(resolvePinDashboardUrl(partial, 9997)).toBe("ws://localhost:9997");
+  });
+
+  it("gateway lacking .address() AND no serverPiPort → undefined (no pin, no crash)", () => {
+    const partial = {} as unknown as { address: () => number | null };
+    expect(resolvePinDashboardUrl(partial, undefined)).toBeUndefined();
+  });
 });
 
 // ── (3) STRUCTURAL repo-lint: every resume call site funnels through the builder ──

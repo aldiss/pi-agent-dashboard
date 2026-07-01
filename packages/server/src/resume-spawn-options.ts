@@ -67,6 +67,12 @@ export function resolvePinDashboardUrl(
   piGateway: Pick<PiGateway, "address">,
   serverPiPort?: number,
 ): string | undefined {
-  const port = piGateway.address() ?? serverPiPort;
+  // Guard the `.address()` call so a caller passing a partial gateway (e.g. a
+  // lean test mock) does not crash — honoring this fn's no-crash contract. When
+  // `.address()` is absent/unbound we STILL fall back to `serverPiPort`, so the
+  // anti-cross-wire pin keeps resolving in prod whenever a runtime port exists;
+  // we never silently drop to no-pin while a port is available.
+  const addr = typeof piGateway?.address === "function" ? piGateway.address() : undefined;
+  const port = addr ?? serverPiPort;
   return typeof port === "number" ? `ws://localhost:${port}` : undefined;
 }
