@@ -17,20 +17,32 @@ import PiDashboardKit
 struct DashboardSyntaxHighlighter: CodeSyntaxHighlighter {
     let theme: Theme
 
-    /// Process-wide token cache keyed by `<lang>\n<code>` hash. `NSCache` auto-evicts
-    /// under memory pressure. Boxed because `NSCache` needs class values.
-    private static let tokenCache = NSCache<NSString, TokenBox>()
-
-    private final class TokenBox {
-        let tokens: [SyntaxToken]
-        init(_ tokens: [SyntaxToken]) { self.tokens = tokens }
+    /// Process-wide token cache keyed by `<lang>\n<code>`. `NSCache` is documented as
+    /// thread-safe (add/remove/query from any thread without external locking), so the
+    /// wrapper honestly vouches `@unchecked Sendable` — that lets the `static let`
+    /// satisfy strict concurrency without `nonisolated(unsafe)`. Auto-evicts under
+    /// memory pressure.
+    private final class SyntaxTokenCache: @unchecked Sendable {
+        /// Boxed because `NSCache` needs class values. `Sendable` is provable: `final`
+        /// class, one immutable `let` of a `Sendable` element type.
+        private final class TokenBox: Sendable {
+            let tokens: [SyntaxToken]
+            init(_ tokens: [SyntaxToken]) { self.tokens = tokens }
+        }
+        private let cache = NSCache<NSString, TokenBox>()
+        func tokens(forKey key: NSString) -> [SyntaxToken]? { cache.object(forKey: key)?.tokens }
+        func store(_ tokens: [SyntaxToken], forKey key: NSString) {
+            cache.setObject(TokenBox(tokens), forKey: key)
+        }
     }
+
+    private static let tokenCache = SyntaxTokenCache()
 
     private static func cachedTokens(_ code: String, _ language: String?) -> [SyntaxToken] {
         let key = "\(language ?? "")\n\(code)" as NSString
-        if let hit = tokenCache.object(forKey: key) { return hit.tokens }
+        if let hit = tokenCache.tokens(forKey: key) { return hit }
         let tokens = SyntaxHighlighter.tokenize(code, language: language)
-        tokenCache.setObject(TokenBox(tokens), forKey: key)
+        tokenCache.store(tokens, forKey: key)
         return tokens
     }
 
