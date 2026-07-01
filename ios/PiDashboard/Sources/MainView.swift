@@ -16,6 +16,7 @@ struct MainView: View {
                 theme.bgPrimary.ignoresSafeArea()
                 SessionListView()
                 ConnectionBanner()
+                ActionErrorBanner()
             }
             .navigationTitle("pi dashboard")
             .navigationBarTitleDisplayMode(.inline)
@@ -55,6 +56,41 @@ struct MainView: View {
             }
         }
         .tint(theme.accentBlue)
+    }
+}
+
+/// Surfaces a control-action failure (Cluster 2) — resume/spawn `*_result`
+/// `{success:false}` or `spawn_error` — as a dismissable red banner so a failed
+/// action is NEVER silent. Auto-dismisses after a grace window; tap ✕ to clear now.
+/// Reuses the `ConnectionBanner` visual language (top overlay, accent-tinted).
+struct ActionErrorBanner: View {
+    @Environment(DashboardStore.self) private var store
+    @Environment(\.theme) private var theme
+
+    var body: some View {
+        if let message = store.actionError {
+            HStack(spacing: 8) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                Text(message).font(.footnote.weight(.medium)).lineLimit(3)
+                Spacer(minLength: 8)
+                Button { store.clearActionError() } label: {
+                    Image(systemName: "xmark").font(.caption2.weight(.bold))
+                }
+                .accessibilityLabel("Dismiss error")
+            }
+            .foregroundStyle(.white)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(theme.accentRed.opacity(0.94))
+            .transition(.move(edge: .top).combined(with: .opacity))
+            .accessibilityIdentifier("action-error-banner")
+            .task(id: message) {
+                // Auto-dismiss after a grace window (unless replaced by a newer error,
+                // which restarts this task via the id:).
+                try? await Task.sleep(for: .seconds(6))
+                if store.actionError == message { store.clearActionError() }
+            }
+        }
     }
 }
 

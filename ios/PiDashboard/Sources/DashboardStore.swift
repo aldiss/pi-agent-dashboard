@@ -83,6 +83,10 @@ final class DashboardStore {
     /// cwd — spawn has no sessionId). Cleared when a `session_added` arrives for that
     /// dir (the new session appearing is the confirm) or a safety timeout fires.
     private(set) var spawning: Set<String> = []
+    /// Last control-action failure message (Cluster 2) — resume/spawn `*_result`
+    /// `{success:false}` or `spawn_error`. Surfaced to the operator as a dismissable
+    /// banner so a failed control is NEVER silent. nil = nothing to show.
+    private(set) var actionError: String?
     /// sessionId → available models (populated by `models_list` after requestModels).
     private(set) var availableModels: [String: [ModelInfo]] = [:]
     /// sessionId currently on screen — drives session_view/unview.
@@ -365,10 +369,40 @@ final class DashboardStore {
         case .sessionStateReset(let sid):
             chatStates[sid] = ChatSessionState()
 
+        case .resumeResult(let sid, let success, let message, _):
+            // Authoritative resume outcome (Cluster 2): clear the pending spinner on
+            // EITHER path (success OR failure) — the result, not the 8s timeout, is the
+            // truth. Correlated by sessionId (the resumingLocal key). On failure the
+            // server sends this WITHOUT a `session_updated{resuming:true}`, so without
+            // this the spinner hung until timeout, silently. Surface the error.
+            resumingLocal.remove(sid)
+            if !success {
+                actionError = message.isEmpty ? "Resume failed." : message
+            }
+
+        case .spawnResult(let cwd, let success, let message, _):
+            // Authoritative spawn outcome (Cluster 2): clear the "starting…" flag for
+            // this cwd on either path. A failure sends no `session_added`, so this is
+            // the only non-timeout clear. Surface the error.
+            spawning.remove(cwd)
+            if !success {
+                actionError = message.isEmpty ? "Couldn't start a session in \(cwd)." : message
+            }
+
+        case .spawnError(let cwd, let message, let code):
+            // Hard spawn failure (Cluster 2) — companion to spawn_result{success:false}.
+            // Clear the pending + surface the classifier-tagged message.
+            spawning.remove(cwd)
+            let detail = message.isEmpty ? "Spawn failed." : message
+            actionError = code.map { "\(detail) (\($0))" } ?? detail
+
         case .unknown:
             break
         }
     }
+
+    /// Dismiss the current action-error banner (Cluster 2).
+    func clearActionError() { actionError = nil }
 
     /// Publish an off-main replay fold back onto the main actor (DF#5). Drains any
     /// live events / further replay chunks that arrived DURING the fold (in arrival
@@ -559,12 +593,10 @@ final class DashboardStore {
             resumingLocal.remove(sid) // send failed — re-arm the Resume button
             return
         }
-        // Safety timeout: the server's early-failure replies (not found / no session
-        // file / already active) come back as `resume_result` WITHOUT a
-        // `session_updated{resuming:true}` broadcast — so the apply() clear-path can't
-        // fire. Auto-clear the optimistic flag after a grace window UNLESS the server
-        // took ownership (session.resuming == true, which keeps isResuming true on its
-        // own). Mirrors the server's own resume-timeout discipline.
+        // Safety-net timeout (Cluster 2 made the result authoritative): the resume
+        // outcome now arrives as `resume_result` and clears `resumingLocal` in apply()
+        // — success OR failure. This timeout is only a fallback for a dropped result
+        // frame; it clears the flag UNLESS the server took ownership (resuming == true).
         Task { [weak self] in
             try? await Task.sleep(for: .seconds(8))
             guard let self else { return }
@@ -588,11 +620,10 @@ final class DashboardStore {
     /// Start a new session in an existing directory — the app's third + final B3
     /// control action. Optimistically flips that cwd to a "starting…" state, then
     /// sends the browser-protocol `spawn_session` via the client's `spawn` convenience
-    /// (server defaults for strategy/model — no advanced options this increment). The
-    /// new session arriving as a `session_added` for that cwd clears the flag in
-    /// `apply`. On a send throw the flag is rolled back; a safety timeout guards the
-    /// case where the spawn fails server-side (a `spawn_result{success:false}` the
-    /// native client doesn't decode yet). UITest is a no-op.
+    /// (server defaults for strategy/model — no advanced options this increment). On
+    /// success a `session_added` for that cwd clears the flag; on FAILURE (Cluster 2)
+    /// a `spawn_result{success:false}` / `spawn_error` clears it + surfaces the error.
+    /// On a send throw the flag is rolled back. UITest is a no-op.
     func spawn(cwd: String) async {
         guard !isUITest else { return }
         let dir = cwd.trimmingCharacters(in: .whitespaces)
@@ -604,9 +635,9 @@ final class DashboardStore {
             spawning.remove(dir) // send failed — re-arm the picker
             return
         }
-        // Safety timeout: a server-side spawn failure replies `spawn_result`
-        // (undecoded natively) without a `session_added`, so the apply() clear-path
-        // can't fire. Auto-clear after a grace window so the row doesn't hang.
+        // Safety-net timeout only (Cluster 2 made the result authoritative): the
+        // spawn outcome now clears `spawning` via spawn_result/spawn_error/session_added
+        // in apply(). This fallback covers a dropped result frame so the row can't hang.
         Task { [weak self] in
             try? await Task.sleep(for: .seconds(12))
             self?.spawning.remove(dir)

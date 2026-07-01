@@ -16,6 +16,16 @@ public enum ServerMessage: Sendable {
     case sendPromptFailed(sessionId: String, queueNonce: String?, reason: String?)
     case sessionStateReset(sessionId: String)
     case modelsList(sessionId: String, models: [ModelInfo])
+    /// Result of a `resume_session` control (Cluster 2). `success` false carries a
+    /// human `message`. Correlated by `sessionId` (the pending key); `requestId` is
+    /// echoed for forward-compat. (`set_model` + `abort` have NO result frame — the
+    /// server confirms them via `session_updated`, so they're not decoded here.)
+    case resumeResult(sessionId: String, success: Bool, message: String, requestId: String?)
+    /// Result of a `spawn_session` control (Cluster 2). Correlated by `cwd`.
+    case spawnResult(cwd: String, success: Bool, message: String, requestId: String?)
+    /// Hard spawn failure companion to `spawn_result{success:false}` — carries a
+    /// `code` classifier + (unused here) stderr tail. Correlated by `cwd`.
+    case spawnError(cwd: String, message: String, code: String?)
     case unknown(type: String)
 
     /// The wire `type` discriminator (for routing / logging).
@@ -32,6 +42,9 @@ public enum ServerMessage: Sendable {
         case .sendPromptFailed: return "send_prompt_failed"
         case .sessionStateReset: return "session_state_reset"
         case .modelsList: return "models_list"
+        case .resumeResult: return "resume_result"
+        case .spawnResult: return "spawn_result"
+        case .spawnError: return "spawn_error"
         case .unknown(let t): return t
         }
     }
@@ -41,6 +54,7 @@ extension ServerMessage: Decodable {
     private enum K: String, CodingKey {
         case type, sessions, orders, session, spawnRequestId, sessionId, updates
         case seq, event, events, isLast, cwd, sessionIds, paths, queueNonce, reason, models
+        case success, message, requestId, code
     }
 
     public init(from decoder: Decoder) throws {
@@ -88,6 +102,23 @@ extension ServerMessage: Decodable {
             self = .modelsList(
                 sessionId: try c.decode(String.self, forKey: .sessionId),
                 models: try c.decodeIfPresent([ModelInfo].self, forKey: .models) ?? [])
+        case "resume_result":
+            self = .resumeResult(
+                sessionId: try c.decode(String.self, forKey: .sessionId),
+                success: try c.decodeIfPresent(Bool.self, forKey: .success) ?? false,
+                message: try c.decodeIfPresent(String.self, forKey: .message) ?? "",
+                requestId: try c.decodeIfPresent(String.self, forKey: .requestId))
+        case "spawn_result":
+            self = .spawnResult(
+                cwd: try c.decode(String.self, forKey: .cwd),
+                success: try c.decodeIfPresent(Bool.self, forKey: .success) ?? false,
+                message: try c.decodeIfPresent(String.self, forKey: .message) ?? "",
+                requestId: try c.decodeIfPresent(String.self, forKey: .requestId))
+        case "spawn_error":
+            self = .spawnError(
+                cwd: try c.decode(String.self, forKey: .cwd),
+                message: try c.decodeIfPresent(String.self, forKey: .message) ?? "",
+                code: try c.decodeIfPresent(String.self, forKey: .code))
         default:
             self = .unknown(type: type)
         }
