@@ -150,7 +150,8 @@ struct NewSessionSheet: View {
                     .foregroundStyle(theme.accentBlue)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(basename)
-                        .font(.system(size: 15, weight: .medium))
+                        .font(.subheadline.weight(.medium))
+                        .dynamicTypeCap(.cardTitle)
                         .foregroundStyle(theme.textPrimary)
                         .lineLimit(1)
                     Text(dir)

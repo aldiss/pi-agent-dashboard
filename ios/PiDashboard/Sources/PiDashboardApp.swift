@@ -90,7 +90,8 @@ struct AutoConnectSplash: View {
         VStack(spacing: 18) {
             Spacer()
             Text("pi dashboard")
-                .font(.system(size: 30, weight: .bold, design: .rounded))
+                .font(.system(.largeTitle, design: .rounded).weight(.bold))
+                .dynamicTypeCap(.title)
                 .foregroundStyle(theme.textPrimary)
             HStack(spacing: 10) {
                 ProgressView().tint(theme.textSecondary)

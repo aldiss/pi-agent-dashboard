@@ -112,9 +112,11 @@ struct SessionCard: View {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(alignment: .top) {
                     Text(session.displayName)
-                        .font(.system(size: 15, weight: .semibold))
+                        .font(.headline)
                         .foregroundStyle(theme.textPrimary)
                         .lineLimit(1)
+                        .truncationMode(.tail)
+                        .layoutPriority(1) // truncate the name before pushing the chip off
                         .accessibilityIdentifier("session-card-name")
                     Spacer(minLength: 8)
                     unreadAsksBadge
@@ -152,6 +154,10 @@ struct SessionCard: View {
             RoundedRectangle(cornerRadius: 14, style: .continuous)
                 .stroke(theme.borderPrimary, lineWidth: 1)
         )
+        // Cluster 4: the card is a dense multi-row layout (name+chip, stats, badges,
+        // process rows). Cap its Dynamic Type so it stays legible + unbroken at
+        // accessibility sizes; body prose elsewhere (chat) still scales freely.
+        .dynamicTypeCap(.cardTitle)
     }
 
     // MARK: stats row (tokens + cost) — compact, alongside the context bar above

@@ -144,8 +144,9 @@ struct ModelPickerSheet: View {
                         Task { await store.setThinkingLevel(sessionId, level: level) }
                     } label: {
                         Text(level)
-                            .font(.system(size: 13, weight: .medium))
-                            .frame(maxWidth: .infinity, minHeight: 40)
+                            .font(.footnote.weight(.medium))
+                            .dynamicTypeCap(.badge)
+                            .frame(maxWidth: .infinity, minHeight: 44)
                             .foregroundStyle(level == currentThinking ? theme.bgPrimary : theme.textSecondary)
                             .background(level == currentThinking ? theme.accentBlue : theme.bgTertiary)
                             .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))

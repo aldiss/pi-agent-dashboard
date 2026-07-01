@@ -87,7 +87,8 @@ struct SessionListView: View {
         } header: {
             HStack(spacing: 8) {
                 Text(tierLabel(section.tier))
-                    .font(.system(size: 13, weight: .bold))
+                    .font(.subheadline.weight(.bold))
+                    .dynamicTypeCap(.sectionHeader)
                     .foregroundStyle(theme.textSecondary)
                 Text("\(section.groups.reduce(0) { $0 + $1.sessions.count })")
                     .font(.caption2)

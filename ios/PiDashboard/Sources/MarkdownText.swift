@@ -136,5 +136,13 @@ struct MarkdownText: View {
                 .overlay(RoundedRectangle(cornerRadius: 10).stroke(theme.borderPrimary, lineWidth: 1))
                 .markdownMargin(top: 6, bottom: 6)
             }
+            .table { config in
+                // Cluster 4: wide tables HORIZONTAL-SCROLL instead of clipping /
+                // squeezing columns unreadably on a phone.
+                ScrollView(.horizontal, showsIndicators: false) {
+                    config.label
+                }
+                .markdownMargin(top: 6, bottom: 6)
+            }
     }
 }

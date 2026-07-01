@@ -62,7 +62,8 @@ struct ConnectView: View {
     private var header: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("pi dashboard")
-                .font(.system(size: 30, weight: .bold, design: .rounded))
+                .font(.system(.largeTitle, design: .rounded).weight(.bold))
+                .dynamicTypeCap(.title)
                 .foregroundStyle(theme.textPrimary)
             Text("Connect to a running dashboard server.")
                 .font(.callout)

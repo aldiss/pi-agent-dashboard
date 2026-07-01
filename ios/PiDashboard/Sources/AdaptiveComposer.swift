@@ -136,7 +136,7 @@ struct AdaptiveComposer: View {
             Image(systemName: "plus")
                 .font(.system(size: 17, weight: .medium))
                 .foregroundStyle(theme.textSecondary)
-                .frame(width: 36, height: 36)
+                .frame(width: 44, height: 44)
                 .background(theme.bgTertiary)
                 .clipShape(Circle())
         }
@@ -151,7 +151,7 @@ struct AdaptiveComposer: View {
                     Image(systemName: "stop.fill")
                         .font(.system(size: 15))
                         .foregroundStyle(.white)
-                        .frame(width: 40, height: 40)
+                        .frame(width: 44, height: 44)
                         .background(theme.accentRed)
                         .clipShape(Circle())
                 }
@@ -161,7 +161,7 @@ struct AdaptiveComposer: View {
                 Image(systemName: "arrow.up")
                     .font(.system(size: 17, weight: .semibold))
                     .foregroundStyle(canSend ? .black : theme.textTertiary)
-                    .frame(width: 40, height: 40)
+                    .frame(width: 44, height: 44)
                     .background(canSend ? Color.white : theme.bgTertiary)
                     .clipShape(Circle())
             }
@@ -179,11 +179,11 @@ struct AdaptiveComposer: View {
             ZStack {
                 Circle()
                     .fill(voice.isRecording ? theme.accentBlue : theme.bgTertiary)
-                    .frame(width: 40, height: 40)
+                    .frame(width: 44, height: 44)
                 if voice.isRecording {
                     Circle()
                         .stroke(theme.accentBlue.opacity(0.5), lineWidth: 2)
-                        .frame(width: 40, height: 40)
+                        .frame(width: 44, height: 44)
                         .scaleEffect(micPulse ? 1.35 : 1.0)
                         .opacity(micPulse ? 0 : 0.8)
                 }

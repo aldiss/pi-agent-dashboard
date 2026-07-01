@@ -49,8 +49,11 @@ struct ImageLightbox: View {
                             .padding(10)
                             .background(.black.opacity(0.4))
                             .clipShape(Circle())
+                            .frame(minWidth: 44, minHeight: 44) // HIG tap target
+                            .contentShape(Rectangle())
                     }
                     .accessibilityIdentifier("lightbox-close")
+                    .accessibilityLabel("Close")
                     .padding(.trailing, 16).padding(.top, 8)
                 }
                 Spacer()
