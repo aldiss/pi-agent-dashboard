@@ -12,6 +12,16 @@ struct GrowingTextView: UIViewRepresentable {
     /// Called with the measured intrinsic content height on every change.
     let onHeightChange: (CGFloat) -> Void
     var isEnabled: Bool = true
+    /// Theme-aware colors + keyboard, threaded from the composer so the input tracks
+    /// the app's ThemeController (NOT the OS trait). Re-applied in `updateUIView` so a
+    /// live theme switch re-colors the composer text, placeholder, and keyboard.
+    var textColor: Color = .primary
+    var placeholderColor: Color = .secondary
+    var keyboardAppearance: UIKeyboardAppearance = .default
+
+    /// Composer input font — size 17 to match the rest of the app's composer UI
+    /// (`AdaptiveComposer`), so the typed text reads as the same font.
+    private static let inputFont = UIFont.systemFont(ofSize: 17)
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -19,20 +29,20 @@ struct GrowingTextView: UIViewRepresentable {
         let tv = UITextView()
         tv.delegate = context.coordinator
         tv.backgroundColor = .clear
-        tv.font = .systemFont(ofSize: 16)
-        tv.textColor = UIColor(white: 0.9, alpha: 1) // ≈ textPrimary #e5e5e5
+        tv.font = Self.inputFont
+        tv.textColor = UIColor(textColor)
         tv.textContainerInset = UIEdgeInsets(top: 8, left: 0, bottom: 8, right: 0)
         tv.textContainer.lineFragmentPadding = 0
         tv.isScrollEnabled = true
-        tv.keyboardAppearance = .dark
+        tv.keyboardAppearance = keyboardAppearance
         tv.returnKeyType = .default // Enter = newline
         tv.autocorrectionType = .yes
         tv.accessibilityIdentifier = "mobile-composer-textarea"
         // Placeholder
         let ph = UILabel()
         ph.text = "Message"
-        ph.font = .systemFont(ofSize: 16)
-        ph.textColor = UIColor(white: 0.5, alpha: 1) // ≈ textTertiary
+        ph.font = Self.inputFont
+        ph.textColor = UIColor(placeholderColor)
         ph.tag = 99
         ph.translatesAutoresizingMaskIntoConstraints = false
         tv.addSubview(ph)
@@ -47,6 +57,17 @@ struct GrowingTextView: UIViewRepresentable {
     func updateUIView(_ tv: UITextView, context: Context) {
         if tv.text != text { tv.text = text }
         tv.isEditable = isEnabled
+        // Re-apply theme-aware styling so a live theme switch (ThemeController) recolors
+        // the composer without a remount. Cheap idempotent sets.
+        tv.textColor = UIColor(textColor)
+        tv.font = Self.inputFont
+        if tv.keyboardAppearance != keyboardAppearance {
+            tv.keyboardAppearance = keyboardAppearance
+            // The keyboard only picks up a new appearance on the next edit session;
+            // reload it in place if the field is currently first responder.
+            if tv.isFirstResponder { tv.reloadInputViews() }
+        }
+        context.coordinator.placeholder?.textColor = UIColor(placeholderColor)
         context.coordinator.placeholder?.isHidden = !text.isEmpty
         recalcHeight(tv)
     }

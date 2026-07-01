@@ -1,5 +1,6 @@
 import SwiftUI
 import PhotosUI
+import UIKit
 import PiDashboardKit
 
 /// Native port of the PWA `MobileComposer`. The single-row⇄column flip, height
@@ -18,6 +19,7 @@ struct AdaptiveComposer: View {
     let onStop: () -> Void
 
     @Environment(\.theme) private var theme
+    @Environment(ThemeController.self) private var themeController
 
     @State private var text = ""
     @State private var isMultiline = false
@@ -111,9 +113,22 @@ struct AdaptiveComposer: View {
             onHeightChange: { h in
                 measuredHeight = h
                 recomputeLayout(contentHeight: h)
-            })
+            },
+            textColor: theme.textPrimary,
+            placeholderColor: theme.textTertiary,
+            keyboardAppearance: keyboardAppearance)
         .frame(height: ComposerLayout.clampedHeight(text: text, measured: measuredHeight))
         .frame(maxWidth: .infinity)
+    }
+
+    /// Keyboard appearance follows the app's ThemeController (NOT the OS trait):
+    /// light → `.light`, dark → `.dark`, system → `.default` (UIKit tracks the OS).
+    private var keyboardAppearance: UIKeyboardAppearance {
+        switch themeController.mode {
+        case .light:  return .light
+        case .dark:   return .dark
+        case .system: return .default
+        }
     }
 
     private var attachButton: some View {
