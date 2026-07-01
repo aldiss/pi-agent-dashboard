@@ -31,6 +31,7 @@ struct MainView: View {
                             .foregroundStyle(theme.textSecondary)
                     }
                     .accessibilityIdentifier("settings-button")
+                    .accessibilityLabel("Settings")
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
@@ -40,6 +41,7 @@ struct MainView: View {
                             .foregroundStyle(theme.accentBlue)
                     }
                     .accessibilityIdentifier("new-session-button")
+                    .accessibilityLabel("New session")
                 }
             }
             .sheet(isPresented: $showNewSession) {

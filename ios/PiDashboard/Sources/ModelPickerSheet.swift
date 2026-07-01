@@ -121,6 +121,7 @@ struct ModelPickerSheet: View {
                             Spacer()
                             if model.qualified == currentModel {
                                 Image(systemName: "checkmark").foregroundStyle(theme.accentBlue)
+                                    .accessibilityHidden(true)
                             }
                         }
                         .padding(.horizontal, 14).padding(.vertical, 12)
@@ -128,6 +129,8 @@ struct ModelPickerSheet: View {
                         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                     }
                     .accessibilityIdentifier("model-row-\(model.provider)-\(model.id)")
+                    .accessibilityValue(model.qualified == currentModel ? "selected" : "")
+                    .accessibilityAddTraits(model.qualified == currentModel ? [.isSelected] : [])
                 }
             }
         }

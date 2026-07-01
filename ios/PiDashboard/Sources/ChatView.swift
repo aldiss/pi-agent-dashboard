@@ -83,10 +83,13 @@ struct ChatView: View {
                             Image(systemName: "chevron.down")
                                 .font(.system(size: 8, weight: .semibold))
                                 .foregroundStyle(theme.textTertiary)
+                                .accessibilityHidden(true) // decorative disclosure glyph
                         }
                     }
                 }
                 .accessibilityIdentifier("chat-model-button")
+                .accessibilityLabel("Model: \(session.flatMap(Format.modelLabel) ?? "not selected")")
+                .accessibilityHint("Change the model")
             }
             filterToolbarItem
             abortToolbarItem
@@ -144,6 +147,8 @@ struct ChatView: View {
                     .foregroundStyle(messageFilter.isDefault ? theme.textSecondary : theme.accentBlue)
             }
             .accessibilityIdentifier("chat-filter-button")
+            .accessibilityLabel("Message filter")
+            .accessibilityValue(messageFilter.isDefault ? "default" : "active")
         }
     }
 

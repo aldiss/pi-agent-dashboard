@@ -20,6 +20,7 @@ struct AdaptiveComposer: View {
 
     @Environment(\.theme) private var theme
     @Environment(ThemeController.self) private var themeController
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var text = ""
     @State private var isMultiline = false
@@ -180,7 +181,9 @@ struct AdaptiveComposer: View {
                 Circle()
                     .fill(voice.isRecording ? theme.accentBlue : theme.bgTertiary)
                     .frame(width: 44, height: 44)
-                if voice.isRecording {
+                if voice.isRecording && A11yMotion.pulsesEnabled(reduceMotion: reduceMotion) {
+                    // Reduce Motion off → the expanding pulse ring; on → the solid fill
+                    // (line above) alone signals recording, no looping animation.
                     Circle()
                         .stroke(theme.accentBlue.opacity(0.5), lineWidth: 2)
                         .frame(width: 44, height: 44)
@@ -197,7 +200,9 @@ struct AdaptiveComposer: View {
         .accessibilityLabel(voice.isRecording ? "Stop recording" :
             (voice.micEnabled ? "Record voice" : "Voice service starting"))
         .onAppear { micPulse = false }
-        .animation(voice.isRecording
+        // Reduce Motion (Cluster 5): no infinite repeat when the user asked to reduce
+        // motion — fall back to a non-looping default.
+        .animation(voice.isRecording && A11yMotion.pulsesEnabled(reduceMotion: reduceMotion)
             ? .easeOut(duration: 1.0).repeatForever(autoreverses: false)
             : .default, value: micPulse)
     }

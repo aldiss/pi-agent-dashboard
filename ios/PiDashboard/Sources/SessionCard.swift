@@ -14,6 +14,7 @@ struct StatusChip: View {
         let accent = theme.sessionAccent(session)
         HStack(spacing: 5) {
             Circle().fill(accent).frame(width: 7, height: 7)
+                .accessibilityHidden(true) // color-only dot; the label below carries the meaning
             Text(label)
                 .font(.caption2.weight(.medium))
                 .foregroundStyle(accent)
@@ -22,7 +23,12 @@ struct StatusChip: View {
         .padding(.vertical, 3)
         .background(accent.opacity(0.12))
         .clipShape(Capsule())
+        .accessibilityElement(children: .ignore)
         .accessibilityIdentifier("session-card-status")
+        // Non-color cue (Cluster 5): VoiceOver speaks the state as a word ("Working" /
+        // "Idle" / "Ended" / "Waiting for your input") — not just a coloured dot. Raw
+        // status stays as the a11y value for the XCUITest asserts.
+        .accessibilityLabel("Status: \(A11yStatus.statusLabel(session.status, currentTool: session.currentTool))")
         .accessibilityValue(label)
     }
 }
@@ -158,6 +164,22 @@ struct SessionCard: View {
         // process rows). Cap its Dynamic Type so it stays legible + unbroken at
         // accessibility sizes; body prose elsewhere (chat) still scales freely.
         .dynamicTypeCap(.cardTitle)
+        // Cluster 5: combine the noisy children (name / chip / model / stats / badges /
+        // process rows) into ONE VoiceOver element with a concise composed label, so
+        // the card reads as a unit instead of a spammy list. `.combine` keeps the
+        // resume button reachable as a nested action.
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(cardAccessibilityLabel)
+    }
+
+    /// Concise VoiceOver summary of the card: name, spoken status, unread asks.
+    private var cardAccessibilityLabel: String {
+        var parts = [session.displayName,
+                     A11yStatus.statusLabel(session.status, currentTool: session.currentTool)]
+        let unread = store.unreadTierACount(session.id)
+        if unread > 0 { parts.append("\(unread) unread \(unread == 1 ? "ask" : "asks")") }
+        if let model = Format.modelLabel(session) { parts.append(model) }
+        return parts.joined(separator: ", ")
     }
 
     // MARK: stats row (tokens + cost) — compact, alongside the context bar above

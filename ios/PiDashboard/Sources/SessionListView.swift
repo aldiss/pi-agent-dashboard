@@ -45,7 +45,10 @@ struct SessionListView: View {
                 if !store.search.isEmpty {
                     Button { store.search = "" } label: {
                         Image(systemName: "xmark.circle.fill").foregroundStyle(theme.textTertiary)
+                            .frame(minWidth: 44, minHeight: 44)
+                            .contentShape(Rectangle())
                     }
+                    .accessibilityLabel("Clear search")
                 }
             }
             .padding(10)
