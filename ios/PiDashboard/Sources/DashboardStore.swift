@@ -51,6 +51,9 @@ final class DashboardStore {
     private(set) var chatStates: [String: ChatSessionState] = [:]
     /// sessionId → last send failure reason (bridge absent), surfaced in ChatView.
     private(set) var sendFailures: [String: String] = [:]
+    /// Sessions with an in-flight abort (optimistic "stopping…" state). Cleared when
+    /// the server confirms the stop via a status→idle/ended `session_updated` delta.
+    private(set) var aborting: Set<String> = []
     /// sessionId → available models (populated by `models_list` after requestModels).
     private(set) var availableModels: [String: [ModelInfo]] = [:]
     /// sessionId currently on screen — drives session_view/unview.
@@ -199,9 +202,15 @@ final class DashboardStore {
                 patch.apply(to: &existing)
                 sessions[sid] = existing
             }
+            // Abort confirmed: the server settled the session out of streaming →
+            // clear the optimistic "stopping…" flag.
+            if aborting.contains(sid), let st = sessions[sid]?.status, st == "idle" || st == "ended" {
+                aborting.remove(sid)
+            }
 
         case .sessionRemoved(let sid):
             sessions.removeValue(forKey: sid)
+            aborting.remove(sid)
 
         case .sessionsReordered(let cwd, let ids):
             orders[cwd] = ids
@@ -323,10 +332,24 @@ final class DashboardStore {
         }
     }
 
+    /// Stop a running session — the app's first control action. Optimistically flips
+    /// to a "stopping…" state, then sends the browser-protocol abort via the client's
+    /// `abort` convenience. The server confirms by flipping the session
+    /// streaming→idle/ended (a `session_updated` delta), which clears the flag in
+    /// `apply`. On a send throw the optimistic flag is rolled back so the button
+    /// re-arms. UITest is a no-op (never touches a live session).
     func abort(_ sid: String) async {
         guard !isUITest else { return }
-        await safeSend(.abort(sessionId: sid))
+        aborting.insert(sid)
+        do {
+            try await client.abort(sessionId: sid)
+        } catch {
+            aborting.remove(sid) // send failed — re-arm the Stop button
+        }
     }
+
+    /// Whether an abort is in flight for `sid` (drives the "Stopping…" UI).
+    func isAborting(_ sid: String) -> Bool { aborting.contains(sid) }
 
     /// Retry a `failed` queued follow-up: drop the failed card, re-send the text as a
     /// fresh queued entry (new nonce). No-op if the nonce isn't a failed queued entry.

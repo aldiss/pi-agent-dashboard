@@ -90,6 +90,16 @@ public actor DashboardClient {
         try await task.send(.string(json))
     }
 
+    /// Abort (stop) a running session — the browser-protocol `{ type: "abort",
+    /// sessionId }` control message (`AbortToBrowserMessage`). Thin convenience over
+    /// `send` so callers express intent directly; the server flips the session
+    /// streaming→idle/ended, which arrives as a `session_updated` delta. Throws
+    /// `.notConnected` if the socket is down (no silent drop). ABORT only — resume /
+    /// spawn are separate controls.
+    public func abort(sessionId: String) async throws {
+        try await send(.abort(sessionId: sessionId))
+    }
+
     /// Receive loop bound to the socket it was started for. Every write to shared
     /// actor state is gated on `socket === task`; a superseded loop (post-reconnect)
     /// exits silently without touching the live socket's `state`/`continuation`.

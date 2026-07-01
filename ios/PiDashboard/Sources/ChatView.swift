@@ -17,6 +17,7 @@ struct ChatView: View {
     @State private var bottomDistance: CGFloat = 0
     @State private var showModelPicker = false
     @State private var lightboxImage: UIImage?
+    @State private var showAbortConfirm = false
 
     private var state: ChatSessionState { store.chatState(sessionId) }
     private var session: DashboardSession? { store.sessions[sessionId] }
@@ -55,6 +56,16 @@ struct ChatView: View {
                 }
                 .accessibilityIdentifier("chat-model-button")
             }
+            abortToolbarItem
+        }
+        .confirmationDialog("Stop this session?", isPresented: $showAbortConfirm, titleVisibility: .visible) {
+            Button("Stop session", role: .destructive) {
+                Task { await store.abort(sessionId) }
+            }
+            .accessibilityIdentifier("chat-abort-confirm")
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("The agent will stop its current turn.")
         }
         .sheet(isPresented: $showModelPicker) {
             ModelPickerSheet(sessionId: sessionId)
@@ -75,6 +86,36 @@ struct ChatView: View {
         Binding(
             get: { lightboxImage.map(LightboxItem.init) },
             set: { if $0 == nil { lightboxImage = nil } })
+    }
+
+    /// True when the session is doing work the operator can stop (streaming or
+    /// active) — gates the Stop control's visibility.
+    private var isRunning: Bool {
+        let st = session?.status
+        return st == "streaming" || st == "active"
+    }
+
+    /// Stop control — the app's first control action. Trailing toolbar button shown
+    /// ONLY while the session is running; tap → confirmation → `store.abort`. Reflects
+    /// the optimistic "Stopping…" state until the server confirms the stop.
+    @ToolbarContentBuilder private var abortToolbarItem: some ToolbarContent {
+        ToolbarItem(placement: .topBarTrailing) {
+            if store.isAborting(sessionId) {
+                HStack(spacing: 4) {
+                    ProgressView().controlSize(.mini).tint(theme.accentRed)
+                    Text("Stopping…").font(.caption2).foregroundStyle(theme.accentRed)
+                }
+                .accessibilityIdentifier("chat-abort-pending")
+            } else if isRunning {
+                Button(role: .destructive) {
+                    showAbortConfirm = true
+                } label: {
+                    Label("Stop", systemImage: "stop.circle")
+                        .foregroundStyle(theme.accentRed)
+                }
+                .accessibilityIdentifier("chat-abort-button")
+            }
+        }
     }
 
     private var messages: some View {
