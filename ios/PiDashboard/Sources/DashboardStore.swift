@@ -58,6 +58,10 @@ final class DashboardStore {
     /// feedback before the server's `session_updated{resuming:true}` lands. Cleared
     /// when the server settles it (resuming→false, or the session leaves `ended`).
     private(set) var resumingLocal: Set<String> = []
+    /// Directories with an in-flight spawn (optimistic "starting…" state, keyed by
+    /// cwd — spawn has no sessionId). Cleared when a `session_added` arrives for that
+    /// dir (the new session appearing is the confirm) or a safety timeout fires.
+    private(set) var spawning: Set<String> = []
     /// sessionId → available models (populated by `models_list` after requestModels).
     private(set) var availableModels: [String: [ModelInfo]] = [:]
     /// sessionId currently on screen — drives session_view/unview.
@@ -200,6 +204,10 @@ final class DashboardStore {
 
         case .sessionAdded(let session, _):
             sessions[session.id] = session
+            // Spawn confirmed: a new session appeared in a directory we were spawning
+            // into → clear the optimistic "starting…" flag for that cwd.
+            let addedDir = SessionGrouping.groupPath(session)
+            if !addedDir.isEmpty { spawning.remove(addedDir) }
 
         case .sessionUpdated(let sid, let patch):
             if var existing = sessions[sid] {
@@ -397,6 +405,44 @@ final class DashboardStore {
     func isResuming(_ sid: String) -> Bool {
         resumingLocal.contains(sid) || sessions[sid]?.resuming == true
     }
+
+    /// Distinct directories the app already knows (every session's group path ∪
+    /// pinned dirs), deduped + sorted — the "+ New session" picker's options. Spawn
+    /// in a KNOWN dir only; the server-filesystem browser is deferred.
+    var knownDirectories: [String] {
+        SessionGrouping.knownDirectories(sessions: Array(sessions.values), pinned: pinnedDirectories)
+    }
+
+    /// Start a new session in an existing directory — the app's third + final B3
+    /// control action. Optimistically flips that cwd to a "starting…" state, then
+    /// sends the browser-protocol `spawn_session` via the client's `spawn` convenience
+    /// (server defaults for strategy/model — no advanced options this increment). The
+    /// new session arriving as a `session_added` for that cwd clears the flag in
+    /// `apply`. On a send throw the flag is rolled back; a safety timeout guards the
+    /// case where the spawn fails server-side (a `spawn_result{success:false}` the
+    /// native client doesn't decode yet). UITest is a no-op.
+    func spawn(cwd: String) async {
+        guard !isUITest else { return }
+        let dir = cwd.trimmingCharacters(in: .whitespaces)
+        guard !dir.isEmpty else { return }
+        spawning.insert(dir)
+        do {
+            try await client.spawn(cwd: dir)
+        } catch {
+            spawning.remove(dir) // send failed — re-arm the picker
+            return
+        }
+        // Safety timeout: a server-side spawn failure replies `spawn_result`
+        // (undecoded natively) without a `session_added`, so the apply() clear-path
+        // can't fire. Auto-clear after a grace window so the row doesn't hang.
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(12))
+            self?.spawning.remove(dir)
+        }
+    }
+
+    /// Whether a spawn is in flight for `cwd` (drives the "Starting…" row).
+    func isSpawning(_ cwd: String) -> Bool { spawning.contains(cwd) }
 
     /// Retry a `failed` queued follow-up: drop the failed card, re-send the text as a
     /// fresh queued entry (new nonce). No-op if the nonce isn't a failed queued entry.

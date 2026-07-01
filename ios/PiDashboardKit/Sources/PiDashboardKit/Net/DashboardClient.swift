@@ -113,6 +113,17 @@ public actor DashboardClient {
         try await send(.resumeSession(sessionId: sessionId, mode: mode, requestId: requestId))
     }
 
+    /// Spawn a new session in an existing directory — the browser-protocol
+    /// `spawn_session` control (`SpawnSessionBrowserMessage`). Only `cwd` is required;
+    /// the server picks the spawn strategy + defaults from its config (no model / name
+    /// / flags this increment — deferred). The new session arrives as a `session_added`
+    /// delta (echoing `requestId` as `spawnRequestId`), which is what confirms the
+    /// spawn. Throws `.notConnected` on a dead socket. `attachProposal` is out of
+    /// scope for the tight B3c picker.
+    public func spawn(cwd: String, requestId: String? = nil) async throws {
+        try await send(.spawnSession(cwd: cwd, requestId: requestId))
+    }
+
     /// Receive loop bound to the socket it was started for. Every write to shared
     /// actor state is gated on `socket === task`; a superseded loop (post-reconnect)
     /// exits silently without touching the live socket's `state`/`continuation`.

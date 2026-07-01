@@ -168,6 +168,27 @@ public enum SessionGrouping {
         session.groupCwd ?? session.cwd ?? ""
     }
 
+    /// Distinct directories the app already knows — every session's group path plus
+    /// the pinned dirs — deduped by canonical path key and sorted by basename then
+    /// full path. Feeds the "+ New session" spawn picker (spawn in a KNOWN dir only;
+    /// the server-filesystem browser is deferred). Empty paths are dropped.
+    public static func knownDirectories(sessions: [DashboardSession],
+                                        pinned: [String] = []) -> [String] {
+        var seen = Set<String>()
+        var out: [String] = []
+        for path in sessions.map(groupPath) + pinned {
+            let trimmed = path.trimmingCharacters(in: .whitespaces)
+            guard !trimmed.isEmpty else { continue }
+            let key = pathKey(trimmed)
+            if seen.insert(key).inserted { out.append(trimmed) }
+        }
+        return out.sorted {
+            let a = $0.split(separator: "/").last.map(String.init) ?? $0
+            let b = $1.split(separator: "/").last.map(String.init) ?? $1
+            return a == b ? $0 < $1 : a.localizedCaseInsensitiveCompare(b) == .orderedAscending
+        }
+    }
+
     /// Split sessions into directory subgroups: pinned dirs first (in pin order,
     /// including empty pinned dirs), then unpinned by most-recent activity. Each
     /// group's sessions are server-order sorted. Mirrors `groupSessionsByDirectory`.

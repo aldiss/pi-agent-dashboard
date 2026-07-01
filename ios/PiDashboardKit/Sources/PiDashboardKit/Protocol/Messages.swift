@@ -112,6 +112,7 @@ public enum ClientMessage: Sendable, Encodable {
     case unhideSession(sessionId: String)
     case shutdown(sessionId: String)
     case forceKill(sessionId: String)
+    case spawnSession(cwd: String, requestId: String?)
 
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: DynamicKey.self)
@@ -150,6 +151,12 @@ public enum ClientMessage: Sendable, Encodable {
         case .unhideSession(let sid): try put("unhide_session", [("sessionId", sid)])
         case .shutdown(let sid): try put("shutdown", [("sessionId", sid)])
         case .forceKill(let sid): try put("force_kill", [("sessionId", sid)])
+        case .spawnSession(let cwd, let reqId):
+            // The one client message keyed by `cwd`, not `sessionId` — the server
+            // spawns a fresh pi in that directory (SpawnSessionBrowserMessage).
+            try c.encode("spawn_session", forKey: DynamicKey("type"))
+            try c.encode(cwd, forKey: DynamicKey("cwd"))
+            try c.encodeIfPresent(reqId, forKey: DynamicKey("requestId"))
         }
     }
 
