@@ -26,6 +26,11 @@ struct ChatView: View {
     /// Perf (DF#5): render only the most-recent window of history until the operator
     /// taps "Load earlier". A large session shows ~175 rows on open, not thousands.
     @State private var showAllHistory = false
+    /// Read-position + unread anchors captured AT OPEN (DF#3) — the divider + restore
+    /// target stay stable while reading; live messages don't move them.
+    @State private var unreadSummary: UnreadCounter.Summary = .none
+    /// Guards the one-time restore-on-open scroll (replaces auto-scroll-to-end).
+    @State private var didRestore = false
 
     private var state: ChatSessionState { store.chatState(sessionId) }
     private var session: DashboardSession? { store.sessions[sessionId] }
@@ -107,9 +112,17 @@ struct ChatView: View {
         }
         .task {
             messageFilter = MessageFilterStore.load(sessionId)
+            // Capture the read position + unread anchors AT OPEN, so the divider is
+            // stable while reading (new live messages don't shove it around).
+            unreadSummary = UnreadCounter.summarize(filteredMessages, lastReadId: store.lastReadId(sessionId))
             await store.openSession(sessionId)
         }
-        .onDisappear { Task { await store.closeSession(sessionId) } }
+        .onDisappear {
+            // The operator has seen this session → mark the newest rendered row read
+            // so re-opening restores here (and the card's unread-asks badge clears).
+            if let lastId = filteredMessages.last?.id { store.markRead(sessionId, messageId: lastId) }
+            Task { await store.closeSession(sessionId) }
+        }
     }
 
     /// Apply a new filter: update local state + persist the per-session override.
@@ -223,6 +236,10 @@ struct ChatView: View {
                                 loadEarlierHeader(windowed.hiddenCount)
                             }
                             ForEach(windowed.rows) { message in
+                                if message.id == unreadSummary.firstUnreadId
+                                    && unreadSummary.firstUnreadId != windowed.rows.first?.id {
+                                    unreadDivider
+                                }
                                 ChatMessageRow(message: message) { ui in lightboxImage = ui }
                                     .id(message.id)
                             }
@@ -244,21 +261,25 @@ struct ChatView: View {
                     .padding(.horizontal, 12)
                     .padding(.vertical, 12)
                 }
-                // Naturally stick to the bottom as content (incl. streamingText) grows
-                // — the calm replacement for the old animated scrollTo. The anchor
-                // holds the bottom on content-size changes without re-firing per row.
-                .defaultScrollAnchor(.bottom)
+                // DF#3: NO auto-scroll-to-end. On open, restore to the last-read row
+                // (or the first unread / bottom) exactly once — never jump to the end.
                 .accessibilityIdentifier("chat-scroll")
+                .onAppear { restoreOnOpen(proxy) }
                 .onPreferenceChange(BottomDistanceKey.self) { sentinelMinY in
                     // distance the sentinel sits BELOW the viewport bottom: ~0 (or
                     // negative) when scrolled to the bottom, grows as the operator
                     // scrolls up. Viewport height = outer.size.height.
                     bottomDistance = sentinelMinY - outer.size.height
+                    // At the bottom → the operator has read to the newest row; mark it
+                    // read live so the unread badge clears without waiting for close.
+                    if bottomDistance <= Self.nearBottomThreshold, let lastId = filteredMessages.last?.id {
+                        store.markRead(sessionId, messageId: lastId)
+                    }
                 }
                 // Non-animated auto-follow (NO animation — animation was the jitter
                 // source). Fires on new rows AND on streamingText growth, but ONLY
                 // when already near the bottom, so a manual scroll-up to read history
-                // is never fought.
+                // is never fought (and NEVER on open — see restoreOnOpen).
                 .onChange(of: state.messages.count) { _, _ in autoFollow(proxy) }
                 .onChange(of: state.streamingText) { _, _ in autoFollow(proxy) }
             }
@@ -277,6 +298,39 @@ struct ChatView: View {
         guard !state.messages.isEmpty else { return }
         guard bottomDistance <= Self.nearBottomThreshold else { return }
         proxy.scrollTo("chat-bottom", anchor: .bottom)
+    }
+
+    /// Restore-on-open (DF#3): scroll to the last-read row → else the first unread →
+    /// else the bottom. Runs ONCE. Replaces the old auto-scroll-to-end so re-opening a
+    /// session returns the operator to where they left off, not the newest message.
+    private func restoreOnOpen(_ proxy: ScrollViewProxy) {
+        guard !didRestore else { return }
+        didRestore = true
+        let target = store.lastReadId(sessionId) ?? unreadSummary.firstUnreadId
+        // Wait a beat for the LazyVStack to realize rows, then anchor without animation.
+        DispatchQueue.main.async {
+            if let target, windowed.rows.contains(where: { $0.id == target }) {
+                proxy.scrollTo(target, anchor: .top)
+            } else {
+                proxy.scrollTo("chat-bottom", anchor: .bottom)
+            }
+        }
+    }
+
+    /// "N unread" divider (DF#3, Telegram-style) rendered above the first unread row.
+    private var unreadDivider: some View {
+        HStack(spacing: 8) {
+            Rectangle().fill(theme.statusUnread.opacity(0.5)).frame(height: 1)
+            Text(unreadSummary.tierAUnread > 0
+                 ? "\(unreadSummary.tierAUnread) unread \(unreadSummary.tierAUnread == 1 ? "ask" : "asks")"
+                 : "unread")
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(theme.statusUnread)
+                .fixedSize()
+            Rectangle().fill(theme.statusUnread.opacity(0.5)).frame(height: 1)
+        }
+        .padding(.vertical, 2)
+        .accessibilityIdentifier("chat-unread-divider")
     }
 
     @ViewBuilder private var streamingIndicator: some View {

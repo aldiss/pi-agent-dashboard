@@ -378,6 +378,25 @@ final class DashboardStore {
 
     func chatState(_ sid: String) -> ChatSessionState { chatStates[sid] ?? ChatSessionState() }
 
+    // MARK: Read-position + engagement-weighted unread (DF#3)
+
+    /// Persist the operator's last-read message for a session (LOCAL-first, via the
+    /// core `ReadPositionStore`). Called as they scroll near a row and on close, so
+    /// re-opening restores that position instead of jumping to the end.
+    func markRead(_ sid: String, messageId: String) {
+        ReadPositionStore.save(sid, messageId: messageId)
+    }
+
+    /// The persisted last-read message id for a session (nil = never read).
+    func lastReadId(_ sid: String) -> String? { ReadPositionStore.load(sid) }
+
+    /// Engagement-weighted unread for a session: count of Tier-A asks (ask_user /
+    /// confirm / select) that arrived AFTER the last-read position — NOT the raw
+    /// message count (agents spam hundreds of tool-calls). Drives the card badge.
+    func unreadTierACount(_ sid: String) -> Int {
+        UnreadCounter.tierAUnreadCount(chatState(sid).messages, lastReadId: ReadPositionStore.load(sid))
+    }
+
     // MARK: Compose (guarded)
 
     /// Send a prompt. SAFETY: refuses in UITest/fixture mode so the smoke suite can

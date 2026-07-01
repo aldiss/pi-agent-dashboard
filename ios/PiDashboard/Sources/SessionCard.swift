@@ -117,6 +117,7 @@ struct SessionCard: View {
                         .lineLimit(1)
                         .accessibilityIdentifier("session-card-name")
                     Spacer(minLength: 8)
+                    unreadAsksBadge
                     StatusChip(session: session)
                 }
 
@@ -242,6 +243,27 @@ struct SessionCard: View {
             .padding(.vertical, 2)
             .background(tint.opacity(0.14))
             .clipShape(Capsule())
+    }
+
+    /// Engagement-weighted unread badge (DF#3): the count of Tier-A asks (ask_user /
+    /// confirm / select) that arrived since the operator last read — NOT the raw
+    /// message count. Cyan (the unread-pulse hue) so it ties to the card's unread
+    /// state. Hidden when zero (a tool-call flood is not "unread").
+    @ViewBuilder private var unreadAsksBadge: some View {
+        let count = store.unreadTierACount(session.id)
+        if count > 0 {
+            HStack(spacing: 3) {
+                Image(systemName: "bell.badge.fill").font(.system(size: 9))
+                Text("\(count)").font(.caption2.weight(.bold))
+            }
+            .foregroundStyle(theme.statusUnread)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 2)
+            .background(theme.statusUnread.opacity(0.16))
+            .clipShape(Capsule())
+            .accessibilityIdentifier("card-unread-asks-\(session.id)")
+            .accessibilityLabel("\(count) unread asks")
+        }
     }
 
     // MARK: resume (ended-only control) — the app's second control action
