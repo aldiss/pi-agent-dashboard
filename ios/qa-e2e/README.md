@@ -62,24 +62,37 @@ overwritten; `--all` writes `*-live.json` siblings instead.
 
 ## 2. XCUITest e2e specs — `PiDashboardUITests/`
 
-Real XCUITest code for flows **F1–F7** (TEST-CONTRACT §B), authored against the
-§A accessibility identifiers. They drive the app in the hermetic **`-uitest`
-fixture mode** (`DashboardStore` loads bundled fixtures — never touches a live
-operator session).
+Real XCUITest code for flows **F1–F7** (TEST-CONTRACT §B) + the app-layer
+regression backfills, authored against the §A accessibility identifiers. They
+drive the app in the hermetic **`-uitest` fixture mode** (`DashboardStore` loads
+bundled fixtures — never touches a live operator session).
 
-| File | Flows |
+| File | Flows / backfill |
 |---|---|
-| `PiDashboardUITestCase.swift` | shared base (launch, element lookup, composer-layout poll) |
+| `PiDashboardUITestCase.swift` | shared base — launch, `launchForcing(themeMode:hideEnded:)` (arg-domain UserDefaults forcing), `connectAndEnterList`, `openChat`, element lookup, composer-layout poll, `waitForAppear`/`waitForGone` |
 | `ConnectAndListUITests.swift` | **F1** connect (+ unreachable-error), **F2** list/tier parity, **F3** open session |
 | `ComposerUITests.swift` | **F4** single-row⇄multiline hysteresis + newline-forces-multiline, **F5** send gating |
 | `BannerAndFiltersUITests.swift` | **F6** connection banner, **F7** search / folders / hide-stale filters |
+| `ComposerThemeUITests.swift` | **Backfill #1** — composer interactable + text readable in light AND dark + live theme-switch (guards c7acd19 light-mode wash-out) |
+| `StuckSendingUITests.swift` | **Backfill #2** — settled chat has nothing stuck at "Sending…" (hermetic guard); full send→reconcile skips pending a build hook (guards 9640dbb) |
+| `SessionDeclutterUITests.swift` | **Backfill #3** — ended hidden by default + toggle reveals/re-hides; tenure-collapse +N skips pending a same-name fixture (guards e6cf8e3) |
+| `ControlActionsUITests.swift` | **F-ext** — abort confirm-dialog, resume affordance, spawn sheet, message-type filter pills, settings round-trip |
 
-### Integration wiring (SwiftPilot, at branch reconcile)
+**Two authored-but-skipping positive paths** (the F6-positive precedent — each
+needs a small cc-ios-build affordance, so they SKIP cleanly rather than fail;
+the hermetic guard beside each runs today):
+- `StuckSendingUITests.testSendReconcilesOptimisticBubbleToConfirmed` — needs a
+  `-uitest-echo-send` arg so `sendPrompt` produces the optimistic bubble +
+  schedules the ack-net reconcile in fixture mode (`sendPrompt` no-ops under
+  `-uitest` today, and the reconcile lives inside it).
+- `SessionDeclutterUITests.testSameNameTenuresCollapseWithBadge` — needs a
+  duplicate-canonical-name pair in `FixtureData.sessionsSnapshot()` so a row
+  folds + the `card-collapsed-count-*` badge renders.
 
-These specs live in `qa-e2e/` (test-CC owned) but the Xcode UITest target
-(`PiDashboardUITests` in `ios/PiDashboard/project.yml`) currently sources from
-`ios/PiDashboard/UITests/` (the build CC's smoke). To run the e2e suite, point
-the UITest target at this directory **in addition to** the smoke. Either:
+### Integration wiring (already live in `project.yml`)
+
+The `PiDashboardUITests` target already sources this directory (Option A below),
+so `xcodegen generate` picks up every spec here. No extra wiring needed:
 
 - **A — add a source path** to the `PiDashboardUITests` target in `project.yml`:
   ```yaml
@@ -124,6 +137,32 @@ Run a single flow:
 xcodebuild test -project PiDashboard.xcodeproj -scheme PiDashboard \
   -destination 'platform=iOS Simulator,id=D19C5CF4-BF12-471D-9896-4975F33C1825' \
   -only-testing:PiDashboardUITests/ComposerUITests/testF4_ComposerHysteresisSingleRowMultilineRevert
+```
+
+Run just the three backfill regression classes (composer light/dark, stuck-Sending,
+declutter):
+
+```bash
+xcodebuild test -project PiDashboard.xcodeproj -scheme PiDashboard \
+  -destination 'platform=iOS Simulator,id=D19C5CF4-BF12-471D-9896-4975F33C1825' \
+  -only-testing:PiDashboardUITests/ComposerThemeUITests \
+  -only-testing:PiDashboardUITests/StuckSendingUITests \
+  -only-testing:PiDashboardUITests/SessionDeclutterUITests \
+  2>&1 | tee /tmp/ios-backfill-test.log
+```
+
+### Compile-check without a sim run (box-safety — high host load)
+
+A full `xcodebuild test` boots the sim + runs the suite (heavy). When the host is
+under load, verify the specs COMPILE + link in the real Swift 6 target WITHOUT a
+sim boot/run via `build-for-testing` (SwiftPilot owns the actual watched, calm-gated
+test run):
+
+```bash
+cd ios/PiDashboard && xcodegen generate
+xcodebuild build-for-testing -project PiDashboard.xcodeproj -scheme PiDashboard \
+  -destination 'platform=iOS Simulator,id=D19C5CF4-BF12-471D-9896-4975F33C1825'
+# ** TEST BUILD SUCCEEDED **  (compiles + links + signs the UITest bundle; no run)
 ```
 
 Screenshots captured by each flow are attached to the `.xcresult` bundle
