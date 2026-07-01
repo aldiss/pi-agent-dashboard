@@ -191,6 +191,50 @@ deterministically covered by the classifier unit sweep.
 ### Regression after W1b: **193/193** across 13 suites (adds classifier + consumer + gateway neighbors). Zero regressions.
 No source consumer relied on the old `onDisconnect` arity (only a stale `dist/*.d.ts` build artifact, unused by jiti/vitest).
 
+### W1b AMEND (d22 blocker — Alice dl-3712 + Bert dl-3714) — heartbeat-timeout timer paths (`65af3dc`)
+
+**The gap (real BLOCKER).** Original W1b threaded the reason through `onDisconnect`, but `onDisconnect` fired
+ONLY from `ws.on("close")`. The ACTUAL heartbeat-timeout drop — **Mechanism-A, the dl-3598 disaster that took
+the crew dashboard-blind** — unregisters from 3 TIMER paths (`pi-gateway.ts` reconnect-grace-expired /
+sleep-recovery-failed / no-heartbeat) that called `sessionManager.unregister` DIRECTLY, recording NO reason.
+W1b claimed to close Gap #4 but missed its primary case.
+
+**Fix (own-hand).**
+- **ONE shared helper** `stampDisconnect(sessionId, signals)` — classifies via `classifyBridgeDisconnect` +
+  fires `onDisconnect`. **Structural invariant:** `classifyBridgeDisconnect` and `onDisconnect` each fire
+  EXACTLY ONCE (inside the helper), so instrumentation can't diverge; a future drop-site can't silently skip
+  it without deliberately bypassing. `PING_MISS_THRESHOLD` hoisted to closure scope (shared, no magic `3`).
+- **Routed through the helper (6 origins):** ws-close; the 3 heartbeat-timeout timer paths; the ping-timeout
+  dead-TCP site (heartbeat-timeout signals); the explicit `session_unregister` (clean-shutdown). Stamp runs
+  BEFORE `unregister`; the row is **kept-not-deleted** (`memory-session-manager.unregister` sets
+  `status:"ended"`, keeps the object) so the reason **persists + is readable post-unregister**. A later
+  `register` (reconnect) doesn't carry the field → stale reason self-clears.
+- **Two-sided invariant (Bert):** the reload-placeholder GC (`session_register` old-ghost cleanup) deliberately
+  does NOT stamp — it's benign GC of a superseded placeholder, NOT a disconnect; a false stamp is as wrong as a
+  missing one. Documented inline + asserted by a negative test.
+
+**Persist-target discipline (Bert's load-bearing check).** The test asserts the OPERATOR-VISIBLE
+`DashboardSession.bridgeDisconnectReason` on the ROW is readable AFTER the timer-driven unregister completes
+(status:"ended" confirms post-unregister) — NOT merely that `onDisconnect` was called. Same durable-target
+discipline as W4's name-pin (write the durable source, not the ephemeral display) — no green-test-that-lies.
+
+**Tests — `bridge-disconnect-timer-path.test.ts` 4/4 green:**
+- POSITIVE — induce a real `heartbeatTimeout` (120 ms, ping loop off) → `ws.terminate()` → row records
+  `bridgeDisconnectReason:"heartbeat-timeout"`, READABLE after the timer-driven unregister (`status:"ended"`,
+  non-blank, `bridgeDisconnectAt` a number).
+- NEGATIVE — benign placeholder GC (`session_register` supersedes a `source:"unknown"` ghost) → row ended but
+  `bridgeDisconnectReason` stays `undefined`; `onDisconnect` never fires for the placeholder id.
+- STRUCTURAL — machine-checks both origins funnel through the ONE helper (classify/onDisconnect each once; ≥6
+  call-sites).
+
+**Regression after the amend:** 14 suites **158 pass / 3 skip / 0 fail** (classifier + consumer + timer-path +
+gateway neighbors + all 4 fix suites); + 8 gateway-adjacent real-ws suites **31/31**. The ws-close refactor to
+the shared helper broke nothing; original W1b tests still green.
+
+**Amend anchor note:** the brief's timer-path line refs (137/165/176) are pre-monorepo/pre-W1b; post-W1b they
+sit at the three `session timed out` log sites in `packages/server/src/pi-gateway.ts`. The 7th unregister
+(reload-placeholder GC) is classified benign (deliberate non-stamp).
+
 ---
 
 ## W4 — name-sync write-pin (row-hygiene name-canon completion; F2-read + F5-write)
