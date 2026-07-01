@@ -25,6 +25,29 @@ public struct ThemePalette: Sendable, Equatable {
     public let accentOrange: String
     public let accentYellow: String
     public let accentPurple: String
+    public let accentCyan: String
+
+    // MARK: Semantic session-status accents
+
+    /// One semantic hue per session state — the session-list color language lifted
+    /// from the PWA (`SessionCard.tsx` / `session-status-visuals.ts`). Rail, dot, and
+    /// status text share one of these so a card reads by color at a glance.
+    ///   active/idle → green · working (streaming) → amber · needs-input → purple ·
+    ///   unread → cyan · error → red · ended → faint gray.
+    public var statusActive: String { accentGreen }      // green-500  #22c55e
+    public var statusWorking: String { accentYellow }    // yellow-500 #eab308
+    public var statusNeedsInput: String { accentPurple } // purple-500 #a855f7
+    public var statusUnread: String { accentCyan }       // cyan-500   #06b6d4
+    public var statusError: String { accentRed }         // red-500    #ef4444
+    public var statusEnded: String { textFaint }         // muted gray
+}
+
+/// Which animated state-pulse a card carries — the at-a-glance signature. Mirrors
+/// the PWA `getCardPulseClass` precedence exactly: needs-YOU beats working beats
+/// unread. `.none` → a calm card. Pure/`Sendable` so selection is unit-testable in
+/// the core (SwiftUI drives the actual animation off the resolved kind).
+public enum CardPulseKind: String, Sendable, Equatable {
+    case none, working, needsInput, unread
 }
 
 public enum DashboardTheme {
@@ -52,7 +75,8 @@ public enum DashboardTheme {
         accentRed: "#ef4444",
         accentOrange: "#f97316",
         accentYellow: "#eab308",
-        accentPurple: "#a855f7"
+        accentPurple: "#a855f7",
+        accentCyan: "#06b6d4"
     )
 
     /// Status chip accent mapping (active→green, streaming→blue, idle→muted,
@@ -64,6 +88,45 @@ public enum DashboardTheme {
         case "idle": return p.textSecondary
         case "ended": return p.textFaint
         default: return p.textTertiary
+        }
+    }
+
+    /// The ONE semantic hue a session-list card carries on its rail + dot + status
+    /// text — the editorial status-as-color language from the PWA
+    /// (`deriveRailBgColor` precedence). Ended wins first (a finished card stays
+    /// muted even if it errored); then error → red, working (streaming) → amber,
+    /// alive (active/idle) → green; unknown falls back to muted. Native
+    /// `DashboardSession` has no `resuming` field (PWA-only), so "working" keys off
+    /// `status == "streaming"`.
+    public static func sessionAccent(_ session: DashboardSession, hasError: Bool = false,
+                                     _ p: ThemePalette = dark) -> String {
+        if session.status == "ended" { return p.statusEnded }
+        if hasError { return p.statusError }
+        if session.status == "streaming" { return p.statusWorking }
+        if session.status == "active" || session.status == "idle" { return p.statusActive }
+        return p.statusEnded
+    }
+
+    /// Which animated state-pulse a card shows. Precedence mirrors the PWA
+    /// `getCardPulseClass` EXACTLY: `currentTool == "ask_user"` (needs YOU) →
+    /// `.needsInput`; else `status == "streaming"` (working) → `.working`; else
+    /// `unread` → `.unread`; else `.none`. Ended sessions never pulse (they are
+    /// neither streaming nor ask_user; unread on an ended card is intentional — the
+    /// PWA shows the same cyan "fresh activity" tint).
+    public static func cardPulseKind(_ session: DashboardSession) -> CardPulseKind {
+        if session.currentTool == "ask_user" { return .needsInput }
+        if session.status == "streaming" { return .working }
+        if session.unread == true { return .unread }
+        return .none
+    }
+
+    /// Tint hue for a pulse kind (purple/amber/cyan). `.none` → nil (no overlay).
+    public static func pulseAccent(_ kind: CardPulseKind, _ p: ThemePalette = dark) -> String? {
+        switch kind {
+        case .needsInput: return p.statusNeedsInput
+        case .working: return p.statusWorking
+        case .unread: return p.statusUnread
+        case .none: return nil
         }
     }
 }

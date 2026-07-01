@@ -70,10 +70,30 @@ struct Theme {
     var accentOrange: Color { Color(hex: palette.accentOrange) }
     var accentYellow: Color { Color(hex: palette.accentYellow) }
     var accentPurple: Color { Color(hex: palette.accentPurple) }
+    var accentCyan: Color { Color(hex: palette.accentCyan) }
+
+    // Semantic session-status accents (the session-list color language).
+    var statusActive: Color { Color(hex: palette.statusActive) }
+    var statusWorking: Color { Color(hex: palette.statusWorking) }
+    var statusNeedsInput: Color { Color(hex: palette.statusNeedsInput) }
+    var statusUnread: Color { Color(hex: palette.statusUnread) }
+    var statusError: Color { Color(hex: palette.statusError) }
+    var statusEnded: Color { Color(hex: palette.statusEnded) }
 
     /// Status-chip color via the core's mapping (active→green, streaming→blue, …).
     func statusColor(_ status: String?) -> Color {
         Color(hex: DashboardTheme.statusColor(status, palette))
+    }
+
+    /// The single semantic hue a session-list card carries (rail + dot + status
+    /// text) — core `sessionAccent` precedence mapped to a `Color`.
+    func sessionAccent(_ session: DashboardSession, hasError: Bool = false) -> Color {
+        Color(hex: DashboardTheme.sessionAccent(session, hasError: hasError, palette))
+    }
+
+    /// Tint color for a card's state-pulse, or nil for a calm card.
+    func pulseAccent(_ kind: CardPulseKind) -> Color? {
+        DashboardTheme.pulseAccent(kind, palette).map(Color.init(hex:))
     }
 }
 

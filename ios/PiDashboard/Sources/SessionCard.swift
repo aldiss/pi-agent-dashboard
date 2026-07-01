@@ -1,24 +1,26 @@
 import SwiftUI
 import PiDashboardKit
 
-/// Status chip — colored dot + label, color via the core's `DashboardTheme.statusColor`
-/// (active→green, streaming→blue, idle→muted, ended→faint). Identifier
-/// `session-card-status`, accessibilityValue = the raw status (for XCUITest asserts).
+/// Status chip — colored dot + label sharing ONE semantic hue per session state
+/// (active/idle→green, streaming→amber, ended→faint, error→red), via the core's
+/// `sessionAccent`. Identifier `session-card-status`, accessibilityValue = the raw
+/// status (for XCUITest asserts).
 struct StatusChip: View {
-    let status: String?
+    let session: DashboardSession
     @Environment(\.theme) private var theme
 
     var body: some View {
-        let label = status ?? "unknown"
+        let label = session.status ?? "unknown"
+        let accent = theme.sessionAccent(session)
         HStack(spacing: 5) {
-            Circle().fill(theme.statusColor(status)).frame(width: 7, height: 7)
+            Circle().fill(accent).frame(width: 7, height: 7)
             Text(label)
                 .font(.caption2.weight(.medium))
-                .foregroundStyle(theme.statusColor(status))
+                .foregroundStyle(accent)
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 3)
-        .background(theme.statusColor(status).opacity(0.12))
+        .background(accent.opacity(0.12))
         .clipShape(Capsule())
         .accessibilityIdentifier("session-card-status")
         .accessibilityValue(label)
@@ -62,6 +64,29 @@ struct ContextBar: View {
     }
 }
 
+/// Animated card state-pulse — the at-a-glance signature. A subtle tint overlay
+/// whose hue is the pulse kind (needs-input→purple, working→amber, unread→cyan)
+/// and whose opacity gently breathes. Honors Reduce Motion: when set, the tint is
+/// a static low-alpha wash (no animation). `.none` renders nothing.
+struct CardPulseOverlay: View {
+    let kind: CardPulseKind
+    @Environment(\.theme) private var theme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var breathing = false
+
+    var body: some View {
+        if let tint = theme.pulseAccent(kind) {
+            tint
+                .opacity(reduceMotion ? 0.06 : (breathing ? 0.10 : 0.04))
+                .animation(reduceMotion ? nil
+                           : .easeInOut(duration: 1.6).repeatForever(autoreverses: true),
+                           value: breathing)
+                .onAppear { if !reduceMotion { breathing = true } }
+                .allowsHitTesting(false)
+        }
+    }
+}
+
 /// A session card — the dashboard's row, adapted to a tappable native card. Shows
 /// display name, status chip, model + thinking, context bar, git branch, unread
 /// stripe, driver progress + next-engagement badge, last-activity relative time.
@@ -69,15 +94,19 @@ struct SessionCard: View {
     let session: DashboardSession
     @Environment(\.theme) private var theme
 
+    private var pulseKind: CardPulseKind { DashboardTheme.cardPulseKind(session) }
+
     var body: some View {
         HStack(spacing: 0) {
-            // Unread stripe — left edge, present only when unread.
-            if session.unread == true {
-                Rectangle()
-                    .fill(theme.accentBlue)
-                    .frame(width: 3)
-                    .accessibilityIdentifier("session-card-unread")
-            }
+            // Status rail — left-edge accent sharing the card's one semantic hue
+            // (green alive / amber working / faint ended). Carries the unread
+            // identifier when there is unviewed activity (XCUITest marker); the
+            // calm-state id stays OUTSIDE the `session-card-` namespace so the
+            // qa-e2e card-counter (`sessionCardIdentifiers`) never miscounts it.
+            Rectangle()
+                .fill(theme.sessionAccent(session))
+                .frame(width: 3)
+                .accessibilityIdentifier(session.unread == true ? "session-card-unread" : "card-status-rail")
 
             VStack(alignment: .leading, spacing: 8) {
                 HStack(alignment: .top) {
@@ -87,7 +116,7 @@ struct SessionCard: View {
                         .lineLimit(1)
                         .accessibilityIdentifier("session-card-name")
                     Spacer(minLength: 8)
-                    StatusChip(status: session.status)
+                    StatusChip(session: session)
                 }
 
                 if let model = Format.modelLabel(session) {
@@ -108,7 +137,7 @@ struct SessionCard: View {
                     if let branch = session.gitBranch, !branch.isEmpty {
                         Label(branch, systemImage: "arrow.triangle.branch")
                             .font(.caption2)
-                            .foregroundStyle(theme.textTertiary)
+                            .foregroundStyle(theme.accentBlue)
                             .lineLimit(1)
                     }
                     Spacer()
@@ -121,6 +150,7 @@ struct SessionCard: View {
             .padding(12)
         }
         .background(theme.bgTertiary)
+        .background(CardPulseOverlay(kind: pulseKind))
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
