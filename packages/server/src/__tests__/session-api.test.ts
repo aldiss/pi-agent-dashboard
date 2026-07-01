@@ -144,6 +144,57 @@ describe("Session Control REST API", () => {
     expect(server.sessionManager.get("rename-me")?.name).toBe("new-name");
   });
 
+  // ── W4: rename write-pin (name-sync-write-pin) ──────────────────
+  // The real route must ALSO write `operatorPinnedName` into the messenger
+  // registry so the rename survives a name-sync tick. Faithful route proof via
+  // a tmp registry pointed at by PI_MESSENGER_REGISTRY_DIR.
+  it("POST /api/session/:id/rename — writes operatorPinnedName to the registry (survives name-sync)", async () => {
+    const { mkdtempSync, writeFileSync, readFileSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const regDir = mkdtempSync(join(tmpdir(), "w4-route-registry-"));
+    const sid = "w4-pin-session";
+    writeFileSync(
+      join(regDir, "Pete.json"),
+      JSON.stringify({ name: "Pete", pid: 999999, sessionId: sid, statusMessage: "busy" }, null, 2),
+    );
+    const prev = process.env.PI_MESSENGER_REGISTRY_DIR;
+    process.env.PI_MESSENGER_REGISTRY_DIR = regDir;
+    try {
+      registerSession(sid, { name: "Pete" });
+      const res = await postJson(`/api/session/${sid}/rename`, { name: "Pete tenure-9 — IronForge" });
+      expect(res.status).toBe(200);
+      const written = JSON.parse(readFileSync(join(regDir, "Pete.json"), "utf8"));
+      // The pin is set (F5-write) and the auto-derived `name` is preserved so
+      // name-sync honors the pin over "Pete — busy".
+      expect(written.operatorPinnedName).toBe("Pete tenure-9 — IronForge");
+      expect(written.name).toBe("Pete");
+    } finally {
+      if (prev === undefined) delete process.env.PI_MESSENGER_REGISTRY_DIR;
+      else process.env.PI_MESSENGER_REGISTRY_DIR = prev;
+    }
+  });
+
+  it("POST /api/session/:id/rename — pin write is best-effort (no registry entry → still 200)", async () => {
+    const { mkdtempSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const emptyReg = mkdtempSync(join(tmpdir(), "w4-empty-registry-"));
+    const prev = process.env.PI_MESSENGER_REGISTRY_DIR;
+    process.env.PI_MESSENGER_REGISTRY_DIR = emptyReg;
+    try {
+      registerSession("w4-no-entry");
+      const res = await postJson("/api/session/w4-no-entry/rename", { name: "Dashboard Only" });
+      // No mesh registry entry for this session → pin write is a benign miss;
+      // the rename itself still succeeds.
+      expect(res.status).toBe(200);
+      expect(server.sessionManager.get("w4-no-entry")?.name).toBe("Dashboard Only");
+    } finally {
+      if (prev === undefined) delete process.env.PI_MESSENGER_REGISTRY_DIR;
+      else process.env.PI_MESSENGER_REGISTRY_DIR = prev;
+    }
+  });
+
   // ── resurrect (Component B) ─────────────────────────────────────
 
   it("POST /api/session/:id/resurrect — 404 for unknown session", async () => {

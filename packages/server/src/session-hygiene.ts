@@ -100,7 +100,10 @@ export function verifySessionLive(
   // ── non-CC (pi / tmux driver): registry kill-0 ground-truth (F1) ──
   const dl = probes.resolveDriverLiveness(session.id);
   if (dl.alive) {
-    return { live: true, reason: "registry-kill0", cleanName: dl.name };
+    // W4 name-canon: pin > derived. The operator-pinned name (operatorPinnedName)
+    // is canonical over the auto-derived registry `name`, completing the class-3
+    // fix (F2-read + F5-write). See change: name-sync-write-pin.
+    return { live: true, reason: "registry-kill0", cleanName: dl.operatorPinnedName ?? dl.name };
   }
   // Record-pid backstop: a session carrying its own kill-0-alive pid is live
   // even without a registry bind (invariant #4: "OR verified current pid").

@@ -190,3 +190,78 @@ deterministically covered by the classifier unit sweep.
 
 ### Regression after W1b: **193/193** across 13 suites (adds classifier + consumer + gateway neighbors). Zero regressions.
 No source consumer relied on the old `onDisconnect` arity (only a stale `dist/*.d.ts` build artifact, unused by jiti/vitest).
+
+---
+
+## W4 — name-sync write-pin (row-hygiene name-canon completion; F2-read + F5-write)
+
+**Closes.** F5 false-green: a raw `POST /api/session/:id/rename` returned 200 + a visible rename but did NOT
+write the registry `operatorPinnedName` pin, so `pi-dashboard-name-sync` re-derived the display from the
+registry `name (+ statusMessage)` ~120 s later and CLOBBERED the rename.
+
+**Fix (own-hand).**
+- New `packages/server/src/name-sync-write-pin.ts`:
+  - `writeOperatorPin(sessionId, pinnedName, registryDir?)` — finds the registry entry by `sessionId`, sets
+    (or, on empty name, clears — `--unpin`) `operatorPinnedName` via ATOMIC write-temp + `rename` (preserving
+    file mode), exactly as `~/bin/pi-rename` does. Best-effort: a miss returns a reason, never throws.
+  - `readOperatorPin(sessionId, registryDir?)` — reads the canonical pin.
+  - `checkNamePinConsistency(rowName, registryPin)` — pure meta-vs-registry divergence detector (the
+    detection missing today).
+- `packages/server/src/session-api.ts` rename route — after the dashboard record + bridge rename, calls
+  `writeOperatorPin(id, name)` so the pin survives a name-sync tick (single source of truth = the registry
+  pin). Then runs `checkNamePinConsistency` and logs LOUD on divergence; logs LOUD on write-failure.
+- **Name-canon fold-in (pin > derived), completing F2-read:**
+  - `driver-liveness.ts` — `DriverLiveness.operatorPinnedName`; `resolveDriverLiveness` reads it on ANY
+    sessionId-bound entry (honored even bound-but-dead).
+  - `session-hygiene.ts` — `verifySessionLive` sets `cleanName: dl.operatorPinnedName ?? dl.name` — the
+    operator pin overrides the auto-derived registry name in the read-path canon.
+
+### Test — 13 unit (`name-sync-write-pin.test.ts`) + 2 route (`session-api.test.ts`) — all green
+Write-pin: sets/clears the pin by sessionId, preserves sibling fields, leaves NO temp file, non-fatal on
+no-entry / no-dir, round-trips through `readOperatorPin`. Consistency: divergent when pin≠row, not-divergent
+when equal / no-pin. Name-canon: `verifySessionLive` picks the pin over the derived name (real
+`resolveDriverLiveness` via a tmp registry fixture) and falls back to the derived name when no pin. Route:
+the REAL rename route writes `operatorPinnedName` into a tmp registry; best-effort miss still returns 200.
+
+### Falsifiable harness acceptance (the core proof — pin survives a REAL name-sync tick, on :8002)
+Seeded a registry entry `Pete.json` for the seed sessionId (`name:"Pete", statusMessage:"working on
+something"`, NO pin). Then:
+```
+STEP 1  POST /api/session/019edfad…/rename {"name":"Pete tenure-9 — IronForge"}   → HTTP 200 {"success":true}
+STEP 2  registry Pete.json → operatorPinnedName:"Pete tenure-9 — IronForge"  (name:"Pete" preserved)   ✓ PIN WRITTEN
+STEP 3  dashboard row name → "Pete tenure-9 — IronForge"
+STEP 4  run the REAL ~/bin/pi-dashboard-name-sync against :8002 (isolated HOME+registry) → "synced: renamed=2"
+STEP 5  dashboard row name AFTER the sync tick → "Pete tenure-9 — IronForge"   ✓ PIN SURVIVED (no clobber)
+```
+Before W4 STEP 5 would have re-derived `"Pete — working on something"` (the F5 clobber). The pin held.
+
+**Consistency check (divergence caught).** A deliberately-divergent raw registry write
+(`operatorPinnedName:"SOMEONE-ELSE hijacked-name"`) vs the row name → `checkNamePinConsistency.divergent ===
+true` (the route logs this LOUD: `W4 name-pin DIVERGENCE … investigate`). Proven by the unit suite's
+divergent/non-divergent/​no-pin cases (the live jiti `-e` eval couldn't bind the `.ts` named export, so the
+faithful route+divergence proof is the vitest that drives the real fastify route + the pure-check unit cases).
+
+### Regression after W4: **200/200** across 13 suites — incl. the row-hygiene name-canon suites
+(`session-hygiene`, `session-routes-hygiene`, `driver-liveness`) all still green after the pin>derived fold-in. Zero regressions.
+
+---
+
+## Summary for the d22 architect + Pete strict-spec QA gates
+
+| Fix | Files (own-hand) | New tests | Harness proof | Regression |
+|---|---|---|---|---|
+| **Fix-10** | browser-protocol (code), process-manager (guard+gate), session-api (resurrect) | 7 | tmux-avail → §19 respawn HTTP 200; tmux-stripped → 500 INTERACTIVE_UNAVAILABLE, 0 headless spawns | 142/142 |
+| **Fix-11** | resume-spawn-options (new), session-api, session-action-handler, event-wiring | 9 | REST fork on 11.9MB seed → `pi --name Pete --fork` +pin, no rpc/model; tmux-stripped → 500, 0 headless | 155/155 |
+| **W1b** | types (enum+fields), bridge-disconnect-classifier (new), pi-gateway, event-wiring, session-api | 20 | clean-shutdown / unknown (fail-loud) / cross-wire (beats clean code) all recorded live on :8002 | 193/193 |
+| **W4** | name-sync-write-pin (new), session-api, driver-liveness, session-hygiene | 15 | rename→pin written→SURVIVES a real name-sync tick (no clobber); divergence caught | 200/200 |
+
+**Anchor mismatches surfaced (monorepo `packages/*/src/**`, not `src/server/**`):**
+1. Fix-11 — `spawn_new_session` + fork-degrade are FRESH spawns (no sessionFile), NOT resume paths; left on
+   config-strategy with scope-note comments (forcing §19 would regress tmux-less fresh spawn). Flagged for a
+   decision if §19-on-fresh was intended.
+2. W1b — `onDisconnect` was a FULLY DEAD hook (zero consumers), not "wired with no reason"; W1b wired a fresh
+   consumer.
+3. Cross-wire detection bug found+fixed on the harness (register-first bridge masked displacement); re-proven live.
+
+**Held state:** 4 commits on `feat/dashboard-durability-integration` (`c2a6c9c`, `2014273`, `2ca70f5`, +W4).
+No push, no deploy, no prod-touch. §3-clean (no attribution). Baseline worktree-manager env-failure NOT chased.

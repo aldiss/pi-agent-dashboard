@@ -13,6 +13,7 @@ import type { BrowserGateway } from "./browser-gateway.js";
 import type { ApiResponse } from "@blackbelt-technology/pi-dashboard-shared/types.js";
 import { spawnPiSession } from "./process-manager.js";
 import { buildInteractiveResumeOptions, resolvePinDashboardUrl } from "./resume-spawn-options.js";
+import { writeOperatorPin, readOperatorPin, checkNamePinConsistency } from "./name-sync-write-pin.js";
 import { loadConfig } from "@blackbelt-technology/pi-dashboard-shared/config.js";
 import { resolveDriverLiveness } from "./driver-liveness.js";
 import { resurrectSession } from "./resurrection-sweep.js";
@@ -299,6 +300,33 @@ export function registerSessionApi(fastify: FastifyInstance, deps: SessionApiDep
       sessionManager.update(id, updates);
       browserGateway.broadcastSessionUpdated(id, updates);
       piGateway.sendToSession(id, { type: "rename_session", sessionId: id, name });
+      // W4 — name-sync write-pin (row-hygiene name-canon completion, F5-write).
+      // A raw rename updated the dashboard record + bridge but NOT the registry
+      // pin, so `pi-dashboard-name-sync` reclobbered it ~120s later. Write
+      // `operatorPinnedName` to the messenger registry (atomic temp+rename, as
+      // pi-rename does) so the rename SURVIVES a name-sync tick. Single source
+      // of truth = the registry pin. Best-effort: a registry miss (dashboard-
+      // only session with no mesh entry) does NOT fail the rename.
+      // See change: name-sync-write-pin.
+      const pinResult = writeOperatorPin(id, name || undefined);
+      // Consistency check (W4 (b)): after the write, the registry pin and the
+      // row name MUST agree. Surface divergence LOUD (the detection missing
+      // today) — e.g. a concurrent raw registry edit, or a write that silently
+      // no-op'd. `no-matching-entry` is benign (no mesh entry for this session).
+      if (pinResult.ok) {
+        const consistency = checkNamePinConsistency(name || undefined, readOperatorPin(id));
+        if (consistency.divergent) {
+          console.warn(
+            `[dashboard] W4 name-pin DIVERGENCE for ${id}: row="${consistency.rowName ?? ""}" ` +
+            `!= registry pin="${consistency.registryPin ?? ""}" — investigate (name-sync will honor the pin).`,
+          );
+        }
+      } else if (pinResult.reason === "write-failed") {
+        console.warn(
+          `[dashboard] W4 name-pin write FAILED for ${id} (registry file=${pinResult.file ?? "?"}); ` +
+          `rename applied to dashboard but NOT pinned — name-sync may reclobber it.`,
+        );
+      }
       return { success: true } satisfies ApiResponse;
     },
   );

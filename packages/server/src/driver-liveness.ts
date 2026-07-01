@@ -41,6 +41,14 @@ export interface DriverLiveness {
   alive: boolean;
   /** The registry's clean themed-name (e.g. "Don") when alive — overrides the stale session_info name. */
   name?: string;
+  /**
+   * The registry's `operatorPinnedName` when set (W4). The operator-pinned name
+   * is canonical over the auto-derived `name` (pin > derived) — the row-hygiene
+   * name-canon resolution prefers this. Present independent of `alive` so a pin
+   * is honored even on a registry-bound-but-dead entry read.
+   * See change: name-sync-write-pin.
+   */
+  operatorPinnedName?: string;
   /** The registry pid that was kill-0'd alive. Present only when `alive` — lets the sweep / resurrect endpoint rebind `session.pid`. */
   pid?: number;
 }
@@ -84,15 +92,24 @@ export function resolveDriverLiveness(sessionId: string): DriverLiveness {
       continue; // skip an unreadable/partial registry file
     }
     if (entry?.sessionId === sessionId) {
+      // W4: the operator-pinned name (when set) is canonical over `name`. Read
+      // it on ANY bound entry — a pin is honored even for a bound-but-dead read
+      // so the row-hygiene name-canon keeps the operator's label.
+      // See change: name-sync-write-pin.
+      const operatorPinnedName =
+        typeof entry.operatorPinnedName === "string" && entry.operatorPinnedName.length > 0
+          ? entry.operatorPinnedName
+          : undefined;
       // UUID-join hit. kill -0 the pid (C2: the sessionId match scopes pid-reuse).
       if (typeof entry.pid === "number" && pidAlive(entry.pid)) {
         return {
           alive: true,
           name: typeof entry.name === "string" ? entry.name : undefined,
+          ...(operatorPinnedName ? { operatorPinnedName } : {}),
           pid: entry.pid,
         };
       }
-      return { alive: false }; // bound but dead → genuinely ended
+      return { alive: false, ...(operatorPinnedName ? { operatorPinnedName } : {}) }; // bound but dead → genuinely ended (pin still honored)
     }
   }
   return { alive: false }; // no entry binds this session id → not a live mesh driver
