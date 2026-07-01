@@ -62,6 +62,14 @@ final class DashboardStore {
     /// Replay batches at/under this size fold synchronously (cheap); larger ones go
     /// off-main to keep the UI responsive on open.
     private static let syncReplayThreshold = 150
+    /// sessionId → max applied `seq` (Cluster 1). Drives resume-with-lastSeq on
+    /// reopen/reconnect + live-event dedup (ignore `seq <= lastSeen`). `nil` = nothing
+    /// applied yet → subscribe requests a full replay.
+    private var lastSeenSeq: [String: Int] = [:]
+    /// Sessions for which the pending replay is an AUTHORITATIVE full replay (we
+    /// subscribed with `lastSeq: nil`) → reset state before reducing so history can't
+    /// duplicate. A resume replay (subscribed with a real lastSeq) is NOT in this set.
+    private var expectingFullReplay: Set<String> = []
     /// sessionId → last send failure reason (bridge absent), surfaced in ChatView.
     private(set) var sendFailures: [String: String] = [:]
     /// Sessions with an in-flight abort (optimistic "stopping…" state). Cleared when
@@ -214,6 +222,24 @@ final class DashboardStore {
         Task { await client.disconnect() }
         phase = .idle
         hasEnteredDashboard = false
+        // Cluster 1: drop all per-session chat/seq/replay caches on disconnect so a
+        // reconnect rebuilds from authoritative replays (no stale rows, bounded memory).
+        chatStates.removeAll()
+        lastSeenSeq.removeAll()
+        expectingFullReplay.removeAll()
+        bufferedDuringReplay.removeAll()
+        replayInFlight.removeAll()
+    }
+
+    /// Evict all per-session chat/seq/replay caches for one session (Cluster 1). Used
+    /// on `session_removed`. Leaves the persisted read-position alone (intentional —
+    /// it's a durable user preference, not live state).
+    private func evictSession(_ sid: String) {
+        chatStates.removeValue(forKey: sid)
+        lastSeenSeq.removeValue(forKey: sid)
+        expectingFullReplay.remove(sid)
+        bufferedDuringReplay.removeValue(forKey: sid)
+        replayInFlight.remove(sid)
     }
 
     // MARK: Message application
@@ -262,6 +288,7 @@ final class DashboardStore {
             sessions.removeValue(forKey: sid)
             aborting.remove(sid)
             resumingLocal.remove(sid)
+            evictSession(sid) // Cluster 1: drop chat/seq/replay caches for a gone session.
 
         case .sessionsReordered(let cwd, let ids):
             orders[cwd] = ids
@@ -269,8 +296,25 @@ final class DashboardStore {
         case .pinnedDirsUpdated(let paths):
             pinnedDirectories = paths
 
-        case .eventReplay(let sid, let events, _):
+        case .eventReplay(let sid, let events, let isLast):
             let evs = events.map(\.event)
+            let batchMax = events.map(\.seq).max()
+            // Reset-before-authoritative-replay (Cluster 1): if we subscribed with
+            // lastSeq:nil, this replay is the FULL history — clear the session state +
+            // seq FIRST so it can't duplicate onto existing rows. Only the first batch
+            // resets; a chunked full replay (isLast:false…true) keeps building.
+            let resetFirst = expectingFullReplay.contains(sid)
+            if resetFirst {
+                chatStates[sid] = ChatSessionState()
+                lastSeenSeq[sid] = nil
+                bufferedDuringReplay[sid] = nil
+                expectingFullReplay.remove(sid) // consumed — later chunks append
+            }
+            // Adopt the batch's max seq (monotonic) so live dedup + the next resume
+            // pick up from the right point.
+            lastSeenSeq[sid] = SeqLifecycle.advance(lastSeen: lastSeenSeq[sid], batchMaxSeq: batchMax)
+            _ = isLast // (chunked-replay boundary; state simply accumulates across chunks)
+
             if replayInFlight.contains(sid) {
                 // A fold is already running for this session — buffer these too so
                 // they drain (in order) after it publishes; never clobber the fold.
@@ -284,6 +328,8 @@ final class DashboardStore {
                 // `ChatSessionState` is Sendable + `reduce(events:)` is a pure value
                 // method, so the fold is safe off-isolation. Live events arriving
                 // during the fold are buffered (see `.event`) and drained on publish.
+                // (The reset above already ran on the base state, so the fold folds
+                // onto the freshly-reset state — no duplication.)
                 replayInFlight.insert(sid)
                 let base = chatStates[sid] ?? ChatSessionState()
                 Task.detached(priority: .userInitiated) { [weak self] in
@@ -292,7 +338,11 @@ final class DashboardStore {
                 }
             }
 
-        case .event(let sid, _, let event):
+        case .event(let sid, let seq, let event):
+            // Seq-dedup (Cluster 1): drop a duplicate or out-of-order live event so it
+            // can't corrupt state. A newer seq is applied + advances lastSeen.
+            guard SeqLifecycle.shouldApply(seq: seq, lastSeen: lastSeenSeq[sid]) else { break }
+            lastSeenSeq[sid] = SeqLifecycle.advance(lastSeen: lastSeenSeq[sid], appliedSeq: seq)
             if replayInFlight.contains(sid) {
                 // A large replay fold is in flight — buffer so this live event drains
                 // AFTER the historical fold (correct order), never onto stale state.
@@ -359,7 +409,8 @@ final class DashboardStore {
 
     // MARK: Chat lifecycle (subscribe + view/unview)
 
-    /// On detail appear: subscribe (with lastSeq resume) + mark viewed (session_view).
+    /// On detail appear: subscribe (resuming from the last applied seq when we've seen
+    /// this session before, else a full replay) + mark viewed (session_view).
     func openSession(_ sid: String) async {
         viewedSessionId = sid
         sendFailures.removeValue(forKey: sid)
@@ -369,11 +420,24 @@ final class DashboardStore {
 
     func closeSession(_ sid: String) async {
         if viewedSessionId == sid { viewedSessionId = nil }
+        // Cluster 1: unsubscribe so an off-screen session STOPS receiving live events
+        // (unbounded memory + wasted work otherwise); session_unview is UI-only.
+        await safeSend(.unsubscribe(sessionId: sid))
         await safeSend(.sessionUnview(sessionId: sid))
     }
 
+    /// Subscribe with resume semantics (Cluster 1): `lastSeq = lastSeenSeq[sid]` — nil
+    /// on first open (→ full replay, reset-before-reduce), the last applied seq on
+    /// reopen/reconnect (→ the server sends only NEW events, no reset). Records whether
+    /// a full replay is expected so `.eventReplay` knows to reset.
     private func subscribe(_ sid: String) async {
-        await safeSend(.subscribe(sessionId: sid, lastSeq: nil))
+        let last = SeqLifecycle.subscribeLastSeq(lastSeen: lastSeenSeq[sid])
+        if SeqLifecycle.expectsFullReplay(lastSeq: last) {
+            expectingFullReplay.insert(sid)
+        } else {
+            expectingFullReplay.remove(sid)
+        }
+        await safeSend(.subscribe(sessionId: sid, lastSeq: last))
     }
 
     func chatState(_ sid: String) -> ChatSessionState { chatStates[sid] ?? ChatSessionState() }
