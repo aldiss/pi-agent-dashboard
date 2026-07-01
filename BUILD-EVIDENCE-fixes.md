@@ -265,3 +265,40 @@ faithful route+divergence proof is the vitest that drives the real fastify route
 
 **Held state:** 4 commits on `feat/dashboard-durability-integration` (`c2a6c9c`, `2014273`, `2ca70f5`, +W4).
 No push, no deploy, no prod-touch. §3-clean (no attribution). Baseline worktree-manager env-failure NOT chased.
+
+---
+
+## Pre-architect full-suite gate — regression caught + fixed (`bfb7006`)
+
+The pre-architect full-MONOREPO run surfaced ONE fix-caused regression (now fixed):
+
+- **`fork-empty-session-preflight.test.ts` (2 test cases)** — `TypeError: piGateway.address is not a function`
+  at `resolvePinDashboardUrl`. Root cause: Fix-11's `resolvePinDashboardUrl` called `piGateway.address()`
+  UNCONDITIONALLY, but its own JSDoc promised no-crash. The failing test passes `piGateway: {} as any` (a lean
+  mock predating Fix-11). The REAL resume caller (`session-api.ts` `resolvePinDashboardUrl(piGateway,
+  deps.serverPiPort)`) passes a real gateway, so prod was never broken — but the guard is the correct on-theme
+  fix (no-crash AND the pin still resolves via `serverPiPort`).
+  - **Fix (`bfb7006`):** `const addr = typeof piGateway?.address === "function" ? piGateway.address() :
+    undefined; const port = addr ?? serverPiPort;` — KEEPS `serverPiPort` fallback so the anti-cross-wire pin
+    still resolves whenever a runtime port exists (never silently drops to no-pin). +3 regression tests in
+    `harden-headless-resume-paths.test.ts` (no-crash on partial gateway; still resolves via serverPiPort;
+    undefined only when neither available). fork-empty-session-preflight → 6/6 green.
+
+**Authoritative full-MONOREPO classification (post-fix).** Server suite GREEN modulo the ONE known
+environmental failure. Every remaining full-monorepo failure is PRE-EXISTING baseline (git-show-confirmed at
+`a5fe3e6`; my diff `a5fe3e6..HEAD` adds ZERO `child_process`/`process.kill` and touches ZERO client files):
+
+| failing file | why it's NOT mine |
+|---|---|
+| `worktree-manager.test.ts` (1) | the brief's named KNOWN-ENVIRONMENTAL fail (git-worktree op misbehaves inside a worktree). "Do NOT chase." |
+| `no-direct-child-process.test.ts` (1) | flags `cc-pane-liveness.ts:21` — a row-hygiene BASELINE file I never touched. Line exists verbatim at `a5fe3e6`. |
+| `no-direct-process-kill.test.ts` (1) | flags `driver-liveness.ts:65` `process.kill(pid,0)` — BASELINE line (the `pidAlive` helper); my W4 diff added only `operatorPinnedName` fields, never that line. |
+| `ChatView.*` (client, 7) | client React/DOM tests; I touched ZERO `packages/client/**` files. |
+
+Verified own-hand: `git diff a5fe3e6 HEAD | grep '^+' | grep -E 'child_process|process\.kill('` → **zero**.
+Operator independently confirmed: server suite **2175 passed / 1 env-fail**, the 2 shared lints are
+pre-existing (allowlist byte-identical baseline→HEAD).
+
+**Held state (final):** 5 commits on `feat/dashboard-durability-integration` — `c2a6c9c` (Fix-10), `2014273`
+(Fix-11), `2ca70f5` (W1b), `b4aa286` (W4), `bfb7006` (Fix-11 follow-up guard). No push, no deploy, no
+prod-touch. §3-clean.
