@@ -379,6 +379,11 @@ export function registerSessionApi(fastify: FastifyInstance, deps: SessionApiDep
           sessionFile: session.sessionFile!,
           mode: "continue",
           strategy: "tmux",
+          // Fix-10: a session-resume MUST use the §19 interactive form or fail
+          // loudly — never silently degrade to the headless `--mode rpc`
+          // crash-form (the exact prod PATH-miss that motivated this).
+          // See change: fail-loud-interactive-resolve.
+          requireInteractive: true,
           ...(respawnAgentName ? { agentName: respawnAgentName } : {}),
           ...(pinDashboardUrl ? { pinDashboardUrl } : {}),
         });

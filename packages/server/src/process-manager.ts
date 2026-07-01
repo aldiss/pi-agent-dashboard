@@ -98,6 +98,23 @@ export interface SessionOptions {
    * SERVER's env, not this caller's). See change: pin-on-resurrect.
    */
   pinDashboardUrl?: string;
+  /**
+   * Fix-10 — fail-loud when an interactive strategy can't resolve its tool.
+   * When `true`, a spawn that RESOLVES to the headless mechanism (because the
+   * requested interactive tool — tmux / wt / wsl-tmux — is unavailable, OR
+   * because electron-mode forced headless) is REFUSED with a loud
+   * `INTERACTIVE_UNAVAILABLE` error instead of silently spawning the headless
+   * `--mode rpc` crash-form (the v1 form that crashed on the 12 MB log).
+   *
+   * Set by every pi-native session-RESUME path (the resurrect respawn, the
+   * REST/WS resume endpoints, prompt-auto-resume) — a real session-resume
+   * MUST use the §19 interactive form or fail loudly; it must NEVER silently
+   * degrade to the crash-form. Fresh spawns (no sessionFile) leave this unset:
+   * they carry no large log to crash on, so the graceful headless fallback is
+   * still correct for tmux-less hosts. Same no-silent-degradation discipline
+   * as the un-end verify-gate. See change: fail-loud-interactive-resolve.
+   */
+  requireInteractive?: boolean;
 }
 
 export interface SpawnResult {
@@ -363,6 +380,26 @@ function chooseMechanism(options?: SessionOptions, electronMode = false): SpawnM
   return "headless";
 }
 
+/**
+ * Fix-10 pure guard: given the resolved mechanism and whether the caller
+ * REQUIRED an interactive form, decide if the spawn must fail-loud.
+ *
+ * A `requireInteractive` caller that resolved to `headless` means the
+ * requested interactive tool (tmux / wt / wsl-tmux) could not be resolved on
+ * this host (or electron-mode forced headless). Silently spawning headless
+ * `--mode rpc` here is the exact v1 crash-form on a large session log — so we
+ * refuse. Any interactive mechanism (tmux/wt/wsl-tmux) is fine.
+ *
+ * Pure + exported so the decision is unit-testable without spawning.
+ * See change: fail-loud-interactive-resolve.
+ */
+export function interactiveResolutionFailed(
+  mechanism: SpawnMechanism,
+  requireInteractive: boolean | undefined,
+): boolean {
+  return requireInteractive === true && mechanism === "headless";
+}
+
 // ── Main entry point ───────────────────────────────────────────────────────
 
 export async function spawnPiSession(
@@ -401,6 +438,25 @@ export async function spawnPiSession(
   const opts: SessionOptions & { electronMode?: boolean } = { ...(options ?? {}), spawnToken };
 
   const mechanism = chooseMechanism(opts, opts?.electronMode ?? false);
+
+  // Fix-10 fail-loud gate: a session-RESUME caller (requireInteractive) that
+  // resolved to headless means the interactive tool couldn't be found. Refuse
+  // — never silently become the headless `--mode rpc` crash-form. Surfaced as
+  // a loud INTERACTIVE_UNAVAILABLE so the endpoint returns an error (not a
+  // silent degraded spawn). See change: fail-loud-interactive-resolve.
+  if (interactiveResolutionFailed(mechanism, opts.requireInteractive)) {
+    return {
+      success: false,
+      code: "INTERACTIVE_UNAVAILABLE",
+      cwd: spawnCwd,
+      spawnToken,
+      message:
+        "interactive session-resume required but no interactive terminal " +
+        "(tmux / Windows Terminal / WSL-tmux) could be resolved on this host. " +
+        "Refusing to silently spawn the headless `--mode rpc` form (the crash-form " +
+        "on large session logs). Install tmux (or Windows Terminal) and retry.",
+    };
+  }
 
   let result: SpawnResult;
   switch (mechanism) {
