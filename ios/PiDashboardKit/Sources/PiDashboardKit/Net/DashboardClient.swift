@@ -1,4 +1,9 @@
 import Foundation
+import os
+
+/// Diagnostic log for the WS client (Cluster 6) — malformed / oversize frames are
+/// logged here (never silently swallowed) so a data issue is debuggable.
+private let clientLog = Logger(subsystem: "technology.blackbelt.pidashboard", category: "ws-client")
 
 public enum DashboardClientError: Error, Sendable {
     case notConnected
@@ -199,9 +204,25 @@ public actor DashboardClient {
         keepalive?.recordActivity(at: nowSeconds())
     }
 
+    /// Decode a WS text frame → `ServerMessage` and yield it. Cluster 6 boundary
+    /// robustness: (1) an ABSURDLY large frame is skipped BEFORE decode so a multi-MB
+    /// payload can't blow memory; (2) a malformed frame is LOGGED + skipped, never
+    /// crashing the stream (a bad frame must not take down live monitoring). Most
+    /// partial garble already DEGRADES inside the resilient decoders (unknown type →
+    /// `.unknown`, bad event → raw), so a true drop here is rare.
     private func emit(_ data: Data) {
-        guard let msg = try? JSONDecoder().decode(ServerMessage.self, from: data) else { return }
-        continuation?.yield(msg)
+        guard PayloadCap.frameWithinBudget(data.count) else {
+            clientLog.error("dropping oversize WS frame: \(data.count) bytes > \(PayloadCap.maxFrameBytes)")
+            return
+        }
+        do {
+            let msg = try JSONDecoder().decode(ServerMessage.self, from: data)
+            continuation?.yield(msg)
+        } catch {
+            // Skip + log — the resilient decoders mean this is only reached by a frame
+            // that isn't even a JSON object; never a crash.
+            clientLog.error("skipping undecodable WS frame (\(data.count) bytes): \(error.localizedDescription)")
+        }
     }
 }
 

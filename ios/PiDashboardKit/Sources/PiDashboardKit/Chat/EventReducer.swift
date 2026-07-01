@@ -314,7 +314,7 @@ public struct ChatSessionState: Sendable, Equatable {
                         next.messages.append(ChatMessage(
                             id: "thinking-\(next.messages.count)", role: .thinking,
                             content: next.streamingThinking, timestamp: ts,
-                            startedAt: started, duration: started.map { ts - $0 }))
+                            startedAt: started, duration: started.map { max(0, ts - $0) }))
                     }
                     next.streamingThinking = ""
                     next.thinkingStartedAt = nil
@@ -403,7 +403,7 @@ public struct ChatSessionState: Sendable, Equatable {
                     next.messages[idx].result = ChatSessionState.truncateForDisplay(result, maxLines: 30, maxChars: 20_000)
                 }
                 if let started = next.messages[idx].startedAt {
-                    next.messages[idx].duration = ts - started
+                    next.messages[idx].duration = max(0, ts - started) // clamp clock-skew negatives
                 }
                 if let images = ChatSessionState.extractImages(data["images"]) {
                     next.messages[idx].images = images
