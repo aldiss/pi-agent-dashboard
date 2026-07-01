@@ -100,6 +100,19 @@ public actor DashboardClient {
         try await send(.abort(sessionId: sessionId))
     }
 
+    /// Resume (continue) an ended session — the browser-protocol `resume_session`
+    /// control (`ResumeSessionBrowserMessage`). `mode` defaults to `"continue"` (the
+    /// respawn keeps the same sessionId); `"fork"` is out of scope for this
+    /// increment. `placement` is omitted so the server applies its `"front"` default
+    /// (the Resume-button trigger). The server sets the session `resuming: true` and
+    /// broadcasts a `session_updated` delta, then clears it on failure/timeout or
+    /// once the respawned bridge re-registers. Throws `.notConnected` on a dead
+    /// socket (no silent drop).
+    public func resume(sessionId: String, mode: String = "continue",
+                       requestId: String? = nil) async throws {
+        try await send(.resumeSession(sessionId: sessionId, mode: mode, requestId: requestId))
+    }
+
     /// Receive loop bound to the socket it was started for. Every write to shared
     /// actor state is gated on `socket === task`; a superseded loop (post-reconnect)
     /// exits silently without touching the live socket's `state`/`continuation`.

@@ -13,6 +13,7 @@ public struct SessionPatch: Codable, Sendable, Equatable {
     public var endedAt: Double?
     public var lastActivityAt: Double?
     public var unread: Bool?
+    public var resuming: Bool?
     public var tokensIn: Double?
     public var tokensOut: Double?
     public var cacheRead: Double?
@@ -43,6 +44,7 @@ public struct SessionPatch: Codable, Sendable, Equatable {
         if let v = endedAt { s.endedAt = v }
         if let v = lastActivityAt { s.lastActivityAt = v }
         if let v = unread { s.unread = v }
+        if let v = resuming { s.resuming = v }
         if let v = tokensIn { s.tokensIn = v }
         if let v = tokensOut { s.tokensOut = v }
         if let v = cacheRead { s.cacheRead = v }

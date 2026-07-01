@@ -93,6 +93,7 @@ struct CardPulseOverlay: View {
 struct SessionCard: View {
     let session: DashboardSession
     @Environment(\.theme) private var theme
+    @Environment(DashboardStore.self) private var store
 
     private var pulseKind: CardPulseKind { DashboardTheme.cardPulseKind(session) }
 
@@ -138,6 +139,8 @@ struct SessionCard: View {
                 processList
 
                 gitAndAgeRow
+
+                resumeRow
             }
             .padding(12)
         }
@@ -239,6 +242,43 @@ struct SessionCard: View {
             .padding(.vertical, 2)
             .background(tint.opacity(0.14))
             .clipShape(Capsule())
+    }
+
+    // MARK: resume (ended-only control) — the app's second control action
+
+    /// Resume affordance shown ONLY on an ended session (the server rejects
+    /// `resume_session{continue}` unless status == "ended"). Tap → `store.resume`;
+    /// reflects the optimistic + server-truth "Resuming…" state until the respawn
+    /// registers. Green accent (reuses color-1 statusActive — a session coming back
+    /// to life). a11y ids use the `card-` prefix so the qa-e2e session-card- counter
+    /// is never miscounted.
+    @ViewBuilder private var resumeRow: some View {
+        if session.status == "ended" {
+            HStack {
+                Spacer(minLength: 0)
+                if store.isResuming(session.id) {
+                    HStack(spacing: 5) {
+                        ProgressView().controlSize(.mini).tint(theme.statusActive)
+                        Text("Resuming…").font(.caption2).foregroundStyle(theme.statusActive)
+                    }
+                    .accessibilityIdentifier("card-resume-pending")
+                } else {
+                    Button {
+                        Task { await store.resume(session.id) }
+                    } label: {
+                        Label("Resume", systemImage: "play.circle")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(theme.statusActive)
+                            .padding(.horizontal, 9)
+                            .padding(.vertical, 3)
+                            .background(theme.statusActive.opacity(0.14))
+                            .clipShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("card-resume-button")
+                }
+            }
+        }
     }
 
     @ViewBuilder private var driverRow: some View {

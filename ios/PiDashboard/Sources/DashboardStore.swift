@@ -54,6 +54,10 @@ final class DashboardStore {
     /// Sessions with an in-flight abort (optimistic "stopping…" state). Cleared when
     /// the server confirms the stop via a status→idle/ended `session_updated` delta.
     private(set) var aborting: Set<String> = []
+    /// Sessions with an in-flight resume (optimistic "resuming…" state) for instant
+    /// feedback before the server's `session_updated{resuming:true}` lands. Cleared
+    /// when the server settles it (resuming→false, or the session leaves `ended`).
+    private(set) var resumingLocal: Set<String> = []
     /// sessionId → available models (populated by `models_list` after requestModels).
     private(set) var availableModels: [String: [ModelInfo]] = [:]
     /// sessionId currently on screen — drives session_view/unview.
@@ -207,10 +211,18 @@ final class DashboardStore {
             if aborting.contains(sid), let st = sessions[sid]?.status, st == "idle" || st == "ended" {
                 aborting.remove(sid)
             }
+            // Resume settled: the server cleared `resuming` (failure/timeout) OR the
+            // session left `ended` (respawn registered → active/streaming/idle) →
+            // clear the optimistic "resuming…" flag.
+            if resumingLocal.contains(sid), let s = sessions[sid],
+               s.resuming != true || (s.status != nil && s.status != "ended") {
+                resumingLocal.remove(sid)
+            }
 
         case .sessionRemoved(let sid):
             sessions.removeValue(forKey: sid)
             aborting.remove(sid)
+            resumingLocal.remove(sid)
 
         case .sessionsReordered(let cwd, let ids):
             orders[cwd] = ids
@@ -350,6 +362,41 @@ final class DashboardStore {
 
     /// Whether an abort is in flight for `sid` (drives the "Stopping…" UI).
     func isAborting(_ sid: String) -> Bool { aborting.contains(sid) }
+
+    /// Resume (continue) an ended session — the app's second control action.
+    /// Optimistically flips to a "resuming…" state, then sends the browser-protocol
+    /// `resume_session` (mode "continue") via the client's `resume` convenience. The
+    /// server sets `resuming: true` and later settles it (resuming→false, or the
+    /// session leaves `ended`), which clears the local flag in `apply`. On a send
+    /// throw the optimistic flag is rolled back so the button re-arms. UITest is a
+    /// no-op. RESUME only — fork/spawn are separate controls.
+    func resume(_ sid: String) async {
+        guard !isUITest else { return }
+        resumingLocal.insert(sid)
+        do {
+            try await client.resume(sessionId: sid)
+        } catch {
+            resumingLocal.remove(sid) // send failed — re-arm the Resume button
+            return
+        }
+        // Safety timeout: the server's early-failure replies (not found / no session
+        // file / already active) come back as `resume_result` WITHOUT a
+        // `session_updated{resuming:true}` broadcast — so the apply() clear-path can't
+        // fire. Auto-clear the optimistic flag after a grace window UNLESS the server
+        // took ownership (session.resuming == true, which keeps isResuming true on its
+        // own). Mirrors the server's own resume-timeout discipline.
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(8))
+            guard let self else { return }
+            if self.sessions[sid]?.resuming != true { self.resumingLocal.remove(sid) }
+        }
+    }
+
+    /// Whether a resume is in flight for `sid` — the optimistic local flag OR the
+    /// server-truth `resuming` field (drives the "Resuming…" UI).
+    func isResuming(_ sid: String) -> Bool {
+        resumingLocal.contains(sid) || sessions[sid]?.resuming == true
+    }
 
     /// Retry a `failed` queued follow-up: drop the failed card, re-send the text as a
     /// fresh queued entry (new nonce). No-op if the nonce isn't a failed queued entry.

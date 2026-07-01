@@ -103,6 +103,10 @@ public struct DashboardSession: Codable, Sendable, Identifiable, Equatable {
     public var endedAt: Double?
     public var lastActivityAt: Double?
     public var unread: Bool?
+    /// Server-driven resume-in-flight flag (set true by `handleResumeSession`, cleared
+    /// on failure/timeout, and false once the respawned bridge re-registers). The
+    /// native card reflects it as the "Resuming…" state.
+    public var resuming: Bool?
     public var tokensIn: Double?
     public var tokensOut: Double?
     public var cacheRead: Double?
