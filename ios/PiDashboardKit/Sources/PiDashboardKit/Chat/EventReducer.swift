@@ -494,6 +494,15 @@ public struct ChatSessionState: Sendable, Equatable {
         case "turn_end":
             break
 
+        case "turn_start", "turn_created":
+            // Pure-noise turn-lifecycle markers carrying no renderable content. The
+            // default arm below would otherwise emit a `.rawEvent` row per event —
+            // the operator's "empty tool_call / turn_start rows". Suppress entirely
+            // (emit NO row); `turn_end` already breaks. Genuinely-unknown events
+            // still fall through to the `.rawEvent` default (hidden by the
+            // systemNotifications filter, available when toggled on for debug).
+            break
+
         default:
             // Unknown event → expandable raw JSON row (mirrors the reducer default).
             next.messages.append(ChatMessage(

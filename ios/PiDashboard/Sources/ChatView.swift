@@ -18,13 +18,32 @@ struct ChatView: View {
     @State private var showModelPicker = false
     @State private var lightboxImage: UIImage?
     @State private var showAbortConfirm = false
+    /// Active message-type filter for this session (per-session override → app
+    /// default → canonical). Loaded on appear, persisted per session on change.
+    @State private var messageFilter: MessageFilter = .default
+    /// Whether the 6-pill filter controls row is expanded under the header.
+    @State private var showFilterControls = false
 
     private var state: ChatSessionState { store.chatState(sessionId) }
     private var session: DashboardSession? { store.sessions[sessionId] }
 
+    /// The rows actually rendered: the reduced messages passed through the active
+    /// message-type filter (tool spam / thinking / raw lifecycle hidden by default).
+    private var filteredMessages: [ChatMessage] {
+        MessageClassifier.filter(state.messages, messageFilter)
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             sendFailureBanner
+            if showFilterControls {
+                MessageFilterControls(
+                    filter: messageFilter,
+                    counts: MessageClassifier.counts(state.messages),
+                    onChange: updateFilter,
+                    onReset: { updateFilter(.default) },
+                    onSetDefault: { MessageFilterStore.saveDefault(messageFilter) })
+            }
             messages
             queuedCards
             AdaptiveComposer(
@@ -56,6 +75,7 @@ struct ChatView: View {
                 }
                 .accessibilityIdentifier("chat-model-button")
             }
+            filterToolbarItem
             abortToolbarItem
         }
         .confirmationDialog("Stop this session?", isPresented: $showAbortConfirm, titleVisibility: .visible) {
@@ -77,8 +97,50 @@ struct ChatView: View {
             ImageLightbox(image: item.image) { lightboxImage = nil }
                 .background(BackdropClearBackground())
         }
-        .task { await store.openSession(sessionId) }
+        .task {
+            messageFilter = MessageFilterStore.load(sessionId)
+            await store.openSession(sessionId)
+        }
         .onDisappear { Task { await store.closeSession(sessionId) } }
+    }
+
+    /// Apply a new filter: update local state + persist the per-session override.
+    private func updateFilter(_ next: MessageFilter) {
+        messageFilter = next
+        MessageFilterStore.save(sessionId, next)
+    }
+
+    /// Leading toolbar button toggling the message-type filter pill row. A dot badge
+    /// marks a non-default (active) filter so the operator knows rows are hidden.
+    @ToolbarContentBuilder private var filterToolbarItem: some ToolbarContent {
+        ToolbarItem(placement: .topBarLeading) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.15)) { showFilterControls.toggle() }
+            } label: {
+                Image(systemName: messageFilter.isDefault
+                      ? "line.3.horizontal.decrease.circle"
+                      : "line.3.horizontal.decrease.circle.fill")
+                    .foregroundStyle(messageFilter.isDefault ? theme.textSecondary : theme.accentBlue)
+            }
+            .accessibilityIdentifier("chat-filter-button")
+        }
+    }
+
+    /// Shown when a filter has hidden every row (all messages fell into OFF
+    /// categories) — distinguishes "nothing to show yet" from "filtered out".
+    private var filteredEmptyState: some View {
+        VStack(spacing: 8) {
+            Image(systemName: "line.3.horizontal.decrease.circle")
+                .font(.largeTitle).foregroundStyle(theme.textTertiary)
+            Text("All messages hidden by the filter")
+                .font(.callout).foregroundStyle(theme.textSecondary)
+            Button("Reset filter") { updateFilter(.default) }
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(theme.accentBlue)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.top, 60)
+        .accessibilityIdentifier("chat-filter-empty")
     }
 
     /// Wrap the optional lightbox UIImage as an Identifiable item for `fullScreenCover(item:)`.
@@ -125,8 +187,10 @@ struct ChatView: View {
                     LazyVStack(alignment: .leading, spacing: 10) {
                         if state.messages.isEmpty {
                             emptyState
+                        } else if filteredMessages.isEmpty {
+                            filteredEmptyState
                         } else {
-                            ForEach(state.messages) { message in
+                            ForEach(filteredMessages) { message in
                                 ChatMessageRow(message: message) { ui in lightboxImage = ui }
                                     .id(message.id)
                             }
