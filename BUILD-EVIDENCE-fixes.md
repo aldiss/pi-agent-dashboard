@@ -134,3 +134,59 @@ silently degrading.
 
 ### Regression after Fix-11: **155/155** (142 + 9 new + 4 spawn-handler) + **60/60** resume/handler suites
 (incl. `auto-resume.test.ts` which exercises the converted `handleSendPrompt`). Zero regressions.
+
+---
+
+## W1b — `bridge_disconnect_reason` field (ROOT-CAUSE Gap #4)
+
+**Closes.** The dashboard recorded "no bridge" (502) but never WHY (heartbeat-timeout vs cross-wire vs
+process-gone vs clean-shutdown). The liveness display lied three times in one night (Cartographer "down",
+Joan `:9999=0`, UnendFinisher "stuck") — an undiscriminated app-registration flap vs a TCP-stable busy bridge.
+
+**Anchor-mismatch surfaced (as the brief asked).** The brief calls `onDisconnect` "wired with no reason". In
+fact **`onDisconnect` had ZERO consumers anywhere** — a fully dead hook (`grep` confirmed: declared in
+pi-gateway, assigned nowhere). So W1b both threads the reason AND wires a fresh consumer.
+
+**Fix (own-hand).**
+- `packages/shared/src/types.ts` — `BridgeDisconnectReason` enum
+  (`heartbeat-timeout|cross-wire|process-gone|clean-shutdown|unknown`); `unknown` mandatory + fail-loud. Two
+  new `DashboardSession` fields: `bridgeDisconnectReason`, `bridgeDisconnectAt`.
+- `packages/shared/src/bridge-disconnect-classifier.ts` — pure `classifyBridgeDisconnect(signals)`.
+  Precedence: cross-wire > clean-shutdown > heartbeat-timeout > process-gone > unknown. Never blank.
+- `packages/server/src/pi-gateway.ts` — `onDisconnect` signature → `(sessionId, reason)`; gathers signals at
+  the `ws.on("close")` origin (close code, ping-miss count ≥ threshold, pid kill-0, cross-wire displacement)
+  and classifies. Cross-wire displacement tracked via a `crossWiredSockets` set populated when a newer
+  registration displaces a still-open socket for the same session id.
+  - **Bug found + fixed mid-build (harness caught it):** the first cross-wire attempt mis-read as
+    `clean-shutdown`. Root cause — a bridge whose FIRST message is `session_register` hits the
+    `!currentSessionId` identity block, which did `connections.set(sid, ws)` BEFORE the register block's
+    displacement check ran, masking the prior socket. Fix: detect displacement at BOTH entry points (the
+    first-message identity block AND the session_register block), capturing the prior socket before overwrite.
+- `packages/server/src/event-wiring.ts` — the fresh consumer: persists reason + `Date.now()`, broadcasts
+  `session_updated`, and logs LOUD on `unknown` (recorded, never blank).
+- `packages/server/src/session-api.ts` — the bridgeless-502 prompt surface now says WHY:
+  `"no bridge connection for session (last disconnect: <reason>)"`.
+
+### Test (unit) — 20/20 green
+- `packages/shared/src/__tests__/bridge-disconnect-classifier.test.ts` — each class → its reason; full
+  precedence table; a brute-force sweep asserting EVERY signal combination yields a non-empty valid reason
+  (fail-loud contract).
+- `packages/server/src/__tests__/bridge-disconnect-reason.test.ts` — consumer persist+broadcast; `unknown`
+  recorded-not-blank + logged; no-op when row already gone; the bridgeless-502 "says WHY" surface.
+
+### Falsifiable harness acceptance (live on :8002 via a protocol-speaking WS probe)
+A tiny WS client registers a session on the test gateway, then closes with a chosen code to induce each class.
+
+| class | how induced | row `bridgeDisconnectReason` | gateway log |
+|---|---|---|---|
+| **clean-shutdown** | WS close 1000 | `'clean-shutdown'` + timestamp | `reason=clean-shutdown (code=1000 misses=0 crossWire=false)` |
+| **unknown** | WS close 4999 (non-clean, no misses, no pid) | `'unknown'` (non-blank) | `reason=unknown …` + `[event-wiring] … UNKNOWN … recorded (never blank) but undeterminable; investigate` |
+| **cross-wire** | probe A holds sid; probe B registers SAME sid (displaces A); A then closes with **1000** | final row `'cross-wire'` | A: `reason=cross-wire (code=1000 … crossWire=true)`; B: `reason=clean-shutdown` |
+
+The cross-wire case is the strong falsifiable one: A closed with a **clean** 1000 code, yet classified
+`cross-wire` — proving precedence (displacement beats the clean code), not just a code lookup. `heartbeat-
+timeout` (180 s ping cycle) + `process-gone` (real pid death mid-session) are slow/racy to drive live but are
+deterministically covered by the classifier unit sweep.
+
+### Regression after W1b: **193/193** across 13 suites (adds classifier + consumer + gateway neighbors). Zero regressions.
+No source consumer relied on the old `onDisconnect` arity (only a stale `dist/*.d.ts` build artifact, unused by jiti/vitest).

@@ -126,6 +126,31 @@ export function wireEvents(deps: EventWiringDeps): void {
     });
   };
 
+  // W1b — persist WHY the bridge disconnected (ROOT-CAUSE Gap #4). The
+  // pi-gateway classifies the disconnect origin into a first-class reason;
+  // record it (+ timestamp) on the row and broadcast so the bridgeless-502
+  // surface can say WHY, not just "no bridge". `unknown` is fail-loud: it is
+  // still recorded (never blank) AND logged as an anomaly for investigation.
+  // See change: bridge-disconnect-reason.
+  piGateway.onDisconnect = (sessionId, reason) => {
+    // Only stamp rows the manager still tracks (a temporary disconnect keeps
+    // the row; heartbeat-timeout may unregister it later). If it's already
+    // gone, there's nothing to annotate.
+    if (!sessionManager.get(sessionId)) return;
+    const updates: Partial<DashboardSession> = {
+      bridgeDisconnectReason: reason,
+      bridgeDisconnectAt: Date.now(),
+    };
+    sessionManager.update(sessionId, updates);
+    browserGateway.broadcastSessionUpdated(sessionId, updates);
+    if (reason === "unknown") {
+      console.warn(
+        `[event-wiring] bridge disconnect reason UNKNOWN for ${sessionId} — ` +
+        `recorded (never blank) but undeterminable; investigate (W1b fail-loud).`,
+      );
+    }
+  };
+
   // Broadcast session ended to browsers when sessions are unregistered
   sessionManager.onUnregister = (sessionId) => {
     const session = sessionManager.get(sessionId);

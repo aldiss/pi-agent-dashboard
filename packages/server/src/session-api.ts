@@ -231,7 +231,17 @@ export function registerSessionApi(fastify: FastifyInstance, deps: SessionApiDep
       });
       if (!sent) {
         reply.code(502);
-        return { success: false, error: "no bridge connection for session" } satisfies ApiResponse;
+        // W1b: surface WHY there's no bridge, not just THAT there isn't one.
+        // The recorded disconnect reason (heartbeat-timeout / cross-wire /
+        // process-gone / clean-shutdown / unknown) turns an opaque 502 into an
+        // actionable one. See change: bridge-disconnect-reason.
+        const why = result.session.bridgeDisconnectReason;
+        return {
+          success: false,
+          error: why
+            ? `no bridge connection for session (last disconnect: ${why})`
+            : "no bridge connection for session",
+        } satisfies ApiResponse;
       }
       return { success: true } satisfies ApiResponse;
     },
