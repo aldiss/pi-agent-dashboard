@@ -302,3 +302,35 @@ pre-existing (allowlist byte-identical baseline→HEAD).
 **Held state (final):** 5 commits on `feat/dashboard-durability-integration` — `c2a6c9c` (Fix-10), `2014273`
 (Fix-11), `2ca70f5` (W1b), `b4aa286` (W4), `bfb7006` (Fix-11 follow-up guard). No push, no deploy, no
 prod-touch. §3-clean.
+
+---
+
+## Final bill-of-health (operator-confirmed categorization, 2026-07-01)
+
+Both build-side (this session) and operator's independent own-hand verification agree: **the 4 fixes are
+CLEAN.** Every non-green test in the full monorepo is PRE-EXISTING baseline or environmental — none traces to
+Fix-10 / Fix-11 / W1b / W4.
+
+| scope | result | attribution |
+|---|---|---|
+| **Server** (`packages/server`) | GREEN modulo `worktree-manager` env-fail — **2175 pass** | fork-empty-session fix landed; the 4 fixes clean |
+| **Shared** (`packages/shared`) | 2 guard-lint fails — `no-direct-child-process` (`cc-pane-liveness.ts`), `no-direct-process-kill` (`driver-liveness.ts`) | **PRE-EXISTING baseline** (un-end + row-hygiene; allowlist byte-identical baseline→HEAD; already in prod). OUT OF SCOPE. |
+| **Client** (`packages/client`) | 7 `ChatView`-render fails | **PRE-EXISTING / environmental**. My fixes touch ZERO client files; the `browser-protocol` additions are compile-time-only union members (erased at runtime), and `ChatView` never references them. OUT OF SCOPE. |
+| **Extension** (`packages/extension`) | **all 680 green** | — |
+
+**Per-fix bill:** each fix is server-suite-green (modulo the named worktree-manager env-fail) AND ships its
+own new tests green — Fix-10 **7/7**, Fix-11 **9 (+3 guard) /12**, W1b **20/20**, W4 **15/15** (13 unit + 2
+route). Cumulative per-fix regression floors held monotonically: 135 → 142 → 155 → 193 → 200.
+
+**Out-of-scope baseline debt (NOT this session's to fix — routed separately to Joan / Bert):**
+- `no-direct-child-process` on `cc-pane-liveness.ts:21` (row-hygiene baseline file, never fix-touched).
+- `no-direct-process-kill` on `driver-liveness.ts:65` `process.kill(pid,0)` (baseline `pidAlive` helper; W4
+  added only `operatorPinnedName` fields, never that line).
+- `worktree-manager.test.ts` (git-worktree op inside a worktree — the brief's named "do NOT chase").
+- 7 `ChatView.*` client render tests (pre-existing/environmental, zero client-file overlap).
+
+These are un-end + row-hygiene baseline issues already living in prod, tracked outside this build. This
+session does NOT touch them.
+
+**STATUS: build complete, harness-green + evidence. Held for the gate chain — DisasterReplay review → Bert +
+Alice d22 architect-review → Pete strict-spec QA → Joan prod-gate → operator-authorize. No prod-touch.**
