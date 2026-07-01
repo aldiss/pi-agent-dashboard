@@ -92,6 +92,85 @@ public enum SessionGrouping {
         }
     }
 
+    /// Hide ENDED sessions (the DF#2 declutter — old crew tenures flood the list).
+    /// Default-on filter, mirrored by a "Hide ended" toggle. The currently-viewed
+    /// session is always preserved (so an open ended chat doesn't vanish). `hideEnded
+    /// == false` → pass everything through. Pure.
+    public static func filterEnded(_ sessions: [DashboardSession], hideEnded: Bool,
+                                   selectedId: String? = nil) -> [DashboardSession] {
+        if !hideEnded { return sessions }
+        return sessions.filter { s in
+            if s.id == selectedId { return true }
+            return s.status != "ended"
+        }
+    }
+
+    /// The standing-crew canonical names — same set the tier classifier anchors on.
+    private static let crewNames = ["Bert", "Joan", "Peggy", "Lane", "Pete", "Faye", "Don", "Alice"]
+
+    /// Collapse key that folds repeated tenures of the same entity into one bucket:
+    /// a standing-crew canonical name (`Joan` from `Joan-tenure-23`, `Don` from
+    /// `Don — Don tenure-4 …`) via the crew regex (anchored, non-letter boundary so
+    /// `Donna`/`Petersen` do NOT match), else the full trimmed name. Lowercased for
+    /// case-insensitive folding; empty name → the session id (never collapses).
+    public static func canonicalNameKey(_ session: DashboardSession) -> String {
+        let name = (session.name ?? "").trimmingCharacters(in: .whitespaces)
+        if name.isEmpty { return session.id }
+        for crew in crewNames {
+            // ^crew followed by a non-letter boundary (or end) → canonical crew name.
+            if matches(name, "^\(crew)(?![A-Za-z])", caseInsensitive: true) {
+                return crew.lowercased()
+            }
+        }
+        return name.lowercased()
+    }
+
+    /// One collapsed row: the most-recent session for a canonical name, plus how many
+    /// OLDER same-name sessions it folds (drives the "+N" badge) and their ids.
+    public struct CollapsedSession: Sendable, Equatable, Identifiable {
+        public let session: DashboardSession
+        public let olderCount: Int
+        public let olderIds: [String]
+        public var id: String { session.id }
+        public init(session: DashboardSession, olderCount: Int, olderIds: [String]) {
+            self.session = session; self.olderCount = olderCount; self.olderIds = olderIds
+        }
+    }
+
+    /// Recency of a session for collapse ordering: `lastActivityAt ?? startedAt ?? 0`.
+    private static func recency(_ s: DashboardSession) -> Double {
+        max(s.lastActivityAt ?? 0, s.startedAt ?? 0)
+    }
+
+    /// Collapse same-canonical-name sessions to ONE row each — the most-recent by
+    /// recency (tie-break: id descending, deterministic) — folding older tenures into
+    /// a `+N` count. Output preserves the FIRST-seen order of the surviving rows (so
+    /// the caller's prior server-order sort is respected). The selected session, when
+    /// it's an OLDER tenure, is promoted to be the surviving row for its name so an
+    /// open chat never hides behind a newer sibling. Pure + deterministic.
+    public static func collapseSameName(_ sessions: [DashboardSession],
+                                        selectedId: String? = nil) -> [CollapsedSession] {
+        var order: [String] = []                       // canonical keys in first-seen order
+        var buckets: [String: [DashboardSession]] = [:]
+        for s in sessions {
+            let key = canonicalNameKey(s)
+            if buckets[key] == nil { order.append(key) }
+            buckets[key, default: []].append(s)
+        }
+        return order.map { key in
+            let group = buckets[key]!
+            // Winner: the selected session if present in this bucket, else most-recent
+            // (recency desc, then id desc — total + deterministic).
+            let winner = group.first { $0.id == selectedId }
+                ?? group.max { a, b in
+                    recency(a) != recency(b) ? recency(a) < recency(b) : a.id < b.id
+                }!
+            let older = group.filter { $0.id != winner.id }
+            return CollapsedSession(session: winner, olderCount: older.count,
+                                    olderIds: older.map { $0.id })
+        }
+    }
+
     /// Case-insensitive substring search over the string the card actually shows
     /// (name → firstMessage → cwd basename). Mirrors `filterByQuery`.
     public static func filterByQuery(_ sessions: [DashboardSession], _ query: String) -> [DashboardSession] {

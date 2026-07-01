@@ -44,6 +44,11 @@ final class DashboardStore {
     var folders = true
     var hideStale = false
     var showHidden = false
+    /// Hide ENDED sessions (DF#2 declutter). Default ON — old crew tenures flood the
+    /// list. Persisted (unlike the other in-memory toggles) so it survives launches.
+    var hideEnded = ListPrefsStore.loadHideEnded() {
+        didSet { ListPrefsStore.saveHideEnded(hideEnded) }
+    }
     var staleHoursThreshold: Double = 12
     var search = ""
 
@@ -276,6 +281,7 @@ final class DashboardStore {
         var visible = SessionGrouping.filterSessions(Array(sessions.values), activeOnly: false, showHidden: showHidden)
         visible = SessionGrouping.filterStale(visible, staleHoursThreshold: staleHoursThreshold,
                                               hideStale: hideStale, now: now, selectedId: viewedSessionId)
+        visible = SessionGrouping.filterEnded(visible, hideEnded: hideEnded, selectedId: viewedSessionId)
         visible = SessionGrouping.filterByQuery(visible, search)
         return SessionGrouping.groupByTier(visible).map { tier, tierSessions in
             TierSection(

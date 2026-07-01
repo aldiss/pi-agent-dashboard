@@ -52,11 +52,13 @@ struct SessionListView: View {
             .background(theme.bgTertiary)
             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
 
-            HStack(spacing: 8) {
-                toggleChip("Folders", isOn: store.folders, id: "toggle-folders") { store.folders.toggle() }
-                toggleChip("Hide stale", isOn: store.hideStale, id: "toggle-hide-stale") { store.hideStale.toggle() }
-                toggleChip("Hidden", isOn: store.showHidden, id: "toggle-show-hidden") { store.showHidden.toggle() }
-                Spacer()
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    toggleChip("Folders", isOn: store.folders, id: "toggle-folders") { store.folders.toggle() }
+                    toggleChip("Hide ended", isOn: store.hideEnded, id: "toggle-hide-ended") { store.hideEnded.toggle() }
+                    toggleChip("Hide stale", isOn: store.hideStale, id: "toggle-hide-stale") { store.hideStale.toggle() }
+                    toggleChip("Hidden", isOn: store.showHidden, id: "toggle-show-hidden") { store.showHidden.toggle() }
+                }
             }
         }
     }
@@ -117,14 +119,28 @@ struct SessionListView: View {
                 .padding(.horizontal, 4)
                 .accessibilityIdentifier("dir-group-\(group.basename)")
             }
-            ForEach(group.sessions) { session in
+            ForEach(SessionGrouping.collapseSameName(group.sessions, selectedId: store.viewedSessionId)) { collapsed in
                 NavigationLink {
-                    ChatView(sessionId: session.id, title: session.displayName)
+                    ChatView(sessionId: collapsed.session.id, title: collapsed.session.displayName)
                 } label: {
-                    SessionCard(session: session)
+                    SessionCard(session: collapsed.session)
+                        .overlay(alignment: .topTrailing) {
+                            if collapsed.olderCount > 0 {
+                                Text("+\(collapsed.olderCount)")
+                                    .font(.caption2.weight(.semibold))
+                                    .foregroundStyle(theme.textSecondary)
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 2)
+                                    .background(theme.bgSurface)
+                                    .clipShape(Capsule())
+                                    .overlay(Capsule().stroke(theme.borderPrimary, lineWidth: 1))
+                                    .padding(6)
+                                    .accessibilityIdentifier("card-collapsed-count-\(collapsed.session.id)")
+                            }
+                        }
                 }
                 .buttonStyle(.plain)
-                .accessibilityIdentifier("session-card-\(session.id)")
+                .accessibilityIdentifier("session-card-\(collapsed.session.id)")
             }
         }
     }
