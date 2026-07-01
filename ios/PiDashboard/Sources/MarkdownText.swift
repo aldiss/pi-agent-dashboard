@@ -8,11 +8,34 @@ import PiDashboardKit
 /// keyword violet, string green, comment gray, number orange, type cyan — so code
 /// reads as a real theme on dark rather than monochrome. `Theme` is a plain value
 /// captured at construction (no environment access needed inside the fence).
+///
+/// PERF (DF#5): tokenizing is the per-render hot-path (re-runs every time a code row
+/// re-renders / scrolls into view). The pure `tokenize(code, language)` result is
+/// cached by a content-hash key in a process-wide `NSCache`, so a given fence is
+/// tokenized ONCE regardless of how many times it renders. Only the cheap `Text`
+/// assembly (theme-colored) runs per call.
 struct DashboardSyntaxHighlighter: CodeSyntaxHighlighter {
     let theme: Theme
 
-    func highlightCode(_ code: String, language: String?) -> Text {
+    /// Process-wide token cache keyed by `<lang>\n<code>` hash. `NSCache` auto-evicts
+    /// under memory pressure. Boxed because `NSCache` needs class values.
+    private static let tokenCache = NSCache<NSString, TokenBox>()
+
+    private final class TokenBox {
+        let tokens: [SyntaxToken]
+        init(_ tokens: [SyntaxToken]) { self.tokens = tokens }
+    }
+
+    private static func cachedTokens(_ code: String, _ language: String?) -> [SyntaxToken] {
+        let key = "\(language ?? "")\n\(code)" as NSString
+        if let hit = tokenCache.object(forKey: key) { return hit.tokens }
         let tokens = SyntaxHighlighter.tokenize(code, language: language)
+        tokenCache.setObject(TokenBox(tokens), forKey: key)
+        return tokens
+    }
+
+    func highlightCode(_ code: String, language: String?) -> Text {
+        let tokens = Self.cachedTokens(code, language)
         guard !tokens.isEmpty else { return Text(code) }
         return tokens.reduce(Text("")) { acc, token in
             acc + Text(token.text).foregroundColor(theme.syntaxColor(token.kind))

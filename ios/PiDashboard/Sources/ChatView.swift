@@ -23,6 +23,9 @@ struct ChatView: View {
     @State private var messageFilter: MessageFilter = .default
     /// Whether the 6-pill filter controls row is expanded under the header.
     @State private var showFilterControls = false
+    /// Perf (DF#5): render only the most-recent window of history until the operator
+    /// taps "Load earlier". A large session shows ~175 rows on open, not thousands.
+    @State private var showAllHistory = false
 
     private var state: ChatSessionState { store.chatState(sessionId) }
     private var session: DashboardSession? { store.sessions[sessionId] }
@@ -31,6 +34,11 @@ struct ChatView: View {
     /// message-type filter (tool spam / thinking / raw lifecycle hidden by default).
     private var filteredMessages: [ChatMessage] {
         MessageClassifier.filter(state.messages, messageFilter)
+    }
+
+    /// The windowed slice actually mounted (DF#5): tail ~175 until "Load earlier".
+    private var windowed: ChatWindow.Windowed {
+        ChatWindow.window(filteredMessages, showAll: showAllHistory)
     }
 
     var body: some View {
@@ -143,6 +151,27 @@ struct ChatView: View {
         .accessibilityIdentifier("chat-filter-empty")
     }
 
+    /// "Load earlier" header shown above the windowed rows when older history is
+    /// clipped (DF#5). Tapping reveals the full transcript for this session view.
+    private func loadEarlierHeader(_ hidden: Int) -> some View {
+        Button {
+            showAllHistory = true
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "arrow.up.circle")
+                Text("Load earlier (\(hidden))")
+            }
+            .font(.caption.weight(.medium))
+            .foregroundStyle(theme.accentBlue)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 8)
+            .background(theme.bgTertiary.opacity(0.6))
+            .clipShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("chat-load-earlier")
+    }
+
     /// Wrap the optional lightbox UIImage as an Identifiable item for `fullScreenCover(item:)`.
     private var lightboxItem: Binding<LightboxItem?> {
         Binding(
@@ -190,7 +219,10 @@ struct ChatView: View {
                         } else if filteredMessages.isEmpty {
                             filteredEmptyState
                         } else {
-                            ForEach(filteredMessages) { message in
+                            if windowed.hiddenCount > 0 {
+                                loadEarlierHeader(windowed.hiddenCount)
+                            }
+                            ForEach(windowed.rows) { message in
                                 ChatMessageRow(message: message) { ui in lightboxImage = ui }
                                     .id(message.id)
                             }

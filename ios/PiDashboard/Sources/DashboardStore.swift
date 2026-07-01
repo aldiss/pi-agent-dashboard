@@ -54,6 +54,14 @@ final class DashboardStore {
 
     // Chat
     private(set) var chatStates: [String: ChatSessionState] = [:]
+    /// Sessions whose large `event_replay` is being folded OFF the main actor (DF#5).
+    /// Live events + further replay chunks for these sessions buffer until the fold
+    /// publishes, so nothing clobbers the historical reduce or lands out of order.
+    private var replayInFlight: Set<String> = []
+    private var bufferedDuringReplay: [String: [DashboardEvent]] = [:]
+    /// Replay batches at/under this size fold synchronously (cheap); larger ones go
+    /// off-main to keep the UI responsive on open.
+    private static let syncReplayThreshold = 150
     /// sessionId → last send failure reason (bridge absent), surfaced in ChatView.
     private(set) var sendFailures: [String: String] = [:]
     /// Sessions with an in-flight abort (optimistic "stopping…" state). Cleared when
@@ -262,14 +270,36 @@ final class DashboardStore {
             pinnedDirectories = paths
 
         case .eventReplay(let sid, let events, _):
-            var state = chatStates[sid] ?? ChatSessionState()
-            for seq in events { state = state.reduce(seq.event) }
-            chatStates[sid] = state
+            let evs = events.map(\.event)
+            if replayInFlight.contains(sid) {
+                // A fold is already running for this session — buffer these too so
+                // they drain (in order) after it publishes; never clobber the fold.
+                bufferedDuringReplay[sid, default: []].append(contentsOf: evs)
+            } else if evs.count <= Self.syncReplayThreshold {
+                // Small batch — fold synchronously (no async overhead / flicker).
+                chatStates[sid] = (chatStates[sid] ?? ChatSessionState()).reduce(events: evs)
+            } else {
+                // Large batch (the "won't load" hang): fold OFF the main actor so
+                // opening a big session doesn't freeze the UI, then publish on main.
+                // `ChatSessionState` is Sendable + `reduce(events:)` is a pure value
+                // method, so the fold is safe off-isolation. Live events arriving
+                // during the fold are buffered (see `.event`) and drained on publish.
+                replayInFlight.insert(sid)
+                let base = chatStates[sid] ?? ChatSessionState()
+                Task.detached(priority: .userInitiated) { [weak self] in
+                    let reduced = base.reduce(events: evs)
+                    await self?.publishReplay(sid: sid, reduced: reduced)
+                }
+            }
 
         case .event(let sid, _, let event):
-            var state = chatStates[sid] ?? ChatSessionState()
-            state = state.reduce(event)
-            chatStates[sid] = state
+            if replayInFlight.contains(sid) {
+                // A large replay fold is in flight — buffer so this live event drains
+                // AFTER the historical fold (correct order), never onto stale state.
+                bufferedDuringReplay[sid, default: []].append(event)
+            } else {
+                chatStates[sid] = (chatStates[sid] ?? ChatSessionState()).reduce(event)
+            }
 
         case .sendPromptFailed(let sid, let queueNonce, let reason):
             // Bridge-absent / server-side failure: flip the matching queued card (by
@@ -288,6 +318,20 @@ final class DashboardStore {
         case .unknown:
             break
         }
+    }
+
+    /// Publish an off-main replay fold back onto the main actor (DF#5). Drains any
+    /// live events / further replay chunks that arrived DURING the fold (in arrival
+    /// order) onto the reduced state, so the final transcript = history + everything
+    /// that landed meanwhile, correctly ordered. Clears the in-flight guard.
+    private func publishReplay(sid: String, reduced: ChatSessionState) {
+        var state = reduced
+        if let buffered = bufferedDuringReplay[sid], !buffered.isEmpty {
+            state = state.reduce(events: buffered)
+        }
+        bufferedDuringReplay.removeValue(forKey: sid)
+        replayInFlight.remove(sid)
+        chatStates[sid] = state
     }
 
     // MARK: Grouped + filtered view

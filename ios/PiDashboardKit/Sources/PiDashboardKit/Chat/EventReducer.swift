@@ -386,7 +386,7 @@ public struct ChatSessionState: Sendable, Equatable {
             guard let toolCallId = data["toolCallId"]?.stringValue else { break }
             if let partial = ChatSessionState.displayString(data["partialResult"]),
                let idx = next.messages.lastIndex(where: { $0.toolCallId == toolCallId }) {
-                next.messages[idx].result = ChatSessionState.truncateLines(partial, 30)
+                next.messages[idx].result = ChatSessionState.truncateForDisplay(partial, maxLines: 30, maxChars: 20_000)
             }
 
         case "tool_execution_end":
@@ -400,7 +400,7 @@ public struct ChatSessionState: Sendable, Equatable {
             if let idx = next.messages.lastIndex(where: { $0.toolCallId == toolCallId }) {
                 next.messages[idx].toolStatus = isError ? .error : .complete
                 if let result = ChatSessionState.displayString(data["result"]) {
-                    next.messages[idx].result = ChatSessionState.truncateLines(result, 30)
+                    next.messages[idx].result = ChatSessionState.truncateForDisplay(result, maxLines: 30, maxChars: 20_000)
                 }
                 if let started = next.messages[idx].startedAt {
                     next.messages[idx].duration = ts - started
@@ -444,7 +444,7 @@ public struct ChatSessionState: Sendable, Equatable {
         case "bash_output":
             next.messages.append(ChatMessage(
                 id: "bash-\(next.messages.count)", role: .bashOutput,
-                content: data["output"]?.stringValue ?? "", timestamp: ts,
+                content: ChatSessionState.truncateForDisplay(data["output"]?.stringValue ?? ""), timestamp: ts,
                 args: ["command": data["command"] ?? .null, "exitCode": data["exitCode"] ?? .null]))
 
         case "command_feedback":
@@ -551,7 +551,8 @@ public struct ChatSessionState: Sendable, Equatable {
             // Unknown event → expandable raw JSON row (mirrors the reducer default).
             next.messages.append(ChatMessage(
                 id: "raw-\(event.eventType)-\(Int(ts))-\(next.messages.count)", role: .rawEvent,
-                content: ChatSessionState.prettyJSON(data), toolName: event.eventType, timestamp: ts))
+                content: ChatSessionState.truncateForDisplay(ChatSessionState.prettyJSON(data)),
+                toolName: event.eventType, timestamp: ts))
         }
 
         return next
@@ -629,6 +630,26 @@ public struct ChatSessionState: Sendable, Equatable {
         let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
         if lines.count <= maxLines { return text }
         return lines.prefix(maxLines).joined(separator: "\n")
+    }
+
+    /// Cap a stored payload for display safety (DF#5 perf): clip by BOTH line count
+    /// AND character count so a giant tool/bash/raw output can't bloat memory or block
+    /// the renderer. Line cap catches long multi-line logs; char cap catches a single
+    /// pathological megabyte-long line the line cap would miss. Appends a marker when
+    /// clipped. Generous caps so ordinary content is untouched — only true monsters
+    /// clip. The collapsed one-line peek + the row's lazy Show-more still apply on top.
+    static func truncateForDisplay(_ text: String, maxLines: Int = 400, maxChars: Int = 40_000) -> String {
+        var out = text
+        var clipped = false
+        // Char cap first (bounds work before the line split on a huge single line).
+        if out.count > maxChars {
+            out = String(out.prefix(maxChars)); clipped = true
+        }
+        let lines = out.split(separator: "\n", omittingEmptySubsequences: false)
+        if lines.count > maxLines {
+            out = lines.prefix(maxLines).joined(separator: "\n"); clipped = true
+        }
+        return clipped ? out + "\n… (truncated — open in the dashboard for full output)" : out
     }
 
     static func prettyJSON(_ value: JSONValue) -> String {
