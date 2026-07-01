@@ -95,6 +95,32 @@ struct Theme {
     func pulseAccent(_ kind: CardPulseKind) -> Color? {
         DashboardTheme.pulseAccent(kind, palette).map(Color.init(hex:))
     }
+
+    // MARK: Chat color language (batch 2)
+
+    /// Subtle role accent for a chat row (border rule / tint), or nil for a role
+    /// that renders on the plain surface (assistant prose, separators).
+    func roleAccent(_ role: ChatRole) -> Color? {
+        ChatColors.roleAccent(role, palette).map(Color.init(hex:))
+    }
+
+    /// Tool-call status hue (running→amber, complete→green, error→red).
+    func toolStatusColor(_ status: ToolStatus?) -> Color {
+        Color(hex: ChatColors.toolStatusAccent(status, palette))
+    }
+
+    /// Code-fence token color for a syntax kind. `.plain` → the default code
+    /// foreground (`textSecondary`); the rest read as a colorful theme on dark.
+    func syntaxColor(_ kind: SyntaxTokenKind) -> Color {
+        switch kind {
+        case .plain:   return textSecondary
+        case .keyword: return accentPurple
+        case .string:  return accentGreen
+        case .comment: return textTertiary
+        case .number:  return accentOrange
+        case .type:    return accentCyan
+        }
+    }
 }
 
 /// Lightweight environment access so views read `theme` without prop-drilling.

@@ -74,6 +74,10 @@ struct ChatMessageRow: View {
                     .padding(.horizontal, 14).padding(.vertical, 10)
                     .background(theme.bgSurface)
                     .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 18, style: .continuous)
+                            .stroke(theme.accentBlue.opacity(0.35), lineWidth: 1)
+                    )
             }
             deliveryFooter
         }
@@ -116,78 +120,89 @@ struct ChatMessageRow: View {
     // MARK: thinking (collapsible)
 
     private var thinkingBlock: some View {
-        VStack(alignment: .leading, spacing: thinkingExpanded ? 6 : 0) {
-            Button {
-                withAnimation(.easeInOut(duration: 0.18)) { thinkingExpanded.toggle() }
-            } label: {
-                HStack(spacing: 5) {
-                    Image(systemName: "brain")
-                    Text("Thinking")
-                    Spacer()
-                    Image(systemName: thinkingExpanded ? "chevron.up" : "chevron.down")
-                }
-                .font(.caption2.weight(.medium))
-                .foregroundStyle(theme.textTertiary)
-            }
-            .accessibilityIdentifier("chat-thinking-toggle")
-            if thinkingExpanded {
-                Text(message.content)
-                    .font(.caption)
+        HStack(spacing: 0) {
+            // Purple leading rule — "reasoning" accent (PWA border-purple-500/30).
+            Rectangle().fill(theme.accentPurple.opacity(0.5)).frame(width: 3)
+
+            VStack(alignment: .leading, spacing: thinkingExpanded ? 6 : 0) {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.18)) { thinkingExpanded.toggle() }
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: "brain").foregroundStyle(theme.accentPurple)
+                        Text("Thinking")
+                        Spacer()
+                        Image(systemName: thinkingExpanded ? "chevron.up" : "chevron.down")
+                    }
+                    .font(.caption2.weight(.medium))
                     .foregroundStyle(theme.textTertiary)
-                    .italic()
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .accessibilityIdentifier("chat-thinking-toggle")
+                if thinkingExpanded {
+                    Text(message.content)
+                        .font(.caption)
+                        .foregroundStyle(theme.textSecondary)
+                        .italic()
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
             }
+            .padding(10)
         }
-        .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(theme.bgSecondary)
+        .background(theme.accentPurple.opacity(0.06))
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
     }
 
     // MARK: tool (expandable)
 
     private var toolCard: some View {
-        VStack(alignment: .leading, spacing: toolExpanded ? 8 : 0) {
-            Button {
-                withAnimation(.easeInOut(duration: 0.18)) { toolExpanded.toggle() }
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: toolIcon).font(.caption)
-                    Text(message.toolName ?? "tool").font(.caption.weight(.semibold)).monospaced()
-                    Spacer()
-                    toolStatusBadge
-                    if let d = message.duration, d > 0 {
-                        Text("\(Int(d / 1000))s").font(.caption2).foregroundStyle(theme.textTertiary)
-                    }
-                    Image(systemName: toolExpanded ? "chevron.up" : "chevron.down")
-                        .font(.caption2)
-                }
-                .foregroundStyle(theme.textSecondary)
-            }
-            .accessibilityIdentifier("chat-tool-toggle")
+        HStack(spacing: 0) {
+            // Leading rule — tool-status hue (running amber / done green / error red).
+            Rectangle().fill(theme.toolStatusColor(message.toolStatus)).frame(width: 3)
 
-            if toolExpanded {
-                let argsText = ChatRender.prettyArgs(message.args)
-                if !argsText.isEmpty {
-                    sectionLabel("Input")
-                    codeBox(argsText, lineLimit: nil)
+            VStack(alignment: .leading, spacing: toolExpanded ? 8 : 0) {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.18)) { toolExpanded.toggle() }
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: toolIcon).font(.caption)
+                            .foregroundStyle(theme.toolStatusColor(message.toolStatus))
+                        Text(message.toolName ?? "tool").font(.caption.weight(.semibold)).monospaced()
+                        Spacer()
+                        toolStatusBadge
+                        if let d = message.duration, d > 0 {
+                            Text("\(Int(d / 1000))s").font(.caption2).foregroundStyle(theme.textTertiary)
+                        }
+                        Image(systemName: toolExpanded ? "chevron.up" : "chevron.down")
+                            .font(.caption2)
+                    }
+                    .foregroundStyle(theme.textSecondary)
                 }
-                if let result = message.result, !result.isEmpty {
-                    sectionLabel("Output")
-                    toolResultBox(result)
+                .accessibilityIdentifier("chat-tool-toggle")
+
+                if toolExpanded {
+                    let argsText = ChatRender.prettyArgs(message.args)
+                    if !argsText.isEmpty {
+                        sectionLabel("Input")
+                        codeBox(argsText, lineLimit: nil)
+                    }
+                    if let result = message.result, !result.isEmpty {
+                        sectionLabel("Output")
+                        toolResultBox(result)
+                    }
+                    if !message.images.isEmpty { imageStrip }
+                } else if let result = message.result, !result.isEmpty {
+                    // Collapsed: a one-line peek at the result.
+                    Text(result)
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(theme.textTertiary)
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.top, 4)
                 }
-                if !message.images.isEmpty { imageStrip }
-            } else if let result = message.result, !result.isEmpty {
-                // Collapsed: a one-line peek at the result.
-                Text(result)
-                    .font(.caption2.monospaced())
-                    .foregroundStyle(theme.textTertiary)
-                    .lineLimit(1)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.top, 4)
             }
+            .padding(10)
         }
-        .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(theme.bgSecondary)
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
@@ -305,9 +320,9 @@ struct ChatMessageRow: View {
     private var toolStatusBadge: some View {
         Group {
             switch message.toolStatus {
-            case .running: Image(systemName: "circle.dotted").foregroundStyle(theme.accentBlue)
-            case .complete: Image(systemName: "checkmark.circle.fill").foregroundStyle(theme.accentGreen)
-            case .error: Image(systemName: "xmark.circle.fill").foregroundStyle(theme.accentRed)
+            case .running: Image(systemName: "circle.dotted").foregroundStyle(theme.toolStatusColor(.running))
+            case .complete: Image(systemName: "checkmark.circle.fill").foregroundStyle(theme.toolStatusColor(.complete))
+            case .error: Image(systemName: "xmark.circle.fill").foregroundStyle(theme.toolStatusColor(.error))
             case .none: EmptyView()
             }
         }
