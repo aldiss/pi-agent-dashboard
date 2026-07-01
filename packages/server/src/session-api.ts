@@ -12,6 +12,7 @@ import type { PiGateway } from "./pi-gateway.js";
 import type { BrowserGateway } from "./browser-gateway.js";
 import type { ApiResponse } from "@blackbelt-technology/pi-dashboard-shared/types.js";
 import { spawnPiSession } from "./process-manager.js";
+import { buildInteractiveResumeOptions, resolvePinDashboardUrl } from "./resume-spawn-options.js";
 import { loadConfig } from "@blackbelt-technology/pi-dashboard-shared/config.js";
 import { resolveDriverLiveness } from "./driver-liveness.js";
 import { resurrectSession } from "./resurrection-sweep.js";
@@ -668,6 +669,10 @@ export function registerSessionApi(fastify: FastifyInstance, deps: SessionApiDep
           pendingAttachRegistry.enqueue(session.cwd, session.attachedProposal);
         }
         const degradeConfig = loadConfig();
+        // Fix-11 scope note: fork-degrade is a FRESH spawn (no sessionFile —
+        // the source had no on-disk history) → replays no large log, cannot hit
+        // the headless crash-form. Left on config strategy so tmux-less hosts
+        // keep the graceful fallback. See change: harden-headless-resume-paths.
         const degradeResult = await spawnPiSession(session.cwd, {
           strategy: degradeConfig.spawnStrategy,
         });
@@ -704,12 +709,18 @@ export function registerSessionApi(fastify: FastifyInstance, deps: SessionApiDep
       // See changes: preserve-session-order-on-reboot,
       //              differentiate-resume-intent-by-trigger.
       pendingResumeIntents?.record(id, "front");
-      const config = loadConfig();
-      const spawnResult = await spawnPiSession(session.cwd, {
+      // Fix-11: a real session-RESUME (loads the existing --session file = the
+      // large-log crash risk) MUST use the §19 interactive form or fail loud —
+      // NEVER silently default to the headless `--mode rpc` crash-form. Pin the
+      // respawn's bridge to THIS server's own gateway (anti-cross-wire).
+      // See change: harden-headless-resume-paths.
+      const resumePin = resolvePinDashboardUrl(piGateway, deps.serverPiPort);
+      const spawnResult = await spawnPiSession(session.cwd, buildInteractiveResumeOptions({
         sessionFile: session.sessionFile,
         mode,
-        strategy: config.spawnStrategy,
-      });
+        ...(session.name ? { agentName: session.name } : {}),
+        ...(resumePin ? { pinDashboardUrl: resumePin } : {}),
+      }));
       // Fork bookkeeping uses the spawn token (not cwd) so two concurrent
       // forks in the same cwd correlate correctly. See change:
       // spawn-correlation-token.

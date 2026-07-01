@@ -5,6 +5,7 @@ import { existsSync } from "node:fs";
 import type { BrowserToServerMessage } from "@blackbelt-technology/pi-dashboard-shared/browser-protocol.js";
 import type { BrowserHandlerContext } from "./handler-context.js";
 import { spawnPiSession } from "../process-manager.js";
+import { buildInteractiveResumeOptions, resolvePinDashboardUrl } from "../resume-spawn-options.js";
 import { ToolResolver } from "@blackbelt-technology/pi-dashboard-shared/platform/binary-lookup.js";
 import { loadConfig } from "@blackbelt-technology/pi-dashboard-shared/config.js";
 import { preflightSpawn } from "../spawn-preflight.js";
@@ -219,12 +220,17 @@ export async function handleSendPrompt(
     pendingResumeIntents?.record(msg.sessionId, "front");
     sessionManager.update(msg.sessionId, { resuming: true });
     broadcast({ type: "session_updated", sessionId: msg.sessionId, updates: { resuming: true } });
-    const autoResumeConfig = loadConfig();
-    const spawnResult = await spawnPiSession(promptSession.cwd, {
+    // Fix-11: prompt-auto-resume replays the existing --session file (the
+    // large-log crash risk) — route through the §19 interactive form or fail
+    // loud, NEVER silently default to the headless `--mode rpc` crash-form.
+    // See change: harden-headless-resume-paths.
+    const autoResumePin = resolvePinDashboardUrl(piGateway);
+    const spawnResult = await spawnPiSession(promptSession.cwd, buildInteractiveResumeOptions({
       sessionFile: promptSession.sessionFile,
       mode: "continue",
-      strategy: autoResumeConfig.spawnStrategy,
-    });
+      ...(promptSession.name ? { agentName: promptSession.name } : {}),
+      ...(autoResumePin ? { pinDashboardUrl: autoResumePin } : {}),
+    }));
     if (!spawnResult.success) {
       console.error(`[dashboard] auto-resume spawn failed: ${spawnResult.message}`);
       pendingResumeRegistry.consume(promptSession.cwd);
@@ -309,6 +315,11 @@ export async function handleResumeSession(
       pendingAttachRegistry.enqueue(session.cwd, session.attachedProposal);
     }
     const degradeConfig = loadConfig();
+    // Fix-11 scope note: fork-degrade is a FRESH spawn (no sessionFile — the
+    // source had no persisted history) → replays no large log, cannot hit the
+    // headless crash-form the resume-hardening targets. Left on config strategy
+    // so tmux-less hosts keep the graceful fallback.
+    // See change: harden-headless-resume-paths.
     // Fresh spawn: no sessionFile, no mode — just `pi --mode rpc`.
     const degradeResult = await spawnPiSession(session.cwd, {
       strategy: degradeConfig.spawnStrategy,
@@ -360,12 +371,18 @@ export async function handleResumeSession(
   // See changes: preserve-session-order-on-reboot,
   //              differentiate-resume-intent-by-trigger.
   pendingResumeIntents?.record(msg.sessionId, placement);
-  const resumeConfig = loadConfig();
-  const result = await spawnPiSession(session.cwd, {
+  // Fix-11: the primary dashboard Resume/Fork path replays the existing
+  // --session file (the large-log crash risk) — route through the §19
+  // interactive form or fail loud, NEVER silently default to the headless
+  // `--mode rpc` crash-form. Pin the respawn to THIS server's own gateway.
+  // See change: harden-headless-resume-paths.
+  const resumePin = resolvePinDashboardUrl(ctx.piGateway);
+  const result = await spawnPiSession(session.cwd, buildInteractiveResumeOptions({
     sessionFile: forkSessionFile,
     mode: msg.mode,
-    strategy: resumeConfig.spawnStrategy,
-  });
+    ...(session.name ? { agentName: session.name } : {}),
+    ...(resumePin ? { pinDashboardUrl: resumePin } : {}),
+  }));
   // Record fork parent keyed by spawn token (was: keyed by cwd, racy on
   // multi-fork-in-same-cwd). See change: spawn-correlation-token.
   if (msg.mode === "fork" && pendingForkRegistry && result.spawnToken) {

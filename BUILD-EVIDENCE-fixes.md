@@ -71,3 +71,66 @@ ps → NO pi process carrying the seed file  (">>> clean refusal")
 The silent degrade-to-crash-form did NOT occur; the endpoint failed loud instead.
 
 ### Regression after Fix-10: **142/142** (135 baseline + 7 new) + 25/25 shared spawn-mechanism/code suites. Zero regressions.
+
+---
+
+## Fix-11 — harden ALL default-headless pi-native session-RESUME paths
+
+**Bug.** un-end v2 hardened ONLY `/resurrect`'s `doRespawnContinue`. Every OTHER path that resumes an
+existing `--session <file>` spawned with `config.spawnStrategy` (default headless → `--mode rpc` = the v1
+crash-form on large logs):
+- REST `POST /api/session/:id/resume`  — `session-api.ts` (was ~703)
+- prompt-auto-resume (ended-branch)    — `session-action-handler.ts` `handleSendPrompt` (was ~223)
+- WS `handleResumeSession`             — `session-action-handler.ts` (was ~364, the primary Resume button)
+
+**Fix (own-hand).**
+- New `packages/server/src/resume-spawn-options.ts` — single source of the §19 resume shape:
+  - `buildInteractiveResumeOptions({sessionFile, mode, agentName?, pinDashboardUrl?})` → always
+    `strategy:"tmux"` + `requireInteractive:true` (composes with Fix-10 → fail-loud, never silent headless),
+    identity + pin included only when provided. NEVER a `model` field.
+  - `resolvePinDashboardUrl(piGateway, serverPiPort?)` — prefers the live bound socket
+    (`piGateway.address()`), falls back to the runtime port; never `loadConfig().piPort`.
+- Converted all THREE real-resume sites to the builder (continue + fork). Identity = `session.name`; pin =
+  the spawning server's own gateway.
+
+**Anchor-mismatch surfaced (as the brief asked).** The brief lists `spawn_new_session` (event-wiring) and
+fork-degrade (session-api + session-action-handler) as resume paths. On inspection **both are FRESH spawns
+with NO sessionFile** — they replay no large log, so they CANNOT hit the headless crash-form the hardening
+targets. Converting them would regress fresh-spawn on tmux-less hosts (a `+ Session` click would fail-loud
+with no tmux). I left them on `config.spawnStrategy` and added explicit `Fix-11 scope note` comments at each
+so the d22/QA gates see the exclusion is deliberate, not missed. This matches the fix's own wording ("route
+every pi-native session-**RESUME** path"). **Flagging for DisasterReplay:** if the intent was to also force
+§19 on fresh spawns, that's a one-line change per site — but it changes fresh-spawn UX on tmux-less hosts.
+
+### Test (unit) — `packages/server/src/__tests__/harden-headless-resume-paths.test.ts` — 9/9 green
+Builder §19-shape (continue/fork → tmux + requireInteractive; identity+pin included/omitted correctly; NEVER
+a model field); pin resolver (live socket > config port > undefined); **structural repo-lint** — asserts
+`session-api.ts` + `session-action-handler.ts` both route through `buildInteractiveResumeOptions` (fails loud
+if a resume site reverts to a raw `config.spawnStrategy`). Sister to `no-model-on-resume`'s grep-lint, which
+also stays green (the builder emits no `--model`).
+
+### Falsifiable harness acceptance (both branches proven on :8002, against the 11.9 MB seed)
+
+**tmux AVAILABLE.** `POST /api/session/019edfad…/resume {"mode":"fork"}`:
+```
+HTTP 200  {"success":true,"data":{"message":"Pi session spawned in tmux (new window)"}}
+```
+Spawned pane command:
+```
+cd /private/tmp/unend-e2e-cwd && PI_AGENT_NAME=Pete PI_DASHBOARD_URL=ws://localhost:9997 \
+  pi --name Pete --fork …019edfad….jsonl
+```
+→ §19 form: `--name Pete`, `--fork <11.9 MB seed>`, pin `:9997`, **NO `--mode rpc`**, **NO `--model`**. Before
+Fix-11 this site emitted `pi --mode rpc --fork …` (the crash-form). Spawn cleaned up after capture.
+
+**tmux UNAVAILABLE** (shim PATH, tmux stripped). Same REST fork:
+```
+HTTP 500  {"success":false,"error":"interactive session-resume required but no interactive terminal … 
+           Refusing to silently spawn the headless `--mode rpc` form …"}
+ps → NO headless spawn — refusal held (GOOD)
+```
+The Fix-10 guard composes through the shared builder: a resume that can't resolve tmux fails loud instead of
+silently degrading.
+
+### Regression after Fix-11: **155/155** (142 + 9 new + 4 spawn-handler) + **60/60** resume/handler suites
+(incl. `auto-resume.test.ts` which exercises the converted `handleSendPrompt`). Zero regressions.

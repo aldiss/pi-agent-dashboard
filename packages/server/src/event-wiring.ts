@@ -884,6 +884,12 @@ export function wireEvents(deps: EventWiringDeps): void {
     }
 
     if (msg.type === "spawn_new_session") {
+      // Fix-11 scope note: this is a FRESH spawn (no sessionFile) — it replays
+      // no large log, so it CANNOT hit the headless `--mode rpc` crash-form the
+      // resume-path hardening targets. Left on `config.spawnStrategy` so the
+      // graceful headless fallback still stands on tmux-less hosts; forcing the
+      // §19 interactive form here would regress fresh-spawn on those hosts.
+      // See change: harden-headless-resume-paths.
       spawnPiSession(msg.cwd, { strategy: loadConfig().spawnStrategy }).then((result) => {
         if (result.process && result.pid) {
           browserGateway.headlessPidRegistry.register(result.pid, msg.cwd, result.process);
