@@ -77,17 +77,59 @@ bundled fixtures — never touches a live operator session).
 | `StuckSendingUITests.swift` | **Backfill #2** — settled chat has nothing stuck at "Sending…" (hermetic guard); full send→reconcile skips pending a build hook (guards 9640dbb) |
 | `SessionDeclutterUITests.swift` | **Backfill #3** — ended hidden by default + toggle reveals/re-hides; tenure-collapse +N skips pending a same-name fixture (guards e6cf8e3) |
 | `ControlActionsUITests.swift` | **F-ext** — abort confirm-dialog, resume affordance, spawn sheet, message-type filter pills, settings round-trip |
+| `ComposerFocusUITests.swift` | **Focus** — composer keeps draft + first-responder across the single-row⇄multiline flip and repeated re-layout; live-streaming + voice-append paths skip pending `-uitest-stream` / `-uitest-voice-append` |
 
-**Two authored-but-skipping positive paths** (the F6-positive precedent — each
-needs a small cc-ios-build affordance, so they SKIP cleanly rather than fail;
-the hermetic guard beside each runs today):
+**Regression suite (gap-fill).** One focused file per operator-visible area, driving
+the §A identifiers hermetically. Each pairs a runs-today assertion with any
+build-hook/fixture-gated path authored as a clean `XCTSkip` (see below).
+
+| File | Area |
+|---|---|
+| `FoldingUITests.swift` | tier + directory fold via the header chevron; PWA default-collapsed set ({operator-chat-pane, other} collapsed); tier fold persists across relaunch. Forces both persisted fold sets empty via the arg domain for a clean-default start |
+| `CrewCollapseUITests.swift` | a crew canonical name renders ONE row (no per-cwd doubling); distinct names → no spurious `+N` badge; global-multi-cwd fold skips pending a same-crew fixture |
+| `StatusRowUITests.swift` | status chip on its OWN row below the name (frame compare), single-line height-bounded, clear of the top-trailing `+N` zone |
+| `ReadPositionUITests.swift` | DF#3 engagement-weighted unread negatives (no spurious divider / no asks-badge for a tool-prose chat); divider + restore-to-last-read skip pending a Tier-A + read-position fixture |
+| `ModelPickerUITests.swift` | title opens the model picker; thinking-level grid renders + is tappable; Done dismisses; model-row select skips pending a models fixture |
+| `SettingsThemeUITests.swift` | theme picker System/Dark/Light; live switch selects the segment; choice persists across relaunch (then restores System) |
+| `CardRichnessUITests.swift` | context bar (with %) + git-branch badge render for a session with that data; tokens/cost/process-list/PR skip pending fixture data |
+| `ColorCodingUITests.swift` | non-color signals backing the color language — rail-identity ternary (unread vs calm) + status a11y value/label; screenshots carry the color |
+| `AccessibilityUITests.swift` | icon-button labels (settings/new-session/model/filter/mic), ≥40pt composer tap targets, non-color status word; send/attach label gap skips with a request |
+| `ActionFailureUITests.swift` | Cluster-2 "never silent" negatives (no error/failure banner in steady state); failed resume/spawn + undeliverable send skip pending a failure-injection hook |
+
+**Authored-but-skipping positive paths** (the F6-positive precedent — each needs a
+small cc-ios-build affordance, so they SKIP cleanly rather than fail; the hermetic
+guard beside each runs today):
 - `StuckSendingUITests.testSendReconcilesOptimisticBubbleToConfirmed` — needs a
   `-uitest-echo-send` arg so `sendPrompt` produces the optimistic bubble +
   schedules the ack-net reconcile in fixture mode (`sendPrompt` no-ops under
   `-uitest` today, and the reconcile lives inside it).
-- `SessionDeclutterUITests.testSameNameTenuresCollapseWithBadge` — needs a
-  duplicate-canonical-name pair in `FixtureData.sessionsSnapshot()` so a row
-  folds + the `card-collapsed-count-*` badge renders.
+- `SessionDeclutterUITests.testSameNameTenuresCollapseWithBadge` +
+  `CrewCollapseUITests.testCrewInMultipleCwdsCollapsesToOneRowWithBadge` — need a
+  duplicate-canonical-name pair (crew name in ≥2 cwds) in
+  `FixtureData.sessionsSnapshot()` so a row folds + the `card-collapsed-count-*`
+  badge renders.
+- `ComposerFocusUITests` streaming/voice, `ReadPositionUITests` divider/restore,
+  `ModelPickerUITests` model-select, `CardRichnessUITests` stats/process/PR,
+  `AccessibilityUITests` send/attach labels, `ActionFailureUITests`
+  resume/spawn/send failure — each skips pending the named launch-arg hook
+  (`-uitest-stream` / `-uitest-voice-append` / `-uitest-action-error` /
+  `-uitest-echo-send-fail`), fixture data (Tier-A asks + read position, a models
+  list, token/cost/process/PR fields), or app label additions noted inline in the
+  skip message.
+
+### Regression coverage = core `swift test` + these XCUITests
+
+Some shipped areas are covered by the CORE unit suite (`PiDashboardKit` `swift test`)
+and are impractical / non-deterministic to drive end-to-end in the simulator — the
+regression suite is the UNION of the two layers, not XCUITest alone:
+
+| Area | Covered by (unit) | Why not E2E |
+|---|---|---|
+| WS-resilience / reconnect (DF#4) | `KeepaliveMonitor` / reconnect-backoff tests | XCUITest can't sever a hermetic fixture socket; the phase transitions are pure-logic |
+| Data robustness (Cluster 6) | `DataRobustness` decode/malformed-payload tests | needs crafted malformed wire bytes fed to the decoder — no UI surface |
+| Overflow + Dynamic Type (Cluster 4) | `TypeScale` / `dynamicTypeCap` tests | exhaustive size-class sweeps are a layout-math property, asserted pure |
+| Light-contrast ratios (Cluster 3) | `Contrast` WCAG-ratio tests | a rendered-pixel contrast ratio isn't readable off an XCUIElement |
+| Voice input | `VoiceInput` / `TranscriptAppender` tests | needs real AVAudioSession capture + the parakeet sidecar (unreachable in the sim) |
 
 ### Integration wiring (already live in `project.yml`)
 
