@@ -302,19 +302,34 @@ const THEMED_NAME_RE = /^[A-Z][a-z]+[A-Z][a-z]+/;
  *   3. `name` starts with a standing-crew canonical name (Bert / Joan / Peggy / Lane / Pete / Faye / Don / Alice)
  *      anchored at start-of-name → `standing-crew`.
  *   4. `source === "tui"` → `operator-chat-pane`.
- *   5. `source === "tmux"` AND cwd under `nos-cells/` (or a `-driver` cell-id
- *      outside `/.pi/cells/`) → `drivers`. Keyed on cwd, NOT a themed-name
- *      regex: pi-driver names are often single-word PascalCase (`Vault`,
- *      `Harbor`, `Keystone`) or even absent, which the compound
- *      {@link THEMED_NAME_RE} would miss.
- *   6. `source === "tmux"` AND (name contains `"cell-executor"` OR themed-PascalCase name
+ *   5. `source === "claude-code"` → `worker`. A Claude Code session is
+ *      build-muscle (NOS §18) — spawned under a pi-driver supervisor with zero
+ *      orchestration-awareness. This source appeared AFTER the tier feature
+ *      landed (cefe63d) and was previously unhandled, so every CC session fell
+ *      to `other`.
+ *   6. `source === "tmux"` AND cwd under `nos-cells/` (or a `-driver` cell-id
+ *      outside `/.pi/cells/`) → `drivers`. Legacy pre-§19 driver cwd shape.
+ *   7. `source === "tmux"` AND (name contains `"cell-executor"` OR themed-PascalCase name
  *      combined with a cell-pattern indicator — `"cell"` / `"ephemeral"` / `"l2"` substring
  *      in name, or cwd containing `"/.pi/cells/"`) → `cell-executor`.
- *   7. Else → `other`.
+ *   8. `source === "tmux"` AND `name` is non-empty → `drivers`. Modern
+ *      pi-driver (NOS §18/§19): a real-name-bound tmux peer. Since §19
+ *      (resume-from-logs, 2026-06-30) drivers run/resume in their PROJECT cwd
+ *      (or the shared orchestration-state), NOT under `nos-cells/` — so cwd is
+ *      no longer a reliable discriminator; the real-name binding is.
+ *   9. Else → `other`.
  *
  * Matches the AGENTS.md v1.3.1 standing-crew canonical-name discipline + the
- * cell-pattern v0.4 cell-executor naming conventions; sessions that do not
- * fit either fall to `other` so the sidebar still surfaces them.
+ * cell-pattern v0.4 cell-executor naming conventions + the NOS §18/§19 driver
+ * spawn/resume discipline; sessions that do not fit any tier fall to `other`
+ * so the sidebar still surfaces them.
+ *
+ * Regression history: cefe63d keyed the drivers tier solely on the `nos-cells/`
+ * cwd. After NOS §18/§19 changed driver spawn to run in the project cwd, live
+ * drivers stopped matching and fell to `other` (the "Drivers/Workers grouping
+ * disappeared" report). Ground truth for driver identity is the
+ * `cell-driver-registry.json`; the name-binding rule (step 8) matches it at
+ * ~100% recall on live active peers without a client-side filesystem read.
  */
 export function classifyTier(session: DashboardSession): SessionTier {
   const name = session.name ?? "";
@@ -322,28 +337,43 @@ export function classifyTier(session: DashboardSession): SessionTier {
   if (session.sessionFile && WORKER_SESSION_FILE_RE.test(session.sessionFile)) return "worker";
   if (STANDING_CREW_NAME_RE.test(name)) return "standing-crew";
   if (session.source === "tui") return "operator-chat-pane";
+  // Claude Code build-muscle (NOS §18) is a worker: a CC session runs a build
+  // under a pi-driver supervisor with zero orchestration-awareness. The
+  // `claude-code` source is the MODERN worker input-shape (alongside the legacy
+  // subagent-worker-* / run-N worker files handled above) — it was unhandled
+  // when the tier feature landed, so every CC session fell to `other`.
+  if (session.source === "claude-code") return "worker";
   if (session.source === "tmux") {
-    // pi-drivers (L2 orchestration) live under the operator's nos-cells/ tree
-    // (e.g. .../nos-cells/architect-pair-driver) and are matched BEFORE the
-    // cell-executor rules below. Keyed on cwd — NOT a themed-name regex —
-    // because driver names are often single-word PascalCase (Vault, Harbor,
-    // Keystone) or absent (the arch-diagram-driver tmux peer has no name),
-    // which the compound THEMED_NAME_RE would miss. Distinct from
-    // cell-executors: drivers are nos-cells/, cell-executors are /.pi/cells/
-    // (nos-cells/ ≠ /.pi/cells/). The "-driver" cell-id fallback is guarded so
-    // it never swallows a /.pi/cells/ cell-executor.
     const cwd = session.cwd ?? "";
+    // Legacy explicit driver cwd (pre-NOS-§19): drivers used to live under the
+    // operator's nos-cells/ tree (e.g. .../nos-cells/architect-pair-driver).
+    // Kept for back-compat with older sessions; matched BEFORE cell-executor.
+    // The "-driver" cell-id fallback is guarded so it never swallows a
+    // /.pi/cells/ cell-executor (nos-cells/ ≠ /.pi/cells/).
     if (cwd.includes("nos-cells/") || (cwd.includes("-driver") && !cwd.includes("/.pi/cells/"))) {
       return "drivers";
     }
+    // Cell-executor detection MUST precede the modern-driver catch below so a
+    // themed cell-executor (/.pi/cells/ cwd, or a cell-indicator name) is not
+    // swallowed into drivers.
     if (name.includes("cell-executor")) return "cell-executor";
     if (THEMED_NAME_RE.test(name)) {
       const lower = name.toLowerCase();
-      const inCellsCwd = (session.cwd ?? "").includes("/.pi/cells/");
+      const inCellsCwd = cwd.includes("/.pi/cells/");
       const cellIndicatorInName =
         lower.includes("cell") || lower.includes("ephemeral") || lower.includes("l2");
       if (cellIndicatorInName || inCellsCwd) return "cell-executor";
     }
+    // Modern pi-driver (NOS §18/§19): a real-name-bound tmux peer spawned via
+    // `spawn-driver`. Since §19 (resume-from-logs, ratified 2026-06-30) a
+    // driver runs/resumes in its PROJECT cwd — or the shared orchestration-state
+    // — NOT under nos-cells/, so cwd is no longer a reliable discriminator; the
+    // real-name binding is. A named tmux peer that is neither standing-crew nor
+    // a cell-executor is an L2 orchestration driver. Ground truth is the
+    // cell-driver-registry; this name-binding heuristic matches it at ~100%
+    // recall on live active peers WITHOUT a client-side filesystem read. An
+    // unnamed tmux peer stays `other`.
+    if (name.trim().length > 0) return "drivers";
   }
   return "other";
 }

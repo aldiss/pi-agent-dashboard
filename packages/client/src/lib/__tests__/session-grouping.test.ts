@@ -220,13 +220,49 @@ describe("classifyTier", () => {
     ).toBe("cell-executor");
   });
 
-  it("falls through to other for tmux sessions with no cell indicators", () => {
+  it("classifies a named tmux peer in a project cwd as a driver (NOS §18/§19 modern driver)", () => {
+    // Regression fix (Drivers/Workers grouping disappeared): since NOS §19
+    // (resume-from-logs, 2026-06-30) a driver runs/resumes in its PROJECT cwd
+    // — or the shared orchestration-state — NOT under nos-cells/. cwd is no
+    // longer a reliable discriminator; the real-name binding is. A named tmux
+    // peer that is neither standing-crew nor cell-executor is an L2 driver.
+    // Names verified own-hand against the live dashboard.
     expect(
-      classifyTier(s({ name: "OakHawk", source: "tmux", cwd: "/random/path" })),
-    ).toBe("other");
+      classifyTier(s({ name: "OakHawk", source: "tmux", cwd: "/Users/x/Misc/Documents/Copilot/pi-agent-dashboard" })),
+    ).toBe("drivers");
+    expect(
+      classifyTier(s({ name: "Conductor", source: "tmux", cwd: "/Users/x/.pi/orchestration-state" })),
+    ).toBe("drivers");
+    expect(
+      classifyTier(s({ name: "Cartographer-2", source: "tmux", cwd: "/Users/x/work/repo" })),
+    ).toBe("drivers");
     expect(
       classifyTier(s({ name: "random-tmux", source: "tmux", cwd: "/x" })),
+    ).toBe("drivers");
+  });
+
+  it("keeps an UNNAMED tmux peer in other (name-binding is the driver discriminator)", () => {
+    expect(
+      classifyTier(s({ name: undefined, source: "tmux", cwd: "/random/path" })),
     ).toBe("other");
+    expect(
+      classifyTier(s({ name: "   ", source: "tmux", cwd: "/x" })),
+    ).toBe("other");
+  });
+
+  it("classifies claude-code build-muscle as worker (NOS §18)", () => {
+    // The `claude-code` source appeared after the tier feature landed and was
+    // previously unhandled — every CC session fell to `other`. CC = build-muscle.
+    expect(
+      classifyTier(s({ name: "Create a dynamic workflow", source: "claude-code", cwd: "/Users/x" })),
+    ).toBe("worker");
+    expect(
+      classifyTier(s({ name: undefined, source: "claude-code", cwd: "/Users/x" })),
+    ).toBe("worker");
+  });
+
+  it("lets a standing-crew name win over the claude-code source (order-safe)", () => {
+    expect(classifyTier(s({ name: "Joan-tenure-1", source: "claude-code" }))).toBe("standing-crew");
   });
 
   it("classifies pi-drivers (tmux + nos-cells/ cwd) as drivers", () => {
@@ -329,6 +365,20 @@ describe("groupSessionsByTier", () => {
     const result = groupSessionsByTier([bert, worker]);
     expect(result.get("standing-crew")?.map((x) => x.id)).toEqual(["Bert"]);
     expect(result.get("worker")?.map((x) => x.id)).toEqual(["subagent-worker-1"]);
+  });
+
+  it("places a modern driver in the drivers tier, ordered after standing-crew (regression guard)", () => {
+    // The live-dashboard regression: modern drivers fell to `other`, so the
+    // Drivers tier vanished. This guards that a named tmux peer in a project
+    // cwd now populates the drivers tier in canonical order.
+    const sessions = [
+      s("Conductor", { source: "tmux", cwd: "/Users/x/work/repo" }),
+      s("Bert"),
+      s("subagent-worker-1"),
+    ];
+    const result = groupSessionsByTier(sessions);
+    expect([...result.keys()]).toEqual(["standing-crew", "drivers", "worker"]);
+    expect(result.get("drivers")?.map((x) => x.id)).toEqual(["Conductor"]);
   });
 
   it("returns empty map for empty input", () => {
