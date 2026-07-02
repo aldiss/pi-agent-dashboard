@@ -110,6 +110,12 @@ final class DashboardStore {
     private var base: URL?
     private var reconnectAttempt = 0
     private let isUITest: Bool
+    /// Hermetic e2e fixture mode (`-uitest-fixtures`, the shared contract in
+    /// `UITestFixtures`): inject the shared fixture sessions + seed their chats, mark
+    /// connected, and bypass the connect screen — no network. A superset of `isUITest`
+    /// (also suppresses every live mutation), but sources its data from the SHARED
+    /// `UITestFixtures` the qa-e2e tests assert against, not the app-private `FixtureData`.
+    private let isFixtureMode: Bool
 
     /// The dashboard base URL the app is connected to (for building sidecar URLs
     /// like the parakeet voice endpoint). Falls back to the entered URL string so a
@@ -121,7 +127,10 @@ final class DashboardStore {
     var connectionToken: String? { token.isEmpty ? nil : token }
 
     init() {
-        isUITest = ProcessInfo.processInfo.arguments.contains("-uitest")
+        let args = ProcessInfo.processInfo.arguments
+        isFixtureMode = args.contains(UITestFixtures.launchArg)
+        // Fixture mode is a superset of UITest (suppresses live mutation + network).
+        isUITest = isFixtureMode || args.contains("-uitest")
         if isUITest {
             // Hermetic: the e2e/smoke suites pin the localhost default + empty token.
             serverURLString = "http://localhost:8000"
@@ -139,6 +148,7 @@ final class DashboardStore {
     /// Probe `/api/health` then open the WS. On UITest launch, load bundled
     /// fixtures instead of touching the network (hermetic, no live mutation).
     func connect() async {
+        if isFixtureMode { injectFixtures(); return }
         if isUITest { loadFixtures(); return }
         guard let url = URL(string: serverURLString.trimmingCharacters(in: .whitespaces)) else {
             phase = .failed("Invalid URL"); return
@@ -166,9 +176,14 @@ final class DashboardStore {
     /// Called once from the root on first appear. If a server was persisted from a
     /// prior successful connect, auto-connect to it — the root shows a splash and
     /// skips the connect form. A fresh install (no stored server) is a no-op, so the
-    /// editable connect form is shown. Never runs under `-uitest`.
+    /// editable connect form is shown. Under `-uitest-fixtures` it injects the shared
+    /// fixtures synchronously so the app boots STRAIGHT into the populated list (no
+    /// connect screen, no network). The legacy `-uitest` smoke path drives ConnectView
+    /// itself, so it stays a no-op here.
     func bootstrap() {
-        guard !isUITest, !didBootstrap else { return }
+        guard !didBootstrap else { return }
+        if isFixtureMode { didBootstrap = true; injectFixtures(); return }
+        guard !isUITest else { return }
         didBootstrap = true
         guard ConnectionPreferences.hasStoredServer() else { return }
         isAutoConnecting = true
@@ -740,6 +755,31 @@ final class DashboardStore {
     }
 
     // MARK: UITest fixtures
+
+    /// Inject the SHARED `UITestFixtures` (the `-uitest-fixtures` hermetic e2e contract):
+    /// populate the session registry + orders + pinned, seed the chat states the fixtures
+    /// script, mark connected, and enter the dashboard — no network, no live mutation.
+    /// Idempotent (bootstrap + a defensive connect() both call it). Sources everything
+    /// from `UITestFixtures` so the app and the qa-e2e asserts share one source of truth.
+    private func injectFixtures() {
+        guard !hasEnteredDashboard else { return }
+        let fixtures = UITestFixtures.sessions
+        var registry: [String: DashboardSession] = [:]
+        for s in fixtures { registry[s.id] = s }
+        sessions = registry
+        orders = UITestFixtures.orders
+        pinnedDirectories = UITestFixtures.pinned
+        // Seed a chat for every fixture session that scripts one (non-empty transcript).
+        for s in fixtures {
+            let chat = UITestFixtures.chat(for: s.id)
+            if !chat.messages.isEmpty { chatStates[s.id] = chat }
+        }
+        health = HealthStatus(ok: true, version: "fixture", mode: "production",
+                              uptime: 1, starter: "UITest", pid: 0,
+                              server: .init(activeSessions: registry.count, totalSessions: registry.count, eventStoreSessions: 0))
+        phase = .connected
+        hasEnteredDashboard = true
+    }
 
     /// Load a bundled fixture snapshot + a scripted chat so the XCUITest smoke runs
     /// hermetically (no live server, no mutation). Mirrors the real apply() paths.
