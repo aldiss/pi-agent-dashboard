@@ -276,7 +276,7 @@ final class ComposerFocusUITests: PiDashboardUITestCase {
     /// specs — the whole point is that focus persists without a re-tap).
     @discardableResult
     private func focusComposer() -> XCUIElement {
-        let tv = waitFor("mobile-composer-textarea", 8)
+        let tv = waitFor("mobile-composer-textarea", 6)
         tv.tap()
         XCTAssertTrue(waitForKeyboard(), "the keyboard comes up when the composer is focused")
         return tv

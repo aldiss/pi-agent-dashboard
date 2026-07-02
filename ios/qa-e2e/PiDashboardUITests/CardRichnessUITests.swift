@@ -20,7 +20,7 @@ final class CardRichnessUITests: PiDashboardUITestCase {
         let field = waitFor("list-search")
         field.tap()
         field.typeText(subject.displayName)
-        _ = waitFor(cardId(subject), 8)
+        _ = waitFor(cardId(subject), 6)
     }
 
     /// The context bar renders (with a % value) for a session carrying context data.

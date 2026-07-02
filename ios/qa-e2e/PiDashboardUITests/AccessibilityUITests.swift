@@ -32,7 +32,7 @@ final class AccessibilityUITests: PiDashboardUITestCase {
     /// The chat glyph buttons (model title, filter funnel) speak their purpose.
     func testChatToolbarIconButtonsHaveLabels() {
         openAChat()
-        let model = waitFor("chat-model-button", 8)
+        let model = waitFor("chat-model-button", 6)
         XCTAssertTrue(model.label.hasPrefix("Model:"), "the model title speaks the model (got '\(model.label)')")
         XCTAssertEqual(waitFor("chat-filter-button", 6).label, "Message filter", "funnel speaks 'Message filter'")
         attach("a11y-chat-toolbar")
@@ -41,7 +41,7 @@ final class AccessibilityUITests: PiDashboardUITestCase {
     /// The composer mic speaks its state (never a bare waveform glyph).
     func testComposerMicHasSpokenLabel() {
         openAChat()
-        let mic = waitFor("mobile-composer-mic", 8)
+        let mic = waitFor("mobile-composer-mic", 6)
         let label = mic.label
         XCTAssertTrue(label == "Record voice" || label == "Voice service starting" || label == "Stop recording",
                       "the mic speaks its state, not a bare glyph (got '\(label)')")
@@ -57,7 +57,7 @@ final class AccessibilityUITests: PiDashboardUITestCase {
         let field = waitFor("list-search")
         field.tap()
         field.typeText(subject.displayName)
-        _ = waitFor(cardId(subject), 8)
+        _ = waitFor(cardId(subject), 6)
 
         let status = waitFor("session-card-status", 6)
         XCTAssertTrue(status.label.hasPrefix("Status:"), "status speaks 'Status: <word>' (got '\(status.label)')")
@@ -68,7 +68,7 @@ final class AccessibilityUITests: PiDashboardUITestCase {
     /// The composer icon controls are real ≥40pt tap targets (attach / send are 44×44).
     func testComposerControlsAreAdequateTapTargets() {
         openAChat()
-        let send = waitFor("mobile-composer-send", 8)
+        let send = waitFor("mobile-composer-send", 6)
         XCTAssertGreaterThanOrEqual(send.frame.height, 40, "send is a ≥40pt tap target")
         XCTAssertGreaterThanOrEqual(send.frame.width, 40, "send is a ≥40pt tap target")
         XCTAssertGreaterThanOrEqual(waitFor("mobile-composer-attach", 6).frame.height, 40, "attach is a ≥40pt tap target")
@@ -80,7 +80,7 @@ final class AccessibilityUITests: PiDashboardUITestCase {
     /// label this SKIPS with the request rather than asserting an aspirational string.
     func testSendAndAttachExposePurposefulLabels() throws {
         openAChat()
-        let send = waitFor("mobile-composer-send", 8)
+        let send = waitFor("mobile-composer-send", 6)
         let attachBtn = waitFor("mobile-composer-attach", 6)
         let sendLabeled = ["Send", "Send message"].contains(send.label)
         let attachLabeled = ["Add photo", "Attach", "Attach image", "Add image"].contains(attachBtn.label)

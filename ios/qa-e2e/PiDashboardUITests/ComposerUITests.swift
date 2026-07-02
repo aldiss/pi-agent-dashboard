@@ -13,7 +13,6 @@ final class ComposerUITests: PiDashboardUITestCase {
         launch()
         connectAndEnterList()
         openChat(fixtureSessions.first ?? fixtureSession("any") { _ in true })
-        _ = waitFor("mobile-composer", 10)
     }
 
     // MARK: F4 — single-row ⇄ multiline hysteresis

@@ -21,28 +21,24 @@ final class BannerAndFiltersUITests: PiDashboardUITestCase {
                        "no disconnect banner while steadily connected")
     }
 
-    /// Positive path (phase injection): the disconnect/reconnect banner surfaces
-    /// when the store is in `.reconnecting`. XCUITest can't sever the socket of a
-    /// hermetic fixture run, so this needs a small app-side affordance: honor a
-    /// `-uitest-reconnecting` launch argument that puts the store into the
-    /// `.reconnecting` phase on entry. If the build session has not wired that hook
-    /// yet, the test SKIPS with a clear coordination note (reported to SwiftPilot)
-    /// rather than failing — the spec is authored + ready for when the hook lands.
+    /// Positive path (phase injection): the disconnect/reconnect banner surfaces when the
+    /// store is in `.reconnecting`. Under `-uitest-fixtures` the app boots `.connected`, so
+    /// the banner needs an app affordance (`-uitest-reconnecting` seeding `.reconnecting`).
+    /// Runs in fixture mode with TIGHT bounded waits — the populated list is up instantly,
+    /// so if the banner isn't there within a short window the hook isn't wired → SKIP fast
+    /// (never the old 15s+5s non-fixture stall).
     func testF6_BannerAppearsWhenReconnecting() throws {
-        launch(["-uitest", "-uitest-reconnecting"])
-        // Non-asserting wait for the shell to come up (this is the first test on a
-        // cold sim; do NOT hard-require session-list — the banner can render over
-        // ConnectView too, and the hook may not be wired at all).
-        _ = el("session-list").waitForExistence(timeout: 15)
-        if !el("connection-banner").waitForExistence(timeout: 5) {
+        launch(Self.fixtureArgs + ["-uitest-reconnecting"])
+        _ = waitForAppear("session-list", 6) // fixture boot is instant; don't hard-require
+        if !waitForAppear("connection-banner", 3) {
             throw XCTSkip("""
             connection-banner not shown under -uitest-reconnecting. PENDING build-session hook: \
-            DashboardStore should enter `.reconnecting` when launched with the \
-            `-uitest-reconnecting` argument (mirrors the >3s disconnect). Reported to SwiftPilot \
-            (TEST-CONTRACT §B F6). Spec authored + ready.
+            DashboardStore should enter `.reconnecting` when launched with the `-uitest-reconnecting` \
+            argument (fixture boot is `.connected` by default, so the banner needs this seed). \
+            Reported to SwiftPilot (TEST-CONTRACT §B F6). Spec authored + ready.
             """)
         }
-        XCTAssertTrue(el("connection-banner").exists, "reconnecting surfaces the banner")
+        XCTAssertTrue(exists("connection-banner"), "reconnecting surfaces the banner")
         attach("F6-reconnecting-banner")
     }
 
@@ -55,7 +51,7 @@ final class BannerAndFiltersUITests: PiDashboardUITestCase {
     func testF7_SearchNarrowsCards() {
         enterList()
         let (keep, drop) = twoDistinctlyNamedSessions()
-        XCTAssertTrue(waitForAppear(cardId(keep), 8), "the keep card is present before filtering")
+        XCTAssertTrue(waitForAppear(cardId(keep), 6), "the keep card is present before filtering")
         XCTAssertTrue(exists(cardId(drop)) || waitForAppear(cardId(drop), 4),
                       "the drop card present before filtering")
 

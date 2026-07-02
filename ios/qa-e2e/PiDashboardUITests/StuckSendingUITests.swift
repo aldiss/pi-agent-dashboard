@@ -78,7 +78,7 @@ final class StuckSendingUITests: PiDashboardUITestCase {
         launch(Self.fixtureArgs + ["-uitest-echo-send"])
         openSeededChat()
 
-        let textView = waitFor("mobile-composer-textarea", 8)
+        let textView = waitFor("mobile-composer-textarea", 6)
         textView.tap()
         textView.typeText("does this reconcile?")
         let send = waitFor("mobile-composer-send", 6)

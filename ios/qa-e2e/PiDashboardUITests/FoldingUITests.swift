@@ -29,7 +29,7 @@ final class FoldingUITests: PiDashboardUITestCase {
 
         let (tier, cards) = foldableExpandedTier()
         let raw = tier.rawValue
-        let header = waitFor("tier-section-\(raw)", 8)
+        let header = waitFor("tier-section-\(raw)", 6)
         XCTAssertTrue(waitForTierValue(raw, "expanded"), "\(raw) is expanded by default")
         XCTAssertTrue(waitForAppear(cards[0], 6), "an expanded tier shows its cards")
         attach("folding-tier-expanded")
@@ -84,7 +84,7 @@ final class FoldingUITests: PiDashboardUITestCase {
         connectAndEnterList()
 
         let (basename, foldedCard, siblingCard) = twoCwdTier()
-        let header = waitFor("dir-group-\(basename)", 8)
+        let header = waitFor("dir-group-\(basename)", 6)
         XCTAssertTrue(waitForAppear(foldedCard, 6), "the folder's card shows while expanded")
         XCTAssertTrue(exists(siblingCard), "the sibling folder's card is present too")
         attach("folding-dir-expanded")
@@ -110,7 +110,7 @@ final class FoldingUITests: PiDashboardUITestCase {
         let raw = tier.rawValue
         XCTAssertTrue(waitForTierValue(raw, "expanded"), "clean baseline: \(raw) expanded")
 
-        waitFor("tier-section-\(raw)", 8).tap()
+        waitFor("tier-section-\(raw)", 6).tap()
         XCTAssertTrue(waitForTierValue(raw, "collapsed"), "\(raw) collapsed before relaunch")
         usleep(400_000) // let the didSet UserDefaults write settle
         app.terminate()
@@ -123,7 +123,7 @@ final class FoldingUITests: PiDashboardUITestCase {
                       "the persisted-collapsed tier still hides its cards after relaunch")
         attach("folding-persisted-collapsed")
 
-        waitFor("tier-section-\(raw)", 8).tap()
+        waitFor("tier-section-\(raw)", 6).tap()
         XCTAssertTrue(waitForTierValue(raw, "expanded"), "restored to the expanded default")
     }
 

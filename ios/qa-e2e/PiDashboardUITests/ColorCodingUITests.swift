@@ -22,7 +22,7 @@ final class ColorCodingUITests: PiDashboardUITestCase {
         let field = waitFor("list-search")
         field.tap()
         field.typeText(subject.displayName)
-        _ = waitFor(cardId(subject), 8)
+        _ = waitFor(cardId(subject), 6)
     }
 
     /// An UNREAD session carries the `session-card-unread` left rail (the unread stripe id).
@@ -63,7 +63,7 @@ final class ColorCodingUITests: PiDashboardUITestCase {
         let calm = fixtureSession("is not unread") { $0.unread != true }
         launch()
         connectAndEnterList()
-        XCTAssertTrue(waitForAppear(cardId(unread), 8), "the unread card is present")
+        XCTAssertTrue(waitForAppear(cardId(unread), 6), "the unread card is present")
         XCTAssertTrue(exists(cardId(calm)) || waitForAppear(cardId(calm), 4), "the calm card is present")
         XCTAssertTrue(exists("session-card-unread"), "the unread session drives the unread rail")
         XCTAssertTrue(exists("card-status-rail"), "the calm session drives the calm rail")

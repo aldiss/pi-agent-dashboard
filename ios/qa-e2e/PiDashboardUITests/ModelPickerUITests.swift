@@ -19,7 +19,7 @@ final class ModelPickerUITests: PiDashboardUITestCase {
         connectAndEnterList()
         let subject = fixtureSession("has a model") { ($0.model?.isEmpty == false) }
         openChat(subject)
-        waitFor("chat-model-button", 8).tap()
+        waitFor("chat-model-button", 6).tap()
     }
 
     /// Tapping the chat title opens the model-picker sheet with the thinking-level control.

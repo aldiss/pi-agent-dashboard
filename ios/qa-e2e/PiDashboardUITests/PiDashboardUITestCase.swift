@@ -71,7 +71,7 @@ class PiDashboardUITestCase: XCTestCase {
     }
 
     @discardableResult
-    func waitFor(_ id: String, _ timeout: TimeInterval = 8) -> XCUIElement {
+    func waitFor(_ id: String, _ timeout: TimeInterval = 6) -> XCUIElement {
         let e = el(id)
         XCTAssertTrue(e.waitForExistence(timeout: timeout), "expected element '\(id)' to appear")
         return e
@@ -125,29 +125,24 @@ class PiDashboardUITestCase: XCTestCase {
         UITestFixtures.sessions.filter { $0.name == "Pete" }
     }
 
-    // MARK: shared flow helpers (fixtures-boot → list; connect fallback)
+    // MARK: shared flow helpers (fixtures-boot → list)
 
-    /// Land on the populated session list. Under `-uitest-fixtures` the app boots
-    /// connected, so the list is up immediately — no connect tap. Falls back to the
-    /// connect-submit path for a non-fixtures launch (the F1 connect-screen variant).
+    /// Land on the populated session list. Under `-uitest-fixtures` the app injects the
+    /// fixture sessions synchronously and boots straight into the list — it's up
+    /// immediately, no connect tap. A tight wait (the fixture app is instant); it never
+    /// waits on a `connect-submit` that fixture mode does not render (that would hang).
     @discardableResult
     func connectAndEnterList() -> XCUIElement {
-        if el("session-list").waitForExistence(timeout: 8) {
-            return el("session-list")
-        }
-        // Non-fixtures boot (connect-screen variant): submit the prefilled localhost URL.
-        if el("connect-submit").waitForExistence(timeout: 4) {
-            el("connect-submit").tap()
-        }
-        return waitFor("session-list")
+        waitFor("session-list", 6)
     }
 
     /// Tap a `session-card-<id>` and wait for the chat surface (`chat-scroll` +
-    /// `mobile-composer`) to mount. Returns once the composer is up.
+    /// `mobile-composer`) to mount. Returns once the composer is up. Tight waits — the
+    /// fixture chat renders instantly.
     func openChat(cardId: String) {
-        waitFor(cardId, 8).tap()
-        _ = waitFor("chat-scroll", 10)
-        _ = waitFor("mobile-composer", 10)
+        waitFor(cardId, 6).tap()
+        _ = waitFor("chat-scroll", 6)
+        _ = waitFor("mobile-composer", 6)
     }
 
     /// Open the chat for a fixture session (derives the card id from the session).
@@ -159,12 +154,17 @@ class PiDashboardUITestCase: XCTestCase {
     /// and to the `chat(for:)` return shape). Fails clearly if none render rows.
     @discardableResult
     func openChatBearing() -> String {
-        for s in fixtureSessions {
+        // Prefer sessions whose `chat(for:)` scripts a non-empty transcript (only those
+        // render rows; the rest show the empty-state loader — an indeterminate spinner we
+        // never want to open). Fall back to the full set if the contract shape changes.
+        let scripted = fixtureSessions.filter { !UITestFixtures.chat(for: $0.id).messages.isEmpty }
+        let candidates = scripted.isEmpty ? fixtureSessions : scripted
+        for s in candidates {
             let card = cardId(s)
-            guard el(card).exists || waitForAppear(card, 2) else { continue }
+            guard el(card).exists || waitForAppear(card, 3) else { continue }
             el(card).tap()
-            if waitForAppear("chat-scroll", 6), hasChatRows() {
-                _ = waitFor("mobile-composer", 8)
+            if waitForAppear("chat-scroll", 5), hasChatRows() {
+                _ = waitFor("mobile-composer", 5)
                 return s.id
             }
             let back = app.navigationBars.buttons.firstMatch

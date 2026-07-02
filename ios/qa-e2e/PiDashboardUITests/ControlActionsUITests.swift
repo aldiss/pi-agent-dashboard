@@ -27,7 +27,7 @@ final class ControlActionsUITests: PiDashboardUITestCase {
         connectAndEnterList()
         openChat(fixtureSession(status: "streaming"))
 
-        let stop = waitFor("chat-abort-button", 8)
+        let stop = waitFor("chat-abort-button", 6)
         XCTAssertTrue(stop.isHittable, "Stop shows + is reachable on a running session")
         attach("ext-abort-button")
 
@@ -93,7 +93,7 @@ final class ControlActionsUITests: PiDashboardUITestCase {
         connectAndEnterList()
         openChatBearing() // a chat with content → the pills have counts
 
-        waitFor("chat-filter-button", 8).tap()
+        waitFor("chat-filter-button", 6).tap()
         XCTAssertTrue(waitFor("chat-filter-controls", 6).exists, "the filter pill row expands")
 
         let pill = waitFor("chat-filter-pill-toolCalls", 6)

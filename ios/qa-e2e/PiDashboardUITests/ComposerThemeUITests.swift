@@ -28,7 +28,7 @@ final class ComposerThemeUITests: PiDashboardUITestCase {
         launchForcing(themeMode: themeMode)
         connectAndEnterList()
         openChat(fixtureSessions.first ?? fixtureSession("any") { _ in true })
-        return waitFor("mobile-composer-textarea", 8)
+        return waitFor("mobile-composer-textarea", 6)
     }
 
     /// Assert the composer is live + text is retained (readable-proxy) in `themeMode`.
@@ -93,7 +93,7 @@ final class ComposerThemeUITests: PiDashboardUITestCase {
         // Back to the list → open Settings → pick Light on the theme segmented picker.
         let back = app.navigationBars.buttons.firstMatch
         if back.exists { back.tap() }
-        waitFor("session-list", 8)
+        waitFor("session-list", 6)
         waitFor("settings-button", 6).tap()
         let picker = waitFor("settings-theme-picker", 6)
         // Segmented control: the "Light" segment is a button inside the picker.
@@ -106,7 +106,7 @@ final class ComposerThemeUITests: PiDashboardUITestCase {
         // Reopen the chat → the composer must still be interactable + hold text in the
         // freshly-applied light theme (the live re-apply worked).
         openChat(fixtureSessions.first ?? fixtureSession("any") { _ in true })
-        let tv2 = waitFor("mobile-composer-textarea", 8)
+        let tv2 = waitFor("mobile-composer-textarea", 6)
         tv2.tap()
         tv2.typeText("after switch")
         XCTAssertTrue(valueContains(tv2, "after switch", timeout: 4),

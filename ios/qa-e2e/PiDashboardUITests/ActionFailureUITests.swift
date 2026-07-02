@@ -18,7 +18,7 @@ final class ActionFailureUITests: PiDashboardUITestCase {
     func testNoActionErrorBannerInSteadyState() {
         launch()
         connectAndEnterList()
-        _ = waitFor("session-list", 8)
+        _ = waitFor("session-list", 6)
         XCTAssertFalse(exists("action-error-banner"),
                        "no action-error banner in the steady fixture state")
         attach("actionfail-none-steady")
@@ -29,7 +29,7 @@ final class ActionFailureUITests: PiDashboardUITestCase {
         launch()
         connectAndEnterList()
         openChat(fixtureSessions.first ?? fixtureSession("any") { _ in true })
-        _ = waitFor("chat-scroll", 8)
+        _ = waitFor("chat-scroll", 6)
         XCTAssertFalse(exists("chat-message-failed"),
                        "no 'Not sent' failure row in the settled fixture chat")
         attach("actionfail-none-chat")
@@ -70,7 +70,7 @@ final class ActionFailureUITests: PiDashboardUITestCase {
         connectAndEnterList()
         openChat(fixtureSessions.first ?? fixtureSession("any") { _ in true })
 
-        let tv = waitFor("mobile-composer-textarea", 8)
+        let tv = waitFor("mobile-composer-textarea", 6)
         tv.tap()
         tv.typeText("will this fail visibly?")
         waitFor("mobile-composer-send", 6).tap()

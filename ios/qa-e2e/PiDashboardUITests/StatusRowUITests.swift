@@ -25,7 +25,7 @@ final class StatusRowUITests: PiDashboardUITestCase {
         field.tap()
         field.typeText(subject.displayName)
         let card = cardId(subject)
-        _ = waitFor(card, 8)
+        _ = waitFor(card, 6)
         let name = waitFor("session-card-name", 6)
         let status = waitFor("session-card-status", 6)
         return (name, status, card)
