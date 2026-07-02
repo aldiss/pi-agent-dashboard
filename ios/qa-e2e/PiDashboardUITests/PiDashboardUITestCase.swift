@@ -99,22 +99,37 @@ class PiDashboardUITestCase: XCTestCase {
     /// what the app renders under `-uitest-fixtures`.
     var fixtureSessions: [DashboardSession] { UITestFixtures.sessions }
 
+    /// The fixture sessions whose card can actually RENDER as a standalone row — i.e. the
+    /// crew-collapse SURVIVORS. Same-canonical-name tenures (e.g. the two "Pete"s) fold to
+    /// ONE row via `SessionGrouping.collapseSameName`; the older, folded-away tenants never
+    /// render their own `session-card-<id>`. Deriving a test subject from a folded-away
+    /// non-survivor would wait forever on a card that never appears, so the property-based
+    /// `fixtureSession(...)` helpers pick from THIS set. Uses the app's OWN collapse rule
+    /// (survivor = most-recent by recency), so the tests and the app agree exactly.
+    var renderedSessions: [DashboardSession] {
+        SessionGrouping.collapseSameName(UITestFixtures.sessions).map(\.session)
+    }
+
     /// The `session-card-<id>` identifier for a fixture session.
     func cardId(_ session: DashboardSession) -> String { "session-card-\(session.id)" }
 
-    /// The first fixture session matching `predicate` (by property — status, gitBranch,
-    /// name, …). Fails the test with a clear message when the fixture set lacks one, so a
-    /// coverage regression in `UITestFixtures` surfaces as a precise failure, not a crash.
+    /// The first RENDERED fixture session matching `predicate` (by property — status,
+    /// gitBranch, name, …). Restricted to crew-collapse survivors (`renderedSessions`) so a
+    /// derived subject is always a card that actually appears, never a folded-away tenure.
+    /// Fails the test with a clear message when the rendered set lacks one, so a coverage
+    /// regression in `UITestFixtures` surfaces as a precise failure, not a crash.
     func fixtureSession(_ why: String,
                         where predicate: (DashboardSession) -> Bool) -> DashboardSession {
-        guard let s = UITestFixtures.sessions.first(where: predicate) else {
-            XCTFail("UITestFixtures has no session for: \(why)")
-            return UITestFixtures.sessions.first ?? DashboardSession(id: "fix-missing")
+        guard let s = renderedSessions.first(where: predicate) else {
+            XCTFail("UITestFixtures has no RENDERED (crew-survivor) session for: \(why)")
+            return renderedSessions.first ?? UITestFixtures.sessions.first ?? DashboardSession(id: "fix-missing")
         }
         return s
     }
 
-    /// A fixture session with a given raw `status` (idle/streaming/ended/active).
+    /// A RENDERED fixture session with a given raw `status` (idle/streaming/ended/active).
+    /// Survivor-only, so e.g. the ended subject is the standalone `fix-atlas`, never the
+    /// crew-folded older "Pete" tenure that shares its row with the streaming survivor.
     func fixtureSession(status: String) -> DashboardSession {
         fixtureSession("status == \(status)") { $0.status == status }
     }
@@ -123,6 +138,46 @@ class PiDashboardUITestCase: XCTestCase {
     /// standing-crew name "Pete" in ≥2 cwds). Returns every fixture session named Pete.
     func peteTenures() -> [DashboardSession] {
         UITestFixtures.sessions.filter { $0.name == "Pete" }
+    }
+
+    /// The tier a fixture session lands in (the app's own `SessionGrouping.classifyTier`).
+    func tierOf(_ session: DashboardSession) -> SessionTier {
+        SessionGrouping.classifyTier(session)
+    }
+
+    /// Reveal a fixture session's card, robust to the round3-1 default-collapsed tiers
+    /// (operator-chat-pane / worker / other ship FOLDED) AND to LazyVStack de-realization
+    /// (an on-list card that's scrolled off-screen isn't in the a11y tree). Narrows via
+    /// `list-search` (force-expands tiers), explicitly expands the session's `tier-section`
+    /// header if still collapsed, then SCROLLS the list to realize an off-screen card.
+    /// Returns the card id.
+    @discardableResult
+    func revealCard(_ session: DashboardSession, timeout: TimeInterval = 6) -> String {
+        let card = cardId(session)
+        if el(card).exists { return card }
+        // 1) Search by display name — matches this session + force-expands all tiers.
+        let field = waitFor("list-search")
+        field.tap()
+        if let v = field.value as? String, !v.isEmpty, v != "Search sessions" {
+            field.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: v.count))
+        }
+        field.typeText(session.displayName)
+        if waitForAppear(card, 2) { return card }
+        // 2) Explicitly expand the session's tier header if it reports collapsed.
+        let header = "tier-section-\(tierOf(session).rawValue)"
+        if el(header).exists, (el(header).value as? String) == "collapsed" {
+            el(header).tap()
+            if waitForAppear(card, 2) { return card }
+        }
+        // 3) LazyVStack de-realization: the card may be rendered below the fold. Scroll the
+        // list down to realize it (bounded number of swipes).
+        let list = el("session-list")
+        for _ in 0..<5 {
+            if el(card).exists { return card }
+            list.swipeUp()
+        }
+        _ = waitForAppear(card, timeout)
+        return card
     }
 
     // MARK: shared flow helpers (fixtures-boot → list)

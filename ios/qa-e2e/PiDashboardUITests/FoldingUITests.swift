@@ -148,10 +148,12 @@ final class FoldingUITests: PiDashboardUITestCase {
         SessionGrouping.groupByTier(fixtureSessions).map { $0.tier }
     }
 
-    /// A tier that spans ≥2 distinct cwds: returns (foldedBasename, its card id, a
-    /// sibling-cwd card id). Fails clearly if no tier has two cwds.
+    /// A tier that spans ≥2 distinct cwds with RENDERED cards: returns (foldedBasename, its
+    /// card id, a sibling-cwd card id). Uses `renderedSessions` (crew-collapse SURVIVORS) so
+    /// it never picks a folded-away tenure (e.g. the older `fix-pete-2`, which shares its row
+    /// with the `fix-pete` survivor and has no standalone card). Fails clearly if none.
     private func twoCwdTier() -> (String, String, String) {
-        for entry in SessionGrouping.groupByTier(fixtureSessions) {
+        for entry in SessionGrouping.groupByTier(renderedSessions) {
             let byCwd = Dictionary(grouping: entry.sessions) { $0.cwd ?? "" }
                 .filter { !$0.key.isEmpty }
             if byCwd.count >= 2 {
@@ -163,7 +165,7 @@ final class FoldingUITests: PiDashboardUITestCase {
                 return (basename, foldedCard, siblingCard)
             }
         }
-        XCTFail("UITestFixtures has no tier spanning ≥2 cwds (needed for directory folding)")
+        XCTFail("UITestFixtures has no tier spanning ≥2 cwds with rendered cards (needed for directory folding)")
         return ("", "", "")
     }
 

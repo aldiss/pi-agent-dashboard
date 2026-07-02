@@ -47,7 +47,10 @@ final class CrewCollapseUITests: PiDashboardUITestCase {
     /// surviving row id is computed via `collapseGroupsFoldingCrew` (the app's own fold),
     /// so the exact `card-collapsed-count-<survivor>` id is asserted.
     func testFoldedCrewRowShowsCollapsedCountBadge() {
-        launch()
+        // `fix-pete-2` (the older Pete tenure that folds into `fix-pete` +1) is `ended`, so it
+        // is FILTERED OUT under the default hideEnded=on BEFORE the crew fold runs → no fold,
+        // no badge. Force hideEnded OFF so both Pete tenures are present and actually fold.
+        launchForcing(hideEnded: false)
         connectAndEnterList()
         let field = waitFor("list-search")
         field.tap()

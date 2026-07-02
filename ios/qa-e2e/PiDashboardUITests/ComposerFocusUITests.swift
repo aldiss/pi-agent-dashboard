@@ -225,12 +225,19 @@ final class ComposerFocusUITests: PiDashboardUITestCase {
     /// `TranscriptAppender`) — it must never CLEAR the draft or drop the caret.
     ///
     /// PENDING build-session hook: real recording needs AVAudioSession capture + the
-    /// parakeet transcription sidecar, neither reachable in the hermetic sim (the health
-    /// probe fails with no server → the mic stays disabled). It needs a NO-OP affordance:
-    /// under a `-uitest-voice-append` launch argument, expose a voice path that appends a
-    /// fixed transcript token to the current draft via `TranscriptAppender` (no capture,
-    /// no network) so the append-preserves-draft contract is drivable. Until it lands this
-    /// SKIPS (it does not fail). App-target change = cc-ios-build owned.
+    /// parakeet transcription sidecar, neither reachable in the hermetic sim. It needs a
+    /// NO-OP affordance: under `-uitest-voice-append`, expose a voice path that appends a
+    /// fixed transcript token to the current draft via `TranscriptAppender` WITHOUT touching
+    /// AVAudioSession, so the append-preserves-draft contract is drivable. Until that pure
+    /// no-op lands this SKIPS (it does not fail).
+    ///
+    /// IMPORTANT — do NOT tap the mic on the sim: tapping `mobile-composer-mic` invokes the
+    /// REAL `VoiceRecorder.toggle` → AVAudioSession capture, which HANGS the app's main run
+    /// loop on a headless simulator (~315 s → the harness kills the test as a spurious
+    /// failure). The current `-uitest-voice-append` wiring enables the mic but the tap still
+    /// hits real capture (not a pure no-op), so this test SKIPS before any tap. Re-enable the
+    /// tap+assert only once the hook appends via `TranscriptAppender` with NO AVAudioSession
+    /// access (a sim-safe path, e.g. gated on `-uitest-voice-append` inside `VoiceRecorder`).
     func testVoiceAppendKeepsDraftAndCaret() throws {
         enterSeededChat(["-uitest-voice-append"])
 
@@ -238,26 +245,16 @@ final class ComposerFocusUITests: PiDashboardUITestCase {
         tv.typeText(markers(1...4))                            // a small existing draft
         XCTAssertTrue(waitForValueContains(tv, "MK04"), "the seed draft is present before the append")
 
-        // The mic is disabled hermetically until the (unreachable) sidecar reports
-        // healthy → skip unless the no-op append hook has enabled a drivable path.
-        let mic = el("mobile-composer-mic")
-        guard mic.exists, mic.isEnabled else {
-            throw XCTSkip("""
-            Voice mic not reachable hermetically (needs AVAudioSession capture + the parakeet \
-            transcription sidecar; the fixture health probe fails with no server, so the mic stays \
-            disabled). PENDING build-session hook: under a `-uitest-voice-append` launch argument, \
-            expose a NO-OP voice path that appends a fixed transcript token to the current draft via \
-            TranscriptAppender (no capture, no network) so the append-preserves-draft/caret contract \
-            is drivable. Reported to cc-ios-build. Spec authored + ready.
-            """)
-        }
-
-        // With the hook present the append fires on tap and composes onto the draft.
-        mic.tap()
-        XCTAssertTrue(waitForValueContains(tv, "MK01"),
-                      "voice-append composes onto the existing draft — the seed text is preserved")
-        XCTAssertTrue(keyboardIsUp(), "the field stays focused across a programmatic append")
-        attach("voice-append")
+        // Never tap the mic on the sim — a real AVAudioSession capture hangs the main thread.
+        throw XCTSkip("""
+        Voice-append not drivable sim-safely: tapping `mobile-composer-mic` triggers the real \
+        VoiceRecorder → AVAudioSession capture, which HANGS the app main run loop on a headless \
+        simulator (~315 s, killed as a spurious failure). The `-uitest-voice-append` hook currently \
+        enables the mic but the tap still hits real capture. PENDING build-session hook: append a \
+        fixed transcript via `TranscriptAppender` under `-uitest-voice-append` WITHOUT any \
+        AVAudioSession access, so the append-preserves-draft/caret contract runs without recording. \
+        Then re-enable the tap+assert here. Reported to cc-ios-build. Spec authored + ready.
+        """)
     }
 
     // MARK: helpers
