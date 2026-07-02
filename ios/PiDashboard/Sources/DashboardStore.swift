@@ -54,6 +54,12 @@ final class DashboardStore {
     var collapsedDirs = ListPrefsStore.loadCollapsedDirs() {
         didSet { ListPrefsStore.saveCollapsedDirs(collapsedDirs) }
     }
+    /// Tier fold OFF-DEFAULT set (tier rawValues flipped away from their PWA default —
+    /// see `TierFold`). Persisted so a folded tier stays folded across launches.
+    /// Default (empty) = {standing-crew, drivers, cell-executor} expanded, rest collapsed.
+    var tierFold = ListPrefsStore.loadTierFold() {
+        didSet { ListPrefsStore.saveTierFold(tierFold) }
+    }
     var staleHoursThreshold: Double = 12
     var search = ""
 
@@ -456,6 +462,22 @@ final class DashboardStore {
     func toggleDirCollapsed(_ cwd: String) {
         guard !cwd.isEmpty else { return }
         if collapsedDirs.contains(cwd) { collapsedDirs.remove(cwd) } else { collapsedDirs.insert(cwd) }
+    }
+
+    /// Is `tier`'s section expanded? Resolved from the persisted off-default set via the
+    /// core `TierFold`. Force-expanded whenever a search is active so a collapsed tier
+    /// never hides a match (mirrors the PWA). Default set: {standing-crew, drivers,
+    /// cell-executor} expanded, the rest collapsed.
+    func isTierExpanded(_ tier: SessionTier) -> Bool {
+        let searching = !search.trimmingCharacters(in: .whitespaces).isEmpty
+        return TierFold.isExpanded(tier, offDefault: tierFold, forceExpand: searching)
+    }
+
+    /// Toggle `tier`'s fold state (persists via didSet). No-op while searching — the
+    /// tiers are force-expanded, so a toggle then would be invisible/confusing.
+    func toggleTier(_ tier: SessionTier) {
+        guard search.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+        tierFold = TierFold.toggle(tier, in: tierFold)
     }
 
     // MARK: Chat lifecycle (subscribe + view/unview)

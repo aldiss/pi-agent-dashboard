@@ -88,17 +88,37 @@ struct SessionListView: View {
         // still fold per-cwd. Groups emptied by the fold drop out.
         let collapsedGroups = SessionGrouping.collapseGroupsFoldingCrew(
             section.groups, selectedId: store.viewedSessionId)
+        let count = collapsedGroups.reduce(0) { $0 + $1.rows.count }
+        let expanded = store.isTierExpanded(section.tier)
         return Section {
-            ForEach(collapsedGroups) { group in
-                directoryGroup(group)
+            if expanded {
+                ForEach(collapsedGroups) { group in
+                    directoryGroup(group)
+                }
             }
         } header: {
+            tierHeader(section.tier, count: count, expanded: expanded)
+        }
+    }
+
+    /// Foldable tier header (PWA-style): a tappable row that folds/unfolds the tier's
+    /// groups — mirrors `directoryHeader`. Leading chevron (down = expanded, right =
+    /// collapsed), the tier label, and the count badge (ALWAYS visible, even collapsed).
+    /// Fold state persists per tier.rawValue (store.tierFold); force-expanded on search.
+    private func tierHeader(_ tier: SessionTier, count: Int, expanded: Bool) -> some View {
+        Button {
+            store.toggleTier(tier)
+        } label: {
             HStack(spacing: 8) {
-                Text(tierLabel(section.tier))
+                Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(theme.textTertiary)
+                    .frame(width: 10)
+                Text(tierLabel(tier))
                     .font(.subheadline.weight(.bold))
                     .dynamicTypeCap(.sectionHeader)
                     .foregroundStyle(theme.textSecondary)
-                Text("\(collapsedGroups.reduce(0) { $0 + $1.rows.count })")
+                Text("\(count)")
                     .font(.caption2)
                     .foregroundStyle(theme.textTertiary)
                 Spacer()
@@ -107,10 +127,14 @@ struct SessionListView: View {
             .padding(.horizontal, 4)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(theme.bgPrimary)
-            .accessibilityElement(children: .combine)
-            .accessibilityAddTraits(.isHeader)
-            .accessibilityIdentifier("tier-section-\(section.tier.rawValue)")
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isHeader)
+        .accessibilityIdentifier("tier-section-\(tier.rawValue)")
+        .accessibilityLabel("\(expanded ? "Collapse" : "Expand") \(tierLabel(tier))")
+        .accessibilityValue(expanded ? "expanded" : "collapsed")
     }
 
     @ViewBuilder private func directoryGroup(_ group: SessionGrouping.CollapsedDirectoryGroup) -> some View {

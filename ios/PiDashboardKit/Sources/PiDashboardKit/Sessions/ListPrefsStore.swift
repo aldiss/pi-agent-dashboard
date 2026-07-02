@@ -12,6 +12,7 @@ import Foundation
 public enum ListPrefsStore {
     private static let hideEndedKey = "pi.dashboard.hideEnded"
     private static let collapsedDirsKey = "pi.dashboard.collapsedDirs"
+    private static let tierFoldKey = "pi.dashboard.tierFold"
 
     /// Whether ended sessions are hidden — default `true` on a fresh install.
     /// Stored only when it DIFFERS from the default, so `true` ⇒ (absent OR "true").
@@ -45,6 +46,24 @@ public enum ListPrefsStore {
             defaults.removeObject(forKey: collapsedDirsKey)
         } else {
             defaults.set(dirs.sorted(), forKey: collapsedDirsKey)
+        }
+    }
+
+    /// The tier fold OFF-DEFAULT set (tier `rawValue`s flipped away from their default
+    /// expand state — see `TierFold`). Empty ⇒ clean PWA defaults ({standing-crew,
+    /// drivers, cell-executor} expanded, the rest collapsed). Absent/garbage → empty.
+    public static func loadTierFold(from defaults: UserDefaults = .standard) -> Set<String> {
+        guard let arr = defaults.array(forKey: tierFoldKey) as? [String] else { return [] }
+        return Set(arr)
+    }
+
+    /// Persist the tier off-default set. EMPTY clears the key (fresh read → defaults).
+    /// Sorted on write for a stable on-disk representation.
+    public static func saveTierFold(_ tiers: Set<String>, to defaults: UserDefaults = .standard) {
+        if tiers.isEmpty {
+            defaults.removeObject(forKey: tierFoldKey)
+        } else {
+            defaults.set(tiers.sorted(), forKey: tierFoldKey)
         }
     }
 }

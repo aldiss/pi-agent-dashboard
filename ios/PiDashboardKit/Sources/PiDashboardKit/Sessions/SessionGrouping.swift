@@ -17,6 +17,35 @@ public let SESSION_TIER_ORDER: [SessionTier] = [
     .standingCrew, .drivers, .cellExecutor, .operatorChatPane, .worker, .other,
 ]
 
+/// Tiers whose section is EXPANDED by default. Tiers NOT listed (operator-chat-pane,
+/// worker, other) default COLLAPSED — they flood the list. Faithful port of the PWA
+/// `DEFAULT_EXPANDED_TIERS` in `packages/client/src/components/SessionList.tsx`.
+public let DEFAULT_EXPANDED_TIERS: Set<SessionTier> = [.standingCrew, .drivers, .cellExecutor]
+
+/// Pure tier fold-state resolution — mirrors the PWA's single "off-default" set.
+/// The persisted set holds a tier's `rawValue` iff the user flipped it AWAY from its
+/// default, so an empty set == clean defaults and one toggle works from either side.
+public enum TierFold {
+    /// Is `tier` expanded, given the off-default set and an optional force-expand
+    /// (an active search/filter must never let a collapsed tier hide a match)?
+    /// Default-expanded tiers are collapsed iff present in the set; default-collapsed
+    /// tiers are collapsed iff ABSENT — so toggling presence always inverts the state.
+    public static func isExpanded(_ tier: SessionTier, offDefault: Set<String>,
+                                  forceExpand: Bool = false) -> Bool {
+        if forceExpand { return true }
+        let present = offDefault.contains(tier.rawValue)
+        return DEFAULT_EXPANDED_TIERS.contains(tier) ? !present : present
+    }
+
+    /// Toggle `tier`'s fold state by flipping its presence in the off-default set
+    /// (present ⇄ absent). Returns the new set (pure; caller persists it).
+    public static func toggle(_ tier: SessionTier, in offDefault: Set<String>) -> Set<String> {
+        var next = offDefault
+        if next.contains(tier.rawValue) { next.remove(tier.rawValue) } else { next.insert(tier.rawValue) }
+        return next
+    }
+}
+
 /// Pure session grouping / filtering / sorting — a faithful Swift port of the
 /// pure helpers in `packages/client/src/lib/session-grouping.ts`. No UIKit /
 /// SwiftUI; fully unit-testable via `swift test`.
