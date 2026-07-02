@@ -231,7 +231,9 @@ struct ChatView: View {
         GeometryReader { outer in
             ScrollViewReader { proxy in
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 10) {
+                    // Spacing 16 (was 10) so messages don't crowd — with the sender
+                    // headers + assistant card (round 3.3) each row reads as a block.
+                    LazyVStack(alignment: .leading, spacing: 16) {
                         if state.messages.isEmpty {
                             emptyState
                         } else if filteredMessages.isEmpty {

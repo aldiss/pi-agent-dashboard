@@ -27,7 +27,8 @@ struct ChatMessageRow: View {
             if message.role == .turnSeparator {
                 content
             } else {
-                VStack(alignment: stackAlignment, spacing: 2) {
+                VStack(alignment: stackAlignment, spacing: 3) {
+                    if ChatRender.showsSenderHeader(for: message.role) { senderHeader }
                     content
                     timestampCaption
                 }
@@ -39,6 +40,29 @@ struct ChatMessageRow: View {
 
     private var alignment: Alignment { message.role == .user ? .trailing : .leading }
     private var stackAlignment: HorizontalAlignment { message.role == .user ? .trailing : .leading }
+
+    /// Lightweight sender marker (accent dot + role label) that opens every prose row,
+    /// so the eye sees where each message starts + who sent it (round 3.3 — the
+    /// "wall of text" fix). User → blue + trailing; assistant → neutral + leading.
+    @ViewBuilder private var senderHeader: some View {
+        if let label = ChatRender.senderLabel(for: message.role) {
+            HStack(spacing: 5) {
+                Circle().fill(senderAccent).frame(width: 6, height: 6)
+                Text(label)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(theme.textTertiary)
+            }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(label)
+            .accessibilityIdentifier("chat-message-sender")
+        }
+    }
+
+    /// Accent hue for the sender dot — user blue (matches the bubble accent), assistant
+    /// a neutral secondary so it reads as a marker, not an alert.
+    private var senderAccent: Color {
+        message.role == .user ? theme.accentBlue : theme.textSecondary
+    }
 
     @ViewBuilder private var timestampCaption: some View {
         let label = Format.clockTime(fromEpochMs: message.timestamp)
@@ -59,9 +83,25 @@ struct ChatMessageRow: View {
         case .toolResult:      toolCard
         case .bashOutput:      bashCard
         case .commandFeedback: commandFeedbackRow
-        case .turnSeparator:   Divider().overlay(theme.borderSecondary).padding(.vertical, 2)
+        case .turnSeparator:   turnSeparatorBreak
         case .rawEvent:        rawCard
         }
+    }
+
+    /// A visible "new turn" break between agent turns — was a bare thin `Divider` that
+    /// vanished into the wall of text. Now a spaced rule + centered caption (mirrors the
+    /// unread divider) so a fresh turn reads as a new section.
+    private var turnSeparatorBreak: some View {
+        HStack(spacing: 8) {
+            Rectangle().fill(theme.borderSecondary).frame(height: 1)
+            Text("new turn")
+                .font(.caption2.weight(.medium))
+                .foregroundStyle(theme.textTertiary)
+                .fixedSize()
+            Rectangle().fill(theme.borderSecondary).frame(height: 1)
+        }
+        .padding(.vertical, 6)
+        .accessibilityIdentifier("chat-turn-separator")
     }
 
     // MARK: user
@@ -106,6 +146,10 @@ struct ChatMessageRow: View {
 
     // MARK: assistant (markdown)
 
+    /// Assistant prose in a soft full-width card (mirrors the PWA `bg-tertiary` +
+    /// subtle-border assistant bubble). Was BARE `MarkdownText` with no boundary — the
+    /// root cause of consecutive assistant messages merging into one wall. The card +
+    /// the sender header above now make each reply a distinct block.
     private var assistantText: some View {
         VStack(alignment: .leading, spacing: 6) {
             if !message.content.isEmpty {
@@ -114,7 +158,15 @@ struct ChatMessageRow: View {
             }
             if !message.images.isEmpty { imageStrip }
         }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
         .frame(maxWidth: .infinity, alignment: .leading)
+        .background(theme.bgTertiary)
+        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(theme.borderPrimary, lineWidth: 1)
+        )
     }
 
     // MARK: thinking (collapsible)
