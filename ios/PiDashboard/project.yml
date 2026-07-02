@@ -69,6 +69,8 @@ targets:
       - path: ../qa-e2e/PiDashboardUITests
     dependencies:
       - target: PiDashboard
+      - package: PiDashboardKit
+        product: PiDashboardKit
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: technology.blackbelt.pidashboard.uitests
