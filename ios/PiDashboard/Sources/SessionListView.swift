@@ -83,8 +83,13 @@ struct SessionListView: View {
     // MARK: tier section
 
     private func tierSection(_ section: TierSection) -> some View {
-        Section {
-            ForEach(section.groups, id: \.cwd) { group in
+        // Fold crew canonical names GLOBALLY across this tier's directory groups (a crew
+        // name with tenures in >1 cwd was doubling — once per cwd-group). Non-crew names
+        // still fold per-cwd. Groups emptied by the fold drop out.
+        let collapsedGroups = SessionGrouping.collapseGroupsFoldingCrew(
+            section.groups, selectedId: store.viewedSessionId)
+        return Section {
+            ForEach(collapsedGroups) { group in
                 directoryGroup(group)
             }
         } header: {
@@ -93,7 +98,7 @@ struct SessionListView: View {
                     .font(.subheadline.weight(.bold))
                     .dynamicTypeCap(.sectionHeader)
                     .foregroundStyle(theme.textSecondary)
-                Text("\(section.groups.reduce(0) { $0 + $1.sessions.count })")
+                Text("\(collapsedGroups.reduce(0) { $0 + $1.rows.count })")
                     .font(.caption2)
                     .foregroundStyle(theme.textTertiary)
                 Spacer()
@@ -108,45 +113,80 @@ struct SessionListView: View {
         }
     }
 
-    @ViewBuilder private func directoryGroup(_ group: SessionGrouping.DirectoryGroup) -> some View {
+    @ViewBuilder private func directoryGroup(_ group: SessionGrouping.CollapsedDirectoryGroup) -> some View {
+        let hasHeader = store.folders && !group.cwd.isEmpty
+        let expanded = store.isDirExpanded(group.cwd)
         VStack(alignment: .leading, spacing: 8) {
-            if store.folders && !group.cwd.isEmpty {
-                HStack(spacing: 5) {
-                    Image(systemName: group.pinned ? "pin.fill" : "folder")
-                        .font(.caption2)
-                        .foregroundStyle(group.pinned ? theme.accentBlue : theme.textTertiary)
-                    Text(group.basename)
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(theme.textTertiary)
-                        .lineLimit(1)
-                }
-                .padding(.horizontal, 4)
-                .accessibilityIdentifier("dir-group-\(group.basename)")
+            if hasHeader {
+                directoryHeader(group, expanded: expanded)
             }
-            ForEach(SessionGrouping.collapseSameName(group.sessions, selectedId: store.viewedSessionId)) { collapsed in
-                NavigationLink {
-                    ChatView(sessionId: collapsed.session.id, title: collapsed.session.displayName)
-                } label: {
-                    SessionCard(session: collapsed.session)
-                        .overlay(alignment: .topTrailing) {
-                            if collapsed.olderCount > 0 {
-                                Text("+\(collapsed.olderCount)")
-                                    .font(.caption2.weight(.semibold))
-                                    .foregroundStyle(theme.textSecondary)
-                                    .padding(.horizontal, 6)
-                                    .padding(.vertical, 2)
-                                    .background(theme.bgSurface)
-                                    .clipShape(Capsule())
-                                    .overlay(Capsule().stroke(theme.borderPrimary, lineWidth: 1))
-                                    .padding(6)
-                                    .accessibilityIdentifier("card-collapsed-count-\(collapsed.session.id)")
+            if !hasHeader || expanded {
+                ForEach(group.rows) { collapsed in
+                    NavigationLink {
+                        ChatView(sessionId: collapsed.session.id, title: collapsed.session.displayName)
+                    } label: {
+                        SessionCard(session: collapsed.session)
+                            .overlay(alignment: .topTrailing) {
+                                if collapsed.olderCount > 0 {
+                                    Text("+\(collapsed.olderCount)")
+                                        .font(.caption2.weight(.semibold))
+                                        .foregroundStyle(theme.textSecondary)
+                                        .padding(.horizontal, 6)
+                                        .padding(.vertical, 2)
+                                        .background(theme.bgSurface)
+                                        .clipShape(Capsule())
+                                        .overlay(Capsule().stroke(theme.borderPrimary, lineWidth: 1))
+                                        .padding(6)
+                                        .accessibilityIdentifier("card-collapsed-count-\(collapsed.session.id)")
+                                }
                             }
-                        }
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("session-card-\(collapsed.session.id)")
                 }
-                .buttonStyle(.plain)
-                .accessibilityIdentifier("session-card-\(collapsed.session.id)")
             }
         }
+    }
+
+    /// Foldable directory header (PWA-style): a tappable row that folds/unfolds the
+    /// sessions under it. Leading chevron (down = expanded, right = collapsed), the
+    /// folder/pin glyph + basename, and — when collapsed — the folded session count.
+    /// Fold state persists per cwd (store.collapsedDirs). Pinned styling preserved.
+    private func directoryHeader(_ group: SessionGrouping.CollapsedDirectoryGroup, expanded: Bool) -> some View {
+        Button {
+            store.toggleDirCollapsed(group.cwd)
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: expanded ? "chevron.down" : "chevron.right")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(theme.textTertiary)
+                    .frame(width: 10)
+                Image(systemName: group.pinned ? "pin.fill" : "folder")
+                    .font(.caption2)
+                    .foregroundStyle(group.pinned ? theme.accentBlue : theme.textTertiary)
+                Text(group.basename)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(theme.textTertiary)
+                    .lineLimit(1)
+                if !expanded {
+                    Text("\(group.rows.count)")
+                        .font(.caption2)
+                        .foregroundStyle(theme.textTertiary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 1)
+                        .background(theme.bgSurface)
+                        .clipShape(Capsule())
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 4)
+            .padding(.vertical, 2)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("dir-group-\(group.basename)")
+        .accessibilityLabel("\(expanded ? "Collapse" : "Expand") \(group.basename)")
+        .accessibilityAddTraits(.isHeader)
     }
 
     private var emptyState: some View {

@@ -322,4 +322,110 @@ public enum SessionGrouping {
         return groupByDirectory(sessions, orders: orders, pinnedDirectories: pinnedDirectories)
             .filter { !$0.sessions.isEmpty }
     }
+
+    // MARK: - Global crew collapse across directory groups (usability round 2, §3)
+    //
+    // `collapseSameName` folds tenures PER directory-group. A standing-crew canonical
+    // name (Joan/Pete/…) with tenures in MULTIPLE cwds therefore shows once per cwd →
+    // doubled across the list (the operator saw Pete twice: nos-cells + unend-e2e-cwd).
+    // The fix: fold every crew canonical name to ONE row across the whole tier — the
+    // survivor lands in its most-recent cwd-group and its `+N` counts ALL tenures
+    // regardless of cwd. Non-crew names keep per-cwd folding (a repeated non-crew name
+    // in two projects is genuinely two rows). Pure + deterministic.
+
+    /// True when `key` (a `canonicalNameKey` result) is a folded standing-crew name —
+    /// i.e. it equals one of the crew canonical keys. Non-crew keys (full lowercased
+    /// names, or a bare session id for anonymous sessions) return false.
+    public static func isCrewKey(_ key: String) -> Bool {
+        crewNames.contains { $0.lowercased() == key }
+    }
+
+    /// One directory subgroup after the global crew fold: the group's identity/pin,
+    /// plus its already-collapsed rows in first-seen order. `rows` is what the folder
+    /// renders; a crew survivor appears in exactly ONE group's rows across the tier.
+    public struct CollapsedDirectoryGroup: Sendable, Equatable, Identifiable {
+        public let cwd: String
+        public let pinned: Bool
+        public let rows: [CollapsedSession]
+        public var id: String { cwd }
+        /// Last path segment — the label the directory header shows.
+        public var basename: String { cwd.split(separator: "/").last.map(String.init) ?? cwd }
+        public init(cwd: String, pinned: Bool, rows: [CollapsedSession]) {
+            self.cwd = cwd; self.pinned = pinned; self.rows = rows
+        }
+    }
+
+    /// Collapse a tier's directory groups, folding crew canonical names GLOBALLY (one
+    /// row per crew name across all groups) while non-crew names fold per-group.
+    ///
+    /// Crew survivor: the selected session if it's a crew tenure, else the most-recent
+    /// crew tenure of that name across every group (recency desc, id-desc tie-break).
+    /// The survivor renders only in the group that actually holds it (its "home"), and
+    /// its `+N`/olderIds count ALL other tenures of the name in ANY group. Rows keep
+    /// first-seen order within each group; groups emptied by the fold are dropped. Pure.
+    public static func collapseGroupsFoldingCrew(_ groups: [DirectoryGroup],
+                                                 selectedId: String? = nil) -> [CollapsedDirectoryGroup] {
+        // 1) Gather every crew tenure across all groups, keyed by canonical crew name,
+        //    remembering which group index each tenure sits in.
+        var crewTenures: [String: [(session: DashboardSession, groupIndex: Int)]] = [:]
+        for (gi, group) in groups.enumerated() {
+            for s in group.sessions {
+                let key = canonicalNameKey(s)
+                if isCrewKey(key) { crewTenures[key, default: []].append((s, gi)) }
+            }
+        }
+        // 2) Per crew name: elect the survivor (selected wins, else most-recent) and
+        //    record its home group + the folded older tenures (across ALL groups).
+        struct CrewFold { let winnerId: String; let homeGroup: Int; let olderCount: Int; let olderIds: [String] }
+        var crewFold: [String: CrewFold] = [:]
+        for (key, tenures) in crewTenures {
+            let winner = tenures.first { $0.session.id == selectedId }
+                ?? tenures.max { a, b in
+                    recency(a.session) != recency(b.session)
+                        ? recency(a.session) < recency(b.session)
+                        : a.session.id < b.session.id
+                }!
+            let older = tenures.filter { $0.session.id != winner.session.id }
+            crewFold[key] = CrewFold(winnerId: winner.session.id, homeGroup: winner.groupIndex,
+                                     olderCount: older.count, olderIds: older.map { $0.session.id })
+        }
+        // 3) Rebuild each group's rows in first-seen order: crew rows emit only in their
+        //    home group (with the GLOBAL fold count); non-crew fold per-group as before.
+        var out: [CollapsedDirectoryGroup] = []
+        for (gi, group) in groups.enumerated() {
+            var order: [String] = []                        // "crew:<key>" or non-crew key, first-seen
+            var nonCrewBuckets: [String: [DashboardSession]] = [:]
+            for s in group.sessions {
+                let key = canonicalNameKey(s)
+                if isCrewKey(key) {
+                    // Suppress crew tenures that live in another group (non-home).
+                    guard let fold = crewFold[key], fold.homeGroup == gi else { continue }
+                    let token = "crew:" + key
+                    if !order.contains(token) { order.append(token) }  // reserve first-seen slot
+                } else {
+                    if nonCrewBuckets[key] == nil { order.append(key) }
+                    nonCrewBuckets[key, default: []].append(s)
+                }
+            }
+            let rows: [CollapsedSession] = order.compactMap { token in
+                if token.hasPrefix("crew:") {
+                    let key = String(token.dropFirst("crew:".count))
+                    guard let fold = crewFold[key],
+                          let winner = group.sessions.first(where: { $0.id == fold.winnerId }) else { return nil }
+                    return CollapsedSession(session: winner, olderCount: fold.olderCount, olderIds: fold.olderIds)
+                }
+                let bucket = nonCrewBuckets[token]!
+                let winner = bucket.first { $0.id == selectedId }
+                    ?? bucket.max { a, b in
+                        recency(a) != recency(b) ? recency(a) < recency(b) : a.id < b.id
+                    }!
+                let older = bucket.filter { $0.id != winner.id }
+                return CollapsedSession(session: winner, olderCount: older.count, olderIds: older.map { $0.id })
+            }
+            if !rows.isEmpty {
+                out.append(CollapsedDirectoryGroup(cwd: group.cwd, pinned: group.pinned, rows: rows))
+            }
+        }
+        return out
+    }
 }

@@ -49,6 +49,11 @@ final class DashboardStore {
     var hideEnded = ListPrefsStore.loadHideEnded() {
         didSet { ListPrefsStore.saveHideEnded(hideEnded) }
     }
+    /// Directory folders the operator has FOLDED SHUT, keyed by cwd. Persisted so a
+    /// collapsed folder stays folded across launches (default = every folder expanded).
+    var collapsedDirs = ListPrefsStore.loadCollapsedDirs() {
+        didSet { ListPrefsStore.saveCollapsedDirs(collapsedDirs) }
+    }
     var staleHoursThreshold: Double = 12
     var search = ""
 
@@ -439,6 +444,18 @@ final class DashboardStore {
 
     var totalVisibleCount: Int {
         tierSections.reduce(0) { $0 + $1.groups.reduce(0) { $0 + $1.sessions.count } }
+    }
+
+    /// Is the directory folder at `cwd` expanded? Default true (absent from the
+    /// collapsed set). Empty cwd (the folders-off flat bucket) is always expanded.
+    func isDirExpanded(_ cwd: String) -> Bool {
+        cwd.isEmpty || !collapsedDirs.contains(cwd)
+    }
+
+    /// Toggle the fold state of the directory folder at `cwd` (persists via didSet).
+    func toggleDirCollapsed(_ cwd: String) {
+        guard !cwd.isEmpty else { return }
+        if collapsedDirs.contains(cwd) { collapsedDirs.remove(cwd) } else { collapsedDirs.insert(cwd) }
     }
 
     // MARK: Chat lifecycle (subscribe + view/unview)

@@ -11,6 +11,7 @@ import Foundation
 /// prefs that need persistence get added here.
 public enum ListPrefsStore {
     private static let hideEndedKey = "pi.dashboard.hideEnded"
+    private static let collapsedDirsKey = "pi.dashboard.collapsedDirs"
 
     /// Whether ended sessions are hidden — default `true` on a fresh install.
     /// Stored only when it DIFFERS from the default, so `true` ⇒ (absent OR "true").
@@ -26,6 +27,24 @@ public enum ListPrefsStore {
             defaults.removeObject(forKey: hideEndedKey)
         } else {
             defaults.set(false, forKey: hideEndedKey)
+        }
+    }
+
+    /// The set of COLLAPSED directory cwds (folders the operator folded shut). Default
+    /// empty ⇒ every folder starts expanded. Stored as a plain `[String]`; read back as
+    /// a `Set` for O(1) membership. Absent/garbage → empty set (never throws).
+    public static func loadCollapsedDirs(from defaults: UserDefaults = .standard) -> Set<String> {
+        guard let arr = defaults.array(forKey: collapsedDirsKey) as? [String] else { return [] }
+        return Set(arr)
+    }
+
+    /// Persist the collapsed-dirs set. An EMPTY set clears the key (fresh read → the
+    /// all-expanded default). Sorted on write for a stable on-disk representation.
+    public static func saveCollapsedDirs(_ dirs: Set<String>, to defaults: UserDefaults = .standard) {
+        if dirs.isEmpty {
+            defaults.removeObject(forKey: collapsedDirsKey)
+        } else {
+            defaults.set(dirs.sorted(), forKey: collapsedDirsKey)
         }
     }
 }

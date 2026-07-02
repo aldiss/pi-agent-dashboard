@@ -18,6 +18,8 @@ struct StatusChip: View {
             Text(label)
                 .font(.caption2.weight(.medium))
                 .foregroundStyle(accent)
+                .lineLimit(1)               // long status truncates horizontally…
+                .truncationMode(.tail)      // …instead of wrapping one-char-per-line
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 3)
@@ -122,11 +124,10 @@ struct SessionCard: View {
                         .foregroundStyle(theme.textPrimary)
                         .lineLimit(1)
                         .truncationMode(.tail)
-                        .layoutPriority(1) // truncate the name before pushing the chip off
+                        .layoutPriority(1) // truncate the name before pushing the badge off
                         .accessibilityIdentifier("session-card-name")
                     Spacer(minLength: 8)
                     unreadAsksBadge
-                    StatusChip(session: session)
                 }
 
                 if let model = Format.modelLabel(session) {
@@ -135,6 +136,14 @@ struct SessionCard: View {
                         .foregroundStyle(theme.textSecondary)
                         .lineLimit(1)
                         .accessibilityIdentifier("session-card-model")
+                }
+
+                // Status chip on its OWN full-width row (was crammed into the header,
+                // where a long status wrapped one-char-per-line). Leading-aligned; the
+                // trailing Spacer keeps the capsule hugging its text at the left edge.
+                HStack(spacing: 0) {
+                    StatusChip(session: session)
+                    Spacer(minLength: 0)
                 }
 
                 ContextBar(session: session)
