@@ -29,6 +29,9 @@ struct AdaptiveComposer: View {
     @State private var photoItems: [PhotosPickerItem] = []
     @State private var voice = VoiceRecorder()
     @State private var micPulse = false
+    /// Marks the NEXT `text` change as programmatic (send-clear / voice-append) so the
+    /// text view force-applies it; a lagging streaming re-render never clobbers typing.
+    @State private var textSignal = ComposerTextSignal()
 
     private var canSend: Bool {
         ComposerLayout.canSend(text: text, imageCount: images.count, disabled: false)
@@ -78,21 +81,25 @@ struct AdaptiveComposer: View {
         .allowsHitTesting(false)
     }
 
-    // MARK: card (one stable tree, two layouts)
-
+    // MARK: card (ONE stable element tree, two layouts)
+    //
+    // CRITICAL: `textEditor` must occupy the SAME structural position in BOTH layouts
+    // or SwiftUI assigns it a new identity on the single-row⇄multiline flip and TEARS
+    // DOWN the underlying UITextView — which resigns first responder (keyboard drops)
+    // and loses the in-flight draft/caret. So the top row ALWAYS renders
+    // `[attach?, textEditor, controls?]` with `textEditor` at a FIXED slot; the
+    // attach/send controls are the only things that reflow: inline (single-row) vs a
+    // conditional SECOND ROW (multiline). No `if/else` ever wraps `textEditor`.
     private var card: some View {
-        Group {
+        VStack(spacing: 8) {
+            HStack(alignment: .bottom, spacing: 8) {
+                if !isMultiline { attachButton }   // single-row: attach leads inline
+                textEditor                          // ← STABLE slot in both layouts
+                if !isMultiline { controlCluster } // single-row: controls trail inline
+            }
             if isMultiline {
-                VStack(spacing: 8) {
-                    textEditor
-                    HStack(spacing: 8) { attachButton; Spacer(); controlCluster }
-                }
-            } else {
-                HStack(alignment: .bottom, spacing: 8) {
-                    attachButton
-                    textEditor
-                    controlCluster
-                }
+                // multiline: attach + controls drop to their own row UNDER the editor.
+                HStack(spacing: 8) { attachButton; Spacer(); controlCluster }
             }
         }
         .padding(.horizontal, 12)
@@ -111,10 +118,12 @@ struct AdaptiveComposer: View {
             text: $text,
             minHeight: ComposerLayout.minHeight,
             maxHeight: ComposerLayout.maxHeight,
-            onHeightChange: { h in
-                measuredHeight = h
-                recomputeLayout(contentHeight: h)
-            },
+            // Height feeds the frame + the NEXT text-driven recompute ONLY. It must NOT
+            // itself drive `recomputeLayout` — that let every per-updateUIView measure
+            // (fired on each streaming re-render) churn `isMultiline` → teardown. Layout
+            // now flips purely from `.onChange(of: text)`.
+            onHeightChange: { h in measuredHeight = h },
+            signal: textSignal,
             textColor: theme.textPrimary,
             placeholderColor: theme.textTertiary,
             keyboardAppearance: keyboardAppearance)
@@ -298,15 +307,19 @@ struct AdaptiveComposer: View {
 
     // MARK: actions
 
-    private func recomputeLayout(contentHeight: Double? = nil) {
-        let h = contentHeight ?? measuredHeight
-        isMultiline = ComposerLayout.isMultiline(previous: isMultiline, text: text, contentHeight: h)
+    /// Recompute the single-row⇄multiline layout. Driven ONLY by `.onChange(of: text)`
+    /// (a real edit), never by the per-`updateUIView` height callback — so a streaming
+    /// re-render can't churn `isMultiline` and tear the text view down. Reads the latest
+    /// `measuredHeight`, which `textViewDidChange` refreshed synchronously on the edit.
+    private func recomputeLayout() {
+        isMultiline = ComposerLayout.isMultiline(previous: isMultiline, text: text, contentHeight: measuredHeight)
     }
 
     private func send() {
         guard canSend else { return }
         UINotificationFeedbackGenerator().notificationOccurred(.success)
         onSend(text.trimmingCharacters(in: .whitespacesAndNewlines), images)
+        textSignal.markProgrammatic() // force the clear through even while first responder
         text = ""
         images = []
         photoItems = []
@@ -325,6 +338,7 @@ struct AdaptiveComposer: View {
     private func toggleMic() {
         let recordingBase = text
         voice.toggle(base: recordingBase) { composed in
+            textSignal.markProgrammatic() // voice transcript is a programmatic append
             text = composed
         }
         micPulse = false

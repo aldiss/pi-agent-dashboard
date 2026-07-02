@@ -37,4 +37,25 @@ public enum ComposerLayout {
         if disabled { return false }
         return !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || imageCount > 0
     }
+
+    /// Should a SwiftUI binding value be pushed into the live `UITextView`?
+    ///
+    /// The composer's `@State text` can LAG the text view during a streaming
+    /// re-render fired right after the user typed a key: `updateUIView` then runs with
+    /// a stale `boundText`, and blindly assigning it back would drop the in-flight
+    /// character + reset the caret (the reported draft-loss bug). Rule:
+    ///  - `fieldText == boundText` → nothing to do (no-op).
+    ///  - `isProgrammatic` (send-clear, voice-append) → ALWAYS apply, even while the
+    ///    field is first responder (the composer explicitly set the value).
+    ///  - `boundText.isEmpty` → apply (a clear is always safe + intended).
+    ///  - otherwise apply ONLY when the field is NOT first responder — an idle field
+    ///    can accept an external value; a focused field must never be clobbered by a
+    ///    lagging re-render echo of the user's own edit.
+    public static func shouldApplyBinding(fieldText: String, boundText: String,
+                                          isFirstResponder: Bool, isProgrammatic: Bool) -> Bool {
+        if fieldText == boundText { return false }
+        if isProgrammatic { return true }
+        if boundText.isEmpty { return true }
+        return !isFirstResponder
+    }
 }

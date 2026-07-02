@@ -1,5 +1,17 @@
 import SwiftUI
 import UIKit
+import PiDashboardKit
+
+/// A one-shot signal the composer flips to mark the NEXT `text` binding change as a
+/// PROGRAMMATIC edit (send → "", voice-append) rather than a user keystroke. A
+/// reference type so `GrowingTextView` (a value-type `UIViewRepresentable`) and the
+/// owning `AdaptiveComposer` observe the same flag across re-renders. `updateUIView`
+/// consumes (resets) it after applying, so it only ever forces a single push.
+final class ComposerTextSignal {
+    var programmatic = false
+    /// Mark the next binding push as programmatic (call BEFORE mutating the bound text).
+    func markProgrammatic() { programmatic = true }
+}
 
 /// A `UITextView` bridged to SwiftUI that auto-sizes and reports its intrinsic
 /// content height. Enter inserts a newline (NEVER sends) — mobile-composer contract.
@@ -12,6 +24,10 @@ struct GrowingTextView: UIViewRepresentable {
     /// Called with the measured intrinsic content height on every change.
     let onHeightChange: (CGFloat) -> Void
     var isEnabled: Bool = true
+    /// Marks a binding change as programmatic so `updateUIView` force-applies it even
+    /// while the field is first responder (send-clear / voice-append), without ever
+    /// clobbering the user's own in-flight typing on a lagging streaming re-render.
+    var signal: ComposerTextSignal
     /// Theme-aware colors + keyboard, threaded from the composer so the input tracks
     /// the app's ThemeController (NOT the OS trait). Re-applied in `updateUIView` so a
     /// live theme switch re-colors the composer text, placeholder, and keyboard.
@@ -55,7 +71,22 @@ struct GrowingTextView: UIViewRepresentable {
     }
 
     func updateUIView(_ tv: UITextView, context: Context) {
-        if tv.text != text { tv.text = text }
+        // Push the bound value into the field ONLY for programmatic edits (send-clear,
+        // voice-append) or an idle field — NEVER echo the user's own in-flight typing
+        // back on a lagging streaming re-render (that dropped the character + caret).
+        let isProgrammatic = signal.programmatic
+        if ComposerLayout.shouldApplyBinding(fieldText: tv.text, boundText: text,
+                                             isFirstResponder: tv.isFirstResponder,
+                                             isProgrammatic: isProgrammatic) {
+            let selected = tv.selectedRange
+            tv.text = text
+            // Preserve the caret across a legit programmatic update: clamp the prior
+            // selection into the new length (clear → 0; append → stays put).
+            let end = (text as NSString).length
+            tv.selectedRange = NSRange(location: min(selected.location, end), length: 0)
+            context.coordinator.placeholder?.isHidden = !text.isEmpty
+        }
+        if isProgrammatic { signal.programmatic = false } // consume — one-shot
         tv.isEditable = isEnabled
         // Re-apply theme-aware styling so a live theme switch (ThemeController) recolors
         // the composer without a remount. Cheap idempotent sets.
@@ -68,17 +99,21 @@ struct GrowingTextView: UIViewRepresentable {
             if tv.isFirstResponder { tv.reloadInputViews() }
         }
         context.coordinator.placeholder?.textColor = UIColor(placeholderColor)
-        context.coordinator.placeholder?.isHidden = !text.isEmpty
+        context.coordinator.placeholder?.isHidden = !tv.text.isEmpty
         recalcHeight(tv)
     }
 
+    /// Measure the intrinsic height and report it. Skips entirely when the field has
+    /// no laid-out width (`bounds.width == 0` during a re-layout) — the old
+    /// `UIScreen.main.bounds.width - 120` fallback yielded a WRONG width → a transient
+    /// mis-measure that spuriously flipped `isMultiline` and tore the field down.
     private func recalcHeight(_ tv: UITextView) {
-        let width = tv.bounds.width > 0 ? tv.bounds.width : UIScreen.main.bounds.width - 120
-        let size = tv.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
-        let clamped = min(max(minHeight, size.height), maxHeight)
+        guard tv.bounds.width > 0 else { return }
+        let size = tv.sizeThatFits(CGSize(width: tv.bounds.width, height: .greatestFiniteMagnitude))
+        // Report async: updateUIView runs inside SwiftUI's render pass; mutating the
+        // composer's @State (measuredHeight) synchronously here is a same-cycle write.
         DispatchQueue.main.async { onHeightChange(size.height) }
         tv.isScrollEnabled = size.height > maxHeight
-        _ = clamped
     }
 
     final class Coordinator: NSObject, UITextViewDelegate {
@@ -89,8 +124,11 @@ struct GrowingTextView: UIViewRepresentable {
         func textViewDidChange(_ tv: UITextView) {
             parent.text = tv.text
             placeholder?.isHidden = !tv.text.isEmpty
-            let width = tv.bounds.width > 0 ? tv.bounds.width : UIScreen.main.bounds.width - 120
-            let size = tv.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
+            // Measure SYNCHRONOUSLY on the real keystroke so `measuredHeight` is fresh
+            // before the text-driven `.onChange(of: text)` recomputes `isMultiline`.
+            // Skip when unlaid-out (width 0) — no wrong-width fallback.
+            guard tv.bounds.width > 0 else { return }
+            let size = tv.sizeThatFits(CGSize(width: tv.bounds.width, height: .greatestFiniteMagnitude))
             parent.onHeightChange(size.height)
             tv.isScrollEnabled = size.height > parent.maxHeight
         }
