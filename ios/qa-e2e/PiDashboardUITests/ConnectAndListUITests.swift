@@ -1,17 +1,22 @@
 import XCTest
+import PiDashboardKit
 
 /// F1–F3: Connect → Session list parity → Open session.
-/// Driven entirely through the TEST-CONTRACT §A accessibility identifiers against
-/// the hermetic `-uitest` fixture snapshot (no live operator session touched).
+///
+/// F1 deliberately exercises the CONNECT SCREEN, so it launches WITHOUT `-uitest-fixtures`
+/// (the app then shows the connect form: `["-uitest"]` for the hermetic prefill+submit
+/// path, `[]` for the live connection-refused error path). F2/F3 run in the default
+/// fixture-boot mode (populated list instantly) and derive their subject from
+/// `UITestFixtures` rather than a hardcoded id.
 @MainActor
 final class ConnectAndListUITests: PiDashboardUITestCase {
 
-    // MARK: F1 — Connect
+    // MARK: F1 — Connect (connect-screen path, NON-fixtures launch)
 
-    /// F1 happy path: launch → `connect-server-url` prefilled with the localhost
-    /// default → tap `connect-submit` → `session-list` appears.
+    /// F1 happy path: launch the connect screen (non-fixtures `-uitest`) → `connect-server-url`
+    /// prefilled with the localhost default → tap `connect-submit` → `session-list` appears.
     func testF1_ConnectEntersSessionList() {
-        launch()
+        launch(["-uitest"]) // connect-screen path: -uitest loads fixtures on submit, no auto-boot
         let url = waitFor("connect-server-url")
         XCTAssertEqual(url.value as? String, "http://localhost:8000",
                        "URL field prefilled with the localhost default")
@@ -21,10 +26,9 @@ final class ConnectAndListUITests: PiDashboardUITestCase {
         XCTAssertTrue(waitFor("session-list").exists, "session list renders after connect")
     }
 
-    /// F1 error path: a BAD url (closed local port) surfaces `connect-error`,
-    /// without `session-list`. Runs WITHOUT `-uitest` so the real RestClient health
-    /// probe runs — but points at `127.0.0.1:1` (connection-refused, instant), so it
-    /// is still hermetic: no live dashboard, no operator session, no network egress.
+    /// F1 error path: a BAD url (closed local port) surfaces `connect-error`, without
+    /// `session-list`. Runs WITHOUT any `-uitest*` so the real RestClient health probe runs
+    /// — but points at `127.0.0.1:1` (connection-refused, instant), still hermetic.
     func testF1_UnreachableServerShowsError() {
         launch([])  // live connect path (no fixtures)
         let url = waitFor("connect-server-url")
@@ -36,52 +40,50 @@ final class ConnectAndListUITests: PiDashboardUITestCase {
         attach("F1-connect-error")
     }
 
-    // MARK: F2 — List parity
+    // MARK: F2 — List parity (fixture boot)
 
-    /// F2: at least one `tier-section-*` renders and cards show name + status.
-    /// The fixture spans drivers / standing-crew / cell-executor / operator-chat /
-    /// worker / other, so multiple tier sections are present.
+    /// F2: the fixture set boots a populated list — the tier a fixture session lands in
+    /// renders, and its card shows a name + status chip.
     func testF2_ListShowsTiersAndCardFields() {
         launch()
-        waitFor("connect-submit").tap()
-        waitFor("session-list")
+        connectAndEnterList()
 
-        // Drivers tier is present (Cartographer + Keystone live under nos-cells/*-driver).
-        XCTAssertTrue(waitFor("tier-section-drivers", 8).exists, "a tier section renders")
+        let subject = fixtureSessions.first ?? fixtureSession("any") { _ in true }
+        let tier = SessionGrouping.groupByTier(fixtureSessions)
+            .first { $0.sessions.contains(where: { $0.id == subject.id }) }?.tier
+        if let tier {
+            XCTAssertTrue(waitFor("tier-section-\(tier.rawValue)", 8).exists, "a tier section renders")
+        }
 
-        // A known card shows its name + status chip.
-        let card = waitFor("session-card-fix-cartographer", 8)
-        XCTAssertTrue(card.exists, "the Cartographer card renders")
+        let card = waitFor(cardId(subject), 8)
+        XCTAssertTrue(card.exists, "a fixture card renders")
         XCTAssertTrue(exists("session-card-name"), "a card display-name label is present")
         let status = el("session-card-status")
         XCTAssertTrue(status.exists, "a status chip is present")
-        // status chip exposes the raw status as its accessibilityValue.
         if let v = status.value as? String {
             XCTAssertFalse(v.isEmpty, "status chip carries a value")
         }
         attach("F2-list")
     }
 
-    // MARK: F3 — Open session
+    // MARK: F3 — Open session (fixture boot)
 
-    /// F3: tap a `session-card-<id>` → `chat-scroll` + `mobile-composer` appear.
-    /// (On appear the app sends `session_view`; in fixture mode that send is a
-    /// no-op safeguard — the OBSERVABLE e2e effect is the chat surface mounting.
-    /// The `session_view` wire message itself is asserted at the unit layer in
-    /// ProtocolRoundTripTests.) Also verifies the nav round-trips back to the list.
+    /// F3: tap a fixture `session-card-<id>` → `chat-scroll` + `mobile-composer` appear.
+    /// (On appear the app sends `session_view`; in fixture mode that send is a no-op
+    /// safeguard — the OBSERVABLE e2e effect is the chat surface mounting.) Also verifies
+    /// the nav round-trips back to the list.
     func testF3_OpenSessionShowsChatAndComposer() {
         launch()
-        waitFor("connect-submit").tap()
-        waitFor("session-list")
+        connectAndEnterList()
 
-        waitFor("session-card-fix-cartographer", 8).tap()
+        let subject = fixtureSessions.first ?? fixtureSession("any") { _ in true }
+        waitFor(cardId(subject), 8).tap()
 
         XCTAssertTrue(waitFor("chat-scroll", 10).exists, "chat scroll mounts on open")
         XCTAssertTrue(waitFor("mobile-composer", 10).exists, "composer mounts on open")
         XCTAssertNotNil(composerLayoutValue(), "composer exposes its layout value")
         attach("F3-chat-open")
 
-        // Round-trip: navigate back → the list is shown again.
         let backButton = app.navigationBars.buttons.firstMatch
         if backButton.exists { backButton.tap() }
         XCTAssertTrue(waitFor("session-list", 8).exists, "navigates back to the list")

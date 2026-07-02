@@ -1,83 +1,70 @@
 import XCTest
+import PiDashboardKit
 
-/// COLOR CODING — the session-list "color language": a card carries ONE semantic hue
-/// (green alive / amber working / red error / faint ended) on its status rail + dot +
-/// status text, and an unread card swaps its left rail to the unread (cyan) stripe with
-/// a state-pulse. XCUITest CANNOT read a rendered color off an element, so this asserts
-/// the NON-COLOR signals that BACK the color language (the deterministic half), and
-/// attaches a screenshot as the color artifact (per the repo's "verify by rendering"
-/// rule):
-///   • the left-rail IDENTITY ternary — `session-card-unread` when the session has
-///     unviewed activity, else the calm `card-status-rail` (SessionCard rail),
-///   • the status chip's accessibilityVALUE = the raw status ("active"/"streaming"/…)
-///     and its accessibilityLABEL = the spoken state word (A11yStatus) — the same
-///     semantic that drives the hue.
+/// COLOR CODING — the session-list "color language": a card carries ONE semantic hue on its
+/// status rail + dot + status text, and an unread card swaps its left rail to the unread
+/// stripe. XCUITest CANNOT read a rendered color off an element, so this asserts the
+/// NON-COLOR signals that BACK the color language (the deterministic half) + attaches a
+/// screenshot as the color artifact:
+///   • the left-rail IDENTITY ternary — `session-card-unread` when the session has unviewed
+///     activity, else the calm `card-status-rail`,
+///   • the status chip's a11y VALUE = the raw status and LABEL = the spoken state word.
 ///
-/// Fixtures: Joan is `unread: true` (→ unread rail) + status "active"; Cartographer is
-/// status "streaming" and NOT unread (→ calm rail).
+/// Subjects derived from `UITestFixtures`: an `unread == true` session (→ unread rail) and a
+/// distinct non-unread session (→ calm rail); a `streaming` session for the status-word cue.
 @MainActor
 final class ColorCodingUITests: PiDashboardUITestCase {
 
-    /// Narrow to one card by a name query (also force-expands tiers so fold state can't
-    /// hide it), then return once its card id is realized.
-    private func show(_ query: String, cardId: String) {
+    /// Narrow to `subject` by display name (force-expands tiers) + wait for its card.
+    private func show(_ subject: DashboardSession) {
         launch()
         connectAndEnterList()
         let field = waitFor("list-search")
         field.tap()
-        field.typeText(query)
-        _ = waitFor(cardId, 8)
+        field.typeText(subject.displayName)
+        _ = waitFor(cardId(subject), 8)
     }
 
-    /// An UNREAD session (Joan, `unread: true`) carries the `session-card-unread` left
-    /// rail — the cyan unread stripe id — which is the non-color marker of the unread
-    /// state-pulse. (The calm rail id `card-status-rail` is used otherwise.)
+    /// An UNREAD session carries the `session-card-unread` left rail (the unread stripe id).
     func testUnreadSessionCarriesUnreadRail() {
-        show("joan", cardId: "session-card-fix-joan")
-
+        let subject = fixtureSession("is unread") { $0.unread == true }
+        show(subject)
         XCTAssertTrue(waitForAppear("session-card-unread", 6),
                       "an unread session exposes the unread rail stripe id")
         attach("color-unread-rail")
     }
 
-    /// A NON-unread session (Cartographer) carries the calm `card-status-rail` id, NOT
-    /// the unread stripe — the rail-identity ternary flips on the unread state.
+    /// A NON-unread session carries the calm `card-status-rail` id, not the unread stripe.
     func testNonUnreadSessionCarriesCalmRail() {
-        show("cart", cardId: "session-card-fix-cartographer")
-
+        let subject = fixtureSession("is not unread") { $0.unread != true }
+        show(subject)
         XCTAssertTrue(waitForAppear("card-status-rail", 6),
                       "a non-unread session exposes the calm status rail id")
         attach("color-calm-rail")
     }
 
-    /// The status chip encodes state without relying on color: its accessibilityValue is
-    /// the raw status and its accessibilityLabel is the spoken word. Cartographer is
-    /// "streaming" → value "streaming", label speaks "Working" (A11yStatus). This is the
-    /// non-color cue that pairs with the amber working hue.
+    /// The status chip encodes state without color: its a11y value is the raw status and its
+    /// label is the spoken word. A streaming session → value "streaming", label "Working".
     func testStatusChipCarriesNonColorStateSignal() {
-        show("cart", cardId: "session-card-fix-cartographer")
-
+        let subject = fixtureSession(status: "streaming")
+        show(subject)
         let status = waitFor("session-card-status", 6)
         XCTAssertEqual(status.value as? String, "streaming",
-                       "the status chip exposes the raw status as its value (the hue's semantic)")
-        if let label = status.label as String? {
-            XCTAssertTrue(label.contains("Working"),
-                          "the spoken status label is the non-color cue for the working hue (got \(label))")
-        }
+                       "the status chip exposes the raw status as its value")
+        XCTAssertTrue(status.label.contains("Working"),
+                      "the spoken status label is the non-color cue for the working hue (got \(status.label))")
         attach("color-status-signal")
     }
 
-    /// The rail-identity is state-driven, not fixed: the unread rail id and the calm rail
-    /// id are MUTUALLY EXCLUSIVE across the two cards — Joan shows unread, Cartographer
-    /// shows calm — proving the color language keys off session state, not a static style.
+    /// The rail-identity is state-driven: an unread session shows the unread rail and a
+    /// non-unread session the calm rail — mutually exclusive across two cards.
     func testRailIdentityIsStateDriven() {
+        let unread = fixtureSession("is unread") { $0.unread == true }
+        let calm = fixtureSession("is not unread") { $0.unread != true }
         launch()
         connectAndEnterList()
-        // Both cards visible in the default expanded tiers (standing-crew + drivers).
-        XCTAssertTrue(waitForAppear("session-card-fix-joan", 8), "Joan card present")
-        XCTAssertTrue(exists("session-card-fix-cartographer"), "Cartographer card present")
-
-        // Joan (unread) contributes the unread rail; Cartographer (calm) the status rail.
+        XCTAssertTrue(waitForAppear(cardId(unread), 8), "the unread card is present")
+        XCTAssertTrue(exists(cardId(calm)) || waitForAppear(cardId(calm), 4), "the calm card is present")
         XCTAssertTrue(exists("session-card-unread"), "the unread session drives the unread rail")
         XCTAssertTrue(exists("card-status-rail"), "the calm session drives the calm rail")
         attach("color-rail-state-driven")

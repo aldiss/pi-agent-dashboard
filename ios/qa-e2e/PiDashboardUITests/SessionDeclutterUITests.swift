@@ -1,4 +1,5 @@
 import XCTest
+import PiDashboardKit
 
 /// BACKFILL #3 — session-list declutter. Regression guard for the operator's daily
 /// flood bug (`fix(ios): declutter session list`, e6cf8e3): 419 sessions, mostly OLD
@@ -14,18 +15,23 @@ import XCTest
 /// across runs (the toggle persists to `UserDefaults`, so a bare launch would inherit a
 /// prior run's value) — no app-side test hook.
 ///
-/// A11y note: the only ended fixture session (`fix-worker`, `subagent-worker-3f4a9c`)
-/// lives in the WORKER tier near the bottom of the list, where a `LazyVStack` may not
+/// A11y note: the ended fixture session (derived via `fixtureSession(status: "ended")`)
+/// can live in the WORKER tier near the bottom of the list, where a `LazyVStack` may not
 /// realize it into the a11y tree. To make its presence/absence observable regardless of
-/// scroll position, each toggle assertion first narrows the list with `list-search`
-/// "worker" — which matches ONLY `fix-worker` by name (verified against every fixture
-/// session) — collapsing the list to that one card. `filterEnded` runs BEFORE
-/// `filterByQuery`, so a hidden ended session is dropped before the query even applies:
-/// search "worker" ⇒ empty when hidden, the card when shown. Exactly the toggle signal.
+/// scroll position, each toggle assertion first narrows the list with `list-search` on the
+/// ended session's display name (`endedQuery`) — collapsing the list to that one card.
+/// `filterEnded` runs BEFORE `filterByQuery`, so a hidden ended session is dropped before
+/// the query even applies: search ⇒ empty when hidden, the card when shown. The toggle signal.
 @MainActor
 final class SessionDeclutterUITests: PiDashboardUITestCase {
 
-    private let endedCard = "session-card-fix-worker"
+    /// An ENDED fixture session (the declutter subject) + its card id, derived from the
+    /// contract set (the fixture seeds ≥1 `status == "ended"` session).
+    private var endedSession: DashboardSession { fixtureSession(status: "ended") }
+    private var endedCard: String { cardId(endedSession) }
+    /// A search token that narrows to ONLY the ended session (its display name), so the
+    /// ended card is the sole on-screen row for a deterministic present/absent read.
+    private var endedQuery: String { endedSession.displayName }
     private let hideEndedToggle = "toggle-hide-ended"
 
     /// Type a query into `list-search` (clearing any prior text first).
@@ -48,7 +54,7 @@ final class SessionDeclutterUITests: PiDashboardUITestCase {
 
     // MARK: ended hidden by default → toggle reveals → toggle re-hides
 
-    /// With `hideEnded` at its DEFAULT (on), the ended `fix-worker` card is filtered
+    /// With `hideEnded` at its DEFAULT (on), the ended fixture card is filtered
     /// out; toggling "Hide ended" OFF reveals it; toggling ON hides it again. The
     /// search-narrowing keeps the single ended card in the on-screen a11y tree for a
     /// deterministic present/absent read.
@@ -61,7 +67,7 @@ final class SessionDeclutterUITests: PiDashboardUITestCase {
         XCTAssertEqual(toggle.value as? String, "on", "Hide ended defaults on")
 
         // Default (hidden): search "worker" yields NO card (ended filtered before query).
-        search("worker")
+        search(endedQuery)
         XCTAssertTrue(waitForGone(endedCard, 6),
                       "ended session hidden by default — search finds nothing")
         attach("declutter-ended-hidden-default")
@@ -90,7 +96,7 @@ final class SessionDeclutterUITests: PiDashboardUITestCase {
         let toggle = waitFor(hideEndedToggle)
         XCTAssertEqual(toggle.value as? String, "off", "Hide ended forced off at launch")
 
-        search("worker")
+        search(endedQuery)
         XCTAssertTrue(waitForAppear(endedCard, 6),
                       "ended session visible when Hide ended is off")
         attach("declutter-ended-visible-off")

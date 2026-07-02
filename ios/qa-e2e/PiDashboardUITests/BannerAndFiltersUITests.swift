@@ -1,4 +1,5 @@
 import XCTest
+import PiDashboardKit
 
 /// F6 (connection banner) + F7 (filters), driven through the §A identifiers.
 @MainActor
@@ -6,8 +7,7 @@ final class BannerAndFiltersUITests: PiDashboardUITestCase {
 
     private func enterList() {
         launch()
-        waitFor("connect-submit").tap()
-        waitFor("session-list")
+        connectAndEnterList()
     }
 
     // MARK: F6 — connection banner
@@ -48,27 +48,50 @@ final class BannerAndFiltersUITests: PiDashboardUITestCase {
 
     // MARK: F7 — filters
 
-    /// Search narrows the card set: `list-search` "cart" keeps Cartographer, drops
-    /// Joan (name → firstMessage → cwd-basename match, mirrors filterByQuery).
+    /// Search narrows the card set: searching a session's display name keeps its card and
+    /// drops a distinct-named sibling (name → firstMessage → cwd-basename match, mirrors
+    /// filterByQuery). Subjects derived from `UITestFixtures` (two sessions whose display
+    /// names don't share a search token).
     func testF7_SearchNarrowsCards() {
         enterList()
-        XCTAssertTrue(waitFor("session-card-fix-cartographer", 8).exists)
-        XCTAssertTrue(exists("session-card-fix-joan"), "Joan present before filtering")
+        let (keep, drop) = twoDistinctlyNamedSessions()
+        XCTAssertTrue(waitForAppear(cardId(keep), 8), "the keep card is present before filtering")
+        XCTAssertTrue(exists(cardId(drop)) || waitForAppear(cardId(drop), 4),
+                      "the drop card present before filtering")
 
         let search = waitFor("list-search")
         search.tap()
-        search.typeText("cart")
+        search.typeText(keep.displayName)
 
-        // Cartographer remains; Joan is filtered out.
-        XCTAssertTrue(waitFor("session-card-fix-cartographer", 6).exists, "match retained")
-        XCTAssertTrue(waitForGone("session-card-fix-joan", 6), "non-match filtered out")
+        // The searched card remains; the distinct-named sibling is filtered out.
+        XCTAssertTrue(waitForAppear(cardId(keep), 6), "match retained")
+        XCTAssertTrue(waitForGone(cardId(drop), 6), "non-match filtered out")
         attach("F7-search")
 
-        // clearing the query restores Joan.
+        // clearing the query restores the sibling.
         if let v = search.value as? String, !v.isEmpty {
             search.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: v.count))
         }
-        XCTAssertTrue(waitFor("session-card-fix-joan", 6).exists, "clearing search restores the full list")
+        XCTAssertTrue(waitForAppear(cardId(drop), 6), "clearing search restores the full list")
+    }
+
+    /// Two fixture sessions whose display names don't share a search token (so searching
+    /// one's name drops the other). Falls back to the first two sessions if no cleaner pair.
+    private func twoDistinctlyNamedSessions() -> (keep: DashboardSession, drop: DashboardSession) {
+        let named = fixtureSessions.filter { !$0.displayName.isEmpty }
+        for a in named {
+            let ka = a.displayName.lowercased()
+            if let b = named.first(where: { b in
+                b.id != a.id
+                    && !b.displayName.lowercased().contains(ka)
+                    && !ka.contains(b.displayName.lowercased())
+            }) {
+                return (a, b)
+            }
+        }
+        let first = fixtureSessions.first ?? fixtureSession("any") { _ in true }
+        let second = fixtureSessions.dropFirst().first ?? first
+        return (first, second)
     }
 
     /// The Folders toggle flattens directory subgroups: with folders ON the
@@ -94,7 +117,7 @@ final class BannerAndFiltersUITests: PiDashboardUITestCase {
         // cards themselves are still present (flattened, not FILTERED out). Assert
         // ANY card remains — not a specific one: after the reflow a particular row
         // can sit below the fold, and the LazyVStack won't expose an off-screen row
-        // to the a11y tree (that raced the earlier `fix-cartographer`-specific check).
+        // to the a11y tree (that raced an earlier card-specific check).
         var cardsRemain = false
         let deadline2 = Date().addingTimeInterval(6)
         while Date() < deadline2 {

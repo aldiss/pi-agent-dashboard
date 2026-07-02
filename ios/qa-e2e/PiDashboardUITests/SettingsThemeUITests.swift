@@ -1,15 +1,15 @@
 import XCTest
+import PiDashboardKit
 
 /// SETTINGS — THEME MODE (parity B5) — the Settings sheet exposes a System/Dark/Light
 /// segmented picker (`settings-theme-picker`) that re-themes the app live and PERSISTS
 /// across launches (`ThemeModeStore` → `pi.dashboard.themeMode`, default `.system`).
 ///
-/// The picker selection is the deterministic observable (a segmented control reports
-/// `isSelected` per segment); the rendered COLOR change is a property XCUITest can't read
-/// off an element (the ComposerThemeUITests backfill carries the color-legibility
-/// evidence via screenshots), so this asserts the SELECTION + its PERSISTENCE. The
-/// persistence test relaunches WITHOUT arg-domain forcing to read the on-disk value back,
-/// then RESTORES `.system` (clearing the key) so it never leaks into a sibling test.
+/// No session-id dependency — runs against the fixture-booted list. The picker selection is
+/// the deterministic observable (a segmented control reports `isSelected` per segment); the
+/// rendered COLOR change is the ComposerTheme backfill's screenshot evidence. The persistence
+/// test relaunches WITHOUT arg-domain forcing to read the on-disk value back, then RESTORES
+/// `.system` (clearing the key) so it never leaks into a sibling test.
 @MainActor
 final class SettingsThemeUITests: PiDashboardUITestCase {
 
@@ -23,7 +23,6 @@ final class SettingsThemeUITests: PiDashboardUITestCase {
     func testThemePickerShowsAllModes() {
         launch()
         openSettings()
-
         let picker = waitFor("settings-theme-picker", 6)
         XCTAssertTrue(picker.exists, "the theme picker renders in Settings")
         XCTAssertTrue(picker.buttons["System"].exists, "System segment present")
@@ -32,13 +31,10 @@ final class SettingsThemeUITests: PiDashboardUITestCase {
         attach("settings-theme-picker")
     }
 
-    /// Choosing Light selects that segment live (the in-session switch). Forced to a
-    /// known start (`themeMode: "dark"`) via the arg domain so the transition is
-    /// deterministic; the arg domain is volatile (never written to disk).
+    /// Choosing Light selects that segment live (forced to a known start via the arg domain).
     func testSwitchingToLightSelectsThatSegment() {
         launchForcing(themeMode: "dark")
         openSettings()
-
         let picker = waitFor("settings-theme-picker", 6)
         let light = picker.buttons["Light"]
         XCTAssertTrue(light.waitForExistence(timeout: 4), "Light segment present")
@@ -47,12 +43,10 @@ final class SettingsThemeUITests: PiDashboardUITestCase {
         attach("settings-theme-light-selected")
     }
 
-    /// The theme choice survives an app relaunch: set Light, terminate, relaunch WITHOUT
-    /// arg-domain forcing (so the persisted value is read), assert Light is still
-    /// selected — then RESTORE System so the persisted key is cleared for siblings.
+    /// The theme choice survives a relaunch: set Light, terminate, relaunch (fixtures, no
+    /// themeMode force), assert still selected — then RESTORE System for siblings.
     func testThemePersistsAcrossRelaunch() {
-        // Bare launch (no themeMode force) so the in-app choice is what persists.
-        launch(["-uitest"])
+        launch(Self.fixtureArgs) // no themeMode force → the in-app choice is what persists
         openSettings()
         let picker = waitFor("settings-theme-picker", 6)
         picker.buttons["Light"].tap()
@@ -60,23 +54,18 @@ final class SettingsThemeUITests: PiDashboardUITestCase {
         usleep(400_000) // let the ThemeModeStore write settle
         app.terminate()
 
-        // Relaunch bare → the store loads the PERSISTED mode.
-        launch(["-uitest"])
+        launch(Self.fixtureArgs)
         openSettings()
         let picker2 = waitFor("settings-theme-picker", 6)
-        XCTAssertTrue(waitForSelected(picker2, "Light"),
-                      "the Light theme persisted across relaunch")
+        XCTAssertTrue(waitForSelected(picker2, "Light"), "the Light theme persisted across relaunch")
         attach("settings-theme-persisted")
 
-        // Restore the default (clears pi.dashboard.themeMode) so nothing leaks downstream.
         picker2.buttons["System"].tap()
         XCTAssertTrue(waitForSelected(picker2, "System"), "restored to the System default")
     }
 
     // MARK: helpers
 
-    /// Poll until `segment` in a segmented control reports selected (a tap posts the
-    /// selection asynchronously). Deadline poll — Swift 6 strict-concurrency clean.
     private func waitForSelected(_ picker: XCUIElement, _ segment: String,
                                  _ timeout: TimeInterval = 5) -> Bool {
         let deadline = Date().addingTimeInterval(timeout)

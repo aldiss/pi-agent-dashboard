@@ -1,18 +1,18 @@
 import XCTest
+import PiDashboardKit
 
 /// F4 (the North Star) + F5: adaptive-composer hysteresis and send gating, driven
-/// through the §A identifiers against the fixture snapshot. These assert the SAME
-/// behavior `ComposerLayout` pins at the unit layer, but end-to-end through the
+/// through the §A identifiers against the hermetic `UITestFixtures` set. These assert the
+/// SAME behavior `ComposerLayout` pins at the unit layer, but end-to-end through the
 /// real SwiftUI composer + UITextView.
 @MainActor
 final class ComposerUITests: PiDashboardUITestCase {
 
-    /// Open the first driver session's chat and return once the composer is up.
+    /// Open a fixture session's chat and return once the composer is up.
     private func openComposer() {
         launch()
-        waitFor("connect-submit").tap()
-        waitFor("session-list")
-        waitFor("session-card-fix-cartographer", 8).tap()
+        connectAndEnterList()
+        openChat(fixtureSessions.first ?? fixtureSession("any") { _ in true })
         _ = waitFor("mobile-composer", 10)
     }
 

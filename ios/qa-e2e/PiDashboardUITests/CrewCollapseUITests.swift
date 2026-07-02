@@ -1,85 +1,98 @@
 import XCTest
+import PiDashboardKit
 
 /// CREW COLLAPSE (the operator's "doubling" bug) — a standing-crew canonical name with
-/// tenures in MULTIPLE cwds must fold to exactly ONE row plus a `+N` badge, NOT one row
-/// per cwd-group. The fold is GLOBAL across a tier's directory groups for crew names
-/// (Bert/Joan/Peggy/Lane/Pete/Faye/Don/Alice), per-group for everything else
-/// (`SessionGrouping.collapseGroupsFoldingCrew`).
+/// tenures in MULTIPLE cwds folds to exactly ONE row plus a `+N` badge, NOT one row per
+/// cwd-group. The fold is GLOBAL across a tier's directory groups for crew names,
+/// per-group for everything else (`SessionGrouping.collapseGroupsFoldingCrew`).
 ///
-/// Relationship to `SessionDeclutterUITests.testSameNameTenuresCollapseWithBadge`: that
-/// spec asserts the GENERIC same-name collapse badge exists (any tier) and SKIPS pending
-/// a duplicate-name fixture. This file is the CREW-specific counterpart — it adds the
-/// regression guard that runs TODAY against the shipped all-distinct-names fixture (the
-/// doubling bug's negative: each crew name appears exactly once, no spurious badge), and
-/// authors the positive global-multi-cwd fold that skips pending the same fixture pair.
-/// No overlap: SessionDeclutter proves "a badge can render", this proves "distinct crew
-/// names never double + fold globally when they should".
+/// Contract fixture: `UITestFixtures` seeds the standing-crew name "Pete" with tenures in
+/// TWO different cwds (`peteTenures()` returns both), so the global crew fold collapses
+/// them to one row + "+1". The subject is derived from the fixture set (the Pete pair),
+/// and the surviving row id is computed via the SAME `collapseGroupsFoldingCrew` the app
+/// uses — so the test asserts on the exact `card-collapsed-count-<survivor>` badge.
 @MainActor
 final class CrewCollapseUITests: PiDashboardUITestCase {
 
-    /// REGRESSION GUARD (runs today): the crew name Joan (the fixture's only standing-crew
-    /// canonical) renders EXACTLY ONCE. The doubling bug showed a crew name once per
-    /// cwd-group; with the global fold, one tenure = one row. Search "joan" narrows to that
-    /// card (and force-expands every tier so fold state can't hide it) for a deterministic
-    /// count.
-    func testCrewNameRendersExactlyOnce() {
+    /// The contract holds at the fixture layer: Pete has ≥2 tenures across ≥2 cwds (so the
+    /// global crew fold has something to fold). Guards the fixture set's coverage.
+    func testFixtureHasPeteInTwoCwds() {
+        let pete = peteTenures()
+        XCTAssertGreaterThanOrEqual(pete.count, 2, "the fixture seeds ≥2 Pete tenures")
+        let cwds = Set(pete.map { $0.cwd ?? "" })
+        XCTAssertGreaterThanOrEqual(cwds.count, 2, "Pete's tenures span ≥2 distinct cwds")
+    }
+
+    /// Pete renders EXACTLY ONE row (the doubling bug showed one row per cwd-group). Search
+    /// "Pete" narrows to his card(s) + force-expands every tier so fold state can't hide a
+    /// row; exactly one `session-card-name` reads "Pete".
+    func testCrewNameRendersExactlyOneRow() {
         launch()
         connectAndEnterList()
 
-        // Narrow to Joan — search matches her name only, and force-expands all tiers.
         let field = waitFor("list-search")
         field.tap()
-        field.typeText("joan")
-        XCTAssertTrue(waitForAppear("session-card-fix-joan", 6), "the Joan crew card renders")
+        field.typeText("Pete")
+        // At least one Pete card realizes.
+        XCTAssertTrue(waitForAnyPeteCard(6), "a Pete crew card renders under the search")
 
-        // Exactly ONE row carries her id — never doubled across cwd-groups.
-        let joanRows = app.descendants(matching: .any).allElementsBoundByIndex
-            .filter { $0.identifier == "session-card-fix-joan" }
-        XCTAssertEqual(joanRows.count, 1, "the crew name renders exactly one row (no per-cwd doubling)")
+        let peteNameRows = app.descendants(matching: .any).allElementsBoundByIndex
+            .filter { $0.identifier == "session-card-name" && ($0.label == "Pete") }
+        XCTAssertEqual(peteNameRows.count, 1,
+                       "the crew name folds to exactly one row (no per-cwd doubling)")
         attach("crew-single-row")
     }
 
-    /// REGRESSION GUARD (runs today): with the shipped fixture's all-DISTINCT names, the
-    /// crew fold collapses NOTHING — so NO `card-collapsed-count-*` badge renders anywhere.
-    /// A regression that folded distinct names together (or re-introduced doubling with a
-    /// stray badge) would trip this.
-    func testDistinctNamesProduceNoCollapseBadge() {
+    /// The folded Pete row carries the `+N` collapse badge for its hidden tenures. The
+    /// surviving row id is computed via `collapseGroupsFoldingCrew` (the app's own fold),
+    /// so the exact `card-collapsed-count-<survivor>` id is asserted.
+    func testFoldedCrewRowShowsCollapsedCountBadge() {
         launch()
         connectAndEnterList()
-        _ = waitFor("session-card-fix-cartographer", 8) // list is up + realized
+        let field = waitFor("list-search")
+        field.tap()
+        field.typeText("Pete")
+        XCTAssertTrue(waitForAnyPeteCard(6), "a Pete card renders")
 
-        let badges = app.descendants(matching: .any).allElementsBoundByIndex
-            .filter { $0.identifier.hasPrefix("card-collapsed-count-") }
-        XCTAssertTrue(badges.isEmpty,
-                      "distinct canonical names fold nothing — no +N collapse badge renders")
-        attach("crew-no-spurious-badge")
+        if let survivor = foldedPeteSurvivorId() {
+            XCTAssertTrue(waitForAppear("card-collapsed-count-\(survivor)", 6),
+                          "the folded Pete row shows its +N collapse badge")
+        } else {
+            // Fallback (fold survivor not derivable from the pure helper): ANY collapse
+            // badge on the Pete-narrowed list proves the fold rendered a +N.
+            let hasBadge = app.descendants(matching: .any).allElementsBoundByIndex
+                .contains { $0.identifier.hasPrefix("card-collapsed-count-") }
+            XCTAssertTrue(hasBadge, "a +N collapse badge renders for the folded crew name")
+        }
+        attach("crew-collapse-badge")
     }
 
-    /// POSITIVE PATH (skips pending a fixture): a crew name with tenures in ≥2 cwds folds
-    /// to ONE row + a `+N` badge (`card-collapsed-count-<survivorId>`). The shipped fixture
-    /// has each crew name in a single cwd, so the global fold has nothing to collapse and no
-    /// badge renders. Needs a fixture pair — e.g. a second `Joan` tenure in a DIFFERENT cwd
-    /// (`FixtureData.sessionsSnapshot()`), which the global crew fold would collapse onto the
-    /// survivor with `olderCount == 1`. Until it lands this SKIPS with a request (the fold
-    /// ALGEBRA is unit-covered by SessionGroupingTests; this is the missing e2e wiring).
-    /// App-target/fixture change = cc-ios-build owned (reported to SwiftPilot).
-    func testCrewInMultipleCwdsCollapsesToOneRowWithBadge() throws {
-        launchForcing(hideEnded: false) // show every tenure so any crew fold can render
-        connectAndEnterList()
+    // MARK: fixture-derived subjects
 
-        let badge = app.descendants(matching: .any).allElementsBoundByIndex
-            .first { $0.identifier.hasPrefix("card-collapsed-count-") }
-        guard badge != nil else {
-            throw XCTSkip("""
-            No crew fold to observe — the fixture has each crew name (Joan/…) in a SINGLE cwd, \
-            so `collapseGroupsFoldingCrew` collapses nothing and no `card-collapsed-count-*` \
-            badge renders. PENDING fixture extension: add a second same-crew tenure in a \
-            DIFFERENT cwd (e.g. a 2nd `Joan`) to FixtureData.sessionsSnapshot() so the global \
-            crew fold folds it to one row + a +N badge (the operator's doubling repro). Fold \
-            algebra is unit-covered (SessionGroupingTests); this is the e2e wiring. Reported to \
-            cc-ios-build. Spec authored + ready.
-            """)
+    /// The surviving row id for the folded Pete crew, computed by the app's own global
+    /// crew fold over the standing-crew tier groups. nil if not derivable (→ fallback).
+    private func foldedPeteSurvivorId() -> String? {
+        let grouped = SessionGrouping.groupByTier(fixtureSessions)
+        guard let crew = grouped.first(where: { $0.tier == .standingCrew }) else { return nil }
+        let dirGroups = SessionGrouping.groupTierByFolder(
+            crew.sessions, folders: true, orders: [:], pinnedDirectories: [])
+        let collapsed = SessionGrouping.collapseGroupsFoldingCrew(dirGroups, selectedId: nil)
+        for group in collapsed {
+            for row in group.rows where row.session.name == "Pete" && row.olderCount > 0 {
+                return row.session.id
+            }
         }
-        attach("crew-multi-cwd-folded")
+        return nil
+    }
+
+    /// True once ANY of Pete's fixture card ids is on screen.
+    private func waitForAnyPeteCard(_ timeout: TimeInterval) -> Bool {
+        let ids = peteTenures().map { cardId($0) }
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if ids.contains(where: { el($0).exists }) { return true }
+            usleep(150_000)
+        }
+        return ids.contains { el($0).exists }
     }
 }

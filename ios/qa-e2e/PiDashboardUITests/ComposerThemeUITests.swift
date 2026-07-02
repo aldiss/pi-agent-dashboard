@@ -1,4 +1,5 @@
 import XCTest
+import PiDashboardKit
 
 /// BACKFILL #1 — the composer renders, is interactable, and shows READABLE text in
 /// BOTH light and dark themes. Regression guard for the operator-reported light-mode
@@ -20,13 +21,13 @@ import XCTest
 @MainActor
 final class ComposerThemeUITests: PiDashboardUITestCase {
 
-    /// Open the Cartographer chat in a forced theme and return the up composer's
-    /// textarea. `fix-cartographer` is the canonical drivers card the other flows use.
+    /// Open a fixture session's chat in a forced theme and return the up composer's
+    /// textarea. Any fixture session's composer exercises the same theme-aware input.
     @discardableResult
     private func openComposer(themeMode: String) -> XCUIElement {
         launchForcing(themeMode: themeMode)
         connectAndEnterList()
-        openChat(cardId: "session-card-fix-cartographer")
+        openChat(fixtureSessions.first ?? fixtureSession("any") { _ in true })
         return waitFor("mobile-composer-textarea", 8)
     }
 
@@ -104,7 +105,7 @@ final class ComposerThemeUITests: PiDashboardUITestCase {
 
         // Reopen the chat → the composer must still be interactable + hold text in the
         // freshly-applied light theme (the live re-apply worked).
-        openChat(cardId: "session-card-fix-cartographer")
+        openChat(fixtureSessions.first ?? fixtureSession("any") { _ in true })
         let tv2 = waitFor("mobile-composer-textarea", 8)
         tv2.tap()
         tv2.typeText("after switch")

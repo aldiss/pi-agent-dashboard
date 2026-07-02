@@ -1,60 +1,51 @@
 import XCTest
+import PiDashboardKit
 
-/// MODEL + THINKING-LEVEL PICKER — tapping the chat title (`chat-model-button`) opens
-/// the `model-picker` sheet (native mirror of the PWA ModelSelector + ReasoningSheet).
-/// The sheet lists provider/id model rows with the current model checkmarked, a
-/// provider filter + search, and a thinking-level segmented grid.
+/// MODEL + THINKING-LEVEL PICKER — tapping the chat title (`chat-model-button`) opens the
+/// `model-picker` sheet with provider/id model rows (current model checkmarked), a provider
+/// filter + search, and a thinking-level segmented grid.
 ///
-/// Hermetic boundary: the model LIST is fetched from the server via `requestModels`,
-/// which no-ops under `-uitest` (`safeSend` is guarded), so `availableModels` stays
-/// empty and the sheet shows "Loading models…" with no `model-row-*`. The thinking-level
-/// grid (`thinking-row-<level>`) renders REGARDLESS (it's local state), so the sheet's
-/// presentation + the reasoning control are asserted today; the model-row SELECT path
-/// (which needs a populated list) is authored and SKIPS pending a models fixture.
+/// Subject derived from `UITestFixtures`: a session carrying a `model` (so the title button
+/// reads a model). The thinking-level grid (`thinking-row-<level>`) is local state and renders
+/// regardless; the model-row list is contract-fixture-driven — asserted if `UITestFixtures`
+/// seeds an `availableModels` list, else the model-select path skips (the sheet + reasoning
+/// grid still assert).
 @MainActor
 final class ModelPickerUITests: PiDashboardUITestCase {
 
-    /// Open Cartographer's chat and tap the title to present the model picker.
+    /// Open a fixture session that has a model set, then present the picker.
     private func openModelPicker() {
+        launch()
         connectAndEnterList()
-        openChat(cardId: "session-card-fix-cartographer")
+        let subject = fixtureSession("has a model") { ($0.model?.isEmpty == false) }
+        openChat(subject)
         waitFor("chat-model-button", 8).tap()
     }
 
-    /// Tapping the chat title opens the model-picker sheet with the thinking-level
-    /// control present (the reasoning grid renders even before the model list loads).
+    /// Tapping the chat title opens the model-picker sheet with the thinking-level control.
     func testTitleOpensModelPickerSheet() {
-        launch()
         openModelPicker()
-
-        XCTAssertTrue(waitFor("model-picker", 6).exists, "tapping the title opens the model picker sheet")
-        // The thinking-level grid is local (no network) — its rows render immediately.
+        XCTAssertTrue(waitFor("model-picker", 6).exists, "tapping the title opens the model picker")
         XCTAssertTrue(waitFor("thinking-row-medium", 6).exists, "the thinking-level grid renders")
         XCTAssertTrue(exists("thinking-row-high"), "all reasoning levels are offered")
         attach("modelpicker-open")
     }
 
-    /// The thinking-level buttons are reachable + tappable in-app (the set is local
-    /// state; `setThinkingLevel` no-ops under `-uitest`, so this asserts the affordance,
-    /// not a live mutation — the same honest boundary the control-action specs use).
+    /// The thinking-level buttons are reachable + tappable in-app (local state; the set
+    /// no-ops under `-uitest`, so this asserts the affordance, not a live mutation).
     func testThinkingLevelButtonsAreTappable() {
-        launch()
         openModelPicker()
-
         let high = waitFor("thinking-row-high", 6)
         XCTAssertTrue(high.isHittable, "a thinking-level button is reachable")
-        high.tap()  // no-op mutation under -uitest; asserts the affordance is wired
-        // The sheet stays up after a level tap (level set doesn't dismiss).
-        XCTAssertTrue(exists("model-picker"), "the picker stays open after choosing a thinking level")
+        high.tap()
+        XCTAssertTrue(exists("model-picker"), "the picker stays open after choosing a level")
         attach("modelpicker-thinking-tap")
     }
 
     /// The picker dismisses via Done, returning to the chat.
     func testModelPickerDismisses() {
-        launch()
         openModelPicker()
         XCTAssertTrue(waitFor("model-picker", 6).exists, "picker is open")
-
         let done = app.buttons["Done"].firstMatch
         XCTAssertTrue(done.waitForExistence(timeout: 4), "Done button present")
         done.tap()
@@ -63,29 +54,23 @@ final class ModelPickerUITests: PiDashboardUITestCase {
         attach("modelpicker-dismissed")
     }
 
-    /// Selecting a model row updates the session's model (the row checkmarks + the title
-    /// subtitle updates via `session_updated`). The model LIST comes from the server
-    /// (`requestModels`), which no-ops under `-uitest`, so no `model-row-*` renders → SKIP
-    /// pending a fixture. Needs `availableModels[fix-cartographer]` seeded (e.g. under a
-    /// `-uitest` models fixture) so rows render and one can be tapped + checkmarked.
+    /// Selecting a model row updates the session (the row checkmarks). The model list comes
+    /// from the server (`requestModels` no-ops under `-uitest`); if `UITestFixtures` seeds no
+    /// `availableModels`, no `model-row-*` renders → SKIP with the request.
     func testSelectingModelRowUpdatesSession() throws {
-        launch()
         openModelPicker()
         _ = waitFor("model-picker", 6)
-
-        let hasModelRow = app.descendants(matching: .any).allElementsBoundByIndex
+        let hasRow = app.descendants(matching: .any).allElementsBoundByIndex
             .contains { $0.identifier.hasPrefix("model-row-") }
-        guard hasModelRow else {
+        guard hasRow else {
             throw XCTSkip("""
-            No model rows to select — `requestModels` no-ops under -uitest (safeSend guarded), so \
-            `availableModels` stays empty and the sheet shows "Loading models…". PENDING fixture: \
-            seed `availableModels[fix-cartographer]` (a `-uitest` models fixture / `models_list`) so \
-            `model-row-<provider>-<id>` rows render, one can be tapped, and the selected row shows the \
-            `selected` a11y value + checkmark. Selection routing is unit-covered (protocol round-trip); \
-            this is the e2e wiring. Reported to cc-ios-build. Spec authored + ready.
+            No model rows to select — `requestModels` no-ops under -uitest and `UITestFixtures` \
+            seeds no `availableModels`, so the sheet shows "Loading models…". To exercise selection, \
+            seed an availableModels list for a fixture session so `model-row-<provider>-<id>` rows \
+            render + one can be tapped/checkmarked. Selection routing is unit-covered (protocol \
+            round-trip); this is the e2e wiring.
             """)
         }
-        // With rows present: tapping one marks it selected (value "selected") + dismisses.
         let row = app.descendants(matching: .any).allElementsBoundByIndex
             .first { $0.identifier.hasPrefix("model-row-") }!
         row.tap()

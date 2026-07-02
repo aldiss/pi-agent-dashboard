@@ -1,4 +1,5 @@
 import XCTest
+import PiDashboardKit
 
 /// F1–F7 EXTENSION — the control actions (abort / resume / spawn), the message-type
 /// filter, and settings reachability. The night-1 F1–F7 covered connect / list / open
@@ -18,13 +19,13 @@ final class ControlActionsUITests: PiDashboardUITestCase {
 
     // MARK: F — abort (Stop) affordance on a running session
 
-    /// A RUNNING session (fix-cartographer is `streaming`) shows the Stop control in
-    /// the chat toolbar; tapping it opens the confirm dialog (`chat-abort-confirm`).
-    /// Cancel dismisses without mutating (abort no-ops under `-uitest` regardless).
+    /// A RUNNING session (a `streaming` fixture session) shows the Stop control in the
+    /// chat toolbar; tapping it opens the confirm dialog (`chat-abort-confirm`). Cancel
+    /// dismisses without mutating (abort no-ops under `-uitest` regardless).
     func testAbortAffordanceShowsAndConfirms() {
         launch()
         connectAndEnterList()
-        openChat(cardId: "session-card-fix-cartographer")
+        openChat(fixtureSession(status: "streaming"))
 
         let stop = waitFor("chat-abort-button", 8)
         XCTAssertTrue(stop.isHittable, "Stop shows + is reachable on a running session")
@@ -42,18 +43,19 @@ final class ControlActionsUITests: PiDashboardUITestCase {
 
     // MARK: F — resume affordance on an ended session
 
-    /// The ended `fix-worker` card exposes a Resume control (`card-resume-button`) —
+    /// An ended fixture session's card exposes a Resume control (`card-resume-button`) —
     /// shown ONLY for `status == "ended"`. Reveal it via `hideEnded` off + a narrowing
     /// search (the worker tier can sit below the fold), then assert the affordance.
     func testResumeAffordanceShowsOnEndedSession() {
         launchForcing(hideEnded: false)
         connectAndEnterList()
 
+        let ended = fixtureSession(status: "ended")
         let field = waitFor("list-search")
         field.tap()
-        field.typeText("worker")
+        field.typeText(ended.displayName)
 
-        XCTAssertTrue(waitFor("session-card-fix-worker", 6).exists, "the ended card is shown")
+        XCTAssertTrue(waitFor(cardId(ended), 6).exists, "the ended card is shown")
         XCTAssertTrue(waitForAppear("card-resume-button", 6),
                       "an ended session exposes the Resume control")
         attach("ext-resume-button")
@@ -89,7 +91,7 @@ final class ControlActionsUITests: PiDashboardUITestCase {
     func testMessageFilterPillToggles() {
         launch()
         connectAndEnterList()
-        openChat(cardId: "session-card-fix-joan") // seeded chat → pills have counts
+        openChatBearing() // a chat with content → the pills have counts
 
         waitFor("chat-filter-button", 8).tap()
         XCTAssertTrue(waitFor("chat-filter-controls", 6).exists, "the filter pill row expands")

@@ -24,12 +24,12 @@ import XCTest
 @MainActor
 final class StuckSendingUITests: PiDashboardUITestCase {
 
-    /// Open the seeded fixture chat. `loadFixtures` seeds a scripted chat for the
-    /// FIRST snapshot session — `fix-joan` (standing-crew, top of the list) — so its
-    /// chat has real reduced rows (a user prompt, assistant markdown, a tool call).
+    /// Open a fixture chat that renders rows. `UITestFixtures` seeds ≥1 session with a
+    /// multi-message `chat(for:)` (a user prompt, assistant markdown, a tool call), found
+    /// via the shared `openChatBearing` helper — so the chat has real reduced rows.
     private func openSeededChat() {
         connectAndEnterList()
-        openChat(cardId: "session-card-fix-joan")
+        openChatBearing()
     }
 
     // MARK: hermetic guard (runs today) — nothing is stranded at "Sending…"
@@ -75,7 +75,7 @@ final class StuckSendingUITests: PiDashboardUITestCase {
     /// this note (it does not fail) — the spec is authored + ready. App-target change =
     /// cc-ios-build owned (reported to SwiftPilot).
     func testSendReconcilesOptimisticBubbleToConfirmed() throws {
-        launch(["-uitest", "-uitest-echo-send"])
+        launch(Self.fixtureArgs + ["-uitest-echo-send"])
         openSeededChat()
 
         let textView = waitFor("mobile-composer-textarea", 8)

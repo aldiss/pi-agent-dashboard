@@ -165,7 +165,7 @@ final class ComposerFocusUITests: PiDashboardUITestCase {
     /// (it does not fail). App-target change = cc-ios-build owned (reported to SwiftPilot).
     /// The hermetic `testComposerDraftAccumulatesUnderRepeatedReLayout` guard runs today.
     func testComposerSurvivesLiveStreamingWhileTyping() throws {
-        enterSeededChat(["-uitest", "-uitest-stream"])
+        enterSeededChat(["-uitest-stream"])
 
         // Detect the pump: under the hook the viewed session goes isStreaming → the
         // composer shows Stop (`mobile-composer-stop`) and/or the chat grows new rows.
@@ -232,7 +232,7 @@ final class ComposerFocusUITests: PiDashboardUITestCase {
     /// no network) so the append-preserves-draft contract is drivable. Until it lands this
     /// SKIPS (it does not fail). App-target change = cc-ios-build owned.
     func testVoiceAppendKeepsDraftAndCaret() throws {
-        enterSeededChat(["-uitest", "-uitest-voice-append"])
+        enterSeededChat(["-uitest-voice-append"])
 
         let tv = focusComposer()
         tv.typeText(markers(1...4))                            // a small existing draft
@@ -262,14 +262,13 @@ final class ComposerFocusUITests: PiDashboardUITestCase {
 
     // MARK: helpers
 
-    /// Launch (`-uitest` + optional extra args) → connect → open the seeded fixture chat.
-    /// `loadFixtures` seeds a scripted chat for the FIRST snapshot session (`fix-joan`,
-    /// top of the list), so ChatView renders real reduced rows — a realistic re-render
-    /// surface for the composer to sit under.
-    private func enterSeededChat(_ args: [String] = ["-uitest"]) {
-        launch(args)
+    /// Launch fixture mode (+ optional extra args like `-uitest-stream`) → open a fixture
+    /// session whose `chat(for:)` renders rows — a realistic re-render surface for the
+    /// composer to sit under.
+    private func enterSeededChat(_ extra: [String] = []) {
+        launch(Self.fixtureArgs + extra)
         connectAndEnterList()
-        openChat(cardId: "session-card-fix-joan")
+        openChatBearing()
     }
 
     /// Focus the composer input and confirm the keyboard actually came up. Returns the
