@@ -106,6 +106,19 @@ public struct QueuedMessage: Sendable, Equatable, Identifiable {
     }
 }
 
+/// What the live streaming indicator should render for a working session. Resolved
+/// purely from `ChatSessionState` (see `streamingIndicator`) so the view is a thin
+/// switch and the decision is `swift test`-pinned. Priority: committed streaming text
+/// wins (it's the answer arriving); else a running tool; else live reasoning; else a
+/// bare "working" pulse. `hidden` when the session isn't streaming.
+public enum StreamingIndicatorKind: Sendable, Equatable {
+    case hidden
+    case text                 // streamingText is non-empty → the answer is arriving
+    case tool(String)         // a tool is running → "running <tool>… M:SS"
+    case thinking(String)     // live reasoning flowing (no tool, no text) → show it moving
+    case waiting              // streaming but nothing surfaced yet → "thinking… M:SS"
+}
+
 /// The reduced chat state for one session — the native mirror of `SessionState`
 /// (MVP subset). `reduce(_:)` folds a `DashboardEvent` stream into renderable
 /// rows + running stats, faithful to `reduceEvent` for the event types the MVP
@@ -116,6 +129,11 @@ public struct ChatSessionState: Sendable, Equatable {
     public var streamingText: String = ""
     public var streamingThinking: String = ""
     public var thinkingStartedAt: Double?
+    /// Epoch-ms the current agent run began (set on `agent_start`, cleared on
+    /// `agent_end`). Drives the working-state elapsed timer ("thinking… 0:45") so a
+    /// long turn reads as ALIVE, not hung. Turn-level, NOT per-thinking-block (that's
+    /// `thinkingStartedAt`). nil ⇒ not streaming ⇒ no timer.
+    public var streamingStartedAt: Double?
     public var isStreaming: Bool = false
     public var status: String = "idle"  // idle | streaming | ended
     public var model: String?
@@ -236,6 +254,19 @@ public struct ChatSessionState: Sendable, Equatable {
         queued.filter { $0.status != .failed }.count
     }
 
+    /// What the working-state indicator should show (pure resolver — the view switches
+    /// on it). Committed text wins (the answer is arriving), then a running tool, then
+    /// live reasoning, then a bare pulse; `hidden` when not streaming. The trimmed
+    /// thinking is carried so the view can render the reasoning as it flows.
+    public var streamingIndicator: StreamingIndicatorKind {
+        guard isStreaming else { return .hidden }
+        if !streamingText.isEmpty { return .text }
+        if let tool = currentTool, !tool.isEmpty { return .tool(tool) }
+        let thinking = streamingThinking.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !thinking.isEmpty { return .thinking(streamingThinking) }
+        return .waiting
+    }
+
     /// Fold one event into a new state. Pure: `self` is not mutated.
     public func reduce(_ event: DashboardEvent) -> ChatSessionState {
         var next = self
@@ -247,12 +278,14 @@ public struct ChatSessionState: Sendable, Equatable {
             next.isStreaming = true
             next.status = "streaming"
             next.streamingText = ""
+            next.streamingStartedAt = ts   // start the working-state elapsed timer
 
         case "agent_end":
             next.isStreaming = false
             next.status = "idle"
             next.streamingText = ""
             next.currentTool = nil
+            next.streamingStartedAt = nil   // stop the timer — the indicator clears
 
         case "message_start":
             let role = next.messageRole(data)
@@ -266,8 +299,28 @@ public struct ChatSessionState: Sendable, Equatable {
                 // queued[] (it becomes the committed user bubble below). Absent
                 // queueNonce = a turn-initiating message (no dequeue).
                 let dispatchedNonce = data["queueNonce"]?.stringValue
+                var dequeued = false
                 if let dispatched = dispatchedNonce {
+                    let before = next.queued.count
                     next.queued.removeAll { $0.queueNonce == dispatched }
+                    dequeued = next.queued.count < before
+                }
+                // SAFETY-NET (nonce drift/absent): the bridge dispatched a CONFIRMED
+                // queued follow-up but its message_start echo carried no matching nonce
+                // (nonce absent, or drifted through a skill/whitespace envelope). Without
+                // this the confirmed card lingers as a phantom "1 queued" forever (the
+                // operator's report). Drop the confirmed entry whose trimmed text matches
+                // the dispatched message text. Confirmed-only + first-match so a
+                // still-pending optimistic (not yet acked) or an unrelated card is safe.
+                if !dequeued {
+                    let dispatchedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !dispatchedText.isEmpty,
+                       let qi = next.queued.firstIndex(where: {
+                           $0.status == .confirmed
+                               && $0.text.trimmingCharacters(in: .whitespacesAndNewlines) == dispatchedText
+                       }) {
+                        next.queued.remove(at: qi)
+                    }
                 }
                 // CONFIRM BY NONCE (primary): the server echo carries the client-
                 // minted queueNonce, so confirm the exact `optim-<nonce>` bubble by
@@ -545,6 +598,12 @@ public struct ChatSessionState: Sendable, Equatable {
             // (emit NO row); `turn_end` already breaks. Genuinely-unknown events
             // still fall through to the `.rawEvent` default (hidden by the
             // systemNotifications filter, available when toggled on for debug).
+            // Defensive: if a replay begins mid-run (agent_start already folded, or
+            // absent) and the timer is unset while streaming, anchor it here so the
+            // elapsed indicator still ticks.
+            if next.isStreaming, next.streamingStartedAt == nil {
+                next.streamingStartedAt = ts
+            }
             break
 
         default:

@@ -42,4 +42,14 @@ public enum TimeFormat {
         return !cal.isDate(Date(timeIntervalSince1970: ms / 1000),
                            inSameDayAs: Date(timeIntervalSince1970: prior / 1000))
     }
+
+    /// Elapsed `M:SS` (seconds zero-padded) between a start and `now`, both epoch-ms —
+    /// the working-state "thinking… 0:45" / "running bash… 0:12" timer that tells alive
+    /// from hung. Minutes are NOT zero-padded and roll past 60 ("61:01" for 61 min).
+    /// A nonpositive start, or `now <= start` (clock skew / not-yet-started), → "0:00".
+    public static func elapsedClock(fromEpochMs start: Double, now: Double) -> String {
+        guard start > 0, now > start else { return "0:00" }
+        let totalSeconds = Int((now - start) / 1000)
+        return "\(totalSeconds / 60):\(String(format: "%02d", totalSeconds % 60))"
+    }
 }

@@ -147,4 +147,44 @@ final class QueueReducerTests: XCTestCase {
         let s = ChatSessionState().enqueueingOptimistic(text: "a", nonce: "n1")
         XCTAssertEqual(s.markingQueuedFailed(nonce: "other"), s)
     }
+
+    // MARK: dequeue safety-net (nonce drift/absent — the lingering "1 queued")
+
+    /// A CONFIRMED queued follow-up whose dispatch echo carries NO queueNonce must
+    /// still clear (text-match) — else it lingers as a phantom "1 queued" forever.
+    func testDequeueClearsConfirmedWhenEchoNonceAbsent() {
+        var s = ChatSessionState().enqueueingOptimistic(text: "follow up", nonce: "n1")
+        s = s.reduce(enqueued("n1", "follow up"))          // → confirmed
+        XCTAssertEqual(s.activeQueuedCount, 1)
+        s = s.reduce(userStart("follow up", nonce: nil))    // dispatched, but NO nonce on the echo
+        XCTAssertEqual(s.queued.count, 0, "confirmed queued cleared by text-match safety-net")
+        XCTAssertEqual(s.activeQueuedCount, 0)
+        XCTAssertEqual(s.messages.filter { $0.role == .user }.count, 1)
+    }
+
+    /// Nonce DRIFT: the echo carries a different nonce than the queued entry → the
+    /// nonce removeAll misses, the text-match safety-net still clears it.
+    func testDequeueClearsConfirmedOnNonceDrift() {
+        var s = ChatSessionState().enqueueingOptimistic(text: "do the thing", nonce: "n1")
+        s = s.reduce(enqueued("n1", "do the thing"))        // → confirmed under n1
+        s = s.reduce(userStart("do the thing", nonce: "drifted-xyz"))
+        XCTAssertEqual(s.queued.count, 0, "drifted nonce falls back to text-match")
+    }
+
+    /// The safety-net is CONFIRMED-only: a still-`pending` optimistic (not yet acked)
+    /// is NOT dropped by a same-text dispatch (it may be a different, later send).
+    func testDequeueSafetyNetLeavesPendingUntouched() {
+        var s = ChatSessionState().enqueueingOptimistic(text: "same text", nonce: "n1") // pending, not confirmed
+        s = s.reduce(userStart("same text", nonce: nil))
+        XCTAssertEqual(s.queued.count, 1, "pending optimistic survives — only confirmed is safety-netted")
+        XCTAssertEqual(s.queued[0].status, .pending)
+    }
+
+    /// Exact-nonce dequeue still works and does NOT double-drop via the safety-net.
+    func testDequeueByNonceUnaffectedBySafetyNet() {
+        var s = ChatSessionState().enqueueingOptimistic(text: "q", nonce: "n1")
+        s = s.reduce(enqueued("n1", "q"))
+        s = s.reduce(userStart("q", nonce: "n1"))
+        XCTAssertEqual(s.queued.count, 0)
+    }
 }

@@ -46,4 +46,30 @@ final class TimeFormatTests: XCTestCase {
     func testIsNewDayFalseForMissingPrior() {
         XCTAssertFalse(TimeFormat.isNewDay(1_782_824_700_000.0, since: 0, timeZone: utc))
     }
+
+    // MARK: elapsedClock (working-state timer "M:SS")
+
+    func testElapsedClockFormatsMinutesAndSeconds() {
+        let start = 1_000_000.0
+        XCTAssertEqual(TimeFormat.elapsedClock(fromEpochMs: start, now: start + 45_000), "0:45")
+        XCTAssertEqual(TimeFormat.elapsedClock(fromEpochMs: start, now: start + 12_000), "0:12")
+        XCTAssertEqual(TimeFormat.elapsedClock(fromEpochMs: start, now: start + 65_000), "1:05")
+        XCTAssertEqual(TimeFormat.elapsedClock(fromEpochMs: start, now: start + 5_000), "0:05") // zero-pad seconds
+    }
+
+    func testElapsedClockSubSecondIsZero() {
+        let start = 1_000_000.0
+        XCTAssertEqual(TimeFormat.elapsedClock(fromEpochMs: start, now: start + 900), "0:00") // <1s floors
+    }
+
+    func testElapsedClockMinutesRollPastSixty() {
+        let start = 1_000_000.0
+        XCTAssertEqual(TimeFormat.elapsedClock(fromEpochMs: start, now: start + 61 * 60_000 + 1_000), "61:01")
+    }
+
+    func testElapsedClockGuardsNonpositiveAndSkew() {
+        XCTAssertEqual(TimeFormat.elapsedClock(fromEpochMs: 0, now: 5_000), "0:00")       // no start
+        XCTAssertEqual(TimeFormat.elapsedClock(fromEpochMs: 5_000, now: 4_000), "0:00")   // now < start (skew)
+        XCTAssertEqual(TimeFormat.elapsedClock(fromEpochMs: 5_000, now: 5_000), "0:00")   // equal
+    }
 }

@@ -339,20 +339,53 @@ struct ChatView: View {
     }
 
     @ViewBuilder private var streamingIndicator: some View {
-        if !state.streamingText.isEmpty {
+        switch state.streamingIndicator {
+        case .hidden:
+            EmptyView()
+        case .text:
+            // The answer is arriving — its growth alone signals "alive"; no timer.
             MarkdownText(content: state.streamingText)
                 .frame(maxWidth: .infinity, alignment: .leading)
-        } else {
-            HStack(spacing: 6) {
-                ProgressView().controlSize(.small).tint(theme.textTertiary)
-                if let tool = state.currentTool {
-                    Text("running \(tool)…").font(.caption).foregroundStyle(theme.textTertiary)
-                } else {
-                    Text("thinking…").font(.caption).foregroundStyle(theme.textTertiary)
+        case .tool(let tool):
+            workingRow(label: "running \(tool)…")
+        case .thinking(let reasoning):
+            // Live reasoning: the spinner+elapsed header PLUS the reasoning text as it
+            // streams (muted/italic, like a ThinkingBlock) so the operator SEES it move.
+            VStack(alignment: .leading, spacing: 4) {
+                workingRow(label: "thinking…")
+                Text(reasoning)
+                    .font(.caption)
+                    .italic()
+                    .foregroundStyle(theme.textTertiary)
+                    .lineLimit(6)
+                    .truncationMode(.head) // keep the LATEST reasoning visible as it grows
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityIdentifier("chat-streaming-thinking")
+            }
+        case .waiting:
+            workingRow(label: "thinking…")
+        }
+    }
+
+    /// A working-state row: spinner + label + a live elapsed timer ("thinking… 0:45" /
+    /// "running bash… 0:12") ticking every second from the agent-run start. The timer
+    /// is what tells ALIVE from hung on a long turn. Cleared when streaming ends
+    /// (`agent_end` → `streamingIndicator == .hidden`, this view is gone).
+    private func workingRow(label: String) -> some View {
+        HStack(spacing: 6) {
+            ProgressView().controlSize(.small).tint(theme.textTertiary)
+            Text(label).font(.caption).foregroundStyle(theme.textTertiary)
+            if let started = state.streamingStartedAt {
+                TimelineView(.periodic(from: .now, by: 1)) { _ in
+                    Text(TimeFormat.elapsedClock(fromEpochMs: started,
+                                                 now: Date().timeIntervalSince1970 * 1000))
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(theme.textTertiary)
+                        .accessibilityIdentifier("chat-streaming-elapsed")
                 }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var emptyState: some View {
