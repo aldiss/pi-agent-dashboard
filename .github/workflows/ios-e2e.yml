@@ -39,7 +39,8 @@ jobs:
   e2e:
     name: E2E XCUITest (simulator)
     runs-on: macos-latest
-    timeout-minutes: 20
+    # Hermetic suite is ~20-25 min (~30s/test, per-test app relaunch); 35 gives headroom.
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
       - name: Select newest Xcode
