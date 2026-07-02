@@ -124,4 +124,22 @@ final class UITestFixturesTests: XCTestCase {
         // ModelPicker asserts a model label renders — the rich session carries one.
         XCTAssertEqual(byId(UITestFixtures.peteId)!.model, "anthropic/claude-opus-4")
     }
+
+    // MARK: composer-overflow probe constants (shared with the app + SwiftPilot)
+
+    func testComposerOverflowLaunchArgStable() {
+        XCTAssertEqual(UITestFixtures.composerOverflowLaunchArg, "-uitest-composer-overflow")
+    }
+
+    func testComposerOverflowLineIsLongSingleLine() {
+        let line = UITestFixtures.composerOverflowLine
+        XCTAssertGreaterThan(line.count, 180, "long enough (~200) to overflow if it doesn't wrap")
+        XCTAssertFalse(line.contains("\n"), "NO newline → only word-wrap can break it (proves the fix)")
+    }
+
+    func testOverflowProbeOpensFirstFixtureSession() {
+        // The probe auto-opens sessions.first — assert that id is stable (fix-pete, which
+        // also has the scripted chat so the composer renders over real content).
+        XCTAssertEqual(UITestFixtures.sessions.first?.id, UITestFixtures.peteId)
+    }
 }

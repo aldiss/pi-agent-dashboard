@@ -51,4 +51,28 @@ final class ComposerLayoutTests: XCTestCase {
         XCTAssertTrue(ComposerLayout.canSend(text: "", imageCount: 1, disabled: false))     // image-only
         XCTAssertFalse(ComposerLayout.canSend(text: "hi", imageCount: 1, disabled: true))   // disabled
     }
+
+    // MARK: resolvedWrapWidth (composer overflow — wrap to the SwiftUI-proposed width)
+
+    func testResolvedWrapWidthPrefersFinitePositiveProposal() {
+        // The width SwiftUI is constraining the field to wins → the text wraps to it.
+        XCTAssertEqual(ComposerLayout.resolvedWrapWidth(proposed: 320, current: 999), 320)
+    }
+
+    func testResolvedWrapWidthFallsBackToCurrentWhenProposalUnusable() {
+        // .infinity / 0 / NaN / nil proposals (the off-screen-overflow trigger) fall back
+        // to the current bounds width instead of sizing to the huge intrinsic width.
+        XCTAssertEqual(ComposerLayout.resolvedWrapWidth(proposed: .infinity, current: 300), 300)
+        XCTAssertEqual(ComposerLayout.resolvedWrapWidth(proposed: 0, current: 300), 300)
+        XCTAssertEqual(ComposerLayout.resolvedWrapWidth(proposed: .nan, current: 300), 300)
+        XCTAssertEqual(ComposerLayout.resolvedWrapWidth(proposed: nil, current: 300), 300)
+        XCTAssertEqual(ComposerLayout.resolvedWrapWidth(proposed: -50, current: 300), 300)
+    }
+
+    func testResolvedWrapWidthNilWhenNoUsableWidth() {
+        // Neither a usable proposal nor usable bounds → nil (keep the prior size).
+        XCTAssertNil(ComposerLayout.resolvedWrapWidth(proposed: nil, current: 0))
+        XCTAssertNil(ComposerLayout.resolvedWrapWidth(proposed: .infinity, current: 0))
+        XCTAssertNil(ComposerLayout.resolvedWrapWidth(proposed: 0, current: -1))
+    }
 }

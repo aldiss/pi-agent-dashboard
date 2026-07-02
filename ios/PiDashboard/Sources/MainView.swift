@@ -9,9 +9,13 @@ struct MainView: View {
     @Environment(\.theme) private var theme
     @State private var showNewSession = false
     @State private var showSettings = false
+    /// Navigation path — normally empty (SessionListView's cards push via their own
+    /// closure links). The `-uitest-composer-overflow` probe seeds it on appear to
+    /// auto-open the first fixture chat for the screenshot check. Value-keyed by id.
+    @State private var navPath: [String] = []
 
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $navPath) {
             ZStack(alignment: .top) {
                 theme.bgPrimary.ignoresSafeArea()
                 SessionListView()
@@ -56,8 +60,18 @@ struct MainView: View {
                     .environment(themeController)
                     .environment(\.theme, theme)
             }
+            .navigationDestination(for: String.self) { sid in
+                ChatView(sessionId: sid, title: store.sessions[sid]?.displayName ?? "Session")
+            }
         }
         .tint(theme.accentBlue)
+        .onAppear {
+            // Composer-overflow probe: auto-open the first fixture chat so the pre-filled
+            // long line is screenshot-visible. No-op in normal use (nil id). One-shot.
+            if navPath.isEmpty, let sid = store.composerOverflowSessionId {
+                navPath = [sid]
+            }
+        }
     }
 }
 

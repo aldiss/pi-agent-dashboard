@@ -116,6 +116,11 @@ final class DashboardStore {
     /// (also suppresses every live mutation), but sources its data from the SHARED
     /// `UITestFixtures` the qa-e2e tests assert against, not the app-private `FixtureData`.
     private let isFixtureMode: Bool
+    /// Composer-overflow diagnostic probe (`-uitest-composer-overflow`, behind the
+    /// uitest guard, NEVER prod): opens the first fixture chat and pre-fills the composer
+    /// with `UITestFixtures.composerOverflowLine` so SwiftPilot can screenshot-verify a
+    /// long line WRAPS (never overflows). Implies fixture mode (injects the same data).
+    private let isComposerOverflowProbe: Bool
 
     /// The dashboard base URL the app is connected to (for building sidecar URLs
     /// like the parakeet voice endpoint). Falls back to the entered URL string so a
@@ -128,7 +133,9 @@ final class DashboardStore {
 
     init() {
         let args = ProcessInfo.processInfo.arguments
-        isFixtureMode = args.contains(UITestFixtures.launchArg)
+        isComposerOverflowProbe = args.contains(UITestFixtures.composerOverflowLaunchArg)
+        // The overflow probe implies fixture mode (it injects the same fixture data).
+        isFixtureMode = isComposerOverflowProbe || args.contains(UITestFixtures.launchArg)
         // Fixture mode is a superset of UITest (suppresses live mutation + network).
         isUITest = isFixtureMode || args.contains("-uitest")
         if isUITest {
@@ -779,6 +786,20 @@ final class DashboardStore {
                               server: .init(activeSessions: registry.count, totalSessions: registry.count, eventStoreSessions: 0))
         phase = .connected
         hasEnteredDashboard = true
+    }
+
+    /// The session id the composer-overflow probe should auto-open (first fixture id),
+    /// or nil when the probe isn't active. Drives MainView's launch navigation.
+    var composerOverflowSessionId: String? {
+        guard isComposerOverflowProbe else { return nil }
+        return UITestFixtures.sessions.first?.id
+    }
+
+    /// The long line to pre-fill the composer with FOR the probed session (else nil, so
+    /// every other session's composer stays empty). Behind the probe guard → never prod.
+    func composerOverflowText(for sid: String) -> String? {
+        guard isComposerOverflowProbe, sid == composerOverflowSessionId else { return nil }
+        return UITestFixtures.composerOverflowLine
     }
 
     /// Load a bundled fixture snapshot + a scripted chat so the XCUITest smoke runs

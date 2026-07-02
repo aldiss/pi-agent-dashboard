@@ -49,6 +49,16 @@ struct GrowingTextView: UIViewRepresentable {
         tv.textColor = UIColor(textColor)
         tv.textContainerInset = UIEdgeInsets(top: 8, left: 0, bottom: 8, right: 0)
         tv.textContainer.lineFragmentPadding = 0
+        // WRAP a long line to the field width instead of overflowing horizontally.
+        // widthTracksTextView pins the text container to the view width; byWordWrapping
+        // makes the layout manager break long lines. Together with the low horizontal
+        // hugging/compression priorities + sizeThatFits(...) below, SwiftUI constrains
+        // the width (never the huge intrinsic width) so a long dictated line grows into
+        // MULTILINE and never runs off-screen (operator: "строка вылезает за пределы").
+        tv.textContainer.widthTracksTextView = true
+        tv.textContainer.lineBreakMode = .byWordWrapping
+        tv.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        tv.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         tv.isScrollEnabled = true
         tv.keyboardAppearance = keyboardAppearance
         tv.returnKeyType = .default // Enter = newline
@@ -68,6 +78,23 @@ struct GrowingTextView: UIViewRepresentable {
         ])
         context.coordinator.placeholder = ph
         return tv
+    }
+
+    /// Return the height the text needs at SwiftUI's PROPOSED width (iOS 16+). This is
+    /// the core overflow fix: by reporting a size for the proposed width, SwiftUI
+    /// CONSTRAINS the field to that width instead of adopting the UITextView's (huge,
+    /// unwrapped) intrinsic width — so a long single line WRAPS to the composer width
+    /// and grows the height (which flips `isMultiline`) rather than running off both
+    /// screen edges. Width is resolved via the pure `ComposerLayout.resolvedWrapWidth`
+    /// (finite-positive proposal wins; else current bounds), height clamped to the band.
+    /// Returns nil when no usable width is available yet (SwiftUI keeps the prior size).
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: UITextView, context: Context) -> CGSize? {
+        guard let width = ComposerLayout.resolvedWrapWidth(
+            proposed: proposal.width.map(Double.init), current: Double(uiView.bounds.width))
+        else { return nil }
+        let fit = uiView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude))
+        let clamped = min(max(minHeight, fit.height), maxHeight)
+        return CGSize(width: width, height: clamped)
     }
 
     func updateUIView(_ tv: UITextView, context: Context) {

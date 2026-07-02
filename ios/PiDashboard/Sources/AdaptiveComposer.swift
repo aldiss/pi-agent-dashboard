@@ -17,6 +17,9 @@ struct AdaptiveComposer: View {
     let serverToken: String?
     let onSend: (String, [ImageContent]) -> Void
     let onStop: () -> Void
+    /// Optional one-time seed for the draft (the `-uitest-composer-overflow` probe
+    /// pre-fills a long line to screenshot-verify wrapping). nil in normal use.
+    var initialText: String? = nil
 
     @Environment(\.theme) private var theme
     @Environment(ThemeController.self) private var themeController
@@ -58,6 +61,14 @@ struct AdaptiveComposer: View {
         .onAppear {
             voice.configure(base: serverBase, token: serverToken)
             voice.onAppear()
+            // Probe seed: pre-fill the draft ONCE with the overflow test line so the
+            // wrap fix is screenshot-visible. Programmatic so the text view applies it;
+            // recompute so the long line's height flips isMultiline.
+            if let seed = initialText, text.isEmpty {
+                textSignal.markProgrammatic()
+                text = seed
+                recomputeLayout()
+            }
         }
         .onChange(of: serverBase) { _, base in voice.configure(base: base, token: serverToken) }
         .onDisappear { voice.onDisappear() }

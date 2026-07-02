@@ -67,7 +67,8 @@ struct ChatView: View {
                 onSend: { text, images in
                     Task { await store.sendPrompt(sessionId, text: text, images: images.isEmpty ? nil : images) }
                 },
-                onStop: { Task { await store.abort(sessionId) } })
+                onStop: { Task { await store.abort(sessionId) } },
+                initialText: store.composerOverflowText(for: sessionId))
         }
         .background(theme.bgPrimary)
         .navigationTitle(title)

@@ -25,6 +25,19 @@ public enum UITestFixtures {
     /// enter hermetic fixture mode. The qa-e2e base case adds this to `launchArguments`.
     public static let launchArg = "-uitest-fixtures"
 
+    /// Diagnostic launch arg (behind the uitest guard, NEVER prod): opens the FIRST
+    /// fixture session's chat and pre-fills the composer with `composerOverflowLine` so
+    /// SwiftPilot can screenshot-verify a long line WRAPS and never overflows the screen.
+    /// Implies fixture mode (it injects the same `sessions`).
+    public static let composerOverflowLaunchArg = "-uitest-composer-overflow"
+
+    /// A long, single-line, NO-newline probe string (~200 chars) — the exact shape that
+    /// used to run off both screen edges. Pre-filled into the composer by the overflow
+    /// probe so the wrap fix is directly visible. No newline → only WORD-WRAP can break
+    /// it; if it doesn't wrap it overflows, which is what the screenshot catches.
+    public static let composerOverflowLine =
+        "This is a deliberately very long single line with no newline characters at all that must wrap within the composer width instead of running off both edges of the screen when dictated or pasted into the input field now"
+
     // Stable ids the qa-e2e tests assert against — NEVER rename without updating both sides.
     public static let peteId = "fix-pete"            // standing-crew survivor (cwd A), rich card + chat
     public static let peteSecondId = "fix-pete-2"    // standing-crew Pete tenure (cwd B) → folds into peteId +1

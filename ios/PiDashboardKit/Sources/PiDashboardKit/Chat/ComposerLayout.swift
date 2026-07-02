@@ -58,4 +58,18 @@ public enum ComposerLayout {
         if boundText.isEmpty { return true }
         return !isFirstResponder
     }
+
+    /// Resolve the width to WRAP the composer's `UITextView` to, from SwiftUI's proposed
+    /// width and the view's current bounds width. A finite, positive proposal wins (that
+    /// is the width SwiftUI is constraining the field to); else fall back to the current
+    /// bounds width when it's usable; else nil (caller keeps the intrinsic size for this
+    /// pass). Hardens the brief's `proposal.width ?? bounds.width` against the `.infinity`
+    /// / `0` / NaN proposals SwiftUI hands an unconstrained field — the exact case that
+    /// let a long line size to its (huge) intrinsic width and run OFF-SCREEN instead of
+    /// wrapping. Pure + `swift test`-pinned.
+    public static func resolvedWrapWidth(proposed: Double?, current: Double) -> Double? {
+        if let p = proposed, p.isFinite, p > 0 { return p }
+        if current.isFinite, current > 0 { return current }
+        return nil
+    }
 }
