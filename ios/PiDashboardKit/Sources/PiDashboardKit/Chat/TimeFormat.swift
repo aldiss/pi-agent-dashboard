@@ -52,4 +52,27 @@ public enum TimeFormat {
         let totalSeconds = Int((now - start) / 1000)
         return "\(totalSeconds / 60):\(String(format: "%02d", totalSeconds % 60))"
     }
+
+    /// Upper bound on a *plausible* single agent-run elapsed time (6 h in ms). A working
+    /// row anchored further back than this is almost certainly a stale/garbage start
+    /// (e.g. a session already streaming when the app opens, before a fresh
+    /// `turn_start`/`agent_start` resets the anchor) — NOT a genuinely 6-hour turn.
+    public static let maxPlausibleElapsedMs: Double = 6 * 60 * 60 * 1000
+
+    /// Guarded elapsed clock: same `M:SS` as `elapsedClock`, but returns `nil` (instead of
+    /// a value) whenever the start is untrustworthy — missing/nonpositive, `now <= start`
+    /// (clock skew), or so far in the past that the delta exceeds `maxPlausibleElapsedMs`.
+    /// The working-state row uses this so a bogus anchor renders just "thinking…" /
+    /// "running <tool>…" with NO garbage timer (the `45637:13` bug), never a fake H:MM.
+    public static func elapsedClockOrNil(fromEpochMs start: Double, now: Double) -> String? {
+        guard start > 0, now > start, (now - start) <= maxPlausibleElapsedMs else { return nil }
+        return elapsedClock(fromEpochMs: start, now: now)
+    }
+
+    /// Optional-start convenience for the SwiftUI call site (`state.streamingStartedAt` is
+    /// `Double?`). `nil` start → `nil` (suppress), otherwise delegates to the guard above.
+    public static func elapsedClockOrNil(fromEpochMs start: Double?, now: Double) -> String? {
+        guard let start else { return nil }
+        return elapsedClockOrNil(fromEpochMs: start, now: now)
+    }
 }

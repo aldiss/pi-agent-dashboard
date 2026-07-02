@@ -72,4 +72,51 @@ final class TimeFormatTests: XCTestCase {
         XCTAssertEqual(TimeFormat.elapsedClock(fromEpochMs: 5_000, now: 4_000), "0:00")   // now < start (skew)
         XCTAssertEqual(TimeFormat.elapsedClock(fromEpochMs: 5_000, now: 5_000), "0:00")   // equal
     }
+
+    // MARK: elapsedClockOrNil (guarded working-state timer — suppresses garbage)
+
+    /// The `45637:13` repro: a start ~31.7 days before `now`. The raw `elapsedClock`
+    /// still formats the garbage H:MM (documenting the bug); the guard suppresses it.
+    func testElapsedClockOrNilSuppressesAbsurdlyOldStart() {
+        let start = 1_000_000.0
+        let now = start + 2_738_233_000.0 // 45637 min 13 s ≈ 31.7 days
+        XCTAssertEqual(TimeFormat.elapsedClock(fromEpochMs: start, now: now), "45637:13") // raw = garbage
+        XCTAssertNil(TimeFormat.elapsedClockOrNil(fromEpochMs: start, now: now))          // guarded = suppressed
+    }
+
+    func testElapsedClockOrNilSuppressesMissingStart() {
+        XCTAssertNil(TimeFormat.elapsedClockOrNil(fromEpochMs: 0, now: 5_000))    // start == 0
+        XCTAssertNil(TimeFormat.elapsedClockOrNil(fromEpochMs: -5_000, now: 5_000)) // negative start
+    }
+
+    func testElapsedClockOrNilSuppressesNilStart() {
+        let none: Double? = nil
+        XCTAssertNil(TimeFormat.elapsedClockOrNil(fromEpochMs: none, now: 5_000)) // Double? overload
+    }
+
+    func testElapsedClockOrNilSuppressesSkew() {
+        XCTAssertNil(TimeFormat.elapsedClockOrNil(fromEpochMs: 5_000, now: 4_000)) // now < start
+        XCTAssertNil(TimeFormat.elapsedClockOrNil(fromEpochMs: 5_000, now: 5_000)) // equal (not-yet-started)
+    }
+
+    func testElapsedClockOrNilAllowsRealRecentStart() {
+        let start = 1_000_000.0
+        XCTAssertEqual(TimeFormat.elapsedClockOrNil(fromEpochMs: start, now: start + 45_000), "0:45")
+        XCTAssertEqual(TimeFormat.elapsedClockOrNil(fromEpochMs: start, now: start + 12_000), "0:12")
+        XCTAssertEqual(TimeFormat.elapsedClockOrNil(fromEpochMs: start, now: start + 65_000), "1:05")
+    }
+
+    func testElapsedClockOrNilOptionalOverloadAllowsRealStart() {
+        let start: Double? = 1_000_000.0
+        XCTAssertEqual(TimeFormat.elapsedClockOrNil(fromEpochMs: start, now: 1_045_000), "0:45")
+    }
+
+    /// Boundary: exactly at the plausible window is still shown; one ms past it is suppressed.
+    func testElapsedClockOrNilWindowBoundary() {
+        let start = 1_000_000.0
+        let atEdge = start + TimeFormat.maxPlausibleElapsedMs        // exactly 6 h → allowed
+        XCTAssertEqual(TimeFormat.elapsedClockOrNil(fromEpochMs: start, now: atEdge), "360:00")
+        let pastEdge = start + TimeFormat.maxPlausibleElapsedMs + 1  // 6 h + 1 ms → suppressed
+        XCTAssertNil(TimeFormat.elapsedClockOrNil(fromEpochMs: start, now: pastEdge))
+    }
 }

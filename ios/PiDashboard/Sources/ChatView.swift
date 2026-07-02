@@ -380,11 +380,18 @@ struct ChatView: View {
             Text(label).font(.caption).foregroundStyle(theme.textTertiary)
             if let started = state.streamingStartedAt {
                 TimelineView(.periodic(from: .now, by: 1)) { _ in
-                    Text(TimeFormat.elapsedClock(fromEpochMs: started,
-                                                 now: Date().timeIntervalSince1970 * 1000))
-                        .font(.caption.monospacedDigit())
-                        .foregroundStyle(theme.textTertiary)
-                        .accessibilityIdentifier("chat-streaming-elapsed")
+                    // Guarded: a missing / 0 / absurdly-old anchor (a session already
+                    // streaming when the app opens, before a fresh turn_start resets it)
+                    // yields nil → render just the label, never a garbage "45637:13".
+                    if let elapsed = TimeFormat.elapsedClockOrNil(
+                        fromEpochMs: started,
+                        now: Date().timeIntervalSince1970 * 1000
+                    ) {
+                        Text(elapsed)
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(theme.textTertiary)
+                            .accessibilityIdentifier("chat-streaming-elapsed")
+                    }
                 }
             }
         }
