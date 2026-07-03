@@ -44,7 +44,9 @@ jobs:
     # Full XCUITest suite is ~40min+ on GitHub's macOS runner (~2x local box, serial run).
     # TOO HEAVY for every-push: runs NIGHTLY + on-demand only. Core (swift test, ~50s) is the
     # every-push gate. 55min gives headroom over the ~40min slow-runner wall time.
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    # TEMP one-off CI verify — push enabled to prove the E2E gate fires green on the runner.
+    # RE-LOCK to `schedule || workflow_dispatch` immediately after the verify run is green.
+    if: github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     timeout-minutes: 55
     steps:
       - uses: actions/checkout@v4
