@@ -76,35 +76,42 @@ final class ThemeModeTests: XCTestCase {
         return (UserDefaults(suiteName: suite)!, suite)
     }
 
-    func testFreshInstallDefaultsToSystem() {
+    func testFreshInstallDefaultsToDark() {
         let (d, suite) = ephemeral()
         defer { d.removePersistentDomain(forName: suite) }
-        XCTAssertEqual(ThemeModeStore.load(from: d), .system)
+        // Dark-by-default: a fresh install matches the (dark) PWA, not `.system`.
+        XCTAssertEqual(ThemeModeStore.load(from: d), .dark)
+        XCTAssertEqual(ThemeModeStore.defaultMode, .dark)
     }
 
-    func testSaveLoadRoundTrips() {
+    /// All three modes persist explicitly and round-trip — including `.system`, which
+    /// is no longer represented by an absent key now that `.dark` is the default.
+    func testSaveLoadRoundTripsAllModes() {
         let (d, suite) = ephemeral()
         defer { d.removePersistentDomain(forName: suite) }
         ThemeModeStore.save(.light, to: d)
         XCTAssertEqual(ThemeModeStore.load(from: d), .light)
         ThemeModeStore.save(.dark, to: d)
         XCTAssertEqual(ThemeModeStore.load(from: d), .dark)
-    }
-
-    /// Saving `.system` clears the key → load resolves back to `.system`.
-    func testSavingSystemClearsKey() {
-        let (d, suite) = ephemeral()
-        defer { d.removePersistentDomain(forName: suite) }
-        ThemeModeStore.save(.dark, to: d)
         ThemeModeStore.save(.system, to: d)
         XCTAssertEqual(ThemeModeStore.load(from: d), .system)
     }
 
-    /// A corrupt stored value falls back to `.system` (never throws).
-    func testUnknownStoredValueFallsBackToSystem() {
+    /// Choosing `.system` from a saved `.light` persists `.system` (does NOT revert to
+    /// the `.dark` default) — the explicit-persist contract.
+    func testSavingSystemPersistsExplicitly() {
+        let (d, suite) = ephemeral()
+        defer { d.removePersistentDomain(forName: suite) }
+        ThemeModeStore.save(.light, to: d)
+        ThemeModeStore.save(.system, to: d)
+        XCTAssertEqual(ThemeModeStore.load(from: d), .system)
+    }
+
+    /// A corrupt stored value falls back to the `.dark` default (never throws).
+    func testUnknownStoredValueFallsBackToDark() {
         let (d, suite) = ephemeral()
         defer { d.removePersistentDomain(forName: suite) }
         d.set("chartreuse", forKey: "pi.dashboard.themeMode")
-        XCTAssertEqual(ThemeModeStore.load(from: d), .system)
+        XCTAssertEqual(ThemeModeStore.load(from: d), .dark)
     }
 }

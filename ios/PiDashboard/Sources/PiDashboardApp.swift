@@ -28,20 +28,18 @@ final class ThemeController {
 struct PiDashboardApp: App {
     @State private var store = DashboardStore()
     @State private var themeController = ThemeController()
-    @Environment(\.colorScheme) private var systemColorScheme
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
         WindowGroup {
-            // Resolve the palette from the operator's mode + the OS appearance. For
-            // `.system` this tracks `systemColorScheme` live; for a pinned mode the
-            // `preferredColorScheme` below forces the scene so the two agree.
-            let systemIsDark = themeController.colorSchemeOverride.map { $0 == .dark }
-                ?? (systemColorScheme == .dark)
-            RootView()
+            // `ThemedRoot` resolves the palette from a VIEW-level colorScheme read.
+            // `@Environment(\.colorScheme)` is only reliable INSIDE the view tree — at
+            // this App/Scene `body` level it reports `.light` regardless of the OS
+            // appearance (a SwiftUI gotcha: the trait isn't resolved this high up), so
+            // reading it here made `.system` render light even on a dark device.
+            ThemedRoot()
                 .environment(store)
                 .environment(themeController)
-                .environment(\.theme, Theme.resolve(themeController.mode, systemIsDark: systemIsDark))
                 .preferredColorScheme(themeController.colorSchemeOverride)
                 // DF#4 foreground-reconnect: returning to `.active` (from background/
                 // inactive) may find the socket silently half-open — a backgrounded WS
@@ -51,6 +49,27 @@ struct PiDashboardApp: App {
                     if new == .active && old != .active { store.revalidate() }
                 }
         }
+    }
+}
+
+/// Reads the OS appearance at a VIEW level (where `@Environment(\.colorScheme)` is
+/// actually resolved) so `.system` follows the device light/dark correctly, then
+/// injects the concrete `Theme` into the environment for the whole tree. A change to
+/// the mode or the OS appearance re-themes the app instantly. For a pinned mode
+/// (`.dark`/`.light`) the appearance read is ignored — `colorSchemeOverride` (applied
+/// on the scene above) both forces the palette here and keeps SwiftUI's own controls
+/// in agreement.
+struct ThemedRoot: View {
+    @Environment(ThemeController.self) private var themeController
+    @Environment(\.colorScheme) private var systemColorScheme
+
+    var body: some View {
+        // `.system` → nil override → fall through to the live, view-level OS read.
+        // `.dark`/`.light` → override decides; the OS read is not consulted.
+        let systemIsDark = themeController.colorSchemeOverride.map { $0 == .dark }
+            ?? (systemColorScheme == .dark)
+        RootView()
+            .environment(\.theme, Theme.resolve(themeController.mode, systemIsDark: systemIsDark))
     }
 }
 
