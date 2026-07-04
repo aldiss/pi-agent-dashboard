@@ -255,9 +255,17 @@ async function runForeground(config: ServerConfig): Promise<void> {
   // race). Identity = who-holds-the-port (external OS fact), never the launchd
   // wrapper nor a stale server.pid. If a port is STILL held after reclaim, fail
   // loud → the supervisor restarts + reclaims again (never a silent bind-race).
-  const reclaimTargets = [config.piPort, config.port].filter(
-    (p): p is number => typeof p === "number" && p > 0,
-  );
+  const reclaimTargets =
+    process.env.PI_DASHBOARD_NO_RECLAIM === "1"
+      ? []
+      : [config.piPort, config.port].filter(
+          (p): p is number => typeof p === "number" && p > 0,
+        );
+  if (process.env.PI_DASHBOARD_NO_RECLAIM === "1") {
+    console.error(
+      "[reclaim] DISABLED via PI_DASHBOARD_NO_RECLAIM=1 (operator escape-hatch / negative-control) — NOT reclaiming ports before bind",
+    );
+  }
   try {
     await reclaimPorts(reclaimTargets);
   } catch (err) {
