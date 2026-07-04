@@ -14,6 +14,7 @@ import { createMemoryEventStore, type EventStore } from "./memory-event-store.js
 import { createHeapWatchdog } from "./heap-watchdog.js";
 import { createMemorySessionManager, type SessionManager } from "./memory-session-manager.js";
 import { createPiGateway, type PiGateway } from "./pi-gateway.js";
+import { failLoudCrash } from "./fail-loud.js";
 import { createBrowserGateway, type BrowserGateway } from "./browser-gateway.js";
 import { createPreferencesStore, type PreferencesStore } from "./preferences-store.js";
 import { createMetaPersistence, type MetaPersistence } from "./meta-persistence.js";
@@ -1583,6 +1584,26 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
       }
       await fastify.close();
     },
+  };
+
+  // Fail-loud on a pi-gateway bind failure (Fault B wedge fix): the gateway
+  // surfaces the ASYNC EADDRINUSE via onListenError (a try/catch around
+  // `new WebSocketServer` cannot catch it). We crash-clean so the supervisor +
+  // reclaim-on-start bring up a fresh instance on a free port — instead of the
+  // old suppressed silent zombie (ESTABLISHED sockets, no rows, no restart).
+  piGateway.onListenError = (err) => {
+    console.error(
+      `[fail-loud] pi gateway failed to bind :${config.piPort} — crashing for a clean supervised restart: ${err.message}`,
+    );
+    void failLoudCrash(1, `pi-gateway bind failed on :${config.piPort}: ${err.message}`, {
+      teardown: () => server.stop(),
+    });
+  };
+  piGateway.onServerError = (err) => {
+    // Post-bind gateway fault: log loud + mark degraded (observable at
+    // /api/health). Not necessarily fatal — the per-socket boundary handles
+    // client faults; this catches a wss-level error after listening.
+    console.error(`[gateway] degraded (post-listen server error): ${err.message}`);
   };
 
   idleTimer.setStopFn(server.stop.bind(server));

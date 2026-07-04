@@ -57,6 +57,7 @@ import { updateBootstrapCompatibility } from "./pi-version-skew.js";
 import type { BootstrapStateStore } from "./bootstrap-state.js";
 import { parseDashboardStarter } from "@blackbelt-technology/pi-dashboard-shared/dashboard-starter.js";
 import { bootstrapInstallFromList } from "./bootstrap-install-from-list.js";
+import { installFailLoudNet, checkCrashBudget, pruneCrashLog } from "./fail-loud.js";
 
 /**
  * Emit a stderr warning at CLI startup when the resolved pi version is
@@ -184,7 +185,34 @@ export function buildConfig(flags: Partial<ServerConfig>): ServerConfig {
  */
 async function runForeground(config: ServerConfig): Promise<void> {
   assertNodeVersionSupported();
+
+  // Crash-budget breaker (S5): if this server crash-looped recently, HALT the
+  // loop by exiting 0 (with launchd KeepAlive={SuccessfulExit:false}, a 0-exit
+  // is NOT respawned) instead of hot-spinning the same fatal fault every
+  // ThrottleInterval. Converts an infinite 10s respawn loop into a clean stop
+  // that surfaces loudly for a human. Cleared by pruneCrashLog() on a healthy
+  // start (below) or by deleting ~/.pi/dashboard/crash-log.jsonl.
+  const budget = checkCrashBudget();
+  if (budget.tripped) {
+    console.error(
+      `[fail-loud] crash-budget breaker TRIPPED: ${budget.count} crashes in ` +
+        `${Math.round(budget.windowMs / 1000)}s (>= ${budget.maxCrashes}). Halting respawn ` +
+        `(exit 0, no restart). Investigate, then clear ~/.pi/dashboard/crash-log.jsonl.`,
+    );
+    process.exit(0);
+  }
+
   const server = await createServer(config);
+
+  // Fail-loud net (DEGRADE-THEN-CRASH) — replaces the old suppress-all net that
+  // swallowed every uncaughtException and never exited (so the supervisor never
+  // saw a crash and never restarted = the silent-zombie root of Fault B). Now an
+  // otherwise-uncaught fault logs LOUD, runs teardown (flush meta / kill PTYs /
+  // stop editors / delete tunnel / release home-lock), then exit(1) → a clean
+  // supervised restart. Installed here (not main) so the server teardown is in
+  // scope; the KNOWN recoverable seams are bounded locally in pi-gateway /
+  // browser-gateway so only genuinely-unexpected faults reach this net.
+  installFailLoudNet({ teardown: () => server.stop() });
 
   // Stamp the bootstrap state with who started this server process.
   // parseDashboardStarter defaults to "Standalone" when DASHBOARD_STARTER is unset.
@@ -221,6 +249,10 @@ async function runForeground(config: ServerConfig): Promise<void> {
   }
 
   await server.start();
+
+  // Healthy start reached — prune old crash-log entries so a past transient does
+  // not count toward the crash-budget breaker indefinitely.
+  pruneCrashLog();
 
   // Kick off the degraded-mode first-run bootstrap if pi is unresolvable.
   // Runs async — server is already listening, so UI + non-pi endpoints
@@ -647,24 +679,14 @@ async function cmdStatus(port: number): Promise<void> {
 }
 
 /**
- * Install process-level safety net so a single misbehaving plugin or
- * library cannot kill the whole dashboard. Logs the offending error and
- * keeps the event loop running. We do NOT exit; the surrounding daemon
- * harness already restarts on real crashes (signal/exit-code), and
- * silently swallowing recoverable async faults is the lesser evil here.
+ * NOTE: the fail-loud crash net (degrade-then-crash) is installed in
+ * runForeground() where the server teardown is in scope — see fail-loud.ts.
+ * The old suppress-all `installCrashSafetyNet` is intentionally GONE: swallowing
+ * every uncaughtException emitted no exit code, so the supervising harness never
+ * saw a crash and never restarted (the silent-zombie root of Fault B).
  */
-function installCrashSafetyNet(): void {
-  process.on("unhandledRejection", (reason: unknown) => {
-    const err = reason instanceof Error ? reason : new Error(String(reason));
-    console.error("[crash-safety] unhandledRejection (suppressed):", err.stack || err.message);
-  });
-  process.on("uncaughtException", (err: Error) => {
-    console.error("[crash-safety] uncaughtException (suppressed):", err.stack || err.message);
-  });
-}
 
 async function main() {
-  installCrashSafetyNet();
   ensureConfig();
 
   const { subcommand, flags } = parseArgs(process.argv.slice(2));

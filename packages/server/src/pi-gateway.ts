@@ -15,6 +15,10 @@ export interface PiGatewayOptions {
   pingInterval?: number;
 }
 
+/** Observable gateway lifecycle state — the fail-loud surface the server/
+ * supervisor observes instead of assuming the gateway is up. */
+export type GatewayStatus = "idle" | "listening" | "listen-failed" | "degraded";
+
 export interface PiGateway {
   start(port: number): void;
   stop(): void;
@@ -41,6 +45,26 @@ export interface PiGateway {
    * add-folder-task-checker-and-spawn-attach.
    */
   onSessionRegistered?: (sessionId: string, cwd: string) => void;
+
+  /** Current observable gateway state (fail-loud surface). */
+  status(): GatewayStatus;
+  /** Re-derive gateway health from the live WS server + report it. Lets the
+   * server/supervisor OBSERVE the gateway rather than assume it is up. */
+  reconcile(): GatewayStatus;
+  /** Fired when the WS server fails to bind/listen (EADDRINUSE etc.). This is
+   * the ASYNC 'error' seam a `try{new WebSocketServer}catch{}` CANNOT catch;
+   * without it the error becomes an uncaughtException (previously suppressed →
+   * a dead-gateway zombie). The server wires this to fail-loud + supervised
+   * restart. */
+  onListenError?: (err: Error) => void;
+  /** Fired on a wss-level 'error' AFTER it was listening (post-bind fault). */
+  onServerError?: (err: Error) => void;
+  /** Fired on a per-client socket 'error'. That connection is torn down with a
+   * reason; the gateway + all other sockets survive (per-socket isolation). */
+  onSocketError?: (sessionId: string | null, err: Error) => void;
+  /** Fired when handling a `session_register` throws — surfaced (never the old
+   * silent `catch {}` that produced ESTABLISHED-but-no-row). */
+  onRegisterError?: (sessionId: string | null, err: Error) => void;
 }
 
 export function createPiGateway(
@@ -51,6 +75,7 @@ export function createPiGateway(
   const pingMs = options?.pingInterval ?? WS_PING_INTERVAL;
   let wss: WebSocketServer | null = null;
   let pingTimer: ReturnType<typeof setInterval> | null = null;
+  let gatewayStatus: GatewayStatus = "idle";
 
   // Map sessionId → WebSocket
   const connections = new Map<string, WebSocket>();
@@ -67,6 +92,10 @@ export function createPiGateway(
   let onDisconnect: ((sessionId: string) => void) | undefined;
   let onSessionCreated: ((sessionId: string) => void) | undefined;
   let onSessionRegistered: ((sessionId: string, cwd: string) => void) | undefined;
+  let onListenError: ((err: Error) => void) | undefined;
+  let onServerError: ((err: Error) => void) | undefined;
+  let onSocketError: ((sessionId: string | null, err: Error) => void) | undefined;
+  let onRegisterError: ((sessionId: string | null, err: Error) => void) | undefined;
 
   function checkEmpty() {
     if (connections.size === 0) {
@@ -188,6 +217,38 @@ export function createPiGateway(
       onSessionRegistered = handler;
     },
 
+    set onListenError(handler: ((err: Error) => void) | undefined) {
+      onListenError = handler;
+    },
+
+    set onServerError(handler: ((err: Error) => void) | undefined) {
+      onServerError = handler;
+    },
+
+    set onSocketError(handler: ((sessionId: string | null, err: Error) => void) | undefined) {
+      onSocketError = handler;
+    },
+
+    set onRegisterError(handler: ((sessionId: string | null, err: Error) => void) | undefined) {
+      onRegisterError = handler;
+    },
+
+    status(): GatewayStatus {
+      return gatewayStatus;
+    },
+
+    reconcile(): GatewayStatus {
+      if (!wss) {
+        gatewayStatus = "idle";
+        return gatewayStatus;
+      }
+      const addr = wss.address();
+      const bound = !!addr && typeof addr === "object";
+      if (bound && gatewayStatus !== "degraded") gatewayStatus = "listening";
+      else if (!bound && gatewayStatus === "idle") gatewayStatus = "idle";
+      return gatewayStatus;
+    },
+
     address() {
       const addr = wss?.address();
       if (addr && typeof addr === "object") return addr.port;
@@ -195,6 +256,33 @@ export function createPiGateway(
     },
     start(port: number) {
       wss = new WebSocketServer({ port });
+      gatewayStatus = "idle";
+
+      // FAIL-LOUD on the ASYNC bind seam. `new WebSocketServer({port})` does NOT
+      // throw synchronously on EADDRINUSE — it emits an async 'error' event, so a
+      // try/catch around the constructor cannot catch it. Without this handler
+      // the error becomes an uncaughtException (previously suppressed → a dead
+      // gateway that still shows ESTABLISHED sockets = the wedge). We surface it;
+      // the server wires onListenError to fail-loud + supervised restart.
+      wss.on("error", (err: Error) => {
+        if (gatewayStatus !== "listening") {
+          gatewayStatus = "listen-failed";
+          console.error(`[gateway] LISTEN FAILED on port ${port}: ${err.message}`);
+          onListenError?.(err);
+        } else {
+          gatewayStatus = "degraded";
+          console.error(`[gateway] server error after listening on port ${port}: ${err.message}`);
+          onServerError?.(err);
+        }
+      });
+
+      // Gate the "listening" signal on the REAL event. Previously "listening" was
+      // logged unconditionally at start, decoupled from whether the bind actually
+      // succeeded (6 "listening" vs 12 EADDRINUSE in the wedge log = false-positive).
+      wss.on("listening", () => {
+        gatewayStatus = "listening";
+        console.error(`[gateway] listening on port ${port}`);
+      });
 
       // WS-level ping/pong: detect truly dead connections.
       // Pong responses are processed in the event loop, so a busy bridge
@@ -249,12 +337,36 @@ export function createPiGateway(
         aliveMisses.set(ws, 0);
         ws.on("pong", () => { aliveMisses.set(ws, 0); });
 
+        ws.on("error", (err: Error) => {
+          // Per-socket isolation: handle the socket 'error' so it can NEVER
+          // bubble to an uncaught exception (the ws library re-throws unhandled
+          // 'error' events). Tear THIS socket down with a reason; the gateway and
+          // every other session survive. Cleanup runs via the 'close' that
+          // follows terminate().
+          console.error(`[gateway] socket error (${currentSessionId ?? "unregistered"}): ${err.message}`);
+          onSocketError?.(currentSessionId, err);
+          try { ws.terminate(); } catch { /* already closing */ }
+        });
+
         ws.on("message", (raw) => {
           // Any received message proves the connection is alive
           aliveMisses.set(ws, 0);
-          try {
-            const msg = JSON.parse(raw.toString()) as ExtensionToServerMessage;
 
+          // (1) Parse. Malformed input is a benign drop, NOT a handler failure —
+          // the two must stay distinct so a throwing handler is never mistaken
+          // for "bad JSON" and silently ignored (validation §Design-delta 1b).
+          let msg: ExtensionToServerMessage;
+          try {
+            msg = JSON.parse(raw.toString()) as ExtensionToServerMessage;
+          } catch {
+            return; // malformed frame — drop quietly
+          }
+
+          // (2) Handle. A throw here (e.g. a throwing sessionManager.register) is
+          // surfaced LOUD (sessionId + type + reason) and, for register, routed to
+          // onRegisterError — replacing the old blanket `catch {}` that left the
+          // socket ESTABLISHED with no row and no log (the silent wedge, PS-3).
+          try {
             // Track session identity from any message with a sessionId
             if (!currentSessionId && "sessionId" in msg && (msg as any).sessionId) {
               const sid: string = (msg as any).sessionId;
@@ -360,8 +472,17 @@ export function createPiGateway(
             // Notify listeners
             const eventSessionId = "sessionId" in msg ? (msg as any).sessionId : undefined;
             onEvent?.(eventSessionId ?? currentSessionId ?? "", msg);
-          } catch {
-            // Ignore malformed messages
+          } catch (err) {
+            const e = err instanceof Error ? err : new Error(String(err));
+            const sid = ("sessionId" in msg ? (msg as any).sessionId : undefined) ?? currentSessionId ?? null;
+            console.error(
+              `[gateway] handler error type=${(msg as { type?: string }).type ?? "?"} session=${sid ?? "?"}: ${e.stack || e.message}`,
+            );
+            if ((msg as { type?: string }).type === "session_register") {
+              // Surface the register failure so the bridge/watchdog sees a
+              // diagnosable state instead of an ESTABLISHED-but-no-row zombie.
+              onRegisterError?.(sid, e);
+            }
           }
         });
 

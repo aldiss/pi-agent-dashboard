@@ -271,6 +271,14 @@ export function createBrowserGateway(
     }
   }
 
+  // Per-seam boundary (Fault B / open-risk #8): isolate + LOUD-log a browser
+  // WebSocketServer-level error so it can never bubble to an uncaught exception
+  // that crashes the whole server. The browser gateway is `noServer` (shares
+  // fastify's port), so this is a server-fault channel, not a bind seam.
+  wss.on("error", (err: Error) => {
+    console.error(`[browser-gw] server error (isolated, non-fatal): ${err.message}`);
+  });
+
   wss.on("connection", (ws, req) => {
     const remoteAddr = req?.socket?.remoteAddress ?? 'unknown';
     const origin = req?.headers?.origin ?? 'no-origin';
@@ -278,6 +286,14 @@ export function createBrowserGateway(
     console.error(`[browser-gw] browser client connected from ${remoteAddr} origin=${origin} ua=${ua.slice(0, 80)} (total: ${subscriptions.size + 1})`);
     const subs = new Set<string>();
     subscriptions.set(ws, subs);
+
+    // Per-socket isolation: handle 'error' so a single browser socket fault
+    // (reset / abrupt close) can NEVER bubble to an uncaught exception. Tear
+    // THIS socket down; every other browser client + the server survive.
+    ws.on("error", (err: Error) => {
+      console.error(`[browser-gw] socket error (isolated): ${err.message}`);
+      try { ws.terminate(); } catch { /* already closing */ }
+    });
 
     // Atomic snapshot of the full session registry + per-cwd orders.
     // Replaces the legacy per-session `session_added` loop and per-cwd
