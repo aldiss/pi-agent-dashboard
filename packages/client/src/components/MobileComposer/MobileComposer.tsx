@@ -152,6 +152,21 @@ export function MobileComposer({
     );
   }, [text]);
 
+  // Re-measure height after a single-row ⇄ column flip. The two layouts render the textarea at
+  // different widths (single-row is narrow, ~26ch/line; column is full-width, ~43ch/line), so a
+  // height computed at the pre-flip width is stale once the layout changes. The auto-grow effect
+  // above depends on [text] ONLY — a one-shot insertion that triggers the flip (voice dictation
+  // lands a whole transcript at once via handleTranscript, with no follow-up keystroke to re-run
+  // it) would otherwise leave the box sized for the narrow single-row width: too tall for the
+  // now-wide column, i.e. phantom "extra enter" blank rows. Height-only re-measure at the new
+  // width; does NOT touch the isMultiline decision (no setState → no loop).
+  useEffect(() => {
+    const ta = textareaRef.current;
+    if (!ta || text.length === 0) return;
+    ta.style.height = "auto";
+    ta.style.height = Math.min(Math.max(36, ta.scrollHeight), 200) + "px";
+  }, [isMultiline]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Recording-stream subscription: PushToTalkButton fires onStreamChange when MediaStream
   // becomes available (recording starts) and null when recording stops. useAudioWave
   // attaches an AnalyserNode to the stream; AudioWaveCanvas renders bars on rAF tick.
