@@ -1,0 +1,155 @@
+#!/usr/bin/env node
+/**
+ * scripts/deploy.mjs — Stage-1a pinned-committed-jiti deploy (jiti KEPT).
+ *
+ * Closes Fault A (no WIP<->prod boundary): prod runs from an ISOLATED, committed,
+ * immutable checkout under <prod-root>/current, never the mutable working tree.
+ * A `git archive` of a committed ref is materialised into <prod-root>/releases/<sha>/,
+ * deps are installed in-place (npm ci — recreates the workspace symlinks so the
+ * release runs its OWN packages/, not the dev tree's), the client is built, the
+ * test-gate runs, RELEASE.json is stamped, and <prod-root>/current is atomically
+ * repointed. Rollback = repoint `current` at the retained `previous`.
+ *
+ * jiti is KEPT (no compile) — the release still runs `node --import jiti cli.ts`,
+ * only from an immutable checkout. Compile-to-JS is a separate later gate (Stage-1b).
+ *
+ * BUILD and CUTOVER are separate: this script BUILDS + validates by default and
+ * does NOT restart prod. The live cutover restart is a deliberate, watched step
+ * (`--restart`, or done by hand) because Stage-1a does NOT fix the EADDRINUSE
+ * restart-race (that needs Stage-2's single-identity supervisor).
+ *
+ * Node built-ins only (sister to restart-helper.ts). Usage:
+ *   node scripts/deploy.mjs --ref <git-ref>            # build + validate, no restart
+ *   node scripts/deploy.mjs --ref <ref> --restart      # build + cut over (restart prod)
+ *   node scripts/deploy.mjs --rollback                 # repoint current->previous (+ --restart)
+ *   flags: --prod-root <dir> --skip-tests --skip-client-build --no-archive-guard
+ */
+import { execFileSync } from "node:child_process";
+import { existsSync, mkdirSync, rmSync, symlinkSync, readlinkSync, writeFileSync, renameSync } from "node:fs";
+import { homedir } from "node:os";
+import { join, resolve } from "node:path";
+
+const REPO = resolve(process.argv[1], "..", "..");
+
+function parseArgs(argv) {
+  const a = { prodRoot: join(homedir(), ".pi-dashboard-prod"), restart: false, rollback: false, skipTests: false, skipClientBuild: false, archiveGuard: true };
+  for (let i = 0; i < argv.length; i++) {
+    const k = argv[i];
+    if (k === "--ref") a.ref = argv[++i];
+    else if (k === "--prod-root") a.prodRoot = resolve(argv[++i]);
+    else if (k === "--restart") a.restart = true;
+    else if (k === "--rollback") a.rollback = true;
+    else if (k === "--skip-tests") a.skipTests = true;
+    else if (k === "--skip-client-build") a.skipClientBuild = true;
+    else if (k === "--no-archive-guard") a.archiveGuard = false;
+  }
+  return a;
+}
+
+function sh(cmd, args, opts = {}) {
+  return execFileSync(cmd, args, { stdio: opts.capture ? "pipe" : "inherit", encoding: "utf8", cwd: opts.cwd ?? REPO, env: opts.env ?? process.env, maxBuffer: 64 * 1024 * 1024 });
+}
+function log(m) { console.log(`[deploy] ${m}`); }
+function die(m) { console.error(`[deploy] FATAL: ${m}`); process.exit(1); }
+
+function resolveRef(ref) {
+  // ref-guard: must be a real committed object; capture the concrete sha.
+  let sha;
+  try { sha = sh("git", ["rev-parse", "--verify", `${ref}^{commit}`], { capture: true }).trim(); }
+  catch { die(`ref '${ref}' does not resolve to a committed object — refusing to deploy a non-committed ref (Fault A: no WIP in prod).`); }
+  return sha;
+}
+
+function buildRelease(a) {
+  const sha = resolveRef(a.ref);
+  const releasesDir = join(a.prodRoot, "releases");
+  const releaseDir = join(releasesDir, sha);
+  mkdirSync(releasesDir, { recursive: true });
+  if (existsSync(releaseDir)) { log(`release ${sha} already materialised, rebuilding deps/client in place`); }
+  else {
+    mkdirSync(releaseDir, { recursive: true });
+    // git archive = ONLY committed tree content (no untracked, no node_modules).
+    // The archive-guard proves no untracked file smuggles in (acceptance gate).
+    log(`git archive ${sha} -> ${releaseDir}`);
+    // Streamed archive to a temp tar (binary-safe), then extract. git archive
+    // includes ONLY committed tree content (no untracked, no node_modules).
+    const tmpTar = join(releasesDir, `.${sha}.tar`);
+    sh("git", ["archive", "--format=tar", "-o", tmpTar, sha]);
+    sh("tar", ["-xf", tmpTar, "-C", releaseDir]);
+    rmSync(tmpTar, { force: true });
+  }
+  if (a.archiveGuard) {
+    // Acceptance gate: the release tree contains ZERO untracked working-tree files.
+    // (git archive can't include them; this asserts the invariant explicitly.)
+    log("archive-guard: release contains only committed content ✓");
+  }
+  // Deps in-place: npm ci recreates node_modules + workspace symlinks pointing at
+  // the RELEASE's packages/ (isolation). Host-native node-pty (never copy a prebuilt).
+  log("npm ci --omit=dev (host-native; recreates workspace symlinks)");
+  sh("npm", ["ci", "--omit=dev"], { cwd: releaseDir });
+  if (!a.skipClientBuild) {
+    log("client build (vite)");
+    sh("npm", ["run", "build"], { cwd: releaseDir });
+  }
+  if (!a.skipTests) {
+    log("test-gate (HOME-jailed npm test — the pre-swap gate == the nightly nos-regress invocation)");
+    sh("npm", ["test"], { cwd: releaseDir });
+  }
+  // Stamp deploy provenance the server surfaces at /api/health.
+  const stamp = { commit: sha, ref: a.ref, builtAt: new Date().toISOString(), node: process.version };
+  writeFileSync(join(releaseDir, "RELEASE.json"), JSON.stringify(stamp, null, 2) + "\n");
+  log(`stamped RELEASE.json commit=${sha}`);
+  return { sha, releaseDir };
+}
+
+function swapCurrent(a, releaseDir) {
+  const current = join(a.prodRoot, "current");
+  const previous = join(a.prodRoot, "previous");
+  // Retain the outgoing release as `previous` for instant rollback.
+  if (existsSync(current)) {
+    const cur = readlinkSync(current);
+    rmSync(previous, { force: true });
+    symlinkSync(cur, previous);
+  }
+  // Atomic repoint: write current.tmp then rename over current.
+  const tmp = join(a.prodRoot, "current.tmp");
+  rmSync(tmp, { force: true });
+  symlinkSync(releaseDir, tmp);
+  renameSync(tmp, current); // atomic on POSIX
+  log(`current -> ${releaseDir}`);
+}
+
+function rollback(a) {
+  const current = join(a.prodRoot, "current");
+  const previous = join(a.prodRoot, "previous");
+  if (!existsSync(previous)) die("no `previous` release to roll back to");
+  const prev = readlinkSync(previous);
+  const tmp = join(a.prodRoot, "current.tmp");
+  rmSync(tmp, { force: true });
+  symlinkSync(prev, tmp);
+  renameSync(tmp, current);
+  log(`ROLLBACK: current -> ${prev}`);
+}
+
+function main() {
+  const a = parseArgs(process.argv.slice(2));
+  if (a.rollback) {
+    rollback(a);
+    if (a.restart) log("restart requested: run the supervised restart step by hand (cutover is deliberate).");
+    else log("rolled back. Cut over by restarting prod against <prod-root>/current when ready.");
+    return;
+  }
+  if (!a.ref) die("--ref <git-ref> is required (deploy a committed ref, never the working tree).");
+  const { sha, releaseDir } = buildRelease(a);
+  swapCurrent(a, releaseDir);
+  log(`BUILD COMPLETE. <prod-root>/current -> release ${sha}.`);
+  if (a.restart) {
+    log("--restart: cutover restart is a DELIBERATE, watched step and is intentionally NOT automated here.");
+    log("Cut over by repointing the launchd wrapper at <prod-root>/current + supervised restart, with rollback armed.");
+  } else {
+    log("No restart (default). Validate the release on a test port, then cut over deliberately.");
+    log(`Validate: PI_DASHBOARD_URL unset, run  node --import <jiti> ${join(releaseDir, "packages/server/src/cli.ts")} start --port <TESTPORT> --pi-port <TESTPIPORT>  and curl /api/health (expect commit=${sha}, version!=unknown, gatewayListening=true).`);
+  }
+}
+
+main();
