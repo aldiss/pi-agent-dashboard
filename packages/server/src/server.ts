@@ -653,6 +653,13 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
   // packages/server/src/server.ts → packages/server/package.json is one level up,
   // not two (`../../` resolved to packages/package.json → always "unknown").
   try { pkgVersion = __require("../package.json").version ?? "unknown"; } catch {}
+  // Deploy provenance: read RELEASE.json stamped by deploy.mjs at the release root
+  // so a deployed release self-reports its commit (code-not-discipline — no launcher
+  // env-wiring). Env override wins for ad-hoc launches; "dev-worktree" when running
+  // an un-deployed working tree (the negative-control signal for the boundary gate).
+  let deployCommit: string | undefined = process.env.DASHBOARD_DEPLOY_COMMIT;
+  if (!deployCommit) { try { deployCommit = (__require("../../../RELEASE.json") as { commit?: string }).commit; } catch { /* un-deployed working tree */ } }
+  if (!deployCommit) deployCommit = "dev-worktree";
   const selfHostname = os.hostname();
 
   // Send this server + discovered peers to new browser connections
@@ -866,7 +873,7 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
     networkGuard,
     store: openspecGroupStore,
   });
-  registerSystemRoutes(fastify, { sessionManager, preferencesStore, metaPersistence, config, networkGuard, version: pkgVersion, directoryService, piGateway, bootstrapState, eventStore });
+  registerSystemRoutes(fastify, { sessionManager, preferencesStore, metaPersistence, config, networkGuard, version: pkgVersion, commit: deployCommit, directoryService, piGateway, bootstrapState, eventStore });
   // Path B sister-coupling primitive — operator-active-surfaces canonical index.
   // See packages/server/src/routes/surfaces-routes.ts + cell:
   // pi-agent-dashboard-ux-message-discoverability/v1 (W4.4 + W6 Feature 4).
