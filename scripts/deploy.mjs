@@ -85,10 +85,17 @@ function buildRelease(a) {
   }
   // Deps in-place: npm ci recreates node_modules + workspace symlinks pointing at
   // the RELEASE's packages/ (isolation). Host-native node-pty (never copy a prebuilt).
-  log("npm ci --omit=dev (host-native; recreates workspace symlinks)");
-  sh("npm", ["ci", "--omit=dev"], { cwd: releaseDir });
-  if (!a.skipClientBuild) {
-    log("client build (vite)");
+  // Full `npm ci` (NOT --omit=dev): the packages/client `prepare` runs
+  // `vite build` (vite is a devDep) and node-pty's install builds its native
+  // binary — both need scripts + devDeps present. --omit=dev breaks the client
+  // prepare ("vite: command not found", code 127). jiti (the kept loader) installs here too.
+  log("npm ci (host-native node-pty; recreates workspace symlinks; client prepare runs vite build)");
+  sh("npm", ["ci"], { cwd: releaseDir });
+  // The client dist is produced by the packages/client `prepare` during npm ci.
+  // Build explicitly only if it did not land (defensive, avoids a double build).
+  const clientDist = join(releaseDir, "packages", "client", "dist");
+  if (!a.skipClientBuild && !existsSync(clientDist)) {
+    log("client dist absent after ci — building explicitly");
     sh("npm", ["run", "build"], { cwd: releaseDir });
   }
   if (!a.skipTests) {
