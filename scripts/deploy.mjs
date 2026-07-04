@@ -25,14 +25,14 @@
  *   flags: --prod-root <dir> --skip-tests --skip-client-build --no-archive-guard
  */
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, rmSync, symlinkSync, readlinkSync, writeFileSync, renameSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, symlinkSync, readlinkSync, writeFileSync, renameSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
 const REPO = resolve(process.argv[1], "..", "..");
 
 function parseArgs(argv) {
-  const a = { prodRoot: join(homedir(), ".pi-dashboard-prod"), restart: false, rollback: false, skipTests: false, skipClientBuild: false, archiveGuard: true };
+  const a = { prodRoot: join(homedir(), ".pi-dashboard-prod"), restart: false, rollback: false, skipTests: false, skipClientBuild: false, archiveGuard: true, registerBridgeOnly: false };
   for (let i = 0; i < argv.length; i++) {
     const k = argv[i];
     if (k === "--ref") a.ref = argv[++i];
@@ -42,6 +42,7 @@ function parseArgs(argv) {
     else if (k === "--skip-tests") a.skipTests = true;
     else if (k === "--skip-client-build") a.skipClientBuild = true;
     else if (k === "--no-archive-guard") a.archiveGuard = false;
+    else if (k === "--register-bridge-only") a.registerBridgeOnly = true;
   }
   return a;
 }
@@ -138,8 +139,46 @@ function rollback(a) {
   log(`ROLLBACK: current -> ${prev}`);
 }
 
+/**
+ * Close the BRIDGE-side WIP<->prod boundary (D6 / Fault A bridge half): register
+ * the release's committed bridge extension at <prod-root>/current/packages/extension
+ * in pi's settings.json, and REMOVE every other dashboard bridge path (the dev-tree
+ * working-tree bridge + any stale releases/<sha> paths). Registering `current` (the
+ * symlink, not a pinned sha) makes the bridge follow deploys automatically. Non-
+ * dashboard packages (npm:*, other extensions) are preserved untouched. Runs as part
+ * of every deploy so a bridge change is only live once committed + deployed.
+ */
+function registerBridge(a) {
+  const settingsPath = join(homedir(), ".pi", "agent", "settings.json");
+  let settings = {};
+  try { settings = JSON.parse(readFileSync(settingsPath, "utf8")); } catch { /* fresh settings */ }
+  // Resolve `current` -> releases/<sha> so we register the SAME concrete path the
+  // server auto-registers (server.ts findBundledExtension realpaths it) — avoids a
+  // duplicate {current, sha} registration = a double bridge per session.
+  const currentLink = join(a.prodRoot, "current");
+  let target;
+  try { target = join(realpathSync(currentLink), "packages", "extension"); }
+  catch { target = join(currentLink, "packages", "extension"); }
+  const pkgs = Array.isArray(settings.packages) ? settings.packages : [];
+  const isDashboardBridge = (p) =>
+    typeof p === "string" &&
+    (p.startsWith("/") || /^[a-zA-Z]:[\\/]/.test(p)) &&
+    /packages[\\/]extension\/?$/.test(p) &&
+    (p.includes("pi-agent-dashboard") || p.includes("pi-dashboard-prod"));
+  const removed = pkgs.filter((p) => isDashboardBridge(p) && p !== target);
+  const kept = pkgs.filter((p) => !isDashboardBridge(p) || p === target);
+  if (!kept.includes(target)) kept.push(target);
+  settings.packages = kept;
+  const tmp = settingsPath + ".deploytmp";
+  writeFileSync(tmp, JSON.stringify(settings, null, 2) + "\n");
+  renameSync(tmp, settingsPath);
+  log(`bridge boundary: registered ${target}`);
+  log(`bridge boundary: removed ${removed.length} non-target bridge path(s)${removed.length ? ": " + removed.join(", ") : ""}`);
+}
+
 function main() {
   const a = parseArgs(process.argv.slice(2));
+  if (a.registerBridgeOnly) { registerBridge(a); return; }
   if (a.rollback) {
     rollback(a);
     if (a.restart) log("restart requested: run the supervised restart step by hand (cutover is deliberate).");
@@ -149,6 +188,7 @@ function main() {
   if (!a.ref) die("--ref <git-ref> is required (deploy a committed ref, never the working tree).");
   const { sha, releaseDir } = buildRelease(a);
   swapCurrent(a, releaseDir);
+  registerBridge(a);
   log(`BUILD COMPLETE. <prod-root>/current -> release ${sha}.`);
   if (a.restart) {
     log("--restart: cutover restart is a DELIBERATE, watched step and is intentionally NOT automated here.");
