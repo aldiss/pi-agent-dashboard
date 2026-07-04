@@ -150,8 +150,17 @@ function rollback(a) {
  */
 function registerBridge(a) {
   const settingsPath = join(homedir(), ".pi", "agent", "settings.json");
+  // Read settings; NEVER clobber an existing-but-unparseable file. A concurrent pi
+  // write can make JSON.parse throw mid-write — starting from {} would wipe every other
+  // key (defaultProvider/Model, dashboardPluginBridges, other packages). Absent file is
+  // the only safe fresh-{} case; exists-but-unparseable = ABORT, do not touch.
   let settings = {};
-  try { settings = JSON.parse(readFileSync(settingsPath, "utf8")); } catch { /* fresh settings */ }
+  let raw = null;
+  try { raw = readFileSync(settingsPath, "utf8"); } catch { /* absent -> fresh {} is safe */ }
+  if (raw !== null) {
+    try { settings = JSON.parse(raw); }
+    catch (err) { die(`settings.json exists but did not parse (concurrent write?) — refusing to clobber: ${err}`); }
+  }
   // Resolve `current` -> releases/<sha> so we register the SAME concrete path the
   // server auto-registers (server.ts findBundledExtension realpaths it) — avoids a
   // duplicate {current, sha} registration = a double bridge per session.
