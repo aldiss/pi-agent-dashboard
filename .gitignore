@@ -22,3 +22,6 @@ site/.astro/
 !.pi/.gitignore
 seed/active-project/repo/
 seed/active-project/worktrees/
+
+# leaked build-output backups (junk) — never track
+dist.LEAKED-*

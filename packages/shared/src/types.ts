@@ -4,6 +4,28 @@ export type SessionSource = "tui" | "zed" | "tmux" | "dashboard" | "terminal" | 
 /** Current status of a session */
 export type SessionStatus = "active" | "idle" | "streaming" | "ended";
 
+/**
+ * Why a bridge WebSocket disconnected (W1b — ROOT-CAUSE Gap #4). The dashboard
+ * records "no bridge" (502) but not WHY; this enum makes the cause first-class
+ * so the liveness/status display can stop lying (Cartographer "down" /
+ * Joan `:9999=0` / UnendFinisher "stuck" all traced to an undiscriminated flap).
+ *
+ *   heartbeat-timeout — WS ping/pong misses exceeded the threshold (busy/hung bridge)
+ *   cross-wire        — a second registration displaced this connection (two bridges,
+ *                       one session — the pin-mismatch / wrong-gateway case)
+ *   process-gone      — the session's pid is no longer kill-0 alive (pi died)
+ *   clean-shutdown    — WS closed with a normal close code (1000 / 1001)
+ *   unknown           — cause could not be determined. MANDATORY + fail-LOUD:
+ *                       never silently blank; always recorded + logged.
+ * See change: bridge-disconnect-reason.
+ */
+export type BridgeDisconnectReason =
+  | "heartbeat-timeout"
+  | "cross-wire"
+  | "process-gone"
+  | "clean-shutdown"
+  | "unknown";
+
 /** Operator effort the NEXT step of a driver needs — the next-engagement badge
  *  (dl-2620). Ordered ascending by how much operator effort is required:
  *  autonomous (none) < one-action (single ratify) < short (~5min) <
@@ -117,6 +139,15 @@ export interface DashboardSession {
   lastEntryCount?: number;
   /** OS process ID of the pi agent — used for force-kill escalation */
   pid?: number;
+  /**
+   * Why the bridge WebSocket last disconnected (W1b). Set on the `ws.on("close")`
+   * disconnect origin (pi-gateway) and persisted on the row so the bridgeless-502
+   * surface can say WHY, not just "no bridge". `unknown` is mandatory + fail-loud
+   * (never blank). See change: bridge-disconnect-reason.
+   */
+  bridgeDisconnectReason?: BridgeDisconnectReason;
+  /** Epoch ms when the bridge last disconnected (paired with bridgeDisconnectReason). */
+  bridgeDisconnectAt?: number;
   /** Active child processes detected by bridge process scanner */
   processes?: Array<{ pid: number; pgid: number; command: string; elapsedMs: number }>;
   /** Latest process metrics from the pi agent */

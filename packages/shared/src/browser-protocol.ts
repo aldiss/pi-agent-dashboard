@@ -186,6 +186,12 @@ export type SpawnFailureCode =
   | "TMUX_MISSING"
   | "PI_CRASHED"
   | "SPAWN_ERRNO"
+  // Fix-10: an interactive strategy (tmux / wt / wsl-tmux) was REQUIRED
+  // (`requireInteractive`) but its tool could not be resolved, so the spawn
+  // would have silently degraded to headless `--mode rpc` — the v1 crash-form
+  // on large logs. We FAIL-LOUD with this code instead of degrading.
+  // See change: fail-loud-interactive-resolve.
+  | "INTERACTIVE_UNAVAILABLE"
   | "PREFLIGHT_FAILED"
   | "REGISTER_TIMEOUT"
   | "SPAWN_HOOK_ERR"
