@@ -41,7 +41,12 @@ export function buildOrchestratorScript(params: RestartParams): string {
   // Same convention as `server-pid.ts`. Embedded as a JSON-stringified literal
   // so quoting/path-separator handling is correct on Windows.
   // See change: fix-restart-bridge-auto-start-race.
-  const pidPath = path.join(os.homedir(), ".pi", "dashboard", "dashboard.pid");
+  // The real daemon pid file written by the server (server-pid.ts writePid).
+  // The previous `dashboard.pid` was DEAD CODE (that file is never written), so
+  // killPriorDaemon() always no-op'd → the orphaned listener kept the ports →
+  // the reload EADDRINUSE'd → zombie (2026-07-04). Reclaim-on-start is the
+  // primary guard now; this makes the orchestrator's explicit kill-step real too.
+  const pidPath = path.join(os.homedir(), ".pi", "dashboard", "server.pid");
   // Argv shape (loader URL-wrapping + entry URL-wrapping rule) is
   // owned by `buildNodeImportArgvParts` in `node-spawn.ts` — the same
   // helper `spawnNodeScript` calls. Keeps the `--import` argv shape

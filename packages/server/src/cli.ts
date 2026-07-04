@@ -57,7 +57,8 @@ import { updateBootstrapCompatibility } from "./pi-version-skew.js";
 import type { BootstrapStateStore } from "./bootstrap-state.js";
 import { parseDashboardStarter } from "@blackbelt-technology/pi-dashboard-shared/dashboard-starter.js";
 import { bootstrapInstallFromList } from "./bootstrap-install-from-list.js";
-import { installFailLoudNet, checkCrashBudget, pruneCrashLog } from "./fail-loud.js";
+import { installFailLoudNet, failLoudCrash, checkCrashBudget, pruneCrashLog } from "./fail-loud.js";
+import { reclaimPorts } from "./reclaim-ports.js";
 
 /**
  * Emit a stderr warning at CLI startup when the resolved pi version is
@@ -246,6 +247,22 @@ async function runForeground(config: ServerConfig): Promise<void> {
     const message = err instanceof Error ? err.message : String(err);
     console.error(`[bootstrap] installable reconcile failed (required package): ${message}`);
     process.exit(1);
+  }
+
+  // Reclaim-on-start (Stage-2 (a)/(d)): BEFORE binding, kill any ORPHAN holding
+  // :piPort/:port (+ its process group) so a previous instance's orphaned
+  // listener can never EADDRINUSE us into a zombie (the 2026-07-04 rollback
+  // race). Identity = who-holds-the-port (external OS fact), never the launchd
+  // wrapper nor a stale server.pid. If a port is STILL held after reclaim, fail
+  // loud → the supervisor restarts + reclaims again (never a silent bind-race).
+  const reclaimTargets = [config.piPort, config.port].filter(
+    (p): p is number => typeof p === "number" && p > 0,
+  );
+  try {
+    await reclaimPorts(reclaimTargets);
+  } catch (err) {
+    console.error(`[reclaim] ${err instanceof Error ? err.message : String(err)}`);
+    await failLoudCrash(1, `port reclaim failed: ${err instanceof Error ? err.message : String(err)}`);
   }
 
   await server.start();

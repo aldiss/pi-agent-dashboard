@@ -111,9 +111,13 @@ describe("buildOrchestratorScript", () => {
 
   // See change: fix-restart-bridge-auto-start-race.
   describe("explicit kill of prior daemon", () => {
-    it("references the dashboard.pid file path", () => {
+    it("references the REAL server.pid file path (not the dead dashboard.pid)", () => {
       const script = buildOrchestratorScript(baseParams);
-      expect(script).toContain("dashboard.pid");
+      // Was `dashboard.pid` — a file the server NEVER writes, so killPriorDaemon
+      // always no-op'd and the orphaned listener kept the ports (2026-07-04
+      // zombie). server-pid.ts writePid() writes server.pid; that is the real one.
+      expect(script).toContain("server.pid");
+      expect(script).not.toContain("dashboard.pid");
       expect(script).toMatch(/const PID_PATH = /);
     });
 

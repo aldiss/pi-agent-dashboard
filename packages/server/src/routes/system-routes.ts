@@ -307,6 +307,36 @@ export function registerSystemRoutes(
       // polls the port via net, spawns the new server, polls /api/health
       // via http. No dependency on sh/lsof/curl — works on Windows too.
       // See change: fix-windows-server-parity.
+      // Single control plane under launchd (Stage-2 (d)): restart THROUGH launchd
+      // (`kickstart -k`) so the replacement stays a launchd-managed child that
+      // KeepAlive still governs. The detached orchestrator (fallback below)
+      // spawns a server that ESCAPES launchd, AND with KeepAlive it used to
+      // double-spawn (launchd respawn + orchestrator) = the duplicate-starter
+      // storm. reclaim-on-start makes the fresh launchd instance bind clean.
+      const supervisor = process.env.DASHBOARD_SUPERVISOR;
+      const launchdLabel = process.env.DASHBOARD_LAUNCHD_LABEL;
+      if (supervisor === "launchd" && launchdLabel) {
+        const uid = typeof process.getuid === "function" ? process.getuid() : 0;
+        const target = `gui/${uid}/${launchdLabel}`;
+        try {
+          // Detached so it survives our imminent teardown; kickstart -k kills
+          // this job (the wrapper forwards SIGTERM to us) then starts fresh.
+          const child = spawn("launchctl", ["kickstart", "-k", target], {
+            detached: true,
+            stdio: "ignore",
+          });
+          child.unref();
+          return { ok: true, via: "launchctl-kickstart", target };
+        } catch (err) {
+          console.error(
+            `[restart] launchctl kickstart failed (${err instanceof Error ? err.message : String(err)}); falling back to orchestrator`,
+          );
+        }
+      }
+
+      // Fallback (non-launchd / dev / Windows / e2e-sandbox): detached
+      // orchestrator + self-exit. reclaim-on-start in the replacement still
+      // guarantees a clean bind (no EADDRINUSE zombie).
       spawnRestart({
         cliPath,
         loader,
