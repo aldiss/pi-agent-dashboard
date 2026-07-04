@@ -201,6 +201,12 @@ export function registerSystemRoutes(
       starter: bootstrapState?.get().starter ?? "Standalone",
       installable: bootstrapState?.get().installable,
       version: version ?? "unknown",
+      // Deploy provenance (Stage-1a boundary): the committed sha this prod runs,
+      // stamped into the launch env by deploy.mjs. "dev-worktree" when running
+      // jiti from an un-deployed working tree — the negative-control signal.
+      commit: process.env.DASHBOARD_DEPLOY_COMMIT ?? "dev-worktree",
+      // Is the pi gateway (:9999) actually bound + listening?
+      gatewayListening: piGateway?.address?.() != null,
       uptime: Math.floor((Date.now() - serverStartTime) / 1000),
       mode: config.dev ? "dev" : "production",
       server: {

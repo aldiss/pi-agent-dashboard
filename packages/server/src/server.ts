@@ -650,7 +650,9 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
   // Resolve package version once at startup
   const __require = createRequire(import.meta.url);
   let pkgVersion = "unknown";
-  try { pkgVersion = __require("../../package.json").version ?? "unknown"; } catch {}
+  // packages/server/src/server.ts → packages/server/package.json is one level up,
+  // not two (`../../` resolved to packages/package.json → always "unknown").
+  try { pkgVersion = __require("../package.json").version ?? "unknown"; } catch {}
   const selfHostname = os.hostname();
 
   // Send this server + discovered peers to new browser connections
