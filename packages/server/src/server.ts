@@ -34,7 +34,10 @@ import { wireEvents } from "./event-wiring.js";
 import { createIdleTimer } from "./idle-timer.js";
 import { discoverAndBroadcastSessions } from "./session-bootstrap.js";
 import { scanAllSessions } from "./session-scanner.js";
-import { resolveDriverLiveness } from "./driver-liveness.js";
+import { resolveDriverLiveness, pidAlive } from "./driver-liveness.js";
+import { createResurrectionSweep } from "./resurrection-sweep.js";
+import { createClaudePaneProbe } from "./cc-pane-liveness.js";
+import type { HygieneProbes } from "./session-hygiene.js";
 import { startDriverSelfReportPolling } from "./driver-self-report.js";
 import { needsMigration, runMigration } from "./migrate-persistence.js";
 import { detectZrokBinary, cleanupStaleZrok, createTunnel, deleteTunnel, scavengeOrphanZrokProcesses, getTunnelUrl } from "./tunnel.js";
@@ -42,7 +45,7 @@ import { registerAuthPlugin, validateWsUpgrade } from "./auth-plugin.js";
 import { findBundledExtension, registerBridgeExtension } from "@blackbelt-technology/pi-dashboard-shared/bridge-register.js";
 import { createNetworkGuard, isLoopback, isBypassedHost } from "./localhost-guard.js";
 import type { AuthConfig } from "@blackbelt-technology/pi-dashboard-shared/config.js";
-import { loadConfig, CONFIG_FILE, type PushConfig } from "@blackbelt-technology/pi-dashboard-shared/config.js";
+import { loadConfig, CONFIG_FILE, DEFAULT_RESURRECTION_SWEEP_MS, type PushConfig } from "@blackbelt-technology/pi-dashboard-shared/config.js";
 import { createPushTokenRegistry, type PushTokenRegistry } from "./push/push-token-registry.js";
 import { createPushDispatcher, type PushDispatcher } from "./push/push-dispatcher.js";
 import { createWebPushTransport } from "./push/push-transports/web-push.js";
@@ -126,6 +129,13 @@ export interface ServerConfig {
   /** Fixture mode — disables side effects for deterministic visual testing.
    *  Gated by PI_DASHBOARD_FIXTURE_MODE=1. Not exposed in production. */
   fixtureMode?: boolean;
+  /** Cadence (ms) for the Component-A display-resurrection sweep. Default 20000; 0 disables.
+   *  See session-resurrection design-pass §3-A. */
+  resurrectionSweepMs?: number;
+  /** Post-respawn VERIFY-gate seam for the resurrect endpoint (build-gate item 2).
+   *  Injected by tests to drive the 5-assertion gate deterministically; production
+   *  omits it → the endpoint builds the real-oracle gate. See change: unend-mechanism-v2. */
+  resurrectVerify?: (sessionId: string) => Promise<import("./resurrection-verify.js").VerifyResult>;
 }
 
 export interface DashboardServer {
@@ -692,6 +702,20 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
   // attached. See change: fix-terminal-half-height-dual-mount.
   const idleTimer = createIdleTimer(config, piGateway, () => terminalManager.list().length > 0);
 
+  // Component A — ongoing display-resurrection sweep (session-resurrection
+  // design-pass §3-A). Periodically re-resolves liveness for ended pi/tmux
+  // rows and clears the tombstone when the driver is alive — closing the
+  // coverage gap that `resolveDriverLiveness`'s startup-only wiring leaves for
+  // sessions that die+resume DURING server uptime. Additive to the two startup
+  // call-sites (session-bootstrap.ts + the scan path above), never a
+  // replacement. Default 20s; `resurrectionSweepMs: 0` disables. Skipped in
+  // fixture mode (deterministic visual testing — no registry-driven mutation).
+  const resurrectionSweep = createResurrectionSweep({
+    sessionManager,
+    browserGateway,
+    intervalMs: config.resurrectionSweepMs ?? DEFAULT_RESURRECTION_SWEEP_MS,
+  });
+
   const fastify = Fastify({
     logger: false,
     keepAliveTimeout: 30_000,
@@ -817,6 +841,13 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
     bootstrapQueue,
     pendingResumeIntents,
     pendingAttachRegistry,
+    // Runtime pi-gateway port for the resurrect respawn's dashboard-pin. This
+    // is `config.piPort` — the value passed to `piGateway.start()` below, which
+    // honors a `--pi-port <N>` CLI override (NOT the config-file default). The
+    // session-api handler prefers the live `piGateway.address()` and falls back
+    // to this. See change: pin-on-resurrect.
+    serverPiPort: config.piPort,
+    ...(config.resurrectVerify ? { resurrectVerify: config.resurrectVerify } : {}),
   });
 
   // Register route modules
@@ -827,7 +858,24 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
     ? async () => {}
     : createNetworkGuard(config.resolvedTrustedNetworks ?? []);
 
-  registerSessionRoutes(fastify, { sessionManager, eventStore, networkGuard });
+  // Hygiene probes (dashboard-session-row-hygiene): the explicit liveness I/O
+  // injected into the /api/sessions read-path reconciler + the retire endpoint.
+  // CC tmux-pane probe is TTL-cached so a reconnect storm collapses to one spawn.
+  const claudePaneProbe = createClaudePaneProbe();
+  const hygieneProbes: HygieneProbes = {
+    resolveDriverLiveness,
+    pidAlive,
+    listClaudePanes: claudePaneProbe.listClaudePanes,
+  };
+
+  registerSessionRoutes(fastify, {
+    sessionManager,
+    eventStore,
+    networkGuard,
+    hygieneProbes,
+    broadcastSessionUpdated: (sessionId, updates) =>
+      browserGateway.broadcastSessionUpdated(sessionId, updates),
+  });
   registerGitRoutes(fastify, { networkGuard });
   registerFileRoutes(fastify, { sessionManager, preferencesStore, networkGuard });
   registerOpenSpecRoutes(fastify, {
@@ -1516,6 +1564,7 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
       } // end if (!isFixture)
 
       idleTimer.start();
+      if (!isFixture) resurrectionSweep.start();
       heapWatchdog.start();
     },
 
@@ -1527,6 +1576,7 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
       } catch { /* ignore mDNS cleanup errors */ }
       removePid();
       idleTimer.cancel();
+      resurrectionSweep.stop();
       heapWatchdog.stop();
       directoryService.stopPolling();
       stopDriverSelfReportPolling();

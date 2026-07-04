@@ -12,7 +12,15 @@ import type { PiGateway } from "./pi-gateway.js";
 import type { BrowserGateway } from "./browser-gateway.js";
 import type { ApiResponse } from "@blackbelt-technology/pi-dashboard-shared/types.js";
 import { spawnPiSession } from "./process-manager.js";
+import { buildInteractiveResumeOptions, resolvePinDashboardUrl } from "./resume-spawn-options.js";
+import { writeOperatorPin, readOperatorPin, checkNamePinConsistency } from "./name-sync-write-pin.js";
 import { loadConfig } from "@blackbelt-technology/pi-dashboard-shared/config.js";
+import { resolveDriverLiveness } from "./driver-liveness.js";
+import { resurrectSession } from "./resurrection-sweep.js";
+import {
+  killProcess as platformKillProcess,
+  isProcessAlive as platformIsProcessAlive,
+} from "@blackbelt-technology/pi-dashboard-shared/platform/process.js";
 import { addWorktree, isInsideWorkTree, resolveRepoRoot } from "./worktree-manager.js";
 import type { PendingForkRegistry } from "./pending-fork-registry.js";
 import type { PendingResumeIntentRegistry } from "./pending-resume-intent-registry.js";
@@ -20,6 +28,11 @@ import type { BootstrapStateStore } from "./bootstrap-state.js";
 import type { BootstrapQueue } from "./bootstrap-queue.js";
 import { attachRenameTarget, detachShouldClearName } from "./proposal-attach-naming.js";
 import { FORK_DEGRADED_TO_NEW_MESSAGE, FORK_DEGRADED_TO_NEW_CODE } from "./browser-handlers/session-action-handler.js";
+import {
+  verifyResurrection,
+  createProductionProbes,
+  type VerifyResult,
+} from "./resurrection-verify.js";
 
 export interface SessionApiDeps {
   sessionManager: SessionManager;
@@ -48,9 +61,84 @@ export interface SessionApiDeps {
    * See change: fix-fork-empty-session-silent-timeout.
    */
   pendingAttachRegistry?: import("./pending-attach-registry.js").PendingAttachRegistry;
+  /**
+   * Post-respawn VERIFY gate seam (design-pass §3-B; build-gate item 2).
+   * Injected by tests to drive the 5-assertion gate deterministically; in
+   * production, omitted → the endpoint builds the real-oracle gate
+   * (`createProductionProbes` + `verifyResurrection`). Receives the resurrected
+   * session id; resolves the gate verdict. The resurrect endpoint returns
+   * success for cases 2/3 ONLY when this resolves `ok:true`.
+   * See change: unend-mechanism-v2.
+   */
+  resurrectVerify?: (sessionId: string) => Promise<VerifyResult>;
+  /**
+   * Runtime pi-gateway port of THIS server, threaded from `ServerConfig.piPort`
+   * in server.ts. Used by the resurrect respawn to pin the spawned bridge to
+   * the SPAWNING server's own gateway (`PI_DASHBOARD_URL=ws://localhost:<port>`)
+   * so it can't mDNS-migrate to a sibling local dashboard.
+   *
+   * ⚠ MUST be the RUNTIME port, not `loadConfig().piPort`: when the server is
+   * started with `--pi-port <N>` overriding the config file, the file value can
+   * differ from `<N>` — pinning to the wrong port would RE-INTRODUCE the exact
+   * cross-wire bug this fixes. `config.piPort` (the value passed to
+   * `piGateway.start()`) is the runtime port; the handler prefers the live
+   * `piGateway.address()` (the actually-bound socket) and falls back to this.
+   * See change: pin-on-resurrect.
+   */
+  serverPiPort?: number;
 }
 
 type IdParams = { Params: { id: string } };
+
+/**
+ * Double-writer guard for force-resurrect case 2 (bridgeless-live takeover).
+ *
+ * Sequence is LOAD-BEARING and must never reorder: SIGTERM the live pid →
+ * **confirm clean exit** (poll, with SIGKILL escalation inside the platform
+ * `killProcess`) → only THEN respawn `pi --session`. Respawning while the old
+ * writer is still alive = two pi processes on one session file = corruption.
+ * If the old pid will not die, we REFUSE to respawn and surface an error.
+ *
+ * Pure + injectable so the ordering is unit-testable without real processes
+ * (see resurrection-takeover.test.ts). Production callers use the platform
+ * defaults.
+ */
+export interface ForceTakeoverDeps {
+  /** Terminate the live pid; resolves once it is dead (or could not be killed). */
+  killProcess?: (pid: number) => Promise<{ ok: boolean; forced: boolean }>;
+  /** Liveness recheck AFTER kill — the guard gate. Must return false before respawn. */
+  isProcessAlive?: (pid: number) => boolean;
+  /** Respawn the session once the old writer is confirmed gone. */
+  respawn: () => Promise<import("./process-manager.js").SpawnResult>;
+}
+
+export interface ForceTakeoverResult {
+  ok: boolean;
+  /** Set on refusal/failure: "kill_failed" (old pid would not die) or "respawn_failed". */
+  reason?: "kill_failed" | "respawn_failed";
+  spawnResult?: import("./process-manager.js").SpawnResult;
+}
+
+export async function forceTakeover(pid: number, deps: ForceTakeoverDeps): Promise<ForceTakeoverResult> {
+  const kill = deps.killProcess ?? ((p: number) => platformKillProcess(p, { timeoutMs: 5000 }));
+  const isAlive = deps.isProcessAlive ?? ((p: number) => platformIsProcessAlive(p));
+
+  // 1. Graceful SIGTERM → (platform escalates to SIGKILL after timeout).
+  await kill(pid);
+
+  // 2. Confirm clean exit — the double-writer GATE. Never respawn over a live
+  //    writer: if the old pid is somehow still alive, refuse.
+  if (isAlive(pid)) {
+    return { ok: false, reason: "kill_failed" };
+  }
+
+  // 3. Old writer is gone → safe to respawn the single writer.
+  const spawnResult = await deps.respawn();
+  if (!spawnResult.success) {
+    return { ok: false, reason: "respawn_failed", spawnResult };
+  }
+  return { ok: true, spawnResult };
+}
 
 /** Helper: validate session exists, return it or send error response */
 function getSessionOrFail(sessionManager: SessionManager, id: string): { session: any } | { error: ApiResponse } {
@@ -61,6 +149,18 @@ function getSessionOrFail(sessionManager: SessionManager, id: string): { session
 
 export function registerSessionApi(fastify: FastifyInstance, deps: SessionApiDeps) {
   const { sessionManager, piGateway, browserGateway, pendingForkRegistry, pendingDashboardSpawns, bootstrapState, bootstrapQueue, pendingResumeIntents, pendingAttachRegistry } = deps;
+
+  // Post-respawn VERIFY gate (build-gate item 2). Production default wires the
+  // real oracles (createProductionProbes: kill-0 + :9999 isSessionConnected +
+  // sendToSession-boolean + observed session.model change). Tests inject
+  // `deps.resurrectVerify` to drive the 5 assertions deterministically.
+  // See change: unend-mechanism-v2.
+  const runResurrectVerify =
+    deps.resurrectVerify ??
+    ((sessionId: string) =>
+      verifyResurrection(
+        createProductionProbes({ sessionId, sessionManager, piGateway }),
+      ));
 
   /**
    * Gate pi-dependent operations on bootstrap status. Returns:
@@ -132,7 +232,17 @@ export function registerSessionApi(fastify: FastifyInstance, deps: SessionApiDep
       });
       if (!sent) {
         reply.code(502);
-        return { success: false, error: "no bridge connection for session" } satisfies ApiResponse;
+        // W1b: surface WHY there's no bridge, not just THAT there isn't one.
+        // The recorded disconnect reason (heartbeat-timeout / cross-wire /
+        // process-gone / clean-shutdown / unknown) turns an opaque 502 into an
+        // actionable one. See change: bridge-disconnect-reason.
+        const why = result.session.bridgeDisconnectReason;
+        return {
+          success: false,
+          error: why
+            ? `no bridge connection for session (last disconnect: ${why})`
+            : "no bridge connection for session",
+        } satisfies ApiResponse;
       }
       return { success: true } satisfies ApiResponse;
     },
@@ -190,7 +300,203 @@ export function registerSessionApi(fastify: FastifyInstance, deps: SessionApiDep
       sessionManager.update(id, updates);
       browserGateway.broadcastSessionUpdated(id, updates);
       piGateway.sendToSession(id, { type: "rename_session", sessionId: id, name });
+      // W4 — name-sync write-pin (row-hygiene name-canon completion, F5-write).
+      // A raw rename updated the dashboard record + bridge but NOT the registry
+      // pin, so `pi-dashboard-name-sync` reclobbered it ~120s later. Write
+      // `operatorPinnedName` to the messenger registry (atomic temp+rename, as
+      // pi-rename does) so the rename SURVIVES a name-sync tick. Single source
+      // of truth = the registry pin. Best-effort: a registry miss (dashboard-
+      // only session with no mesh entry) does NOT fail the rename.
+      // See change: name-sync-write-pin.
+      const pinResult = writeOperatorPin(id, name || undefined);
+      // Consistency check (W4 (b)): after the write, the registry pin and the
+      // row name MUST agree. Surface divergence LOUD (the detection missing
+      // today) — e.g. a concurrent raw registry edit, or a write that silently
+      // no-op'd. `no-matching-entry` is benign (no mesh entry for this session).
+      if (pinResult.ok) {
+        const consistency = checkNamePinConsistency(name || undefined, readOperatorPin(id));
+        if (consistency.divergent) {
+          console.warn(
+            `[dashboard] W4 name-pin DIVERGENCE for ${id}: row="${consistency.rowName ?? ""}" ` +
+            `!= registry pin="${consistency.registryPin ?? ""}" — investigate (name-sync will honor the pin).`,
+          );
+        }
+      } else if (pinResult.reason === "write-failed") {
+        console.warn(
+          `[dashboard] W4 name-pin write FAILED for ${id} (registry file=${pinResult.file ?? "?"}); ` +
+          `rename applied to dashboard but NOT pinned — name-sync may reclobber it.`,
+        );
+      }
       return { success: true } satisfies ApiResponse;
+    },
+  );
+
+  // POST /api/session/:id/resurrect
+  //
+  // Component B — the operator's "bring it back, no matter what" (session-
+  // resurrection design-pass §3-B / §4). State-aware bring-back to
+  // dashboard-interactable, modeled on the sibling rename route above:
+  //
+  //   case 1  bridge-connected-live → clear tombstone + rebind (display). The
+  //           live :9999 socket IS the transport — no respawn. mode:"display".
+  //   case 2  bridgeless-live (live pid, no bridge = the Cartographer-2 case) →
+  //           controlled single-writer takeover (RATIFIED Option 1): SIGTERM the
+  //           live pid → confirm clean exit → respawn `pi --session` so the new
+  //           process loads the bridge + registers. Double-writer guarded.
+  //           mode:"respawn".
+  //   case 3  truly-ended (no live process) → clean `pi --session` continue
+  //           respawn (the existing path). mode:"respawn".
+  fastify.post<IdParams>(
+    "/api/session/:id/resurrect",
+    async (request, reply) => {
+      const { id } = request.params;
+      const result = getSessionOrFail(sessionManager, id);
+      if ("error" in result) {
+        reply.code(404);
+        return result.error;
+      }
+      const session = result.session;
+
+      // CC sessions are correctly-ended read-only views — never resurrected.
+      if (session.source === "claude-code") {
+        reply.code(400);
+        return { success: false, error: "claude-code sessions are read-only and cannot be resurrected" } satisfies ApiResponse;
+      }
+
+      // ── case 1: bridge-connected-live ────────────────────────────────
+      // A live :9999 bridge is the strongest proof of life + already carries
+      // transport. Clear the tombstone (if any) and rebind; no respawn.
+      if (piGateway.isSessionConnected(id)) {
+        resurrectSession(
+          id,
+          { sessionManager, browserGateway },
+          { alive: true, ...(typeof session.pid === "number" ? { pid: session.pid } : {}) },
+        );
+        return { success: true, data: { resurrected: true, mode: "display" } } satisfies ApiResponse<{ resurrected: boolean; mode: string }>;
+      }
+
+      // Resolve live-process state via the registry UUID-join + kill-0.
+      const liveness = resolveDriverLiveness(id);
+
+      // Shared respawn-continue path (cases 2 + 3). Returns the raw
+      // SpawnResult so both `forceTakeover` (case 2) and case 3 read `.success`
+      // off the same shape. Mirrors the resume endpoint's bookkeeping: tag the
+      // user-resume intent "front", register the headless pid, stamp
+      // pendingDashboardSpawns. Callers guard `session.sessionFile` first.
+      //
+      // §19 INTERACTIVE FORM — FORCED (design-pass §3-A, §4a item 4): the
+      // respawn uses `strategy:"tmux"`, OVERRIDING `loadConfig().spawnStrategy`
+      // (which defaults to "headless"). The headless `--mode rpc` form is the
+      // one that crashed on the real Cartographer-2; the §19 interactive tmux
+      // form (`PI_AGENT_NAME=<N> pi --name <N> --session <file>`, NO --model,
+      // NO --mode rpc) is the ONE proven to restore a bridge-connected +
+      // writable + model-changeable session. The themed identity comes from the
+      // live messenger-registry name (case 2) or the session's display name.
+      // See change: unend-mechanism-v2.
+      const respawnAgentName = liveness.name ?? session.name ?? undefined;
+      // ENV-INDEPENDENT ANTI-CROSS-WIRE PIN (see change: pin-on-resurrect).
+      // Pin the respawn's bridge to THIS server's own gateway so a
+      // multi-dashboard host (e.g. prod :8000 + :8001 both mDNS-advertising)
+      // can't migrate the respawned session to a sibling dashboard via mDNS
+      // discovery → `updateUrl`. With PI_DASHBOARD_URL set, the spawned bridge
+      // captures it as `pinnedUrl` and the ISOLATION GUARD in
+      // server-auto-start.ts short-circuits discovery entirely.
+      //
+      // ⚠ CRITICAL: source the RUNTIME pi-gateway port, NEVER
+      // `loadConfig().piPort`. The live `piGateway.address()` is the
+      // actually-bound socket port (ground truth even under ephemeral :0);
+      // `deps.serverPiPort` (threaded from `ServerConfig.piPort` = the value
+      // passed to `piGateway.start()`, which honors a `--pi-port <N>` CLI
+      // override) is the fallback. The config-FILE port can differ from the
+      // runtime port → pinning to it would re-introduce the cross-wire bug.
+      const runtimePiPort = piGateway.address() ?? deps.serverPiPort;
+      const pinDashboardUrl =
+        typeof runtimePiPort === "number" ? `ws://localhost:${runtimePiPort}` : undefined;
+      const doRespawnContinue = async (): Promise<import("./process-manager.js").SpawnResult> => {
+        pendingResumeIntents?.record(id, "front");
+        const spawnResult = await spawnPiSession(session.cwd, {
+          sessionFile: session.sessionFile!,
+          mode: "continue",
+          strategy: "tmux",
+          // Fix-10: a session-resume MUST use the §19 interactive form or fail
+          // loudly — never silently degrade to the headless `--mode rpc`
+          // crash-form (the exact prod PATH-miss that motivated this).
+          // See change: fail-loud-interactive-resolve.
+          requireInteractive: true,
+          ...(respawnAgentName ? { agentName: respawnAgentName } : {}),
+          ...(pinDashboardUrl ? { pinDashboardUrl } : {}),
+        });
+        if (spawnResult.process && spawnResult.pid) {
+          browserGateway.headlessPidRegistry.register(
+            spawnResult.pid,
+            session.cwd,
+            spawnResult.process,
+            spawnResult.spawnToken,
+          );
+        }
+        if (spawnResult.dashboardSpawned && spawnResult.success) {
+          pendingDashboardSpawns?.set(session.cwd, (pendingDashboardSpawns?.get(session.cwd) ?? 0) + 1);
+        }
+        return spawnResult;
+      };
+
+      // ── case 2: bridgeless-live → controlled single-writer takeover ──
+      if (liveness.alive && typeof liveness.pid === "number") {
+        if (!session.sessionFile) {
+          reply.code(400);
+          return { success: false, error: "session file is unknown" } satisfies ApiResponse;
+        }
+        const takeover = await forceTakeover(liveness.pid, { respawn: doRespawnContinue });
+        if (!takeover.ok) {
+          // kill_failed → never respawned over a live writer (guard held).
+          reply.code(takeover.reason === "kill_failed" ? 409 : 500);
+          return {
+            success: false,
+            error:
+              takeover.reason === "kill_failed"
+                ? `live process ${liveness.pid} did not exit; refusing to respawn (double-writer guard)`
+                : `respawn failed after takeover${takeover.spawnResult ? `: ${takeover.spawnResult.message}` : ""}`,
+          } satisfies ApiResponse;
+        }
+        // POST-RESPAWN VERIFY (build-gate item 2): the respawn process started,
+        // but "started" ≠ "interactable" (the exact v1 false-green). Assert the
+        // 5 real oracles before returning success; on failure (after the gate's
+        // internal retry) surface a LOUD actionable error, never silent success.
+        const verify2 = await runResurrectVerify(id);
+        if (!verify2.ok) {
+          reply.code(503);
+          return {
+            success: false,
+            error:
+              `respawn started but verify gate REJECTED it: assertion "${verify2.failedAssertion}" ` +
+              `failed — ${verify2.detail}. Session is NOT fully interactable.`,
+          } satisfies ApiResponse;
+        }
+        return { success: true, data: { resurrected: true, mode: "respawn", verified: true } } satisfies ApiResponse<{ resurrected: boolean; mode: string; verified: boolean }>;
+      }
+
+      // ── case 3: truly-ended → clean continue respawn ─────────────────
+      if (!session.sessionFile) {
+        reply.code(400);
+        return { success: false, error: "session file is unknown" } satisfies ApiResponse;
+      }
+      const respawn = await doRespawnContinue();
+      if (!respawn.success) {
+        reply.code(500);
+        return { success: false, error: respawn.message } satisfies ApiResponse;
+      }
+      // POST-RESPAWN VERIFY (build-gate item 2) — same gate as case 2.
+      const verify3 = await runResurrectVerify(id);
+      if (!verify3.ok) {
+        reply.code(503);
+        return {
+          success: false,
+          error:
+            `respawn started but verify gate REJECTED it: assertion "${verify3.failedAssertion}" ` +
+            `failed — ${verify3.detail}. Session is NOT fully interactable.`,
+        } satisfies ApiResponse;
+      }
+      return { success: true, data: { resurrected: true, mode: "respawn", verified: true } } satisfies ApiResponse<{ resurrected: boolean; mode: string; verified: boolean }>;
     },
   );
 
@@ -401,6 +707,10 @@ export function registerSessionApi(fastify: FastifyInstance, deps: SessionApiDep
           pendingAttachRegistry.enqueue(session.cwd, session.attachedProposal);
         }
         const degradeConfig = loadConfig();
+        // Fix-11 scope note: fork-degrade is a FRESH spawn (no sessionFile —
+        // the source had no on-disk history) → replays no large log, cannot hit
+        // the headless crash-form. Left on config strategy so tmux-less hosts
+        // keep the graceful fallback. See change: harden-headless-resume-paths.
         const degradeResult = await spawnPiSession(session.cwd, {
           strategy: degradeConfig.spawnStrategy,
         });
@@ -437,12 +747,18 @@ export function registerSessionApi(fastify: FastifyInstance, deps: SessionApiDep
       // See changes: preserve-session-order-on-reboot,
       //              differentiate-resume-intent-by-trigger.
       pendingResumeIntents?.record(id, "front");
-      const config = loadConfig();
-      const spawnResult = await spawnPiSession(session.cwd, {
+      // Fix-11: a real session-RESUME (loads the existing --session file = the
+      // large-log crash risk) MUST use the §19 interactive form or fail loud —
+      // NEVER silently default to the headless `--mode rpc` crash-form. Pin the
+      // respawn's bridge to THIS server's own gateway (anti-cross-wire).
+      // See change: harden-headless-resume-paths.
+      const resumePin = resolvePinDashboardUrl(piGateway, deps.serverPiPort);
+      const spawnResult = await spawnPiSession(session.cwd, buildInteractiveResumeOptions({
         sessionFile: session.sessionFile,
         mode,
-        strategy: config.spawnStrategy,
-      });
+        ...(session.name ? { agentName: session.name } : {}),
+        ...(resumePin ? { pinDashboardUrl: resumePin } : {}),
+      }));
       // Fork bookkeeping uses the spawn token (not cwd) so two concurrent
       // forks in the same cwd correlate correctly. See change:
       // spawn-correlation-token.

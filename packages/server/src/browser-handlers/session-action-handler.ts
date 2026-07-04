@@ -5,6 +5,7 @@ import { existsSync } from "node:fs";
 import type { BrowserToServerMessage } from "@blackbelt-technology/pi-dashboard-shared/browser-protocol.js";
 import type { BrowserHandlerContext } from "./handler-context.js";
 import { spawnPiSession } from "../process-manager.js";
+import { buildInteractiveResumeOptions, resolvePinDashboardUrl } from "../resume-spawn-options.js";
 import { ToolResolver } from "@blackbelt-technology/pi-dashboard-shared/platform/binary-lookup.js";
 import { loadConfig } from "@blackbelt-technology/pi-dashboard-shared/config.js";
 import { preflightSpawn } from "../spawn-preflight.js";
@@ -133,19 +134,33 @@ export async function handleHeadlessReload(
 
   emitCommandFeedback(ctx, msg.sessionId, "started");
 
-  // SIGTERM the old headless pi. No-op if already dead (idempotency guard).
+  // SIGTERM the old headless pi + clear its registry entry (killBySessionId
+  // deletes the entry). No-op if already dead (idempotency guard). This handler
+  // is only reached when `shouldInterceptReload` was true = the session had a
+  // tracked HEADLESS pid (getPid !== undefined), so the predecessor is always a
+  // headless-registry pid — killBySessionId covers it. An INTERACTIVE (tmux)
+  // predecessor has no headless-registry pid, so it can never route here (see
+  // the caller's shouldInterceptReload gate). See change:
+  // harden-headless-reload-resume.
   headlessPidRegistry.killBySessionId(msg.sessionId);
 
-  // Respawn with the same session file. The new pi process re-hydrates the
+  // Respawn with the same session file. Fix-11 amend: this is a real session-
+  // RESUME (mode:"continue" + existing sessionFile = the large-log replay), so
+  // it MUST use the §19 interactive form or fail loud — NEVER the headless
+  // `--mode rpc` crash-form (the exact class the resume-hardening targets). Same
+  // shape as the sibling prompt-auto-resume path. The new pi re-hydrates the
   // same sessionId, the bridge re-registers, and the server preserves
   // accumulated state (tokens/cost/context/attachedProposal).
+  // See change: harden-headless-reload-resume.
+  const reloadPin = resolvePinDashboardUrl(ctx.piGateway);
   let spawnResult: Awaited<ReturnType<typeof spawnPiSession>>;
   try {
-    spawnResult = await spawnPiSession(session.cwd, {
+    spawnResult = await spawnPiSession(session.cwd, buildInteractiveResumeOptions({
       sessionFile: session.sessionFile,
       mode: "continue",
-      strategy: "headless",
-    });
+      ...(session.name ? { agentName: session.name } : {}),
+      ...(reloadPin ? { pinDashboardUrl: reloadPin } : {}),
+    }));
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error(`[dashboard] headless reload spawn failed: ${message}`);
@@ -175,8 +190,26 @@ export async function handleHeadlessReload(
     return;
   }
 
+  // Fix-11 amend — EXPLICIT no-headless-register for the interactive respawn
+  // (Bert). The §19 interactive (tmux) respawn is DETACHED — it returns no
+  // pid/process — and an interactive session must NEVER be tracked in the
+  // headless-pid registry: that registry is the routing key for
+  // `shouldInterceptReload`. Registering the converted session as headless would
+  // (a) wrongly route a FUTURE /reload back here instead of the TUI
+  // `/__dashboard_reload` path, and (b) let a pid-carrying spawnResult mis-tag an
+  // interactive session as headless. So we deliberately do NOT call
+  // headlessPidRegistry.register here — the old headless entry was already
+  // cleared by killBySessionId above, leaving no stale entry.
+  // See change: harden-headless-reload-resume.
   if (spawnResult.pid && spawnResult.process) {
-    headlessPidRegistry.register(spawnResult.pid, session.cwd, spawnResult.process);
+    // Defensive: an interactive respawn should not surface a pid+process. If a
+    // future spawn shape ever does, we still must NOT headless-register it —
+    // log loud so the invariant violation is visible rather than silently
+    // re-introducing the headless-routing bug.
+    console.warn(
+      `[dashboard] reload: interactive respawn unexpectedly returned pid ${spawnResult.pid} ` +
+      `for ${msg.sessionId}; NOT headless-registering (interactive sessions route to TUI reload).`,
+    );
   }
 
   emitCommandFeedback(ctx, msg.sessionId, "completed");
@@ -219,12 +252,17 @@ export async function handleSendPrompt(
     pendingResumeIntents?.record(msg.sessionId, "front");
     sessionManager.update(msg.sessionId, { resuming: true });
     broadcast({ type: "session_updated", sessionId: msg.sessionId, updates: { resuming: true } });
-    const autoResumeConfig = loadConfig();
-    const spawnResult = await spawnPiSession(promptSession.cwd, {
+    // Fix-11: prompt-auto-resume replays the existing --session file (the
+    // large-log crash risk) — route through the §19 interactive form or fail
+    // loud, NEVER silently default to the headless `--mode rpc` crash-form.
+    // See change: harden-headless-resume-paths.
+    const autoResumePin = resolvePinDashboardUrl(piGateway);
+    const spawnResult = await spawnPiSession(promptSession.cwd, buildInteractiveResumeOptions({
       sessionFile: promptSession.sessionFile,
       mode: "continue",
-      strategy: autoResumeConfig.spawnStrategy,
-    });
+      ...(promptSession.name ? { agentName: promptSession.name } : {}),
+      ...(autoResumePin ? { pinDashboardUrl: autoResumePin } : {}),
+    }));
     if (!spawnResult.success) {
       console.error(`[dashboard] auto-resume spawn failed: ${spawnResult.message}`);
       pendingResumeRegistry.consume(promptSession.cwd);
@@ -309,6 +347,11 @@ export async function handleResumeSession(
       pendingAttachRegistry.enqueue(session.cwd, session.attachedProposal);
     }
     const degradeConfig = loadConfig();
+    // Fix-11 scope note: fork-degrade is a FRESH spawn (no sessionFile — the
+    // source had no persisted history) → replays no large log, cannot hit the
+    // headless crash-form the resume-hardening targets. Left on config strategy
+    // so tmux-less hosts keep the graceful fallback.
+    // See change: harden-headless-resume-paths.
     // Fresh spawn: no sessionFile, no mode — just `pi --mode rpc`.
     const degradeResult = await spawnPiSession(session.cwd, {
       strategy: degradeConfig.spawnStrategy,
@@ -360,12 +403,18 @@ export async function handleResumeSession(
   // See changes: preserve-session-order-on-reboot,
   //              differentiate-resume-intent-by-trigger.
   pendingResumeIntents?.record(msg.sessionId, placement);
-  const resumeConfig = loadConfig();
-  const result = await spawnPiSession(session.cwd, {
+  // Fix-11: the primary dashboard Resume/Fork path replays the existing
+  // --session file (the large-log crash risk) — route through the §19
+  // interactive form or fail loud, NEVER silently default to the headless
+  // `--mode rpc` crash-form. Pin the respawn to THIS server's own gateway.
+  // See change: harden-headless-resume-paths.
+  const resumePin = resolvePinDashboardUrl(ctx.piGateway);
+  const result = await spawnPiSession(session.cwd, buildInteractiveResumeOptions({
     sessionFile: forkSessionFile,
     mode: msg.mode,
-    strategy: resumeConfig.spawnStrategy,
-  });
+    ...(session.name ? { agentName: session.name } : {}),
+    ...(resumePin ? { pinDashboardUrl: resumePin } : {}),
+  }));
   // Record fork parent keyed by spawn token (was: keyed by cwd, racy on
   // multi-fork-in-same-cwd). See change: spawn-correlation-token.
   if (msg.mode === "fork" && pendingForkRegistry && result.spawnToken) {

@@ -12,6 +12,7 @@ import type { DirectoryService } from "./directory-service.js";
 import { extractSessionUpdates, isActivityEvent, isUnreadTrigger, isPushTrigger, type PushTriggerOptions } from "./event-status-extraction.js";
 import type { ViewedSessionTracker } from "./viewed-session-tracker.js";
 import { setCatalogueForSession } from "./provider-catalogue-cache.js";
+import { setModelsForSession } from "./session-models-cache.js";
 import type { PushDispatcher } from "./push/push-dispatcher.js";
 import type { PushPrefs } from "./push/push-types.js";
 import { spawnPiSession } from "./process-manager.js";
@@ -123,6 +124,31 @@ export function wireEvents(deps: EventWiringDeps): void {
         },
       });
     });
+  };
+
+  // W1b — persist WHY the bridge disconnected (ROOT-CAUSE Gap #4). The
+  // pi-gateway classifies the disconnect origin into a first-class reason;
+  // record it (+ timestamp) on the row and broadcast so the bridgeless-502
+  // surface can say WHY, not just "no bridge". `unknown` is fail-loud: it is
+  // still recorded (never blank) AND logged as an anomaly for investigation.
+  // See change: bridge-disconnect-reason.
+  piGateway.onDisconnect = (sessionId, reason) => {
+    // Only stamp rows the manager still tracks (a temporary disconnect keeps
+    // the row; heartbeat-timeout may unregister it later). If it's already
+    // gone, there's nothing to annotate.
+    if (!sessionManager.get(sessionId)) return;
+    const updates: Partial<DashboardSession> = {
+      bridgeDisconnectReason: reason,
+      bridgeDisconnectAt: Date.now(),
+    };
+    sessionManager.update(sessionId, updates);
+    browserGateway.broadcastSessionUpdated(sessionId, updates);
+    if (reason === "unknown") {
+      console.warn(
+        `[event-wiring] bridge disconnect reason UNKNOWN for ${sessionId} — ` +
+        `recorded (never blank) but undeterminable; investigate (W1b fail-loud).`,
+      );
+    }
   };
 
   // Broadcast session ended to browsers when sessions are unregistered
@@ -721,6 +747,10 @@ export function wireEvents(deps: EventWiringDeps): void {
     }
 
     if (msg.type === "models_list") {
+      // Cache the session's model catalogue (the resurrection verify-gate's
+      // alt-model resolver reads it — same source as the dashboard picker,
+      // no pi-ai dependency). See change: unend-mechanism-v2.
+      setModelsForSession(sessionId, msg.models);
       // Broadcast to all browsers (not just subscribers) so model selector
       // is available even before the user opens the session
       browserGateway.broadcastToAll({
@@ -879,6 +909,12 @@ export function wireEvents(deps: EventWiringDeps): void {
     }
 
     if (msg.type === "spawn_new_session") {
+      // Fix-11 scope note: this is a FRESH spawn (no sessionFile) — it replays
+      // no large log, so it CANNOT hit the headless `--mode rpc` crash-form the
+      // resume-path hardening targets. Left on `config.spawnStrategy` so the
+      // graceful headless fallback still stands on tmux-less hosts; forcing the
+      // §19 interactive form here would regress fresh-spawn on those hosts.
+      // See change: harden-headless-resume-paths.
       spawnPiSession(msg.cwd, { strategy: loadConfig().spawnStrategy }).then((result) => {
         if (result.process && result.pid) {
           browserGateway.headlessPidRegistry.register(result.pid, msg.cwd, result.process);

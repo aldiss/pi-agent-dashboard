@@ -3,7 +3,12 @@
  */
 import { WebSocketServer, WebSocket } from "ws";
 import type { ExtensionToServerMessage, ServerToExtensionMessage } from "@blackbelt-technology/pi-dashboard-shared/protocol.js";
-import type { DashboardSession } from "@blackbelt-technology/pi-dashboard-shared/types.js";
+import type { DashboardSession, BridgeDisconnectReason } from "@blackbelt-technology/pi-dashboard-shared/types.js";
+import {
+  classifyBridgeDisconnect,
+  type DisconnectSignals,
+} from "@blackbelt-technology/pi-dashboard-shared/bridge-disconnect-classifier.js";
+import { pidAlive as platformPidAlive } from "./driver-liveness.js";
 import type { SessionManager } from "./memory-session-manager.js";
 import { getSpawnRegisterWatchdog } from "./spawn-register-watchdog.js";
 
@@ -31,7 +36,14 @@ export interface PiGateway {
   onEvent?: (sessionId: string, msg: ExtensionToServerMessage) => void;
   onEmpty?: () => void;
   onConnection?: () => void;
-  onDisconnect?: (sessionId: string) => void;
+  /**
+   * Fired on the `ws.on("close")` disconnect origin. W1b threads the classified
+   * {@link BridgeDisconnectReason} so the consumer can persist WHY the bridge
+   * dropped (heartbeat-timeout / cross-wire / process-gone / clean-shutdown /
+   * unknown), not just THAT it dropped. `unknown` is never blank (fail-loud).
+   * See change: bridge-disconnect-reason.
+   */
+  onDisconnect?: (sessionId: string, reason: BridgeDisconnectReason) => void;
   onSessionCreated?: (sessionId: string) => void;
   /**
    * Fired after a `session_register` message has been processed and the
@@ -49,11 +61,22 @@ export function createPiGateway(
 ): PiGateway {
   const hbTimeout = options?.heartbeatTimeout ?? HEARTBEAT_TIMEOUT;
   const pingMs = options?.pingInterval ?? WS_PING_INTERVAL;
+  // WS ping/pong miss threshold before a connection is treated as dead. Hoisted
+  // to closure scope so the ping-timeout site, the ws-close origin, and the
+  // heartbeat-timeout timer paths all reference one definition (no magic 3).
+  const PING_MISS_THRESHOLD = 3;
   let wss: WebSocketServer | null = null;
   let pingTimer: ReturnType<typeof setInterval> | null = null;
 
   // Map sessionId → WebSocket
   const connections = new Map<string, WebSocket>();
+  // W1b: sockets displaced by a newer registration for the same session id
+  // (two bridges, one session = cross-wire). The displaced socket's `close`
+  // handler reads this to classify its disconnect as `cross-wire`. A plain
+  // reconnect (/reload) does NOT populate this — there the old socket closes
+  // FIRST, then a new one connects, so no live displacement occurs.
+  // See change: bridge-disconnect-reason.
+  const crossWiredSockets = new Set<WebSocket>();
   // Track connection liveness for WS ping/pong (miss counter: kill after 2 consecutive misses)
   const aliveMisses = new Map<WebSocket, number>();
   // Map sessionId → heartbeat timeout
@@ -64,7 +87,7 @@ export function createPiGateway(
   let onEvent: ((sessionId: string, msg: ExtensionToServerMessage) => void) | undefined;
   let onEmpty: (() => void) | undefined;
   let onConnection: (() => void) | undefined;
-  let onDisconnect: ((sessionId: string) => void) | undefined;
+  let onDisconnect: ((sessionId: string, reason: BridgeDisconnectReason) => void) | undefined;
   let onSessionCreated: ((sessionId: string) => void) | undefined;
   let onSessionRegistered: ((sessionId: string, cwd: string) => void) | undefined;
 
@@ -72,6 +95,50 @@ export function createPiGateway(
     if (connections.size === 0) {
       onEmpty?.();
     }
+  }
+
+  /**
+   * W1b shared disconnect-origin stamper. Classifies WHY a bridge dropped from
+   * the given signals (via `classifyBridgeDisconnect` — the SAME classifier the
+   * ws-close origin uses) and fires `onDisconnect(sessionId, reason)` so the
+   * consumer persists `bridgeDisconnectReason` + `bridgeDisconnectAt` on the row.
+   *
+   * ONE helper called by BOTH origins so the stamping is SYMMETRIC and logic is
+   * never duplicated (Alice dl-3712 + Bert dl-3714):
+   *   - `ws.on("close")`  — socket-close origin (close code / cross-wire signal)
+   *   - the 3 heartbeat-timeout TIMER paths + the ping-timeout path — the drops
+   *     that call `sessionManager.unregister` DIRECTLY (Mechanism-A, dl-3598).
+   *
+   * MUST be called BEFORE `sessionManager.unregister(sessionId)`: unregister
+   * keeps the row (sets `status:"ended"`, does not delete), and the consumer's
+   * guard is `sessionManager.get(sessionId)` — so stamping first lands the reason
+   * on the still-present row; unregister then marks it ended without clobbering
+   * the reason (it only writes status/endedAt). A later `register` (reconnect)
+   * does NOT carry `bridgeDisconnectReason`, so the stale reason clears itself.
+   *
+   * See change: bridge-disconnect-reason-timer-paths.
+   */
+  function stampDisconnect(sessionId: string, signals: DisconnectSignals): BridgeDisconnectReason {
+    const reason = classifyBridgeDisconnect(signals);
+    onDisconnect?.(sessionId, reason);
+    return reason;
+  }
+
+  /**
+   * Build the heartbeat-timeout disconnect signals for a timer/ping-driven drop.
+   * The timer firing IS the missed-heartbeat proof (`heartbeatMissed:true`); the
+   * pid (when known) is kill-0'd so the classifier can prefer `process-gone`
+   * over `heartbeat-timeout` when the pi process is actually dead (its precedence
+   * is heartbeat-timeout > process-gone, so a still-recorded pid that's dead
+   * still reads heartbeat-timeout here — the proximate cause was the missed
+   * heartbeat). See change: bridge-disconnect-reason-timer-paths.
+   */
+  function heartbeatTimeoutSignals(sessionId: string): DisconnectSignals {
+    const sessionPid = sessionManager.get(sessionId)?.pid;
+    return {
+      heartbeatMissed: true,
+      ...(typeof sessionPid === "number" ? { pidAlive: platformPidAlive(sessionPid) } : {}),
+    };
   }
 
   function resetHeartbeat(sessionId: string) {
@@ -115,6 +182,10 @@ export function createPiGateway(
                 return;
               }
               console.error(`[gateway] session timed out: ${sessionId} (reconnect grace period expired)`);
+              // W1b — stamp the heartbeat-timeout reason BEFORE the direct
+              // unregister (Mechanism-A, dl-3598). Same shared helper the
+              // ws-close origin uses. See change: bridge-disconnect-reason-timer-paths.
+              stampDisconnect(sessionId, heartbeatTimeoutSignals(sessionId));
               sessionManager.unregister(sessionId);
               connections.delete(sessionId);
               heartbeatTimers.delete(sessionId);
@@ -143,6 +214,9 @@ export function createPiGateway(
                 return;
               }
               console.error(`[gateway] session timed out: ${sessionId} (sleep recovery failed)`);
+              // W1b — stamp heartbeat-timeout before the direct unregister
+              // (Mechanism-A). See change: bridge-disconnect-reason-timer-paths.
+              stampDisconnect(sessionId, heartbeatTimeoutSignals(sessionId));
               sessionManager.unregister(sessionId);
               connections.delete(sessionId);
               heartbeatTimers.delete(sessionId);
@@ -154,6 +228,11 @@ export function createPiGateway(
         }
 
         console.error(`[gateway] session timed out: ${sessionId} (no heartbeat for ${hbTimeout}ms)`);
+        // W1b — stamp heartbeat-timeout before the direct unregister. This is
+        // the PRIMARY Mechanism-A path (dl-3598): the crew went dashboard-blind
+        // because this drop recorded no reason. Same shared helper the ws-close
+        // origin uses. See change: bridge-disconnect-reason-timer-paths.
+        stampDisconnect(sessionId, heartbeatTimeoutSignals(sessionId));
         sessionManager.unregister(sessionId);
         connections.delete(sessionId);
         heartbeatTimers.delete(sessionId);
@@ -176,7 +255,7 @@ export function createPiGateway(
       onConnection = handler;
     },
 
-    set onDisconnect(handler: ((sessionId: string) => void) | undefined) {
+    set onDisconnect(handler: ((sessionId: string, reason: BridgeDisconnectReason) => void) | undefined) {
       onDisconnect = handler;
     },
 
@@ -201,7 +280,6 @@ export function createPiGateway(
       // won't respond to pings. We check the underlying TCP socket's
       // writable state as a fallback — if TCP is alive, the bridge is just
       // busy, not dead.
-      const PING_MISS_THRESHOLD = 3;
       if (pingMs > 0) pingTimer = setInterval(() => {
         if (!wss) return;
         for (const client of wss.clients) {
@@ -225,12 +303,19 @@ export function createPiGateway(
             for (const [sid, ws] of connections) {
               if (ws === client) {
                 console.error(`[gateway] connection dead (ping timeout, ${misses} misses): ${sid}`);
+                // W1b — dead-TCP ping-timeout is a heartbeat-timeout-class drop
+                // (misses ≥ threshold). Stamp via the shared helper before the
+                // direct unregister, same as the timer paths. crossWiredSockets
+                // cleanup mirrors the ws-close origin.
+                // See change: bridge-disconnect-reason-timer-paths.
+                stampDisconnect(sid, heartbeatTimeoutSignals(sid));
                 sessionManager.unregister(sid);
                 connections.delete(sid);
                 const timer = heartbeatTimers.get(sid);
                 if (timer) clearTimeout(timer);
                 heartbeatTimers.delete(sid);
                 heartbeatMeta.delete(sid);
+                crossWiredSockets.delete(client);
                 break;
               }
             }
@@ -259,6 +344,17 @@ export function createPiGateway(
             if (!currentSessionId && "sessionId" in msg && (msg as any).sessionId) {
               const sid: string = (msg as any).sessionId;
               currentSessionId = sid;
+              // W1b cross-wire detection (entry point 1): a message carrying a
+              // sessionId already held by a DIFFERENT open socket is displacing
+              // it — two bridges, one session. Capture BEFORE the overwrite so
+              // the displaced socket's `close` classifies as `cross-wire`. This
+              // block runs for a bridge whose FIRST message is the register, so
+              // the detection must live here too (not only in session_register).
+              // See change: bridge-disconnect-reason.
+              const prior = connections.get(sid);
+              if (prior && prior !== ws && prior.readyState === WebSocket.OPEN) {
+                crossWiredSockets.add(prior);
+              }
               connections.set(sid, ws);
               // Auto-create a placeholder session so events aren't lost
               if (!sessionManager.get(sid)) {
@@ -289,11 +385,26 @@ export function createPiGateway(
                 // Clean up if it's an auto-created placeholder (source unknown)
                 // or a ghost session (no sessionFile, created by duplicate bridge)
                 if (oldSession && (oldSession.source === "unknown" || !oldSession.sessionFile)) {
+                  // W1b scope-note: NOT a Gap #4 disconnect — this retires a
+                  // placeholder/ghost row when the SAME bridge re-registers under
+                  // its real sessionId (/reload). Nothing "dropped"; stamping a
+                  // disconnect reason on a discarded placeholder would mislead.
+                  // Intentionally NOT routed through stampDisconnect.
+                  // See change: bridge-disconnect-reason-timer-paths.
                   sessionManager.unregister(currentSessionId);
                   connections.delete(currentSessionId);
                 }
               }
               currentSessionId = msg.sessionId;
+              // W1b cross-wire detection: if a DIFFERENT, still-open socket
+              // already holds this session id, this registration is displacing
+              // it — two bridges claiming one session. Mark the displaced socket
+              // so its `close` handler classifies the disconnect as `cross-wire`
+              // (not a benign reconnect). See change: bridge-disconnect-reason.
+              const prevWs = connections.get(msg.sessionId);
+              if (prevWs && prevWs !== ws && prevWs.readyState === WebSocket.OPEN) {
+                crossWiredSockets.add(prevWs);
+              }
               connections.set(msg.sessionId, ws);
 
               sessionManager.register({
@@ -335,6 +446,12 @@ export function createPiGateway(
 
             if (msg.type === "session_unregister" && msg.sessionId) {
               console.error(`[gateway] session unregistered: ${msg.sessionId} (explicit)`);
+              // W1b — an explicit bridge-initiated unregister is an ORDERLY
+              // shutdown (the bridge said "I'm done"). Stamp clean-shutdown via
+              // the shared helper (closeCode 1000 signal) before the direct
+              // unregister, so Gap #4 records WHY. See change:
+              // bridge-disconnect-reason-timer-paths.
+              stampDisconnect(msg.sessionId, { closeCode: 1000 });
               sessionManager.unregister(msg.sessionId);
               connections.delete(msg.sessionId);
               const timer = heartbeatTimers.get(msg.sessionId);
@@ -365,12 +482,36 @@ export function createPiGateway(
           }
         });
 
-        ws.on("close", () => {
+        ws.on("close", (code?: number) => {
           if (currentSessionId) {
-            console.error(`[gateway] connection closed: ${currentSessionId}`);
+            // W1b — gather disconnect signals and classify WHY the bridge
+            // dropped, so the consumer persists a first-class reason (not just
+            // "no bridge"). Routes through the SHARED `stampDisconnect` helper —
+            // the SAME path the timer/ping origins use — so instrumentation is
+            // structurally symmetric (a new drop-site can't silently skip it).
+            // See changes: bridge-disconnect-reason, bridge-disconnect-reason-timer-paths.
+            const crossWire = crossWiredSockets.has(ws);
+            // Heartbeat miss: this socket's ping-miss counter reached the kill
+            // threshold before close (bridge stopped answering pings).
+            const misses = aliveMisses.get(ws) ?? 0;
+            const heartbeatMissed = misses >= PING_MISS_THRESHOLD;
+            // Process-gone: kill-0 the session's known pid (only when a pid is
+            // recorded — never infer liveness without one).
+            const sessionPid = sessionManager.get(currentSessionId)?.pid;
+            const signals: DisconnectSignals = {
+              ...(typeof code === "number" ? { closeCode: code } : {}),
+              heartbeatMissed,
+              ...(crossWire ? { crossWire: true } : {}),
+              ...(typeof sessionPid === "number" ? { pidAlive: platformPidAlive(sessionPid) } : {}),
+            };
+            const reason = stampDisconnect(currentSessionId, signals);
+            console.error(
+              `[gateway] connection closed: ${currentSessionId} reason=${reason} ` +
+              `(code=${code ?? "?"} misses=${misses} crossWire=${crossWire})`,
+            );
+            crossWiredSockets.delete(ws);
             // Don't immediately unregister - wait for heartbeat timeout
             // This handles temporary disconnects
-            onDisconnect?.(currentSessionId);
           }
           aliveMisses.delete(ws);
         });
