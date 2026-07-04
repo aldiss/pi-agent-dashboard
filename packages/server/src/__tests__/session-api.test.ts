@@ -127,6 +127,41 @@ describe("Session Control REST API", () => {
     expect(server.sessionManager.get("rename-me")?.name).toBe("new-name");
   });
 
+  // ── resurrect (Component B) ─────────────────────────────────────
+
+  it("POST /api/session/:id/resurrect — 404 for unknown session", async () => {
+    const res = await postJson("/api/session/unknown-id/resurrect");
+    expect(res.status).toBe(404);
+    expect((await res.json()).error).toBe("session not found");
+  });
+
+  it("POST /api/session/:id/resurrect — 400 for claude-code session (read-only)", async () => {
+    registerSession("cc-resurrect", { source: "claude-code", sessionFile: "/path/cc.jsonl" });
+    const res = await postJson("/api/session/cc-resurrect/resurrect");
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/read-only/);
+  });
+
+  it("POST /api/session/:id/resurrect — truly-ended (no bridge, dead driver) → respawn", async () => {
+    // No :9999 bridge in this test server + fresh HOME means resolveDriverLiveness
+    // returns {alive:false} → case 3 (clean continue respawn). spawnPiSession is mocked.
+    registerSession("ended-resurrect", { sessionFile: "/path/ended.jsonl" });
+    server.sessionManager.update("ended-resurrect", { status: "ended", endedAt: Date.now() });
+    const res = await postJson("/api/session/ended-resurrect/resurrect");
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.success).toBe(true);
+    expect(body.data).toMatchObject({ resurrected: true, mode: "respawn" });
+  });
+
+  it("POST /api/session/:id/resurrect — 400 when session file is unknown (truly-ended path)", async () => {
+    registerSession("no-file-resurrect");
+    server.sessionManager.update("no-file-resurrect", { status: "ended", endedAt: Date.now(), sessionFile: undefined });
+    const res = await postJson("/api/session/no-file-resurrect/resurrect");
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toMatch(/session file is unknown/);
+  });
+
   // ── hide/unhide ─────────────────────────────────────────────────
 
   it("POST /api/session/:id/hide — hides session", async () => {

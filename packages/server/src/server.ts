@@ -35,6 +35,7 @@ import { createIdleTimer } from "./idle-timer.js";
 import { discoverAndBroadcastSessions } from "./session-bootstrap.js";
 import { scanAllSessions } from "./session-scanner.js";
 import { resolveDriverLiveness } from "./driver-liveness.js";
+import { createResurrectionSweep } from "./resurrection-sweep.js";
 import { startDriverSelfReportPolling } from "./driver-self-report.js";
 import { needsMigration, runMigration } from "./migrate-persistence.js";
 import { detectZrokBinary, cleanupStaleZrok, createTunnel, deleteTunnel, scavengeOrphanZrokProcesses, getTunnelUrl } from "./tunnel.js";
@@ -42,7 +43,7 @@ import { registerAuthPlugin, validateWsUpgrade } from "./auth-plugin.js";
 import { findBundledExtension, registerBridgeExtension } from "@blackbelt-technology/pi-dashboard-shared/bridge-register.js";
 import { createNetworkGuard, isLoopback, isBypassedHost } from "./localhost-guard.js";
 import type { AuthConfig } from "@blackbelt-technology/pi-dashboard-shared/config.js";
-import { loadConfig, CONFIG_FILE, type PushConfig } from "@blackbelt-technology/pi-dashboard-shared/config.js";
+import { loadConfig, CONFIG_FILE, DEFAULT_RESURRECTION_SWEEP_MS, type PushConfig } from "@blackbelt-technology/pi-dashboard-shared/config.js";
 import { createPushTokenRegistry, type PushTokenRegistry } from "./push/push-token-registry.js";
 import { createPushDispatcher, type PushDispatcher } from "./push/push-dispatcher.js";
 import { createWebPushTransport } from "./push/push-transports/web-push.js";
@@ -126,6 +127,9 @@ export interface ServerConfig {
   /** Fixture mode — disables side effects for deterministic visual testing.
    *  Gated by PI_DASHBOARD_FIXTURE_MODE=1. Not exposed in production. */
   fixtureMode?: boolean;
+  /** Cadence (ms) for the Component-A display-resurrection sweep. Default 20000; 0 disables.
+   *  See session-resurrection design-pass §3-A. */
+  resurrectionSweepMs?: number;
 }
 
 export interface DashboardServer {
@@ -691,6 +695,20 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
   // Active terminals keep the server alive even when no pi sessions are
   // attached. See change: fix-terminal-half-height-dual-mount.
   const idleTimer = createIdleTimer(config, piGateway, () => terminalManager.list().length > 0);
+
+  // Component A — ongoing display-resurrection sweep (session-resurrection
+  // design-pass §3-A). Periodically re-resolves liveness for ended pi/tmux
+  // rows and clears the tombstone when the driver is alive — closing the
+  // coverage gap that `resolveDriverLiveness`'s startup-only wiring leaves for
+  // sessions that die+resume DURING server uptime. Additive to the two startup
+  // call-sites (session-bootstrap.ts + the scan path above), never a
+  // replacement. Default 20s; `resurrectionSweepMs: 0` disables. Skipped in
+  // fixture mode (deterministic visual testing — no registry-driven mutation).
+  const resurrectionSweep = createResurrectionSweep({
+    sessionManager,
+    browserGateway,
+    intervalMs: config.resurrectionSweepMs ?? DEFAULT_RESURRECTION_SWEEP_MS,
+  });
 
   const fastify = Fastify({
     logger: false,
@@ -1516,6 +1534,7 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
       } // end if (!isFixture)
 
       idleTimer.start();
+      if (!isFixture) resurrectionSweep.start();
       heapWatchdog.start();
     },
 
@@ -1527,6 +1546,7 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
       } catch { /* ignore mDNS cleanup errors */ }
       removePid();
       idleTimer.cancel();
+      resurrectionSweep.stop();
       heapWatchdog.stop();
       directoryService.stopPolling();
       stopDriverSelfReportPolling();

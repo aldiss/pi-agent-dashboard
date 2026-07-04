@@ -68,6 +68,25 @@ describe("parseArgs", () => {
     expect(result.flags.fixtureMode).toBe(true);
   });
 
+  it("parses resurrect subcommand with positional session id (Component B CLI)", () => {
+    const result = parseArgs(["resurrect", "019f140a"]);
+    expect(result.subcommand).toBe("resurrect");
+    expect(result.resurrectId).toBe("019f140a");
+  });
+
+  it("parses resurrect with id AND a flag (id captured, flag parsed)", () => {
+    const result = parseArgs(["resurrect", "019f140a", "--port", "8010"]);
+    expect(result.subcommand).toBe("resurrect");
+    expect(result.resurrectId).toBe("019f140a");
+    expect(result.flags.port).toBe(8010);
+  });
+
+  it("resurrect without an id leaves resurrectId undefined (handler errors)", () => {
+    const result = parseArgs(["resurrect"]);
+    expect(result.subcommand).toBe("resurrect");
+    expect(result.resurrectId).toBeUndefined();
+  });
+
   it("ignores unknown args", () => {
     const result = parseArgs(["start", "--unknown", "value"]);
     expect(result.subcommand).toBe("start");

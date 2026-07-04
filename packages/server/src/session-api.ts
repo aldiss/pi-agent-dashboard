@@ -13,6 +13,12 @@ import type { BrowserGateway } from "./browser-gateway.js";
 import type { ApiResponse } from "@blackbelt-technology/pi-dashboard-shared/types.js";
 import { spawnPiSession } from "./process-manager.js";
 import { loadConfig } from "@blackbelt-technology/pi-dashboard-shared/config.js";
+import { resolveDriverLiveness } from "./driver-liveness.js";
+import { resurrectSession } from "./resurrection-sweep.js";
+import {
+  killProcess as platformKillProcess,
+  isProcessAlive as platformIsProcessAlive,
+} from "@blackbelt-technology/pi-dashboard-shared/platform/process.js";
 import { addWorktree, isInsideWorkTree, resolveRepoRoot } from "./worktree-manager.js";
 import type { PendingForkRegistry } from "./pending-fork-registry.js";
 import type { PendingResumeIntentRegistry } from "./pending-resume-intent-registry.js";
@@ -51,6 +57,56 @@ export interface SessionApiDeps {
 }
 
 type IdParams = { Params: { id: string } };
+
+/**
+ * Double-writer guard for force-resurrect case 2 (bridgeless-live takeover).
+ *
+ * Sequence is LOAD-BEARING and must never reorder: SIGTERM the live pid →
+ * **confirm clean exit** (poll, with SIGKILL escalation inside the platform
+ * `killProcess`) → only THEN respawn `pi --session`. Respawning while the old
+ * writer is still alive = two pi processes on one session file = corruption.
+ * If the old pid will not die, we REFUSE to respawn and surface an error.
+ *
+ * Pure + injectable so the ordering is unit-testable without real processes
+ * (see resurrection-takeover.test.ts). Production callers use the platform
+ * defaults.
+ */
+export interface ForceTakeoverDeps {
+  /** Terminate the live pid; resolves once it is dead (or could not be killed). */
+  killProcess?: (pid: number) => Promise<{ ok: boolean; forced: boolean }>;
+  /** Liveness recheck AFTER kill — the guard gate. Must return false before respawn. */
+  isProcessAlive?: (pid: number) => boolean;
+  /** Respawn the session once the old writer is confirmed gone. */
+  respawn: () => Promise<import("./process-manager.js").SpawnResult>;
+}
+
+export interface ForceTakeoverResult {
+  ok: boolean;
+  /** Set on refusal/failure: "kill_failed" (old pid would not die) or "respawn_failed". */
+  reason?: "kill_failed" | "respawn_failed";
+  spawnResult?: import("./process-manager.js").SpawnResult;
+}
+
+export async function forceTakeover(pid: number, deps: ForceTakeoverDeps): Promise<ForceTakeoverResult> {
+  const kill = deps.killProcess ?? ((p: number) => platformKillProcess(p, { timeoutMs: 5000 }));
+  const isAlive = deps.isProcessAlive ?? ((p: number) => platformIsProcessAlive(p));
+
+  // 1. Graceful SIGTERM → (platform escalates to SIGKILL after timeout).
+  await kill(pid);
+
+  // 2. Confirm clean exit — the double-writer GATE. Never respawn over a live
+  //    writer: if the old pid is somehow still alive, refuse.
+  if (isAlive(pid)) {
+    return { ok: false, reason: "kill_failed" };
+  }
+
+  // 3. Old writer is gone → safe to respawn the single writer.
+  const spawnResult = await deps.respawn();
+  if (!spawnResult.success) {
+    return { ok: false, reason: "respawn_failed", spawnResult };
+  }
+  return { ok: true, spawnResult };
+}
 
 /** Helper: validate session exists, return it or send error response */
 function getSessionOrFail(sessionManager: SessionManager, id: string): { session: any } | { error: ApiResponse } {
@@ -191,6 +247,115 @@ export function registerSessionApi(fastify: FastifyInstance, deps: SessionApiDep
       browserGateway.broadcastSessionUpdated(id, updates);
       piGateway.sendToSession(id, { type: "rename_session", sessionId: id, name });
       return { success: true } satisfies ApiResponse;
+    },
+  );
+
+  // POST /api/session/:id/resurrect
+  //
+  // Component B — the operator's "bring it back, no matter what" (session-
+  // resurrection design-pass §3-B / §4). State-aware bring-back to
+  // dashboard-interactable, modeled on the sibling rename route above:
+  //
+  //   case 1  bridge-connected-live → clear tombstone + rebind (display). The
+  //           live :9999 socket IS the transport — no respawn. mode:"display".
+  //   case 2  bridgeless-live (live pid, no bridge = the Cartographer-2 case) →
+  //           controlled single-writer takeover (RATIFIED Option 1): SIGTERM the
+  //           live pid → confirm clean exit → respawn `pi --session` so the new
+  //           process loads the bridge + registers. Double-writer guarded.
+  //           mode:"respawn".
+  //   case 3  truly-ended (no live process) → clean `pi --session` continue
+  //           respawn (the existing path). mode:"respawn".
+  fastify.post<IdParams>(
+    "/api/session/:id/resurrect",
+    async (request, reply) => {
+      const { id } = request.params;
+      const result = getSessionOrFail(sessionManager, id);
+      if ("error" in result) {
+        reply.code(404);
+        return result.error;
+      }
+      const session = result.session;
+
+      // CC sessions are correctly-ended read-only views — never resurrected.
+      if (session.source === "claude-code") {
+        reply.code(400);
+        return { success: false, error: "claude-code sessions are read-only and cannot be resurrected" } satisfies ApiResponse;
+      }
+
+      // ── case 1: bridge-connected-live ────────────────────────────────
+      // A live :9999 bridge is the strongest proof of life + already carries
+      // transport. Clear the tombstone (if any) and rebind; no respawn.
+      if (piGateway.isSessionConnected(id)) {
+        resurrectSession(
+          id,
+          { sessionManager, browserGateway },
+          { alive: true, ...(typeof session.pid === "number" ? { pid: session.pid } : {}) },
+        );
+        return { success: true, data: { resurrected: true, mode: "display" } } satisfies ApiResponse<{ resurrected: boolean; mode: string }>;
+      }
+
+      // Resolve live-process state via the registry UUID-join + kill-0.
+      const liveness = resolveDriverLiveness(id);
+
+      // Shared respawn-continue path (cases 2 + 3). Returns the raw
+      // SpawnResult so both `forceTakeover` (case 2) and case 3 read `.success`
+      // off the same shape. Mirrors the resume endpoint's bookkeeping: tag the
+      // user-resume intent "front", register the headless pid, stamp
+      // pendingDashboardSpawns. Callers guard `session.sessionFile` first.
+      const doRespawnContinue = async (): Promise<import("./process-manager.js").SpawnResult> => {
+        pendingResumeIntents?.record(id, "front");
+        const config = loadConfig();
+        const spawnResult = await spawnPiSession(session.cwd, {
+          sessionFile: session.sessionFile!,
+          mode: "continue",
+          strategy: config.spawnStrategy,
+        });
+        if (spawnResult.process && spawnResult.pid) {
+          browserGateway.headlessPidRegistry.register(
+            spawnResult.pid,
+            session.cwd,
+            spawnResult.process,
+            spawnResult.spawnToken,
+          );
+        }
+        if (spawnResult.dashboardSpawned && spawnResult.success) {
+          pendingDashboardSpawns?.set(session.cwd, (pendingDashboardSpawns?.get(session.cwd) ?? 0) + 1);
+        }
+        return spawnResult;
+      };
+
+      // ── case 2: bridgeless-live → controlled single-writer takeover ──
+      if (liveness.alive && typeof liveness.pid === "number") {
+        if (!session.sessionFile) {
+          reply.code(400);
+          return { success: false, error: "session file is unknown" } satisfies ApiResponse;
+        }
+        const takeover = await forceTakeover(liveness.pid, { respawn: doRespawnContinue });
+        if (!takeover.ok) {
+          // kill_failed → never respawned over a live writer (guard held).
+          reply.code(takeover.reason === "kill_failed" ? 409 : 500);
+          return {
+            success: false,
+            error:
+              takeover.reason === "kill_failed"
+                ? `live process ${liveness.pid} did not exit; refusing to respawn (double-writer guard)`
+                : `respawn failed after takeover${takeover.spawnResult ? `: ${takeover.spawnResult.message}` : ""}`,
+          } satisfies ApiResponse;
+        }
+        return { success: true, data: { resurrected: true, mode: "respawn" } } satisfies ApiResponse<{ resurrected: boolean; mode: string }>;
+      }
+
+      // ── case 3: truly-ended → clean continue respawn ─────────────────
+      if (!session.sessionFile) {
+        reply.code(400);
+        return { success: false, error: "session file is unknown" } satisfies ApiResponse;
+      }
+      const respawn = await doRespawnContinue();
+      if (!respawn.success) {
+        reply.code(500);
+        return { success: false, error: respawn.message } satisfies ApiResponse;
+      }
+      return { success: true, data: { resurrected: true, mode: "respawn" } } satisfies ApiResponse<{ resurrected: boolean; mode: string }>;
     },
   );
 

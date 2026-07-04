@@ -88,12 +88,14 @@ function logCompatibilityWarning(store: BootstrapStateStore): void {
   }
 }
 
-const SUBCOMMANDS = ["start", "stop", "restart", "status", "upgrade-pi"] as const;
+const SUBCOMMANDS = ["start", "stop", "restart", "status", "upgrade-pi", "resurrect"] as const;
 type Subcommand = (typeof SUBCOMMANDS)[number];
 
 export interface ParsedArgs {
   subcommand: Subcommand | null;
   flags: Partial<ServerConfig>;
+  /** Positional session id for `resurrect <id>`. Undefined for other subcommands. */
+  resurrectId?: string;
 }
 
 /**
@@ -103,6 +105,7 @@ export interface ParsedArgs {
 export function parseArgs(args: string[]): ParsedArgs {
   const flags: Partial<ServerConfig> = {};
   let subcommand: Subcommand | null = null;
+  let resurrectId: string | undefined;
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -111,6 +114,13 @@ export function parseArgs(args: string[]): ParsedArgs {
     // Check for subcommand (first positional arg)
     if (!subcommand && SUBCOMMANDS.includes(arg as Subcommand)) {
       subcommand = arg as Subcommand;
+      continue;
+    }
+
+    // `resurrect <id>` — capture the first non-flag positional after the
+    // subcommand as the session id.
+    if (subcommand === "resurrect" && resurrectId === undefined && !arg.startsWith("-")) {
+      resurrectId = arg;
       continue;
     }
 
@@ -130,7 +140,7 @@ export function parseArgs(args: string[]): ParsedArgs {
     }
   }
 
-  return { subcommand, flags };
+  return { subcommand, flags, ...(resurrectId !== undefined ? { resurrectId } : {}) };
 }
 
 /**
@@ -154,6 +164,7 @@ export function buildConfig(flags: Partial<ServerConfig>): ServerConfig {
     editor: fileConfig.editor,
     openspec: fileConfig.openspec,
     reattachPlacement: fileConfig.reattachPlacement,
+    resurrectionSweepMs: fileConfig.resurrectionSweepMs,
     resolvedTrustedNetworks: fileConfig.resolvedTrustedNetworks,
     corsAllowedOrigins: fileConfig.cors.allowedOrigins,
     // Fixture mode (deterministic visual/e2e testing — disables mDNS-advertise,
@@ -593,6 +604,47 @@ async function cmdUpgradePi(config: ServerConfig): Promise<void> {
   console.log(`[upgrade-pi] ✓ installed ${res.installed.join(", ")}`);
 }
 
+/**
+ * `pi-dashboard resurrect <id>` — Component B CLI sugar (session-resurrection
+ * design-pass §4). POSTs `/api/session/:id/resurrect` to the running dashboard,
+ * which performs the state-aware bring-back (display / takeover / respawn).
+ * Requires a running dashboard — there is no offline resurrect (the server owns
+ * the session registry + spawn path).
+ */
+async function cmdResurrect(config: ServerConfig, id: string | undefined): Promise<void> {
+  if (!id) {
+    console.error("[resurrect] usage: pi-dashboard resurrect <session-id>");
+    process.exit(1);
+  }
+  const status = await isDashboardRunning(config.port);
+  if (!status.running) {
+    console.error(
+      `[resurrect] no dashboard running on port ${config.port}; start one first (pi-dashboard start)`,
+    );
+    process.exit(1);
+  }
+  try {
+    const res = await fetch(
+      `http://localhost:${config.port}/api/session/${encodeURIComponent(id!)}/resurrect`,
+      { method: "POST", headers: { "content-type": "application/json" }, body: "{}" },
+    );
+    const body = (await res.json().catch(() => ({}))) as {
+      success?: boolean;
+      error?: string;
+      data?: { resurrected?: boolean; mode?: string };
+    };
+    if (!res.ok || body.success === false) {
+      console.error(`[resurrect] failed: HTTP ${res.status} ${body.error ?? ""}`.trim());
+      process.exit(1);
+    }
+    const mode = body.data?.mode ?? "?";
+    console.log(`[resurrect] ✓ session ${id} resurrected (mode: ${mode})`);
+  } catch (err) {
+    console.error(`[resurrect] failed to reach server: ${(err as Error).message ?? err}`);
+    process.exit(1);
+  }
+}
+
 async function cmdStatus(port: number): Promise<void> {
   // 1. Try mDNS discovery first
   try {
@@ -667,7 +719,7 @@ async function main() {
   installCrashSafetyNet();
   ensureConfig();
 
-  const { subcommand, flags } = parseArgs(process.argv.slice(2));
+  const { subcommand, flags, resurrectId } = parseArgs(process.argv.slice(2));
   const config = buildConfig(flags);
 
   switch (subcommand) {
@@ -685,6 +737,9 @@ async function main() {
       break;
     case "upgrade-pi":
       await cmdUpgradePi(config);
+      break;
+    case "resurrect":
+      await cmdResurrect(config, resurrectId);
       break;
     default:
       // No subcommand — run in foreground (backward compatible)

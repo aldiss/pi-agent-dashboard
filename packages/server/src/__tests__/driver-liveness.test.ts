@@ -37,9 +37,9 @@ describe("driver-liveness (Fix L)", () => {
     expect(pidAlive(NaN as unknown as number)).toBe(false);
   });
 
-  it("ALIVE: UUID-join hit + kill-0 alive → {alive:true, name} (the false-ended driver, rescued)", () => {
+  it("ALIVE: UUID-join hit + kill-0 alive → {alive:true, name, pid} (the false-ended driver, rescued)", () => {
     writeEntry("Don", { name: "Don", pid: ALIVE_PID, sessionId: "uuid-don-live" });
-    expect(resolveDriverLiveness("uuid-don-live")).toEqual({ alive: true, name: "Don" });
+    expect(resolveDriverLiveness("uuid-don-live")).toEqual({ alive: true, name: "Don", pid: ALIVE_PID });
   });
 
   it("DEAD: UUID-join hit but pid dead → {alive:false} (genuinely ended, stays ended+hidden)", () => {
@@ -60,7 +60,7 @@ describe("driver-liveness (Fix L)", () => {
     // Querying a sessionId that no entry carries → no bind, even though the pid is alive.
     expect(resolveDriverLiveness("uuid-not-present").alive).toBe(false);
     // Querying the real one → binds.
-    expect(resolveDriverLiveness("uuid-the-real-one")).toEqual({ alive: true, name: "Reused" });
+    expect(resolveDriverLiveness("uuid-the-real-one")).toEqual({ alive: true, name: "Reused", pid: ALIVE_PID });
   });
 
   it("C3 heartbeat is display-only: a stale lastActivityAt does NOT make a kill-0-alive driver ended", () => {
@@ -71,7 +71,7 @@ describe("driver-liveness (Fix L)", () => {
       sessionId: "uuid-quiet",
       activity: { lastActivityAt: "2020-01-01T00:00:00.000Z" },
     });
-    expect(resolveDriverLiveness("uuid-quiet")).toEqual({ alive: true, name: "Quiet" });
+    expect(resolveDriverLiveness("uuid-quiet")).toEqual({ alive: true, name: "Quiet", pid: ALIVE_PID });
   });
 
   it("fail-safe: empty/absent registry dir → {alive:false} (keeps the ended default, never throws)", () => {
@@ -86,6 +86,6 @@ describe("driver-liveness (Fix L)", () => {
   it("robust: an unreadable/partial JSON registry file is skipped, not fatal", () => {
     writeFileSync(join(regDir, "Broken.json"), "{ this is not json");
     writeEntry("Good", { name: "Good", pid: ALIVE_PID, sessionId: "uuid-good" });
-    expect(resolveDriverLiveness("uuid-good")).toEqual({ alive: true, name: "Good" });
+    expect(resolveDriverLiveness("uuid-good")).toEqual({ alive: true, name: "Good", pid: ALIVE_PID });
   });
 });
