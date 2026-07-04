@@ -7,6 +7,7 @@ import path from "node:path";
 import os from "node:os";
 
 import { registerBridgeExtension, findBundledExtension } from "@blackbelt-technology/pi-dashboard-shared/bridge-register.js";
+import { SettingsUnparseableError } from "@blackbelt-technology/pi-dashboard-shared/settings-io.js";
 
 describe("bridge extension registration (server context)", () => {
   let tmpDir: string;
@@ -48,13 +49,17 @@ describe("bridge extension registration (server context)", () => {
     expect(settings.packages).toContain("/test/extension");
   });
 
-  it("should not crash on malformed settings.json", () => {
+  it("does NOT clobber a malformed settings.json — throws + preserves the file (mode-I fix)", () => {
     fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
-    fs.writeFileSync(settingsPath, "not valid json{{{");
-    // Should not throw — starts fresh
-    registerBridgeExtension("/test/extension");
-    const settings = JSON.parse(fs.readFileSync(settingsPath, "utf-8"));
-    expect(settings.packages).toContain("/test/extension");
+    const corrupt = "not valid json{{{";
+    fs.writeFileSync(settingsPath, corrupt);
+    // PREVIOUS behavior (the bug): "start fresh" → the next write CLOBBERED every
+    // other settings.json key (defaultProvider/model/thinking/pluginBridges/
+    // workflows). This was live-witnessed twice during D6 (dl-4565/4566). The safe
+    // behavior is to REFUSE: throw SettingsUnparseableError and leave the real
+    // (concurrently-written / corrupt) file untouched, so nothing is clobbered.
+    expect(() => registerBridgeExtension("/test/extension")).toThrow(SettingsUnparseableError);
+    expect(fs.readFileSync(settingsPath, "utf-8")).toBe(corrupt); // NOT clobbered
   });
 
   it("should not crash when settings directory does not exist", () => {

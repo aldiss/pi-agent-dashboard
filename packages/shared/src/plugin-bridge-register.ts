@@ -10,9 +10,9 @@
  * - Uses atomic write (tmp + rename) for all updates.
  * - Detects path conflicts (existing entry with mismatched path).
  */
-import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { readSettingsOrThrow, atomicWriteSettings, SettingsUnparseableError } from "./settings-io.js";
 
 export interface PluginBridgeRegisterOptions {
   homedir?: string;
@@ -20,29 +20,26 @@ export interface PluginBridgeRegisterOptions {
 
 export type PluginBridgeConflict =
   | { type: "ok" }
-  | { type: "conflict"; existingPath: string; newPath: string };
+  | { type: "conflict"; existingPath: string; newPath: string }
+  | { type: "skipped"; reason: string };
 
 function getSettingsPath(homedir?: string): string {
   const home = homedir ?? process.env.HOME ?? process.env.USERPROFILE ?? os.homedir();
   return path.join(home, ".pi", "agent", "settings.json");
 }
 
+// Delegates to the canonical strict reader (settings-io): absent/empty → {},
+// but an existing-yet-UNPARSEABLE settings.json THROWS SettingsUnparseableError
+// instead of returning {} (the mode-I clobber fix). Every caller below catches
+// it and SKIPS the write, so a concurrent/partial write is never overwritten
+// with a fresh object.
 function readSettings(settingsPath: string): Record<string, unknown> {
-  try {
-    if (!fs.existsSync(settingsPath)) return {};
-    const raw = fs.readFileSync(settingsPath, "utf-8").trim();
-    if (!raw) return {};
-    return JSON.parse(raw);
-  } catch {
-    return {};
-  }
+  return readSettingsOrThrow(settingsPath);
 }
 
 function writeSettings(settingsPath: string, settings: Record<string, unknown>): void {
-  fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
-  const tmp = settingsPath + ".tmp." + process.pid;
-  fs.writeFileSync(tmp, JSON.stringify(settings, null, 2) + "\n");
-  fs.renameSync(tmp, settingsPath);
+  // Atomic write (unique temp + fsync + rename) via the canonical writer.
+  atomicWriteSettings(settingsPath, settings);
 }
 
 function getManagedBridges(
@@ -72,7 +69,18 @@ export function registerPluginBridge(
   opts: PluginBridgeRegisterOptions = {},
 ): PluginBridgeConflict {
   const settingsPath = getSettingsPath(opts.homedir);
-  const settings = readSettings(settingsPath);
+  let settings: Record<string, unknown>;
+  try {
+    settings = readSettings(settingsPath);
+  } catch (err) {
+    if (err instanceof SettingsUnparseableError) {
+      console.error(
+        `[plugin-bridge] settings.json unparseable — SKIPPING registration of "${pluginId}" to avoid clobbering it: ${err.message}`,
+      );
+      return { type: "skipped", reason: err.message };
+    }
+    throw err;
+  }
   const managed = getManagedBridges(settings);
   const key = MANAGED_PREFIX + pluginId;
 
@@ -99,7 +107,18 @@ export function deregisterPluginBridge(
   opts: PluginBridgeRegisterOptions = {},
 ): void {
   const settingsPath = getSettingsPath(opts.homedir);
-  const settings = readSettings(settingsPath);
+  let settings: Record<string, unknown>;
+  try {
+    settings = readSettings(settingsPath);
+  } catch (err) {
+    if (err instanceof SettingsUnparseableError) {
+      console.error(
+        `[plugin-bridge] settings.json unparseable — SKIPPING deregistration of "${pluginId}" to avoid clobbering it: ${err.message}`,
+      );
+      return;
+    }
+    throw err;
+  }
   const managed = getManagedBridges(settings);
   const key = MANAGED_PREFIX + pluginId;
 
@@ -122,7 +141,16 @@ export function registerAllPluginBridges(
 ): Record<string, PluginBridgeConflict> {
   const results: Record<string, PluginBridgeConflict> = {};
   for (const { pluginId, bridgePath } of plugins) {
-    results[pluginId] = registerPluginBridge(pluginId, bridgePath, opts);
+    // Boot-safety: this runs UNWRAPPED at server.ts start(); a single plugin's
+    // registration failure (unparseable settings, write error) must never crash
+    // server boot. Log loud + mark skipped, never clobber, never throw upward.
+    try {
+      results[pluginId] = registerPluginBridge(pluginId, bridgePath, opts);
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      console.error(`[plugin-bridge] registration failed for "${pluginId}" (non-fatal, skipped): ${reason}`);
+      results[pluginId] = { type: "skipped", reason };
+    }
   }
   return results;
 }
@@ -134,6 +162,14 @@ export function listManagedBridges(
   opts: PluginBridgeRegisterOptions = {},
 ): Record<string, string> {
   const settingsPath = getSettingsPath(opts.homedir);
-  const settings = readSettings(settingsPath);
+  let settings: Record<string, unknown>;
+  try {
+    settings = readSettings(settingsPath);
+  } catch (err) {
+    console.error(
+      `[plugin-bridge] settings.json unparseable — listing zero managed bridges: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return {};
+  }
   return getManagedBridges(settings);
 }

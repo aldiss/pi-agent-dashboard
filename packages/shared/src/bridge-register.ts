@@ -11,6 +11,7 @@ import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { createRequire } from "node:module";
+import { readSettingsOrThrow, atomicWriteSettings } from "./settings-io.js";
 
 /**
  * Check that a candidate path is a valid, stable extension directory.
@@ -117,16 +118,15 @@ export function registerBridgeExtension(
     ?? process.env.USERPROFILE
     ?? os.homedir();
   const settingsPath = path.join(home, ".pi", "agent", "settings.json");
-  const settingsDir = path.dirname(settingsPath);
-  fs.mkdirSync(settingsDir, { recursive: true });
 
-  let settings: Record<string, unknown> = {};
-  try {
-    if (fs.existsSync(settingsPath)) {
-      const raw = fs.readFileSync(settingsPath, "utf-8").trim();
-      if (raw) settings = JSON.parse(raw);
-    }
-  } catch { /* start fresh */ }
+  // Read STRICTLY (mode-I clobber fix): absent/empty settings.json → a fresh
+  // `{}` is legitimate, but an existing-yet-UNPARSEABLE settings.json THROWS
+  // (SettingsUnparseableError) instead of starting from `{}`. A concurrent or
+  // partial write must NEVER be overwritten with a fresh object — that is the
+  // clobber that erased provider/model/thinking/pluginBridges/workflows keys.
+  // Both callers are wrapped (cli.ts bootstrap try/catch → bridgeRegistrationError;
+  // server.ts try/catch → loud log + continue), so the throw is surfaced, not fatal.
+  const settings = readSettingsOrThrow(settingsPath);
 
   const packages = Array.isArray(settings.packages) ? settings.packages as string[] : [];
 
@@ -153,12 +153,8 @@ export function registerBridgeExtension(
   cleaned.push(extensionPath);
   settings.packages = cleaned;
 
-  try {
-    const tmp = settingsPath + ".tmp";
-    fs.writeFileSync(tmp, JSON.stringify(settings, null, 2) + "\n");
-    fs.renameSync(tmp, settingsPath);
-    console.log(`[dashboard] Registered bridge extension in pi settings: ${extensionPath}`);
-  } catch (err) {
-    console.error("[dashboard] Failed to register bridge extension:", err);
-  }
+  // Atomic write (unique temp + fsync + rename) via the canonical settings
+  // writer — never a bare writeFileSync, never a fixed-name temp that races.
+  atomicWriteSettings(settingsPath, settings);
+  console.log(`[dashboard] Registered bridge extension in pi settings: ${extensionPath}`);
 }

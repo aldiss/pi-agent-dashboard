@@ -278,8 +278,19 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
   const __serverDir = path.dirname(fileURLToPath(import.meta.url));
   const extPath = findBundledExtension(path.resolve(__serverDir, "..", "..", ".."));
   if (!isFixture && extPath) {
-    registerBridgeExtension(extPath);
-    console.log(`[dashboard] Bridge extension registered: ${extPath}`);
+    try {
+      registerBridgeExtension(extPath);
+      console.log(`[dashboard] Bridge extension registered: ${extPath}`);
+    } catch (err) {
+      // Never crash boot over bridge registration, and NEVER clobber
+      // settings.json: readSettingsOrThrow throws on an unparseable /
+      // concurrently-written settings.json instead of overwriting it with `{}`.
+      // Log loud + continue — sessions still spawn; the next boot registers once
+      // settings.json is valid again. (mode-I racy-settings fix, Stage-2.)
+      console.error(
+        `[dashboard] Bridge extension registration SKIPPED (settings.json unparseable/unwritable — NOT clobbered): ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   } else if (!isFixture) {
     console.warn(`[dashboard] Bridge extension NOT found (searched from ${__serverDir}). ` +
       `Sessions will spawn but never connect to the gateway. ` +
