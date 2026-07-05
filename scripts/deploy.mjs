@@ -25,14 +25,14 @@
  *   flags: --prod-root <dir> --skip-tests --skip-client-build --no-archive-guard
  */
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, rmSync, symlinkSync, readlinkSync, writeFileSync, renameSync, realpathSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, symlinkSync, readlinkSync, readFileSync, writeFileSync, renameSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
 const REPO = resolve(process.argv[1], "..", "..");
 
 function parseArgs(argv) {
-  const a = { prodRoot: join(homedir(), ".pi-dashboard-prod"), restart: false, rollback: false, skipTests: false, skipClientBuild: false, archiveGuard: true, registerBridgeOnly: false };
+  const a = { prodRoot: join(homedir(), ".pi-dashboard-prod"), restart: false, rollback: false, skipTests: false, skipClientBuild: false, archiveGuard: true, registerBridgeOnly: false, noBridgeRegister: false };
   for (let i = 0; i < argv.length; i++) {
     const k = argv[i];
     if (k === "--ref") a.ref = argv[++i];
@@ -43,6 +43,7 @@ function parseArgs(argv) {
     else if (k === "--skip-client-build") a.skipClientBuild = true;
     else if (k === "--no-archive-guard") a.archiveGuard = false;
     else if (k === "--register-bridge-only") a.registerBridgeOnly = true;
+    else if (k === "--no-bridge-register") a.noBridgeRegister = true;
   }
   return a;
 }
@@ -148,7 +149,27 @@ function rollback(a) {
  * dashboard packages (npm:*, other extensions) are preserved untouched. Runs as part
  * of every deploy so a bridge change is only live once committed + deployed.
  */
+function isRealProdRoot(a) {
+  // The REAL prod-root is ~/.pi-dashboard-prod. An isolated/jail build passes a
+  // DIFFERENT --prod-root; for those we must never touch the operator's live settings.
+  return resolve(a.prodRoot) === resolve(join(homedir(), ".pi-dashboard-prod"));
+}
+
 function registerBridge(a) {
+  // JAIL-ISOLATION (X11-a): registerBridge writes the operator's REAL
+  // ~/.pi/agent/settings.json. An isolated/jail build (--prod-root != the real
+  // ~/.pi-dashboard-prod) or an explicit --no-bridge-register MUST NOT touch the
+  // operator's live settings — a Stage-2 jail build clobbered settings exactly here
+  // (and the readFileSync-was-never-imported bug below made every write start from {}).
+  // Only a real-prod-root deploy registers the release bridge in live settings.
+  const isolated = !isRealProdRoot(a);
+  if (a.noBridgeRegister || isolated) {
+    const why = a.noBridgeRegister
+      ? "--no-bridge-register"
+      : `isolated build: --prod-root ${a.prodRoot} != ~/.pi-dashboard-prod`;
+    log(`bridge boundary: SKIP settings.json registration (${why}) — live settings untouched (jail-isolation)`);
+    return;
+  }
   const settingsPath = join(homedir(), ".pi", "agent", "settings.json");
   // Read settings; NEVER clobber an existing-but-unparseable file. A concurrent pi
   // write can make JSON.parse throw mid-write — starting from {} would wipe every other
