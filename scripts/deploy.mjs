@@ -25,7 +25,7 @@
  *   flags: --prod-root <dir> --skip-tests --skip-client-build --no-archive-guard
  */
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, rmSync, symlinkSync, readlinkSync, readFileSync, writeFileSync, renameSync, realpathSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, symlinkSync, readlinkSync, readFileSync, readdirSync, writeFileSync, renameSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -155,6 +155,34 @@ function isRealProdRoot(a) {
   return resolve(a.prodRoot) === resolve(join(homedir(), ".pi-dashboard-prod"));
 }
 
+function releasePluginBridges(releaseRoot) {
+  // X11-b: discover plugin-bridge entries under a RELEASE tree — a node-builtins
+  // mirror of the runtime discoverPlugins (loader.ts): glob <root>/packages/*, prefer
+  // dashboard-plugin.json else package.json#pi-dashboard-plugin, resolve manifest.bridge
+  // against the package dir. Returns { "dashboard-<id>": <absolute release bridge path> }
+  // (the same managed-key scheme registerPluginBridge uses in settings.json).
+  const out = {};
+  const packagesDir = join(releaseRoot, "packages");
+  let entries;
+  try { entries = readdirSync(packagesDir); } catch { return out; }
+  for (const entry of entries) {
+    const pkgDir = join(packagesDir, entry);
+    let manifest = null;
+    const adj = join(pkgDir, "dashboard-plugin.json");
+    if (existsSync(adj)) {
+      try { manifest = JSON.parse(readFileSync(adj, "utf8")); } catch { continue; }
+    } else {
+      const pj = join(pkgDir, "package.json");
+      if (!existsSync(pj)) continue;
+      try { manifest = JSON.parse(readFileSync(pj, "utf8"))["pi-dashboard-plugin"] ?? null; } catch { continue; }
+    }
+    if (!manifest || typeof manifest !== "object") continue;
+    if (typeof manifest.id !== "string" || typeof manifest.bridge !== "string") continue;
+    out["dashboard-" + manifest.id] = resolve(pkgDir, manifest.bridge);
+  }
+  return out;
+}
+
 function registerBridge(a) {
   // JAIL-ISOLATION (X11-a): registerBridge writes the operator's REAL
   // ~/.pi/agent/settings.json. An isolated/jail build (--prod-root != the real
@@ -186,9 +214,9 @@ function registerBridge(a) {
   // server auto-registers (server.ts findBundledExtension realpaths it) — avoids a
   // duplicate {current, sha} registration = a double bridge per session.
   const currentLink = join(a.prodRoot, "current");
-  let target;
-  try { target = join(realpathSync(currentLink), "packages", "extension"); }
-  catch { target = join(currentLink, "packages", "extension"); }
+  let releaseRoot;
+  try { releaseRoot = realpathSync(currentLink); } catch { releaseRoot = currentLink; }
+  const target = join(releaseRoot, "packages", "extension");
   const pkgs = Array.isArray(settings.packages) ? settings.packages : [];
   const isDashboardBridge = (p) =>
     typeof p === "string" &&
@@ -199,11 +227,31 @@ function registerBridge(a) {
   const kept = pkgs.filter((p) => !isDashboardBridge(p) || p === target);
   if (!kept.includes(target)) kept.push(target);
   settings.packages = kept;
+  // X11-b: pin the RELEASE plugin-bridge(s) in dashboardPluginBridges + prune stale
+  // dev-tree / non-release dashboard-* entries (same D6 treatment as the main bridge).
+  // The release server discovers these under its OWN cwd (= the release dir), but
+  // registerPluginBridge returns "conflict" (never overwrites) against a mismatched
+  // entry — so a stale dev-tree path is STICKY until deploy prunes it. Rebuild the
+  // dashboard-managed set from the release; a non-managed key (no dashboard- prefix)
+  // is preserved untouched.
+  const releaseBridges = releasePluginBridges(releaseRoot);
+  const existingPB = (settings.dashboardPluginBridges && typeof settings.dashboardPluginBridges === "object" && !Array.isArray(settings.dashboardPluginBridges))
+    ? settings.dashboardPluginBridges : {};
+  const pbNext = {};
+  for (const [k, v] of Object.entries(existingPB)) if (!k.startsWith("dashboard-")) pbNext[k] = v;
+  const pbRemoved = Object.entries(existingPB)
+    .filter(([k, v]) => k.startsWith("dashboard-") && releaseBridges[k] !== v)
+    .map(([k, v]) => `${k}=${v}`);
+  for (const [k, v] of Object.entries(releaseBridges)) pbNext[k] = v;
+  settings.dashboardPluginBridges = pbNext;
   const tmp = settingsPath + ".deploytmp";
   writeFileSync(tmp, JSON.stringify(settings, null, 2) + "\n");
   renameSync(tmp, settingsPath);
   log(`bridge boundary: registered ${target}`);
   log(`bridge boundary: removed ${removed.length} non-target bridge path(s)${removed.length ? ": " + removed.join(", ") : ""}`);
+  const pbReg = Object.entries(releaseBridges).map(([k, v]) => `${k} -> ${v}`);
+  log(`plugin-bridge boundary: registered ${pbReg.length} release plugin-bridge(s)${pbReg.length ? ": " + pbReg.join(", ") : ""}`);
+  log(`plugin-bridge boundary: removed ${pbRemoved.length} stale/dev-tree plugin-bridge path(s)${pbRemoved.length ? ": " + pbRemoved.join(", ") : ""}`);
 }
 
 function main() {
