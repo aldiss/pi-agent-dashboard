@@ -103,6 +103,26 @@ export function createPiGateway(
     }
   }
 
+  // G5 (terminate-on-displace): register a socket for a sessionId, first closing any
+  // DIFFERENT socket previously mapped to the same id. Without this, a same-sessionId
+  // reconnect (~100× under a reload storm) overwrites the map entry and LEAKS the
+  // displaced socket's FD (orphan, never closed) — the leak that feeds the storm
+  // (validation §Design-delta 9). The LATEST socket wins; terminate() is synchronous +
+  // idempotent (no-op on an already-closing socket). Idempotent when prev === ws (same
+  // socket re-registering). The displaced socket's 'close' handler is CAS-guarded (below)
+  // so its late fire never disconnects the new owner.
+  function setConnection(sessionId: string, ws: WebSocket) {
+    const prev = connections.get(sessionId);
+    if (prev && prev !== ws) {
+      try {
+        prev.terminate();
+      } catch {
+        /* already closing/closed — fine */
+      }
+    }
+    connections.set(sessionId, ws);
+  }
+
   function resetHeartbeat(sessionId: string) {
     const existing = heartbeatTimers.get(sessionId);
     if (existing) clearTimeout(existing);
@@ -371,7 +391,7 @@ export function createPiGateway(
             if (!currentSessionId && "sessionId" in msg && (msg as any).sessionId) {
               const sid: string = (msg as any).sessionId;
               currentSessionId = sid;
-              connections.set(sid, ws);
+              setConnection(sid, ws);
               // Auto-create a placeholder session so events aren't lost
               if (!sessionManager.get(sid)) {
                 sessionManager.register({
@@ -406,7 +426,7 @@ export function createPiGateway(
                 }
               }
               currentSessionId = msg.sessionId;
-              connections.set(msg.sessionId, ws);
+              setConnection(msg.sessionId, ws);
 
               sessionManager.register({
                 id: msg.sessionId,
@@ -487,7 +507,11 @@ export function createPiGateway(
         });
 
         ws.on("close", () => {
-          if (currentSessionId) {
+          // CAS (G5): act only as the CURRENT owner of this sessionId. If a newer
+          // socket displaced us (same-id reconnect), it owns the session now — a
+          // displaced socket's late close must NOT trigger a disconnect for the live
+          // session (idempotent register; the displaced FD was already terminated).
+          if (currentSessionId && connections.get(currentSessionId) === ws) {
             console.error(`[gateway] connection closed: ${currentSessionId}`);
             // Don't immediately unregister - wait for heartbeat timeout
             // This handles temporary disconnects
