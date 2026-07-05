@@ -87,6 +87,8 @@ import { registerModelProxyApiKeyRoutes } from "./routes/model-proxy-api-key-rou
 import { registerModelProxyRefreshRoutes } from "./routes/model-proxy-refresh-routes.js";
 import { getModelRegistry, getStreamSimpleFn } from "./model-proxy/registry-singleton.js";
 import { writeConfigPartial } from "./config-api.js";
+import { reclaimPorts } from "./reclaim-ports.js";
+import { startModelProxySecondPort } from "./model-proxy-second-port.js";
 import { loadServerEntries, discoverPlugins, getPluginStatusStore } from "@blackbelt-technology/dashboard-plugin-runtime/server";
 import { createServerPluginContext } from "@blackbelt-technology/dashboard-plugin-runtime/server";
 import { getPluginConfig as getPluginConfigFromFile } from "@blackbelt-technology/pi-dashboard-shared/config.js";
@@ -1433,33 +1435,40 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
       {
         const proxyCfg = loadConfig().modelProxy;
         if (proxyCfg.enabled && proxyCfg.secondPort) {
-          try {
-            const F = (await import("fastify")).default;
-            const sf = F({ logger: false });
-            const proxyAuthGate = createModelProxyAuthGate({
-              getConfig: () => loadConfig().modelProxy,
-              persistKeyUsage: (apiKeys) => {
-                writeConfigPartial({ modelProxy: { apiKeys } });
-              },
-            });
-            sf.addHook("onRequest", proxyAuthGate);
-            registerModelProxyRoutes(sf, {
-              getConfig: () => loadConfig().modelProxy,
-              getRegistry: async () => {
-                try { return await getModelRegistry(); } catch { return null; }
-              },
-              streamSimple: (opts: any) => {
-                const fn = getStreamSimpleFn();
-                if (!fn) throw new Error("streamSimple not available");
-                return fn(opts.model, { messages: opts.messages, system: opts.system, tools: opts.tools }, opts);
-              },
-            });
-            await sf.listen({ port: proxyCfg.secondPort, host: "127.0.0.1" });
-            secondFastify = sf as any;
-            console.log(`Model proxy second port listening at http://127.0.0.1:${proxyCfg.secondPort}`);
-          } catch (err) {
-            console.warn(`Model proxy second port bind failed (continuing without):`, err);
-          }
+          const secondPort = proxyCfg.secondPort;
+          // X4 fail-loud: reclaim-on-start the 2nd port (Stage-2 (a)/(d) treatment) then
+          // bind; on a genuine conflict surface LOUD + mark /api/health.proxySecondPort
+          // DEGRADED — never the old buried soft-fail warn that silently dropped the proxy.
+          // Optional subsystem: a 2nd-port failure must not crash the live server/gateway/fleet.
+          await startModelProxySecondPort(secondPort, {
+            reclaim: (ports) => reclaimPorts(ports),
+            listen: async () => {
+              const F = (await import("fastify")).default;
+              const sf = F({ logger: false });
+              const proxyAuthGate = createModelProxyAuthGate({
+                getConfig: () => loadConfig().modelProxy,
+                persistKeyUsage: (apiKeys) => {
+                  writeConfigPartial({ modelProxy: { apiKeys } });
+                },
+              });
+              sf.addHook("onRequest", proxyAuthGate);
+              registerModelProxyRoutes(sf, {
+                getConfig: () => loadConfig().modelProxy,
+                getRegistry: async () => {
+                  try { return await getModelRegistry(); } catch { return null; }
+                },
+                streamSimple: (opts: any) => {
+                  const fn = getStreamSimpleFn();
+                  if (!fn) throw new Error("streamSimple not available");
+                  return fn(opts.model, { messages: opts.messages, system: opts.system, tools: opts.tools }, opts);
+                },
+              });
+              await sf.listen({ port: secondPort, host: "127.0.0.1" });
+              secondFastify = sf as any;
+            },
+            log: (m) => console.log(m),
+            errorLog: (m, err) => console.error(m, err),
+          });
         }
       }
 

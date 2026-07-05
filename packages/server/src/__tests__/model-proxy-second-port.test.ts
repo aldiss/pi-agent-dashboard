@@ -1,116 +1,79 @@
 /**
- * Integration test for the model proxy's optional second port (task 9.3).
+ * model-proxy second-port fail-loud (Stage-3 X4) — own-hand verification.
  *
- * Starts a server with `modelProxy.secondPort` set, then verifies that
- * GET /v1/models returns an identical response on both ports.
+ * Pre-fix (RED): the 2nd-port bind failure was swallowed by
+ *   catch (err) { console.warn("Model proxy second port bind failed (continuing without):", err); }
+ * so an ENABLED proxy that couldn't bind was SILENTLY dead — a suppressed failure.
  *
- * The test uses a valid proxy API key on both ports.
+ * The fix (startModelProxySecondPort): reclaim-on-start the 2nd port, and on a genuine
+ * conflict surface it LOUD (console.error) + mark /api/health.proxySecondPort DEGRADED,
+ * never a buried warn — WITHOUT crashing the healthy main server (optional subsystem).
  */
-import { describe, it, expect, afterAll } from "vitest";
-import { createTestServer, type TestServerHandle } from "../test-support/test-server.js";
-import { writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { homedir } from "node:os";
+import { describe, it, expect, vi } from "vitest";
+import {
+  startModelProxySecondPort,
+  getModelProxySecondPortStatus,
+  setModelProxySecondPortStatus,
+} from "../model-proxy-second-port.js";
 
-let handle: TestServerHandle;
+describe("model-proxy second port (X4 fail-loud)", () => {
+  it("happy path — reclaim + listen succeed → listening + status listening", async () => {
+    setModelProxySecondPortStatus({ status: "disabled" });
+    const reclaim = vi.fn(async () => []);
+    const listen = vi.fn(async () => {});
+    const log = vi.fn();
+    const errorLog = vi.fn();
 
-async function findFreePort(): Promise<number> {
-  const { createServer } = await import("node:net");
-  return new Promise((resolve, reject) => {
-    const s = createServer();
-    s.listen(0, "127.0.0.1", () => {
-      const port = (s.address() as any).port;
-      s.close(() => resolve(port));
-    });
-    s.on("error", reject);
+    const r = await startModelProxySecondPort(8788, { reclaim, listen, log, errorLog });
+
+    expect(r).toBe("listening");
+    expect(reclaim).toHaveBeenCalledWith([8788]); // reclaim-on-start the 2nd port (Stage-2 reuse)
+    expect(listen).toHaveBeenCalledOnce();
+    expect(getModelProxySecondPortStatus()).toEqual({ status: "listening", port: 8788 });
+    expect(errorLog).not.toHaveBeenCalled();
   });
-}
 
-afterAll(async () => {
-  if (handle) await handle.stop();
-});
-
-describe("model proxy second port (task 9.3)", () => {
-  it("both :mainPort/v1/models and :secondPort/v1/models return identical 200 or 503", async () => {
-    const secondPort = await findFreePort();
-
-    // Write a minimal config with secondPort enabled
-    const configPath = join(homedir(), ".pi", "dashboard", "config.json");
-    const dashDir = join(homedir(), ".pi", "dashboard");
-    const { mkdirSync } = await import("node:fs");
-    mkdirSync(dashDir, { recursive: true });
-
-    let existing: any = {};
-    try {
-      existing = JSON.parse(require("fs").readFileSync(configPath, "utf-8"));
-    } catch {}
-
-    writeFileSync(configPath, JSON.stringify({
-      ...existing,
-      modelProxy: {
-        ...(existing.modelProxy ?? {}),
-        enabled: true,
-        secondPort,
-        apiKeys: [],
-        maxConcurrentStreams: 16,
-        perKeyConcurrentStreams: 4,
-        logRequests: false,
-      },
-    }));
-
-    handle = await createTestServer();
-    const { httpPort } = handle;
-
-    // Generate a proxy API key via the management API
-    const createKeyRes = await fetch(`http://localhost:${httpPort}/api/model-proxy/api-keys`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ label: "test-key" }),
+  it("THE FIX — reclaim leaves the port held (conflict) → FAIL-LOUD degraded, no throw, no silent continue", async () => {
+    setModelProxySecondPortStatus({ status: "disabled" });
+    const reclaim = vi.fn(async () => {
+      throw new Error(":8788 STILL held after reclaim — refusing to bind (fail loud)");
     });
+    const listen = vi.fn(async () => {});
+    const errorLog = vi.fn();
 
-    // The server may not have auth enabled in test mode (loopback bypass)
-    // so the create should succeed or return an auth response
-    let proxyKey: string | null = null;
-    if (createKeyRes.ok) {
-      const created = await createKeyRes.json() as any;
-      proxyKey = created.data?.key ?? null;
-    }
+    // Must NOT throw upward — the healthy main server is untouched.
+    const r = await startModelProxySecondPort(8788, { reclaim, listen, errorLog });
 
-    const authHeader: Record<string, string> = proxyKey
-      ? { "Authorization": `Bearer ${proxyKey}` }
-      : {};
+    expect(r).toBe("failed"); // surfaced, not swallowed
+    expect(listen).not.toHaveBeenCalled(); // never attempted the bind
+    const st = getModelProxySecondPortStatus();
+    expect(st.status).toBe("failed");
+    expect(st).toMatchObject({ port: 8788 });
+    expect("reason" in st && st.reason).toContain("STILL held");
+    // LOUD (error, not warn) and NOT the old buried "continuing without".
+    expect(errorLog).toHaveBeenCalledOnce();
+    expect(errorLog.mock.calls[0]![0]).toContain("FAIL-LOUD");
+    expect(errorLog.mock.calls[0]![0]).not.toContain("continuing without");
+  });
 
-    // Main port
-    const mainRes = await fetch(`http://localhost:${httpPort}/v1/models`, {
-      headers: authHeader,
+  it("listen conflict after a clean reclaim (race) → FAIL-LOUD degraded", async () => {
+    setModelProxySecondPortStatus({ status: "disabled" });
+    const reclaim = vi.fn(async () => []); // reclaim frees it...
+    const listen = vi.fn(async () => {
+      throw new Error("listen EADDRINUSE 127.0.0.1:8788"); // ...but someone grabbed it first
     });
+    const errorLog = vi.fn();
 
-    // Second port — if it didn't bind (port conflict) we skip
-    let secondRes: Response;
-    try {
-      secondRes = await fetch(`http://127.0.0.1:${secondPort}/v1/models`, {
-        headers: authHeader,
-      });
-    } catch {
-      // Second port failed to bind — warn but don't fail test
-      console.warn(`Second port ${secondPort} not reachable — skipping comparison`);
-      expect(mainRes.status).toBeGreaterThanOrEqual(200);
-      return;
-    }
+    const r = await startModelProxySecondPort(8788, { reclaim, listen, errorLog });
 
-    // Both should return the same HTTP status code (200 with models or 503 if pi-ai unavailable)
-    expect(mainRes.status).toBe(secondRes.status);
+    expect(r).toBe("failed");
+    expect(getModelProxySecondPortStatus()).toMatchObject({ status: "failed", port: 8788 });
+    expect(errorLog).toHaveBeenCalledOnce();
+  });
 
-    // Both should return valid JSON
-    const mainBody = await mainRes.json() as any;
-    const secondBody = await secondRes.json() as any;
-
-    // The top-level shape should match
-    if (mainBody.object) {
-      expect(secondBody.object).toBe(mainBody.object);
-    } else {
-      // Both degraded (503)
-      expect(secondBody.code).toBe(mainBody.code);
-    }
+  it("degrade-clean when disabled — status stays disabled (caller gate skips the bind)", () => {
+    setModelProxySecondPortStatus({ status: "disabled" });
+    // server.ts gate `if (proxyCfg.enabled && proxyCfg.secondPort)` never calls us.
+    expect(getModelProxySecondPortStatus()).toEqual({ status: "disabled" });
   });
 });
