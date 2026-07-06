@@ -24,6 +24,11 @@ const ALLOWLIST: readonly string[] = [
   // See change: consolidate-windows-spawn-and-platform-handlers.
   "packages/shared/src/platform/detached-spawn.ts",
   "packages/shared/src/platform/subprocess-adapter.ts",
+  // CC-pane tmux-liveness probe (session-hygiene 3-axis positive-proof-of-dead,
+  // F4/dl-2732): reads `tmux list-panes`/`list-sessions` via execFileSync with
+  // FIXED argv (no shell, no untrusted input), 1s timeout, fail-safe []-on-error.
+  // Reviewed intentional probe — the de-ghoster's live-but-unregistered-driver axis.
+  "packages/server/src/cc-pane-liveness.ts",
 ];
 
 /**
