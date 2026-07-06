@@ -356,10 +356,11 @@ struct ChatMessageRow: View {
             HStack(spacing: 6) {
                 ForEach(Array(message.images.enumerated()), id: \.offset) { _, img in
                     if let data = Data(base64Encoded: img.data), let ui = UIImage(data: data) {
+                        let cell = ImageLayout.thumbnailSize(for: ui.size)
                         Button { onImageTap(ui) } label: {
                             Image(uiImage: ui)
-                                .resizable().scaledToFill()
-                                .frame(width: 140, height: 140)
+                                .resizable().scaledToFit()
+                                .frame(width: cell.width, height: cell.height)
                                 .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                                 .overlay(RoundedRectangle(cornerRadius: 10).stroke(theme.borderPrimary, lineWidth: 1))
                         }
