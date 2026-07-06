@@ -399,3 +399,98 @@ describe("★ retire endpoint — verify-dead guard (Joan invariant #1 + #4) ★
     expect(d.retired).toEqual([]);
   });
 });
+
+describe("tmux name-token over-keep disambiguation (the 9-Alice regression, dl-4971 follow-up)", () => {
+  it("1 live-pid record + N same-name null-pid ghosts + 1 unique live tmux → keeps the live, DEMOTES the ghosts", () => {
+    // The prod regression: 1 live Alice (pid kill-0 alive) + 3 dead Alice ghosts
+    // (null pid, idle, aged) all share nameToken "Alice" and the ONE live tmux
+    // "Alice" kept all 4 via the weak tmux name-axis. The live one is held by the
+    // STRONG pid-kill0 axis, so the ghosts must collapse.
+    const probes = makeProbes({ alivePids: [ALIVE], tmuxSessions: ["Alice"] });
+    const sessions = [
+      s({ id: "alice-live", name: "Alice", status: "active", pid: ALIVE, lastActivityAt: 1_000 }),
+      s({ id: "ghost-1", name: "Alice", status: "idle", lastActivityAt: 1_000 }),
+      s({ id: "ghost-2", name: "Alice", status: "idle", lastActivityAt: 1_000 }),
+      s({ id: "ghost-3", name: "Alice", status: "idle", lastActivityAt: 1_000 }),
+    ];
+    const actions = reconcileSessionHygiene(sessions, probes, { nowMs: 200_000 });
+    // The live Alice is NEVER hidden (invariant #1 — held via pid-kill0).
+    expect(actions.find((a) => a.sessionId === "alice-live" && a.updates.hidden === true)).toBeUndefined();
+    // All 3 ghosts demoted to ended+hidden with the superseded reason.
+    for (const id of ["ghost-1", "ghost-2", "ghost-3"]) {
+      const act = actions.find((a) => a.sessionId === id);
+      expect(act?.updates).toMatchObject({ status: "ended", hidden: true });
+      expect(act?.reason).toBe("demote:tmux-name-superseded");
+    }
+  });
+
+  it("false-demote-safe: a SINGLE null-pid tmux-live driver with NO strong same-name sibling STAYS live", () => {
+    // The legit case the 3rd axis exists for: a live-but-unregistered pi-driver,
+    // null row-pid, running in its own tmux — no strong same-name sibling claims
+    // the name, so it keeps its tmux-axis liveness (never false-demoted).
+    const probes = makeProbes({ tmuxSessions: ["Solo"] });
+    const actions = reconcileSessionHygiene(
+      [s({ id: "solo", name: "Solo", status: "idle", lastActivityAt: 1_000 })],
+      probes,
+      { nowMs: 9_999 },
+    );
+    expect(actions.find((a) => a.sessionId === "solo" && a.updates.hidden === true)).toBeUndefined();
+  });
+
+  it("a registry-live sibling supersedes same-name ghosts even with a STALE row label (uses clean mesh-name)", () => {
+    // The strong-live row's label is stale (∅); its registry clean-name "Bob" is
+    // the tmux/mesh name the ghost matched — so the supersede keys off cleanName.
+    const probes = makeProbes({ registryLive: { "bob-live": "Bob" }, tmuxSessions: ["Bob"] });
+    const sessions = [
+      s({ id: "bob-live", name: "∅", status: "active", lastActivityAt: 1_000 }),
+      s({ id: "bob-ghost", name: "Bob", status: "idle", lastActivityAt: 1_000 }),
+    ];
+    const actions = reconcileSessionHygiene(sessions, probes, { nowMs: 200_000 });
+    const ghost = actions.find((a) => a.sessionId === "bob-ghost");
+    expect(ghost?.updates).toMatchObject({ status: "ended", hidden: true });
+    expect(ghost?.reason).toBe("demote:tmux-name-superseded");
+    // The live Bob is NOT hidden (it gets an F2 name-canon action instead).
+    expect(actions.find((a) => a.sessionId === "bob-live" && a.updates.hidden === true)).toBeUndefined();
+  });
+
+  it("perf: listDriverTmuxSessions is snapshotted ONCE per reconcile pass, not per-record", () => {
+    // The ~27s /api/sessions latency: the uncached tmux probe re-shelled per
+    // record over ~500 rows. The pass now snapshots it once.
+    let tmuxCalls = 0;
+    const base = makeProbes({ tmuxSessions: ["X"] });
+    const probes: HygieneProbes = {
+      ...base,
+      listDriverTmuxSessions: () => { tmuxCalls++; return ["X"]; },
+    };
+    const sessions = Array.from({ length: 50 }, (_, i) =>
+      s({ id: `r${i}`, name: `Ghost${i}`, status: "idle", lastActivityAt: 1_000 }),
+    );
+    reconcileSessionHygiene(sessions, probes, { nowMs: 9_999 });
+    expect(tmuxCalls).toBe(1);
+  });
+
+  it("grace belt: a RECENTLY-active superseded row is NOT immediately demoted under graceMs:0 (invariant #1 residual)", () => {
+    // The degenerate anomaly the belt guards: even though the prod sweep passes
+    // graceMs:0 (agedOut no-op), a superseded verdict is heuristic, so a recently-
+    // active would-be-ghost gets the SUPERSEDED_DEMOTE_MIN_GRACE_MS window and is
+    // never immediately hidden.
+    const probes = makeProbes({ alivePids: [ALIVE], tmuxSessions: ["Twin"] });
+    const nowMs = 500_000;
+    const recent = [
+      s({ id: "twin-strong", name: "Twin", status: "active", pid: ALIVE, lastActivityAt: nowMs - 1_000 }),
+      s({ id: "twin-recent", name: "Twin", status: "idle", lastActivityAt: nowMs - 1_000 }),
+    ];
+    const a1 = reconcileSessionHygiene(recent, probes, { nowMs, graceMs: 0 });
+    expect(a1.find((a) => a.sessionId === "twin-recent" && a.updates.hidden === true)).toBeUndefined();
+
+    // But an OLD superseded sibling (past the belt) IS demoted — real ghosts still collapse.
+    const old = [
+      s({ id: "twin-strong", name: "Twin", status: "active", pid: ALIVE, lastActivityAt: nowMs - 1_000 }),
+      s({ id: "twin-old", name: "Twin", status: "idle", lastActivityAt: nowMs - 300_000 }),
+    ];
+    const a2 = reconcileSessionHygiene(old, probes, { nowMs, graceMs: 0 });
+    const oldAct = a2.find((a) => a.sessionId === "twin-old");
+    expect(oldAct?.updates).toMatchObject({ status: "ended", hidden: true });
+    expect(oldAct?.reason).toBe("demote:tmux-name-superseded");
+  });
+});

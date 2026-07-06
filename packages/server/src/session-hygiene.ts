@@ -68,6 +68,7 @@ export interface LivenessResult {
     | "registry-kill0"
     | "pid-kill0"
     | "tmux-session-alive"
+    | "tmux-name-superseded"
     | "no-live-bind";
   /** Clean canonical name from the live source (registry name / tmux session-name). */
   cleanName?: string;
@@ -162,6 +163,19 @@ function agedOut(s: HygieneSession, nowMs: number, graceMs: number): boolean {
   return nowMs - basis >= graceMs;
 }
 
+/**
+ * Minimum quiet-window before a `tmux-name-superseded` ghost is demoted, applied
+ * EVEN when the caller passes graceMs:0 (the prod sweep + read-path both do). A
+ * superseded verdict is HEURISTIC (no strong proof-of-death — the row was demoted
+ * only because a same-name sibling owns the unique live tmux), so it earns a grace
+ * a strong-proven-dead row does not: a recently-active record is never immediately
+ * hidden. Real ghosts (idle for many minutes / hours / days) are far past this, so
+ * board cleanup is unaffected; the belt only protects the degenerate two-same-name-
+ * live anomaly (a genuinely-live tmux-only driver colliding a strong sibling's
+ * name) — the one invariant-#1 residual of the weak-axis disambiguation.
+ */
+const SUPERSEDED_DEMOTE_MIN_GRACE_MS = 120_000;
+
 /** One reconciliation action: persist `updates` onto the session + broadcast. */
 export interface HygieneAction {
   sessionId: string;
@@ -208,9 +222,59 @@ export function reconcileSessionHygiene(
   // restart never demotes a live-but-not-yet-re-registered driver.
   if (opts.withinPostRestartGrace) return actions;
 
-  for (const s of sessions) {
-    const live = verifySessionLive(s, probes);
+  // ── Probe memoization (perf; dl-4820 read-path latency) ─────────────────
+  // verifySessionLive() calls listDriverTmuxSessions()/listClaudePanes() on every
+  // record that reaches the tmux/CC axes. Over the full fleet (~500 rows) each
+  // UNCACHED probe re-shells `tmux list-sessions`, so the /api/sessions read-path
+  // measured ~20-27s. Both probes are pass-invariant (one tmux/pane snapshot per
+  // reconcile), so snapshot each ONCE here and hand verifySessionLive memoized
+  // readers. Registry/pid probes stay per-record (they are sessionId/pid-specific).
+  const tmuxSnapshot = probes.listDriverTmuxSessions?.() ?? [];
+  const paneSnapshot = probes.listClaudePanes();
+  const memoProbes: HygieneProbes = {
+    ...probes,
+    listDriverTmuxSessions: () => tmuxSnapshot,
+    listClaudePanes: () => paneSnapshot,
+  };
 
+  // ── Liveness (one pass) + tmux name-token disambiguation ────────────────
+  // A tmux session-name is UNIQUE, so a live tmux "Alice" is attributable to
+  // exactly ONE driver. verifySessionLive's tmux axis matches by name-token only,
+  // so a single live "Alice" tmux keeps EVERY same-name null-pid record visible
+  // (the 9-Alice over-keep: 1 live Alice + 8 dead ghosts, all kept). Fix: if a
+  // same-name record is live via a STRONG axis (registry-kill0 / pid-kill0 /
+  // cc-pane-alive), the unique tmux belongs to THAT record — so a same-name record
+  // kept ONLY by the weak tmux name-axis is a dead ghost and is demoted.
+  // False-demote-safe (invariant #1): (a) a genuinely-live null-pid tmux driver
+  // with NO strong same-name sibling keeps its tmux-axis liveness (its name is not
+  // strong-claimed); (b) a superseded record is one BORROWING a strong sibling's
+  // UNIQUE tmux name, so it is structurally a ghost (a real driver owns its own
+  // unique tmux). NOTE the prod sweep passes graceMs:0, so the ordinary agedOut()
+  // is a no-op and a superseded-demote would otherwise be IMMEDIATE; the dead-
+  // handling below therefore applies a dedicated SUPERSEDED_DEMOTE_MIN_GRACE_MS
+  // belt to the superseded case, so a recently-active row in the degenerate
+  // two-same-name-live anomaly is never immediately hidden.
+  const results = sessions.map((s) => ({ s, live: verifySessionLive(s, memoProbes) }));
+  const strongLiveNames = new Set<string>();
+  for (const { s, live } of results) {
+    if (live.live && live.reason !== "tmux-session-alive") {
+      // Use the clean mesh-name (registry/cc-pane name = the tmux session-name)
+      // when present, else the record label. This is the token the ghosts' tmux
+      // match against, so a registry-live row with a stale label still supersedes.
+      const tok = driverNameToken(live.cleanName ?? s.name);
+      if (tok) strongLiveNames.add(tok);
+    }
+  }
+  for (const r of results) {
+    if (r.live.live && r.live.reason === "tmux-session-alive") {
+      const tok = driverNameToken(r.s.name);
+      if (tok && strongLiveNames.has(tok)) {
+        r.live = { live: false, reason: "tmux-name-superseded" };
+      }
+    }
+  }
+
+  for (const { s, live } of results) {
     if (live.live) {
       const updates: Partial<DashboardSession> = {};
       // F2/F4 — canonical-first label (kill ∅ / prompt-text / stale name).
@@ -240,7 +304,15 @@ export function reconcileSessionHygiene(
       // the frozen-"idle" ghosts (REG-absent ∧ tmux-dead) reconciled-nowhere — is
       // DEMOTED to ended+hidden. The reap below only fired on already-ended rows,
       // so idle/active ghosts fell straight through it.
-      if (agedOut(s, opts.nowMs, graceMs)) {
+      // A tmux-name-superseded verdict is HEURISTIC (weak-axis, no strong proof-
+      // of-death), so it earns a dedicated minimum grace EVEN under graceMs:0 (the
+      // prod sweep) — a strong-proven-dead row does not. Real ghosts are far past
+      // it; the belt only shields a recently-active row in the degenerate anomaly.
+      const demoteGrace =
+        live.reason === "tmux-name-superseded"
+          ? Math.max(graceMs, SUPERSEDED_DEMOTE_MIN_GRACE_MS)
+          : graceMs;
+      if (agedOut(s, opts.nowMs, demoteGrace)) {
         actions.push({
           sessionId: s.id,
           updates: { status: "ended", endedAt: s.endedAt ?? opts.nowMs, hidden: true },
