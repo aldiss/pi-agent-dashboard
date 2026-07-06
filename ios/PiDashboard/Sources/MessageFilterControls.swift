@@ -81,7 +81,7 @@ struct MessageFilterControls: View {
             .clipShape(Capsule())
             .overlay(Capsule().stroke(pillColor(category).opacity(on ? 0.4 : 0.2), lineWidth: 1))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.pressable)
         .accessibilityIdentifier("chat-filter-pill-\(category.rawValue)")
         .accessibilityValue(on ? "on" : "off")
     }

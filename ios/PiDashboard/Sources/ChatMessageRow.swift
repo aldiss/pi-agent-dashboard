@@ -10,6 +10,7 @@ struct ChatMessageRow: View {
     /// Tapping an inline image asks `ChatView` to present the full-screen lightbox.
     var onImageTap: (UIImage) -> Void = { _ in }
     @Environment(\.theme) private var theme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var toolExpanded = false
     @State private var resultExpanded = false
@@ -178,7 +179,7 @@ struct ChatMessageRow: View {
 
             VStack(alignment: .leading, spacing: thinkingExpanded ? 6 : 0) {
                 Button {
-                    withAnimation(.easeInOut(duration: 0.18)) { thinkingExpanded.toggle() }
+                    withAnimation(Motion.animation(Motion.smooth, reduceMotion: reduceMotion)) { thinkingExpanded.toggle() }
                 } label: {
                     HStack(spacing: 5) {
                         Image(systemName: "brain").foregroundStyle(theme.accentPurple)
@@ -214,7 +215,7 @@ struct ChatMessageRow: View {
 
             VStack(alignment: .leading, spacing: toolExpanded ? 8 : 0) {
                 Button {
-                    withAnimation(.easeInOut(duration: 0.18)) { toolExpanded.toggle() }
+                    withAnimation(Motion.animation(Motion.smooth, reduceMotion: reduceMotion)) { toolExpanded.toggle() }
                 } label: {
                     HStack(spacing: 6) {
                         Image(systemName: toolIcon).font(.caption)
@@ -287,7 +288,7 @@ struct ChatMessageRow: View {
             codeBox(resultExpanded ? result : visible, lineLimit: nil)
             if clipped {
                 Button(resultExpanded ? "Show less" : "Show more") {
-                    withAnimation(.easeInOut(duration: 0.15)) { resultExpanded.toggle() }
+                    withAnimation(Motion.animation(Motion.smooth, reduceMotion: reduceMotion)) { resultExpanded.toggle() }
                 }
                 .font(.caption2.weight(.semibold))
                 .foregroundStyle(theme.accentBlue)

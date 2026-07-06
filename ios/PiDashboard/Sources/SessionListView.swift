@@ -129,7 +129,7 @@ struct SessionListView: View {
             .background(theme.bgPrimary)
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.pressable)
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(.isHeader)
         .accessibilityIdentifier("tier-section-\(tier.rawValue)")
@@ -165,7 +165,7 @@ struct SessionListView: View {
                                 }
                             }
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.pressableCard)
                     .accessibilityIdentifier("session-card-\(collapsed.session.id)")
                 }
             }
@@ -207,7 +207,7 @@ struct SessionListView: View {
             .padding(.vertical, 2)
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.pressable)
         .accessibilityIdentifier("dir-group-\(group.basename)")
         .accessibilityLabel("\(expanded ? "Collapse" : "Expand") \(group.basename)")
         .accessibilityAddTraits(.isHeader)

@@ -328,7 +328,7 @@ struct AdaptiveComposer: View {
 
     private func send() {
         guard canSend else { return }
-        UINotificationFeedbackGenerator().notificationOccurred(.success)
+        Haptics.success()
         onSend(text.trimmingCharacters(in: .whitespacesAndNewlines), images)
         textSignal.markProgrammatic() // force the clear through even while first responder
         text = ""
@@ -339,7 +339,7 @@ struct AdaptiveComposer: View {
     }
 
     private func stop() {
-        UINotificationFeedbackGenerator().notificationOccurred(.warning)
+        Haptics.warning()
         onStop()
     }
 

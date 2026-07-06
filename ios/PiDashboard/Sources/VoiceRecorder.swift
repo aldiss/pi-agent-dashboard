@@ -123,7 +123,7 @@ final class VoiceRecorder {
             recorder = rec
             fileURL = url
             phase = .recording
-            UINotificationFeedbackGenerator().notificationOccurred(.success)
+            Haptics.success()
             // 10-min auto-stop safety.
             autoStopTask = Task { [weak self] in
                 try? await Task.sleep(nanoseconds: (self?.maxRecordingSeconds ?? 600) * 1_000_000_000)
@@ -141,7 +141,7 @@ final class VoiceRecorder {
         rec.stop()
         recorder = nil
         deactivateSession()
-        UINotificationFeedbackGenerator().notificationOccurred(.warning)
+        Haptics.warning()
 
         guard let data = try? Data(contentsOf: url), data.count >= minUploadBytes else {
             try? FileManager.default.removeItem(at: url)

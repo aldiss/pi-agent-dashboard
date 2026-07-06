@@ -191,7 +191,7 @@ struct NewSessionSheet: View {
             .background(theme.bgTertiary)
             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.pressableCard)
         .accessibilityIdentifier("new-session-dir-\(basename)")
     }
 
@@ -217,6 +217,7 @@ struct NewSessionSheet: View {
 struct ConnectionBanner: View {
     @Environment(DashboardStore.self) private var store
     @Environment(\.theme) private var theme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         Group {
@@ -230,6 +231,10 @@ struct ConnectionBanner: View {
                 EmptyView()
             }
         }
+        // The banner's move+fade transition needs an animation to drive it; route the
+        // phase change through the gentle spring (large/soft surface), reduce-motion
+        // gated via the ONE policy so it snaps with no travel under Reduce Motion.
+        .animation(Motion.animation(Motion.gentle, reduceMotion: reduceMotion), value: store.phase)
     }
 
     private func banner(color: Color, icon: String, text: String) -> some View {

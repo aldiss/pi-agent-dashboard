@@ -48,4 +48,55 @@ final class A11yTests: XCTestCase {
         XCTAssertTrue(A11yMotion.pulsesEnabled(reduceMotion: false), "motion allowed by default")
         XCTAssertFalse(A11yMotion.pulsesEnabled(reduceMotion: true), "no pulsing under Reduce Motion")
     }
+
+    /// BUILD-2: the TRAVEL gate (one-shot transitions/presses) — same reduce-motion
+    /// keying as the pulse gate, distinct name. This is the single policy the app-layer
+    /// `Motion.animation(_:reduceMotion:)` delegates to (spring when true, nil when off).
+    func testTravelEnabledGate() {
+        XCTAssertTrue(A11yMotion.travelEnabled(reduceMotion: false), "travel allowed by default")
+        XCTAssertFalse(A11yMotion.travelEnabled(reduceMotion: true), "no travel under Reduce Motion")
+    }
+
+    /// Pulse + travel gates agree (both keyed off the one flag) — no split-brain policy.
+    func testPulseAndTravelGatesAgree() {
+        for rm in [true, false] {
+            XCTAssertEqual(A11yMotion.pulsesEnabled(reduceMotion: rm),
+                           A11yMotion.travelEnabled(reduceMotion: rm))
+        }
+    }
+
+    /// Haptics BYPASS the gate — a tactile tick is an a11y aid, so it fires even under
+    /// Reduce Motion (always true, both flag states).
+    func testHapticsBypassReduceMotion() {
+        XCTAssertTrue(A11yMotion.hapticsAllowed(reduceMotion: true), "haptics fire under Reduce Motion")
+        XCTAssertTrue(A11yMotion.hapticsAllowed(reduceMotion: false))
+    }
+
+    // MARK: SpringSpec — the motion vocabulary math (web {stiffness,damping} → SwiftUI)
+
+    /// The exact ported params (response = 2π/√stiffness, dampingFraction =
+    /// damping/(2√stiffness)). Pinned here so the design vocabulary can't silently drift.
+    func testSpringSpecParamFidelity() {
+        XCTAssertEqual(SpringSpec.smooth.response, 0.31, accuracy: 0.0001)
+        XCTAssertEqual(SpringSpec.smooth.dampingFraction, 1.0, accuracy: 0.0001,
+                       "smooth is over-damped in web (≈1.05) → clamped to 1.0, no overshoot")
+        XCTAssertEqual(SpringSpec.gentle.response, 0.41, accuracy: 0.0001)
+        XCTAssertEqual(SpringSpec.gentle.dampingFraction, 0.97, accuracy: 0.0001)
+        XCTAssertEqual(SpringSpec.snappy.response, 0.28, accuracy: 0.0001)
+        XCTAssertEqual(SpringSpec.snappy.dampingFraction, 0.75, accuracy: 0.0001)
+    }
+
+    /// The wired tokens are NON-bouncy (dampingFraction ≥ 1 for smooth, < 1 but high for
+    /// gentle) and NOT guarded; snappy is the ONE guarded/under-damped token, unwired.
+    func testSpringSpecGuardsAndDamping() {
+        XCTAssertFalse(SpringSpec.smooth.isGuarded, "smooth ships")
+        XCTAssertFalse(SpringSpec.gentle.isGuarded, "gentle ships")
+        XCTAssertTrue(SpringSpec.snappy.isGuarded, "snappy withheld until sign-off")
+        // smooth never overshoots (critically/over-damped); snappy is the under-damped one.
+        XCTAssertGreaterThanOrEqual(SpringSpec.smooth.dampingFraction, 1.0)
+        XCTAssertLessThan(SpringSpec.snappy.dampingFraction, 1.0)
+        // The three tokens are distinct.
+        XCTAssertNotEqual(SpringSpec.smooth, SpringSpec.gentle)
+        XCTAssertNotEqual(SpringSpec.gentle, SpringSpec.snappy)
+    }
 }

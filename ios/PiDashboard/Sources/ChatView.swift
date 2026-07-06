@@ -10,6 +10,7 @@ struct ChatView: View {
 
     @Environment(DashboardStore.self) private var store
     @Environment(\.theme) private var theme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// Distance (pt) of the bottom sentinel below the viewport bottom: ~0 when the
     /// chat is scrolled to the bottom, larger when the operator has scrolled up.
@@ -140,7 +141,7 @@ struct ChatView: View {
     @ToolbarContentBuilder private var filterToolbarItem: some ToolbarContent {
         ToolbarItem(placement: .topBarLeading) {
             Button {
-                withAnimation(.easeInOut(duration: 0.15)) { showFilterControls.toggle() }
+                withAnimation(Motion.animation(Motion.smooth, reduceMotion: reduceMotion)) { showFilterControls.toggle() }
             } label: {
                 Image(systemName: messageFilter.isDefault
                       ? "line.3.horizontal.decrease.circle"
@@ -187,7 +188,7 @@ struct ChatView: View {
             .background(theme.bgTertiary.opacity(0.6))
             .clipShape(Capsule())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.pressable)
         .accessibilityIdentifier("chat-load-earlier")
     }
 

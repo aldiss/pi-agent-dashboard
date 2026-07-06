@@ -333,7 +333,7 @@ struct SessionCard: View {
                             .background(theme.statusActive.opacity(0.14))
                             .clipShape(Capsule())
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(.pressable)
                     .accessibilityIdentifier("card-resume-button")
                 }
             }
