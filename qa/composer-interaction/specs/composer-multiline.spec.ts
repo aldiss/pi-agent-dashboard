@@ -232,3 +232,35 @@ test("9c - textarea caps at ~200px and scrolls past the cap (column, not unbound
   expect(ch, "clientHeight reached the cap region (grew, then clamped)").toBeGreaterThanOrEqual(150);
   expect(sh, "content overflows the cap -> internal scroll engaged").toBeGreaterThan(ch + 40);
 });
+
+test("10 - one-shot fill (voice-dictation shape) settles to the SAME height as char-by-char typing (no phantom 'extra enter' rows)", async ({ page }) => {
+  // Regression guard for the dictation over-grow bug: voice dictation lands a whole transcript in
+  // ONE setText, flipping single-row -> column with NO follow-up keystroke. The pre-fix build
+  // measured scrollHeight at the NARROW single-row width and never re-measured after the flip, so
+  // the box stayed sized for the narrow width -> too tall for the now-wide column = phantom rows.
+  const LONG = "the quick brown fox jumps over the lazy dog while running fast"; // ~61ch -> column
+  const ta = page.locator(TEXTAREA);
+
+  // (a) char-by-char typing self-heals: each post-flip keystroke re-runs the [text] auto-grow at
+  //     the wide column width, so the final height is correct.
+  await ta.click();
+  await ta.pressSequentially(LONG);
+  await flush(page);
+  expect(await multiline(page), "typed long line is column").toBe("true");
+  const typedH = await clientH(page);
+
+  // (b) one-shot fill is the dictation shape: whole chunk at once, flip with no follow-up keystroke.
+  await ta.fill("");
+  await flush(page);
+  await ta.fill(LONG);
+  await flush(page);
+  expect(await multiline(page), "filled long line is column").toBe("true");
+  const filledH = await clientH(page);
+
+  // Same text + same column layout => identical natural height. On the regression filledH > typedH
+  // (phantom rows); the isMultiline height re-measure makes them equal.
+  expect(
+    filledH,
+    `one-shot fill must not be taller than typed (phantom rows): filled=${filledH} typed=${typedH}`,
+  ).toBeLessThanOrEqual(typedH);
+});
