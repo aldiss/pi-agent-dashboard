@@ -1,4 +1,5 @@
 import XCTest
+import PiDashboardKit
 
 /// COMPOSER-FOCUS REGRESSION — the composer must KEEP its draft + first-responder
 /// across the single-row⇄multiline flip AND while a session streams (the operator's
@@ -255,6 +256,51 @@ final class ComposerFocusUITests: PiDashboardUITestCase {
         AVAudioSession access, so the append-preserves-draft/caret contract runs without recording. \
         Then re-enable the tap+assert here. Reported to cc-ios-build. Spec authored + ready.
         """)
+    }
+
+    /// The programmatic-append LAYOUT-FLIP regression (the voice-cramping residual,
+    /// diagnosed by ComposerMender): a long, no-newline line set in ONE shot must flip
+    /// the composer to `multiline`, not stay cramped in the single-row slot.
+    ///
+    /// WHY the deterministic seed (not a real mic): `TranscriptAppender.append` joins with
+    /// a SPACE, so a dictation is one long NO-NEWLINE line — the `text.contains("\n")`
+    /// fast-flip never fires, and the layout must flip purely off the async wrapped HEIGHT.
+    /// The `-uitest-composer-overflow` probe drives the SAME code path with zero mic: it
+    /// auto-opens the first fixture chat and seeds the composer via `AdaptiveComposer`'s
+    /// `onAppear` `initialText` path (the programmatic-append site the fix arms) with
+    /// `UITestFixtures.composerOverflowLine` — a ~200-char, single-line, no-newline string
+    /// that wraps far past the single-row width. No AVAudioSession, no hang.
+    ///
+    /// RED→GREEN contract (the empirical proof Portico's sim confirms):
+    ///   • WITHOUT the fix: the one-shot seed recomputes `isMultiline` against the STALE
+    ///     pre-seed height (~minHeight) → stays `single-row` (the cramped bug). RED.
+    ///   • WITH the fix: the async wrapped height lands, `pendingProgrammaticLayout` fires
+    ///     ONE recompute → flips to `multiline`. GREEN.
+    /// Asserts on the `mobile-composer-card` a11y value (`single-row`/`multiline`) — the
+    /// native analogue of the PWA `test-10` (filled 96 vs typed 48 → GREEN on the web side).
+    func testProgrammaticLongLineSeedFlipsToMultiline() {
+        // The overflow probe implies fixture mode AND auto-opens + seeds — its own launch
+        // path (not `enterSeededChat`, which would not seed). `-uitest` keeps mutation
+        // guards active. No mic is ever touched.
+        launch(["-uitest", UITestFixtures.composerOverflowLaunchArg])
+
+        // The probe boots straight into the seeded chat; the composer mounts with the
+        // long no-newline draft already applied via its onAppear `initialText` path.
+        _ = waitFor("mobile-composer", 8)
+        _ = waitFor("mobile-composer-card", 6)
+
+        // THE ASSERT: the programmatically-seeded long line drives the composer to
+        // multiline (RED without the fix — stays `single-row`; GREEN with it). A generous
+        // timeout: the flip depends on the async wrapped-height landing then the one-shot
+        // recompute, so it is NOT instantaneous on first paint.
+        XCTAssertTrue(waitForComposerLayout("multiline", timeout: 8),
+            """
+            A long, no-newline line set in ONE shot (voice/seed programmatic append) must flip the \
+            composer to multiline. Staying `single-row` is the cramping residual: the one-shot text \
+            set recomputes against the stale pre-append height and never re-flips once the real \
+            wrapped height lands. (Fix: `pendingProgrammaticLayout` re-flips on the async height.)
+            """)
+        attach("programmatic-seed-multiline")
     }
 
     // MARK: helpers

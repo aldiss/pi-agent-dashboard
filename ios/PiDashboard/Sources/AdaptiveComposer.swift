@@ -32,6 +32,13 @@ struct AdaptiveComposer: View {
     @State private var photoItems: [PhotosPickerItem] = []
     @State private var voice = VoiceRecorder()
     @State private var micPulse = false
+    /// Armed by a programmatic append (voice transcript / probe seed) so the NEXT
+    /// measured-height update triggers ONE layout recompute — a dictated/seeded long
+    /// no-newline line sets `text` in one shot, so the `.onChange(of: text)` recompute
+    /// runs against the PRE-append (stale) height and can't flip; the real wrapped
+    /// height arrives async via `onHeightChange`, and this flag lets that one landing
+    /// re-flip. One-shot so ordinary streaming re-renders never churn `isMultiline`.
+    @State private var pendingProgrammaticLayout = false
     /// Marks the NEXT `text` change as programmatic (send-clear / voice-append) so the
     /// text view force-applies it; a lagging streaming re-render never clobbers typing.
     @State private var textSignal = ComposerTextSignal()
@@ -57,6 +64,19 @@ struct AdaptiveComposer: View {
         // marker elements instead, leaving the controls' own ids intact.
         .overlay(alignment: .topLeading) { composerMarkers }
         .onChange(of: text) { _, _ in recomputeLayout() }
+        // A voice/probe append sets `text` in ONE shot: the `.onChange(of: text)` above
+        // recomputes against the PRE-append (stale) `measuredHeight`, so a long dictated
+        // no-newline line can't flip on that pass. The real wrapped height lands async via
+        // `onHeightChange`; recompute ONCE here to let it flip. One-shot-gated
+        // (`pendingProgrammaticLayout`) so ordinary streaming re-renders that also move
+        // `measuredHeight` never churn `isMultiline` — the exact teardown the height-driven
+        // recompute was removed to avoid.
+        .onChange(of: measuredHeight) { _, _ in
+            if pendingProgrammaticLayout {
+                pendingProgrammaticLayout = false
+                recomputeLayout()
+            }
+        }
         .onChange(of: photoItems) { _, items in Task { await loadImages(items) } }
         .onAppear {
             voice.configure(base: serverBase, token: serverToken)
@@ -66,6 +86,7 @@ struct AdaptiveComposer: View {
             // recompute so the long line's height flips isMultiline.
             if let seed = initialText, text.isEmpty {
                 textSignal.markProgrammatic()
+                pendingProgrammaticLayout = true // seed is a one-shot long-line set → same async re-flip path
                 text = seed
                 recomputeLayout()
             }
@@ -353,6 +374,7 @@ struct AdaptiveComposer: View {
         let recordingBase = text
         voice.toggle(base: recordingBase) { composed in
             textSignal.markProgrammatic() // voice transcript is a programmatic append
+            pendingProgrammaticLayout = true // arm the one-shot re-flip once the wrapped height lands
             text = composed
         }
         micPulse = false
