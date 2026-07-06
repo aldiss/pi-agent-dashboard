@@ -16,7 +16,10 @@ struct StatusChip: View {
             Circle().fill(accent).frame(width: 7, height: 7)
                 .accessibilityHidden(true) // color-only dot; the label below carries the meaning
             Text(label)
-                .font(.caption2.weight(.medium))
+                .font(.caption2.weight(.semibold))
+                .textCase(.uppercase)       // vitals-line: the status WORD in caps (visual only —
+                                            // accessibilityValue below stays the raw status for XCUITest)
+                .tracking(0.4)              // slight letterspacing so the uppercase word reads as a label
                 .foregroundStyle(accent)
                 .lineLimit(1)               // long status truncates horizontally…
                 .truncationMode(.tail)      // …instead of wrapping one-char-per-line
@@ -54,7 +57,7 @@ struct ContextBar: View {
                 .frame(height: 4)
                 if let pct = Format.contextPercent(session) {
                     Text("\(pct) context")
-                        .font(.caption2)
+                        .font(.caption2.monospacedDigit())  // tabular figures — column-locked in the vitals line
                         .foregroundStyle(theme.textTertiary)
                 }
             }
@@ -114,60 +117,79 @@ struct SessionCard: View {
             // qa-e2e card-counter (`sessionCardIdentifiers`) never miscounts it.
             Rectangle()
                 .fill(theme.sessionAccent(session))
-                .frame(width: 3)
+                .frame(width: 4)
                 .accessibilityIdentifier(session.unread == true ? "session-card-unread" : "card-status-rail")
 
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(alignment: .top) {
-                    Text(session.displayName)
-                        .font(.headline)
-                        .foregroundStyle(theme.textPrimary)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                        .layoutPriority(1) // truncate the name before pushing the badge off
-                        .accessibilityIdentifier("session-card-name")
-                    Spacer(minLength: 8)
-                    unreadAsksBadge
+            // 3-zone banding (BUILD-4): the grouping differential IS the hierarchy —
+            // inter-band spacing 12 separates the three zones; intra-band 4-6 binds the
+            // rows inside each. Identity reads first, then the vitals line, then the
+            // receding detail. (Was one flat VStack(spacing: 8) — every row a peer.)
+            VStack(alignment: .leading, spacing: 12) {
+
+                // ── Zone 1 · IDENTITY — name + unread badge, model/thinking below.
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(alignment: .top) {
+                        Text(session.displayName)
+                            .font(.headline)   // system font — Fraunces DEFERRED to the type-voice unit
+                            .foregroundStyle(theme.textPrimary)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                            .layoutPriority(1) // truncate the name before pushing the badge off
+                            .accessibilityIdentifier("session-card-name")
+                        Spacer(minLength: 8)
+                        unreadAsksBadge
+                    }
+
+                    if let model = Format.modelLabel(session) {
+                        Text(model)
+                            .font(.caption)
+                            .foregroundStyle(theme.textSecondary)
+                            .lineLimit(1)
+                            .accessibilityIdentifier("session-card-model")
+                    }
                 }
 
-                if let model = Format.modelLabel(session) {
-                    Text(model)
-                        .font(.caption)
-                        .foregroundStyle(theme.textSecondary)
-                        .lineLimit(1)
-                        .accessibilityIdentifier("session-card-model")
+                // ── Zone 2 · VITALS LINE — the uppercase status word (semantic hue) +
+                // the context gauge, column-locked on one row. StatusChip + ContextBar
+                // already carry the hue/data; composed here so state reads at a glance.
+                vitalsRow
+
+                // ── Zone 3 · DETAIL — driver telemetry, processes, branch/age, resume;
+                // low-contrast, receding. Bound at intra-band 6 (< the 12 inter-band).
+                VStack(alignment: .leading, spacing: 6) {
+                    statsRow
+
+                    if session.progress != nil || session.nextEngagement != nil {
+                        driverRow
+                    }
+
+                    processList
+
+                    gitAndAgeRow
+
+                    resumeRow
                 }
-
-                // Status chip on its OWN full-width row (was crammed into the header,
-                // where a long status wrapped one-char-per-line). Leading-aligned; the
-                // trailing Spacer keeps the capsule hugging its text at the left edge.
-                HStack(spacing: 0) {
-                    StatusChip(session: session)
-                    Spacer(minLength: 0)
-                }
-
-                ContextBar(session: session)
-
-                statsRow
-
-                if session.progress != nil || session.nextEngagement != nil {
-                    driverRow
-                }
-
-                processList
-
-                gitAndAgeRow
-
-                resumeRow
             }
             .padding(12)
         }
         .background(theme.bgTertiary)
         .background(CardPulseOverlay(kind: pulseKind))
         .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        // Lit-from-above depth (BUILD-4 / §1.5): a vertical gradient hairline — a warm
+        // highlight on the TOP edge (as if catching overhead light) fading to the flat
+        // borderPrimary down the card. `strokeBorder` keeps the 1pt line inside the
+        // clipped bounds. (Portico render-verifies at 393×852; if it reads glassy, the
+        // fallback is a flat borderSecondary hairline.)
         .overlay(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(theme.borderPrimary, lineWidth: 1)
+                .strokeBorder(
+                    LinearGradient(
+                        colors: [Color(hex: "rgba(242,233,222,0.09)"), theme.borderPrimary],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    ),
+                    lineWidth: 1
+                )
         )
         // Cluster 4: the card is a dense multi-row layout (name+chip, stats, badges,
         // process rows). Cap its Dynamic Type so it stays legible + unbroken at
@@ -179,6 +201,17 @@ struct SessionCard: View {
         // resume button reachable as a nested action.
         .accessibilityElement(children: .combine)
         .accessibilityLabel(cardAccessibilityLabel)
+    }
+
+    /// Zone-2 vitals line: the status chip (uppercase word in the semantic hue) and the
+    /// context gauge on ONE row, column-locked. A long status truncates (its own
+    /// `lineLimit(1)`) before crowding the gauge; the gauge takes the trailing space.
+    /// Status stays leading + BELOW the name (StatusRowUITests asserts the geometry).
+    @ViewBuilder private var vitalsRow: some View {
+        HStack(alignment: .center, spacing: 10) {
+            StatusChip(session: session)
+            ContextBar(session: session)
+        }
     }
 
     /// Concise VoiceOver summary of the card: name, spoken status, unread asks.
@@ -347,7 +380,7 @@ struct SessionCard: View {
                     GeometryReader { geo in
                         ZStack(alignment: .leading) {
                             Capsule().fill(theme.bgSurface)
-                            Capsule().fill(theme.accentPurple)
+                            Capsule().fill(progressFill)
                                 .frame(width: max(3, geo.size.width * min(max(progress.pct, 0), 1)))
                         }
                     }
@@ -356,7 +389,7 @@ struct SessionCard: View {
                         Text(label).font(.caption2).foregroundStyle(theme.textSecondary).lineLimit(1)
                     } else {
                         Text("\(Int((progress.pct * 100).rounded()))%")
-                            .font(.caption2).foregroundStyle(theme.textSecondary)
+                            .font(.caption2.monospacedDigit()).foregroundStyle(theme.textSecondary)
                     }
                 }
             }
@@ -371,5 +404,14 @@ struct SessionCard: View {
                     .clipShape(Capsule())
             }
         }
+    }
+
+    /// Progress-bar fill hue. Per the card spec, progress is NOT purple unless the
+    /// session's STATE is genuinely a purple one (needs-YOU / ask_user). A generic
+    /// progress bar reading purple falsely signals "awaiting input", so the default is
+    /// a neutral, receding `textTertiary`; purple is reserved for the `.needsInput`
+    /// pulse state (single-sourced off the same `cardPulseKind` the overlay uses).
+    private var progressFill: Color {
+        pulseKind == .needsInput ? theme.statusNeedsInput : theme.textTertiary
     }
 }
