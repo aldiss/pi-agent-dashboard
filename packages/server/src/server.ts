@@ -35,8 +35,10 @@ import { wireEvents } from "./event-wiring.js";
 import { createIdleTimer } from "./idle-timer.js";
 import { discoverAndBroadcastSessions } from "./session-bootstrap.js";
 import { scanAllSessions } from "./session-scanner.js";
-import { resolveDriverLiveness } from "./driver-liveness.js";
+import { resolveDriverLiveness, pidAlive } from "./driver-liveness.js";
 import { startDriverSelfReportPolling } from "./driver-self-report.js";
+import { listClaudePanesUncached, listDriverTmuxSessionsUncached } from "./cc-pane-liveness.js";
+import { reconcileSessionHygiene } from "./session-hygiene.js";
 import { needsMigration, runMigration } from "./migrate-persistence.js";
 import { detectZrokBinary, cleanupStaleZrok, createTunnel, deleteTunnel, scavengeOrphanZrokProcesses, getTunnelUrl } from "./tunnel.js";
 import { registerAuthPlugin, validateWsUpgrade } from "./auth-plugin.js";
@@ -102,6 +104,8 @@ export interface ServerConfig {
   dev: boolean;
   autoShutdown: boolean;
   shutdownIdleSeconds: number;
+  /** Cadence (ms) for the de-ghost hygiene sweep. 0 disables. Sourced from the shared config (DEFAULT_RESURRECTION_SWEEP_MS); optional here, defaulted in the sweep if absent. */
+  resurrectionSweepMs?: number;
   tunnel: boolean;
   tunnelReservedToken?: string;
   authConfig?: AuthConfig;
@@ -628,6 +632,41 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
     broadcast: (id, updates) => browserGateway.broadcastSessionUpdated(id, updates),
   });
 
+  // ── De-ghost hygiene sweep (§22 gap; Conductor-2 pattern) ──────────────────
+  // Cadence reconcile: re-derive liveness FRESH from external truth (registry
+  // kill-0 + CC-pane) and DEMOTE positive-proof-of-dead rows — the frozen-"idle"
+  // ghosts (REG-absent ∧ dead) reconciled-nowhere — to ended+hidden. DEMOTE-ONLY
+  // (the sole auto-mutation), NEVER respawns. Alice-safe: a REG-absent row whose
+  // record-pid is kill-0-ALIVE is KEPT via verifySessionLive's pid-kill0 backstop.
+  // Post-restart grace forbids mutation while the registry/bridge re-populate.
+  const hygieneSweepStartMs = Date.now();
+  const HYGIENE_POST_RESTART_GRACE_MS = 60_000;
+  const hygieneSweepMs = config.resurrectionSweepMs ?? 20_000;
+  let stopSessionHygieneSweep: () => void = () => {};
+  if (hygieneSweepMs > 0) {
+    const hygieneTimer = setInterval(() => {
+      try {
+        const nowMs = Date.now();
+        const actions = reconcileSessionHygiene(
+          sessionManager.listAll(),
+          { resolveDriverLiveness, pidAlive, listClaudePanes: listClaudePanesUncached, listDriverTmuxSessions: listDriverTmuxSessionsUncached },
+          { nowMs, graceMs: 0, withinPostRestartGrace: nowMs - hygieneSweepStartMs < HYGIENE_POST_RESTART_GRACE_MS },
+        );
+        for (const a of actions) {
+          sessionManager.update(a.sessionId, a.updates);
+          browserGateway.broadcastSessionUpdated(a.sessionId, a.updates);
+        }
+        if (actions.length > 0) {
+          console.error(`[hygiene-sweep] ${actions.length} action(s): ${actions.map((a) => `${a.sessionId.slice(0, 8)}:${a.reason}`).join(", ")}`);
+        }
+      } catch (err) {
+        console.error("[hygiene-sweep] sweep failed:", err);
+      }
+    }, hygieneSweepMs);
+    if (typeof hygieneTimer.unref === "function") hygieneTimer.unref();
+    stopSessionHygieneSweep = () => clearInterval(hygieneTimer);
+  }
+
   // ── Push dispatcher (conditional on config.push.enabled && !config.push.errors) ──
   let pushDispatcher: PushDispatcher | undefined;
   let pushTokenRegistry: PushTokenRegistry | undefined;
@@ -850,7 +889,13 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
     ? async () => {}
     : createNetworkGuard(config.resolvedTrustedNetworks ?? []);
 
-  registerSessionRoutes(fastify, { sessionManager, eventStore, networkGuard });
+  registerSessionRoutes(fastify, {
+    sessionManager,
+    eventStore,
+    networkGuard,
+    hygieneProbes: { resolveDriverLiveness, pidAlive, listClaudePanes: listClaudePanesUncached, listDriverTmuxSessions: listDriverTmuxSessionsUncached },
+    broadcastSessionUpdated: (id, updates) => browserGateway.broadcastSessionUpdated(id, updates),
+  });
   registerGitRoutes(fastify, { networkGuard });
   registerFileRoutes(fastify, { sessionManager, preferencesStore, networkGuard });
   registerOpenSpecRoutes(fastify, {
@@ -1560,6 +1605,7 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
       heapWatchdog.stop();
       directoryService.stopPolling();
       stopDriverSelfReportPolling();
+      stopSessionHygieneSweep();
       browserGateway.shutdownHeadlessProcesses();
       metaPersistence.flushAll();
       metaPersistence.dispose();

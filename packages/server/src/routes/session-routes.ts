@@ -6,9 +6,15 @@ import { resolve, relative, isAbsolute } from "node:path";
 import type { FastifyInstance } from "fastify";
 import type { SessionManager } from "../memory-session-manager.js";
 import type { EventStore } from "../memory-event-store.js";
-import type { ApiResponse } from "@blackbelt-technology/pi-dashboard-shared/types.js";
+import type { ApiResponse, DashboardSession } from "@blackbelt-technology/pi-dashboard-shared/types.js";
 import type { NetworkGuard } from "./route-deps.js";
 import { extractFileChanges, enrichWithGitDiff } from "../session-diff.js";
+import {
+  reconcileSessionHygiene,
+  evaluateRetire,
+  type HygieneProbes,
+  type RetireKey,
+} from "../session-hygiene.js";
 
 export function registerSessionRoutes(
   fastify: FastifyInstance,
@@ -16,13 +22,61 @@ export function registerSessionRoutes(
     sessionManager: SessionManager;
     eventStore: EventStore;
     networkGuard: NetworkGuard;
+    /** Injected liveness probes for read-path hygiene + the retire guard. */
+    hygieneProbes: HygieneProbes;
+    /** Broadcast a per-session update to subscribed browsers. */
+    broadcastSessionUpdated: (id: string, updates: Partial<DashboardSession>) => void;
+    /** Per-session quiet window before a verified-dead row is reaped/demoted. */
+    hygieneGraceMs?: number;
+    /** Injected clock (tests). */
+    now?: () => number;
   },
 ) {
-  const { sessionManager, eventStore, networkGuard } = deps;
+  const { sessionManager, eventStore, networkGuard, hygieneProbes, broadcastSessionUpdated } = deps;
+  const nowFn = deps.now ?? (() => Date.now());
+  const hygieneGraceMs = deps.hygieneGraceMs ?? 0;
 
+  // GET /api/sessions — read-path hygiene (F1 reap + demote, F2 name-canon,
+  // false-ended rescue) via reconcileSessionHygiene, then return the reconciled
+  // list. Each action is applied to the in-memory manager AND broadcast so both
+  // the responding fetch and live subscribers converge. (The cadence sweep in
+  // server.ts runs the same reconcile on a timer with the post-restart grace.)
   fastify.get("/api/sessions", async () => {
-    const sessions = sessionManager.listAll();
-    return { success: true, data: sessions } satisfies ApiResponse;
+    const actions = reconcileSessionHygiene(sessionManager.listAll(), hygieneProbes, {
+      nowMs: nowFn(),
+      graceMs: hygieneGraceMs,
+    });
+    for (const a of actions) {
+      sessionManager.update(a.sessionId, a.updates);
+      broadcastSessionUpdated(a.sessionId, a.updates);
+    }
+    return { success: true, data: sessionManager.listAll() } satisfies ApiResponse;
+  });
+
+  // POST /api/sessions/retire — proactively hide a proven-dead row (F1 retire).
+  // The load-bearing guard: evaluateRetire NEVER trusts the caller's dead-claim —
+  // it independently verifies each target dead; a live (or live-key) target is
+  // REFUSED and surfaced as an anomaly (invariant #1), its row left visible.
+  fastify.post<{ Body: RetireKey }>("/api/sessions/retire", async (request) => {
+    const body = request.body ?? {};
+    const hasKey = !!body.sessionId || !!body.tmuxName || typeof body.pid === "number";
+    if (!hasKey) {
+      return { success: false, error: "retire requires sessionId, tmuxName, or pid" } satisfies ApiResponse;
+    }
+    const decision = evaluateRetire(sessionManager.listAll(), body, hygieneProbes);
+    for (const id of decision.retired) {
+      sessionManager.update(id, { hidden: true });
+      broadcastSessionUpdated(id, { hidden: true });
+    }
+    return {
+      success: true,
+      data: {
+        retired: decision.retired,
+        refusedLive: decision.refusedLive,
+        anomaly: decision.anomaly,
+        notFound: decision.notFound,
+      },
+    } satisfies ApiResponse;
   });
 
   fastify.get<{ Params: { sessionId: string; seq: string } }>(
