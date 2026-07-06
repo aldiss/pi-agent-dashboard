@@ -53,31 +53,66 @@ export function registerSessionRoutes(
     return { success: true, data: sessionManager.listAll() } satisfies ApiResponse;
   });
 
-  // POST /api/sessions/retire — proactively hide a proven-dead row (F1 retire).
-  // The load-bearing guard: evaluateRetire NEVER trusts the caller's dead-claim —
-  // it independently verifies each target dead; a live (or live-key) target is
-  // REFUSED and surfaced as an anomaly (invariant #1), its row left visible.
-  fastify.post<{ Body: RetireKey }>("/api/sessions/retire", async (request) => {
-    const body = request.body ?? {};
-    const hasKey = !!body.sessionId || !!body.tmuxName || typeof body.pid === "number";
-    if (!hasKey) {
-      return { success: false, error: "retire requires sessionId, tmuxName, or pid" } satisfies ApiResponse;
-    }
-    const decision = evaluateRetire(sessionManager.listAll(), body, hygieneProbes);
-    for (const id of decision.retired) {
-      sessionManager.update(id, { hidden: true });
-      broadcastSessionUpdated(id, { hidden: true });
-    }
-    return {
-      success: true,
-      data: {
-        retired: decision.retired,
-        refusedLive: decision.refusedLive,
-        anomaly: decision.anomaly,
-        notFound: decision.notFound,
-      },
-    } satisfies ApiResponse;
-  });
+  // POST /api/sessions/retire — the reaper consumer endpoint (AutoHandoffDriver
+  // commit 07add54). Multi-key body {sessionId|tmuxName|pid}; server resolves
+  // from the in-memory record (name+pid, NO JSONL read — race-free).
+  //
+  // ★ Joan's load-bearing guard (invariant #1 + #4) ★: the server INDEPENDENTLY
+  // verifies-dead via the explicit liveness predicate before retiring. A target
+  // that proves LIVE is REFUSED and surfaced as an anomaly (retire-requested-
+  // on-a-LIVE-session = split-brain / cross-fork, the dl-2939 ×4 incident) —
+  // its row stays live-visible, NEVER hidden. Best-effort + non-fatal: always
+  // HTTP 200 so a retire-miss never breaks the reaper (the reap already
+  // succeeded; the F1 read-path kill-0 backstop covers any miss next scan).
+  fastify.post<{ Body: RetireKey }>(
+    "/api/sessions/retire",
+    { preHandler: networkGuard },
+    async (request) => {
+      const body = (request.body ?? {}) as RetireKey;
+      const key: RetireKey = {
+        sessionId: typeof body.sessionId === "string" ? body.sessionId : undefined,
+        tmuxName: typeof body.tmuxName === "string" ? body.tmuxName : undefined,
+        pid: typeof body.pid === "number" ? body.pid : undefined,
+      };
+      if (!key.sessionId && !key.tmuxName && key.pid === undefined) {
+        return {
+          success: false,
+          error: "retire requires one of {sessionId, tmuxName, pid}",
+        } satisfies ApiResponse;
+      }
+
+      const decision = evaluateRetire(sessionManager.listAll(), key, hygieneProbes);
+
+      // Retire (hidden-not-deleted) the proven-dead targets + broadcast.
+      for (const sessionId of decision.retired) {
+        sessionManager.update(sessionId, { hidden: true });
+        broadcastSessionUpdated(sessionId, { hidden: true });
+      }
+
+      // Invariant #1 anomaly: a retire was requested on a LIVE row. We refused
+      // to hide it; log it loud so the split-brain/cross-fork is visible.
+      if (decision.anomaly) {
+        for (const r of decision.refusedLive) {
+          console.warn(
+            `[dashboard] retire REFUSED — target is LIVE (${r.reason}); ` +
+              `leaving row visible (anomaly: split-brain/cross-fork). ` +
+              `sessionId=${r.sessionId || "<unmatched>"} name=${r.name ?? "?"} ` +
+              `key=${JSON.stringify(key)}`,
+          );
+        }
+      }
+
+      return {
+        success: true,
+        data: {
+          retired: decision.retired,
+          refusedLive: decision.refusedLive,
+          notFound: decision.notFound,
+          anomaly: decision.anomaly,
+        },
+      } satisfies ApiResponse;
+    },
+  );
 
   fastify.get<{ Params: { sessionId: string; seq: string } }>(
     "/api/events/:sessionId/:seq",
