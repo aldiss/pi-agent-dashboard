@@ -203,18 +203,6 @@ public enum DashboardTheme {
         shadowCard: "rgba(70,45,20,0.12)"
     )
 
-    /// Status chip accent mapping (active→green, streaming→blue, idle→muted,
-    /// ended→faint). Mirrors the dashboard's status-chip coloring.
-    public static func statusColor(_ status: String?, _ p: ThemePalette = dark) -> String {
-        switch status {
-        case "active": return p.accentGreen
-        case "streaming": return p.accentBlue
-        case "idle": return p.textSecondary
-        case "ended": return p.textFaint
-        default: return p.textTertiary
-        }
-    }
-
     /// The ONE semantic hue a session-list card carries on its rail + dot + status
     /// text — the editorial status-as-color language from the PWA
     /// (`deriveRailBgColor` precedence). Ended wins first (a finished card stays

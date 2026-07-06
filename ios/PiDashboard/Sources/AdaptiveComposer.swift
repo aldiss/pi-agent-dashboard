@@ -281,7 +281,10 @@ struct AdaptiveComposer: View {
 
     private var queueBadge: some View {
         HStack(spacing: 6) {
-            Circle().fill(theme.accentBlue).frame(width: 6, height: 6)
+            // Queued work is a STATUS (pending send), not an interactive control, so it
+            // carries the amber working hue — never the blue/terracotta interaction
+            // accent (engine-b §4.9, blue=interaction-only).
+            Circle().fill(theme.statusWorking).frame(width: 6, height: 6)
             Text("\(queuedCount) queued").font(.caption2)
         }
         .foregroundStyle(theme.textSecondary)

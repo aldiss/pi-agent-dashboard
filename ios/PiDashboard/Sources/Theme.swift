@@ -94,11 +94,6 @@ struct Theme {
     var statusError: Color { Color(hex: palette.statusError) }
     var statusEnded: Color { Color(hex: palette.statusEnded) }
 
-    /// Status-chip color via the core's mapping (active→green, streaming→blue, …).
-    func statusColor(_ status: String?) -> Color {
-        Color(hex: DashboardTheme.statusColor(status, palette))
-    }
-
     /// The single semantic hue a session-list card carries (rail + dot + status
     /// text) — core `sessionAccent` precedence mapped to a `Color`.
     func sessionAccent(_ session: DashboardSession, hasError: Bool = false) -> Color {

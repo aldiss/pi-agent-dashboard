@@ -5,8 +5,8 @@ import XCTest
 /// selection lifted from the PWA (`SessionCard.tsx` `getCardPulseClass` +
 /// `session-status-visuals.ts` `deriveRailBgColor`). These are the core, UI-free
 /// helpers the native card renders off — verified here via `swift test`, no
-/// simulator. The legacy `statusColor` mapping is pinned separately in
-/// `ComposerModelPropertyTests` and intentionally left unchanged.
+/// simulator. `sessionAccent` is the ONE semantic hue (rail+dot+word); the enforced
+/// blue=interaction-only invariant lives at the bottom of this file.
 final class SessionColorTests: XCTestCase {
     private let p = DashboardTheme.dark
 
@@ -100,5 +100,62 @@ final class SessionColorTests: XCTestCase {
         XCTAssertEqual(DashboardTheme.pulseAccent(.working, p), p.statusWorking)
         XCTAssertEqual(DashboardTheme.pulseAccent(.unread, p), p.statusUnread)
         XCTAssertNil(DashboardTheme.pulseAccent(.none, p), "no overlay for a calm card")
+    }
+
+    // MARK: ENFORCED invariant — blue = interaction-only (BUILD-3)
+
+    /// The regression lock: NO semantic status hue may equal the interactive accent
+    /// (`accentPrimary` == `accentBlue`) — checked across BOTH palettes, since the
+    /// invariant must hold under the default editorial skin (interactive = terracotta
+    /// `#cf6238`) AND legacy (interactive = blue `#3b82f6`). Status is carried by its
+    /// OWN hue — streaming→amber, ask_user→purple, unread→cyan, live→green, error→red —
+    /// and the interaction accent is reserved for affordances (links, nav, controls).
+    /// Guards against re-introducing the old backwards `statusColor` (streaming→blue).
+    func testStatusHuesNeverEqualInteractiveAccent() {
+        for palette in [DashboardTheme.editorialDark, DashboardTheme.dark] {
+            XCTAssertEqual(palette.accentPrimary, palette.accentBlue,
+                           "interactive accent is the aliased accentBlue")
+            let interactive = palette.accentBlue // editorial terracotta / legacy blue
+            let semanticStatusHues = [
+                palette.statusActive, palette.statusWorking, palette.statusNeedsInput,
+                palette.statusUnread, palette.statusError, palette.statusEnded,
+            ]
+            for hue in semanticStatusHues {
+                XCTAssertNotEqual(hue, interactive,
+                                  "a semantic status hue must never be the interactive accent (\(interactive))")
+            }
+        }
+    }
+
+    /// Every session status resolves through `sessionAccent` to its semantic hue and
+    /// NEVER to the interactive accent — the mapping-level half of the invariant.
+    func testSessionAccentNeverInteractiveAccent() {
+        let interactive = p.accentBlue
+        // streaming is the historical offender (old statusColor sent it to blue).
+        XCTAssertEqual(DashboardTheme.sessionAccent(session(status: "streaming"), p), p.statusWorking)
+        XCTAssertNotEqual(DashboardTheme.sessionAccent(session(status: "streaming"), p), interactive,
+                          "streaming is AMBER, not the interactive blue (the regression this locks out)")
+        for status in ["active", "idle", "streaming", "ended", "weird"] {
+            XCTAssertNotEqual(DashboardTheme.sessionAccent(session(status: status), p), interactive)
+            XCTAssertNotEqual(DashboardTheme.sessionAccent(session(status: status), hasError: true, p),
+                              interactive, "error path is RED, never interactive blue")
+        }
+        // Pulse overlays (working/needsInput/unread) are likewise semantic, never blue.
+        for kind in [CardPulseKind.working, .needsInput, .unread] {
+            XCTAssertNotEqual(DashboardTheme.pulseAccent(kind, p), interactive)
+        }
+    }
+
+    /// The one-hue contract at the source: rail + dot + spoken word all derive from the
+    /// SAME `sessionAccent` value (the card can't paint the rail one hue and the dot
+    /// another). Asserted on the pure helper the three call sites share.
+    func testCardOneHueSingleSource() {
+        for status in ["active", "streaming", "ended"] {
+            let s = session(status: status)
+            let hue = DashboardTheme.sessionAccent(s, p)
+            // Idempotent + deterministic: every read of the shared helper is the one hue.
+            XCTAssertEqual(DashboardTheme.sessionAccent(s, p), hue)
+        }
+        XCTAssertEqual(DashboardTheme.sessionAccent(session(status: "streaming"), p), p.statusWorking)
     }
 }

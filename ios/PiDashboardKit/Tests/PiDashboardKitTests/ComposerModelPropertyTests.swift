@@ -149,16 +149,18 @@ final class ComposerModelPropertyTests: XCTestCase {
         XCTAssertEqual(m.qualified, "openai/gpt-5")
     }
 
-    /// Status-chip color mapping (active→green, streaming→blue, idle→muted,
-    /// ended→faint, unknown→tertiary) — the dashboard's status semantics.
-    func testStatusColorMapping() {
+    /// Session status → the ONE semantic card hue via `sessionAccent` (active→green,
+    /// streaming→AMBER, ended→muted, unknown→muted). Migrated off the removed backwards
+    /// `statusColor` (which mapped streaming→blue); the full precedence lives in
+    /// `SessionColorTests`, this pins the corrected mapping at the old call site.
+    func testSessionStatusHueMapping() {
         let p = DashboardTheme.dark
-        XCTAssertEqual(DashboardTheme.statusColor("active", p), p.accentGreen)
-        XCTAssertEqual(DashboardTheme.statusColor("streaming", p), p.accentBlue)
-        XCTAssertEqual(DashboardTheme.statusColor("idle", p), p.textSecondary)
-        XCTAssertEqual(DashboardTheme.statusColor("ended", p), p.textFaint)
-        XCTAssertEqual(DashboardTheme.statusColor("weird", p), p.textTertiary)
-        XCTAssertEqual(DashboardTheme.statusColor(nil, p), p.textTertiary)
+        func s(_ status: String?) -> DashboardSession { DashboardSession(id: "s", status: status) }
+        XCTAssertEqual(DashboardTheme.sessionAccent(s("active"), p), p.statusActive)   // green
+        XCTAssertEqual(DashboardTheme.sessionAccent(s("streaming"), p), p.statusWorking) // amber, NOT blue
+        XCTAssertEqual(DashboardTheme.sessionAccent(s("ended"), p), p.statusEnded)     // muted
+        XCTAssertEqual(DashboardTheme.sessionAccent(s("weird"), p), p.statusEnded)     // unknown → muted
+        XCTAssertEqual(DashboardTheme.sessionAccent(s(nil), p), p.statusEnded)
     }
 
     /// The dark palette tokens are the operator's lifted hexes (DESIGN.md §5) —
