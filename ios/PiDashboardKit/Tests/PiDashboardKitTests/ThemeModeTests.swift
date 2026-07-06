@@ -76,12 +76,13 @@ final class ThemeModeTests: XCTestCase {
         return (UserDefaults(suiteName: suite)!, suite)
     }
 
-    func testFreshInstallDefaultsToDark() {
+    func testFreshInstallDefaultsToSystem() {
         let (d, suite) = ephemeral()
         defer { d.removePersistentDomain(forName: suite) }
-        // Dark-by-default: a fresh install matches the (dark) PWA, not `.system`.
-        XCTAssertEqual(ThemeModeStore.load(from: d), .dark)
-        XCTAssertEqual(ThemeModeStore.defaultMode, .dark)
+        // Ratified default (RABLE §1.1): `.system` ("Auto"). The `.system`-renders-
+        // light bug is fixed, so pass-1's `.dark` workaround is restored to `.system`.
+        XCTAssertEqual(ThemeModeStore.load(from: d), .system)
+        XCTAssertEqual(ThemeModeStore.defaultMode, .system)
     }
 
     /// All three modes persist explicitly and round-trip — including `.system`, which
@@ -107,11 +108,11 @@ final class ThemeModeTests: XCTestCase {
         XCTAssertEqual(ThemeModeStore.load(from: d), .system)
     }
 
-    /// A corrupt stored value falls back to the `.dark` default (never throws).
-    func testUnknownStoredValueFallsBackToDark() {
+    /// A corrupt stored value falls back to the `.system` default (never throws).
+    func testUnknownStoredValueFallsBackToSystem() {
         let (d, suite) = ephemeral()
         defer { d.removePersistentDomain(forName: suite) }
         d.set("chartreuse", forKey: "pi.dashboard.themeMode")
-        XCTAssertEqual(ThemeModeStore.load(from: d), .dark)
+        XCTAssertEqual(ThemeModeStore.load(from: d), .system)
     }
 }

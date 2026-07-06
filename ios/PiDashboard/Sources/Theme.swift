@@ -54,21 +54,24 @@ struct Theme {
     static let dark = Theme(palette: DashboardTheme.dark)
     static let light = Theme(palette: DashboardTheme.light)
 
-    /// Resolve the theme the UI renders from the operator's mode + the current OS
-    /// appearance (for `.system`). Thin `Color`-layer wrapper over the core's pure
-    /// `DashboardTheme.resolvePalette`.
-    static func resolve(_ mode: ThemeMode, systemIsDark: Bool) -> Theme {
-        Theme(palette: DashboardTheme.resolvePalette(mode, systemIsDark: systemIsDark))
+    /// Resolve the theme the UI renders from the operator's skin + mode + the current
+    /// OS appearance (for `.system`). Thin `Color`-layer wrapper over the core's pure
+    /// `DashboardTheme.resolvePalette(skin, mode, systemIsDark)`.
+    static func resolve(_ skin: Skin, _ mode: ThemeMode, systemIsDark: Bool) -> Theme {
+        Theme(palette: DashboardTheme.resolvePalette(skin, mode, systemIsDark: systemIsDark))
     }
 
     var bgPrimary: Color { Color(hex: palette.bgPrimary) }
     var bgSecondary: Color { Color(hex: palette.bgSecondary) }
     var bgTertiary: Color { Color(hex: palette.bgTertiary) }
     var bgSurface: Color { Color(hex: palette.bgSurface) }
+    var bgHover: Color { Color(hex: palette.bgHover) }
     var bgCode: Color { Color(hex: palette.bgCode) }
+    var bgOverlay: Color { Color(hex: palette.bgOverlay) }
     var textPrimary: Color { Color(hex: palette.textPrimary) }
     var textSecondary: Color { Color(hex: palette.textSecondary) }
     var textTertiary: Color { Color(hex: palette.textTertiary) }
+    var textMuted: Color { Color(hex: palette.textMuted) }
     var textFaint: Color { Color(hex: palette.textFaint) }
     var borderPrimary: Color { Color(hex: palette.borderPrimary) }
     var borderSecondary: Color { Color(hex: palette.borderSecondary) }
@@ -79,6 +82,9 @@ struct Theme {
     var accentYellow: Color { Color(hex: palette.accentYellow) }
     var accentPurple: Color { Color(hex: palette.accentPurple) }
     var accentCyan: Color { Color(hex: palette.accentCyan) }
+    var link: Color { Color(hex: palette.link) }
+    var linkHover: Color { Color(hex: palette.linkHover) }
+    var shadowCard: Color { Color(hex: palette.shadowCard) }
 
     // Semantic session-status accents (the session-list color language).
     var statusActive: Color { Color(hex: palette.statusActive) }

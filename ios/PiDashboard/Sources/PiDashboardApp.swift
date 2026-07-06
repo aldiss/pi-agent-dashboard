@@ -2,16 +2,23 @@ import SwiftUI
 import PiDashboardKit
 import Observation
 
-/// Holds the operator's persisted theme preference and drives the live theme. The
-/// SwiftUI tree resolves the concrete `Theme` from `mode` + the OS appearance, so a
-/// change here re-themes the whole app instantly. Persists on set via `ThemeModeStore`.
+/// Holds the operator's persisted appearance preferences (skin × mode) and drives the
+/// live theme. The SwiftUI tree resolves the concrete `Theme` from `skin` + `mode` +
+/// the OS appearance, so a change here re-themes the whole app instantly. Each axis
+/// persists on set via its store (`SkinStore` / `ThemeModeStore`).
 @MainActor
 @Observable
 final class ThemeController {
     var mode: ThemeMode {
         didSet { ThemeModeStore.save(mode) }
     }
-    init() { mode = ThemeModeStore.load() }
+    var skin: Skin {
+        didSet { SkinStore.save(skin) }
+    }
+    init() {
+        mode = ThemeModeStore.load()
+        skin = SkinStore.load()
+    }
 
     /// `preferredColorScheme` for the scene: nil for `.system` (follow the OS),
     /// else the pinned scheme.
@@ -69,7 +76,7 @@ struct ThemedRoot: View {
         let systemIsDark = themeController.colorSchemeOverride.map { $0 == .dark }
             ?? (systemColorScheme == .dark)
         RootView()
-            .environment(\.theme, Theme.resolve(themeController.mode, systemIsDark: systemIsDark))
+            .environment(\.theme, Theme.resolve(themeController.skin, themeController.mode, systemIsDark: systemIsDark))
     }
 }
 

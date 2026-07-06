@@ -9,11 +9,14 @@ public struct ThemePalette: Sendable, Equatable {
     public let bgSecondary: String    // panels, sidebar
     public let bgTertiary: String     // cards, inputs, selected
     public let bgSurface: String      // badges, buttons, elevated
+    public let bgHover: String        // row/control hover wash (--bg-hover)
     public let bgSelected: String
     public let bgCode: String         // code blocks, tool output
+    public let bgOverlay: String      // scrim behind sheets/dialogs (--bg-overlay)
     public let textPrimary: String
     public let textSecondary: String
     public let textTertiary: String
+    public let textMuted: String      // hints, disabled (--text-muted)
     public let textFaint: String
     public let borderPrimary: String
     public let borderSecondary: String
@@ -26,6 +29,9 @@ public struct ThemePalette: Sendable, Equatable {
     public let accentYellow: String
     public let accentPurple: String
     public let accentCyan: String
+    public let link: String           // hyperlink text (--link)
+    public let linkHover: String      // hyperlink hover (--link-hover)
+    public let shadowCard: String     // card drop-shadow color (--shadow-card)
 
     // MARK: Semantic session-status accents
 
@@ -60,11 +66,14 @@ public enum DashboardTheme {
         bgSecondary: "#141414",
         bgTertiary: "#1e1e1e",
         bgSurface: "#2a2a2a",
+        bgHover: "rgba(255,255,255,0.06)",
         bgSelected: "#1e1e1e",
         bgCode: "#1a1a1a",
+        bgOverlay: "rgba(0,0,0,0.6)",
         textPrimary: "#e5e5e5",
         textSecondary: "#b0b0b0",
         textTertiary: "#808080",
+        textMuted: "#585858",
         textFaint: "#3a3a3a",
         borderPrimary: "#252525",
         borderSecondary: "#333333",
@@ -76,7 +85,10 @@ public enum DashboardTheme {
         accentOrange: "#f97316",
         accentYellow: "#eab308",
         accentPurple: "#a855f7",
-        accentCyan: "#06b6d4"
+        accentCyan: "#06b6d4",
+        link: "#60a5fa",
+        linkHover: "#93bbfd",
+        shadowCard: "rgba(0,0,0,0.4)"
     )
 
     /// LIGHT palette — bg/text/border lifted from the PWA `index.css
@@ -93,11 +105,14 @@ public enum DashboardTheme {
         bgSecondary: "#fafafa",
         bgTertiary: "#f0f0f0",
         bgSurface: "#e0e0e0",
+        bgHover: "rgba(0,0,0,0.04)",
         bgSelected: "#e8e8e8",
         bgCode: "#f5f5f5",
+        bgOverlay: "rgba(0,0,0,0.3)",
         textPrimary: "#1a1a1a",   // 17.4:1
         textSecondary: "#444444", // 9.7:1
         textTertiary: "#777777",  // 4.48:1
+        textMuted: "#aaaaaa",     // legacy --text-muted (index.css [data-theme=light])
         textFaint: "#6b6b6b",     // 5.33:1 (was #d0d0d0 = 1.54:1 — the worst offender)
         borderPrimary: "#e0e0e0",
         borderSecondary: "#cccccc",
@@ -109,7 +124,83 @@ public enum DashboardTheme {
         accentOrange: "#c2410c",  // orange-700, 5.18:1 (was #f97316 = 2.80)
         accentYellow: "#b45309",  // amber-700, 5.02:1 (was #eab308 = 1.92)
         accentPurple: "#9333ea",  // purple-600, 5.38:1 (was #a855f7 = 3.96)
-        accentCyan: "#0e7490"     // cyan-700, 5.36:1 (was #06b6d4 = 2.43)
+        accentCyan: "#0e7490",    // cyan-700, 5.36:1 (was #06b6d4 = 2.43)
+        link: "#2563eb",          // legacy --link (light)
+        linkHover: "#1d4ed8",     // legacy --link-hover (light)
+        shadowCard: "rgba(0,0,0,0.08)"
+    )
+
+    /// EDITORIAL-DARK — the DEFAULT skin (the hero). Warm espresso canvas, terracotta
+    /// interactive accent (NOT blue), softened status hues. Every hex lifted own-hand
+    /// from `index.css [data-skin="editorial"]` (:94–143). The interactive accent
+    /// (`accentPrimary`/`accentBlue`/`link`) is terracotta `#cf6238`; the blue=
+    /// interaction-only enforcement lands in BUILD-3 — here we just carry the values.
+    /// `accentCyan` aliases the editorial fresh/unread hue `#5ba9a0` (`--status-fresh`)
+    /// so `statusUnread` resolves correctly under editorial (the web keeps a separate
+    /// `--status-*` set; the native palette folds them onto the accent fields the
+    /// existing `status*` computed vars already read).
+    public static let editorialDark = ThemePalette(
+        bgPrimary: "#17120e",
+        bgSecondary: "#1e1813",
+        bgTertiary: "#251d16",
+        bgSurface: "#2e251c",
+        bgHover: "rgba(242,233,222,0.06)",
+        bgSelected: "#2e251c",
+        bgCode: "#1a130d",
+        bgOverlay: "rgba(10,7,5,0.55)",
+        textPrimary: "#f3ebe0",
+        textSecondary: "#c9bbab",
+        textTertiary: "#9b8b78",
+        textMuted: "#897a67",
+        textFaint: "#5a4d3f",
+        borderPrimary: "#2c2219",
+        borderSecondary: "#3a2f24",
+        borderSubtle: "rgba(242,233,222,0.07)",
+        accentPrimary: "#cf6238",  // terracotta (remaps blue UI accent)
+        accentBlue: "#cf6238",     // terracotta — no blue interactive accent under editorial
+        accentGreen: "#7fae5a",    // status live
+        accentRed: "#d65440",      // status error
+        accentOrange: "#d98a3e",
+        accentYellow: "#e0a23c",   // status wait/streaming
+        accentPurple: "#b283d6",   // status think/ask_user
+        accentCyan: "#5ba9a0",     // status fresh/unread (--status-fresh)
+        link: "#cf6238",
+        linkHover: "#e6926a",
+        shadowCard: "rgba(0,0,0,0.5)"
+    )
+
+    /// EDITORIAL-LIGHT — the warm-paper alternate (NOT cold white). Every hex lifted
+    /// own-hand from `index.css [data-skin="editorial"][data-theme="light"]` (:146–189).
+    /// Terracotta is deepened (`#bb5630`) for contrast on paper; status hues darkened
+    /// to match. Same accent→status folding as editorial-dark.
+    public static let editorialLight = ThemePalette(
+        bgPrimary: "#f4ece1",
+        bgSecondary: "#efe5d7",
+        bgTertiary: "#fbf5ec",
+        bgSurface: "#ffffff",
+        bgHover: "rgba(40,28,16,0.05)",
+        bgSelected: "#f3e8d8",
+        bgCode: "#f0e6d6",
+        bgOverlay: "rgba(60,40,20,0.35)",
+        textPrimary: "#2a211a",
+        textSecondary: "#5e5042",
+        textTertiary: "#80715e",
+        textMuted: "#927f69",
+        textFaint: "#b6a48c",
+        borderPrimary: "#e2d4c2",
+        borderSecondary: "#d8c7b1",
+        borderSubtle: "rgba(40,28,16,0.08)",
+        accentPrimary: "#bb5630",  // deepened terracotta for paper contrast
+        accentBlue: "#bb5630",
+        accentGreen: "#5f8c3e",
+        accentRed: "#bb4329",
+        accentOrange: "#b5701f",
+        accentYellow: "#bf7d1d",
+        accentPurple: "#8a52bd",
+        accentCyan: "#3f8079",     // --status-fresh (light)
+        link: "#bb5630",
+        linkHover: "#8f3f20",
+        shadowCard: "rgba(70,45,20,0.12)"
     )
 
     /// Status chip accent mapping (active→green, streaming→blue, idle→muted,
