@@ -101,6 +101,25 @@ export function writeConfigPartial(partial: Record<string, any>): WriteConfigRes
         mergedAuth.allowedUsers = partial.auth.allowedUsers;
       }
 
+      // Build 0 multi-operator gate. Persist requireBrowserAuth explicitly so a
+      // Settings/API toggle survives reload. `!== undefined` (not truthiness)
+      // lets an explicit `false` clear it; omitting the key preserves the
+      // existing value (carried by the `{ ...existingAuth }` seed above).
+      // NOTE: this flag is restart-required (see writeConfigPartial's
+      // restart-detection below + system-routes' reload path) — persisting it
+      // here writes it to disk; it takes effect on the next server start.
+      if (partial.auth.requireBrowserAuth !== undefined) {
+        const next = partial.auth.requireBrowserAuth === true;
+        // Flipping the browser-auth gate is restart-required: the browser
+        // gateway captures it at construction (a frozen boolean) and the `/ws`
+        // upgrade gate must read the SAME frozen value, or the two gates
+        // diverge (see system-routes reload path). Never apply it live.
+        if (next !== (existingAuth.requireBrowserAuth === true)) {
+          restartRequired = true;
+        }
+        mergedAuth.requireBrowserAuth = next;
+      }
+
       // fix-trusted-networks-no-oauth: propagate bypassHosts / bypassUrls
       // from the incoming partial. Without these, the UI's Trusted Networks
       // save path silently dropped every entry on disk. `!== undefined`

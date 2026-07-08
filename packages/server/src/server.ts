@@ -45,6 +45,7 @@ import { reconcileSessionHygiene } from "./session-hygiene.js";
 import { needsMigration, runMigration } from "./migrate-persistence.js";
 import { detectZrokBinary, cleanupStaleZrok, createTunnel, deleteTunnel, scavengeOrphanZrokProcesses, getTunnelUrl } from "./tunnel.js";
 import { registerAuthPlugin, validateWsUpgrade } from "./auth-plugin.js";
+import type { TokenPayload } from "./auth.js";
 import { findBundledExtension, registerBridgeExtension } from "@blackbelt-technology/pi-dashboard-shared/bridge-register.js";
 import { createNetworkGuard, isLoopback, isBypassedHost } from "./localhost-guard.js";
 import type { AuthConfig } from "@blackbelt-technology/pi-dashboard-shared/config.js";
@@ -100,6 +101,16 @@ import { getPluginConfig as getPluginConfigFromFile } from "@blackbelt-technolog
 import { registerAllPluginBridges } from "@blackbelt-technology/pi-dashboard-shared/plugin-bridge-register.js";
 import { registerEditorProxy, handleEditorUpgrade } from "./editor-proxy.js";
 import { detectCodeServerBinary } from "./editor-detection.js";
+
+/**
+ * A raw Node upgrade request carrying the principal captured at
+ * `validateWsUpgrade` (Build 0). The browser gateway's connection handler
+ * reads `wsPrincipal` off the same request object to bind it to the socket.
+ * Null when single-operator mode allowed the connection with no cookie.
+ */
+type WsUpgradeRequest = import("node:http").IncomingMessage & {
+  wsPrincipal?: TokenPayload | null;
+};
 
 export interface ServerConfig {
   port: number;
@@ -285,6 +296,17 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
   // All gating is done here in createServer so no fixture code leaks into
   // individual modules.
   const isFixture = config.fixtureMode === true;
+
+  // Build 0 (PRINCIPAL-CAPTURE): freeze the multi-operator browser-auth gate
+  // flag AT STARTUP. Both the `/ws` upgrade gate (below) AND the browser
+  // gateway's send-seam gate read THIS single frozen boolean — never the
+  // mutable `config.authConfig`, which the `/api/config` reload path reassigns
+  // live (system-routes.ts). Reading the mutable value at upgrade time while
+  // the gateway holds a construction-time boolean would let the two gates
+  // diverge on a runtime flip. The flag is therefore restart-required: a flip
+  // via `/api/config` writes to disk + returns `restartRequired:true`, and
+  // only the next server start observes it. See gate-pushback-1 MAJOR (desync).
+  const requireBrowserAuthAtStartup = config.authConfig?.requireBrowserAuth === true;
 
   // Ensure bridge extension is registered in pi's global settings
   // (needed for bundled installs where pi can't discover it from package.json)
@@ -626,7 +648,7 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
     },
   });
 
-  const browserGateway = createBrowserGateway(sessionManager, eventStore, piGateway, undefined, pendingForkRegistry, sessionOrderManager, preferencesStore, directoryService, terminalManager, pendingDashboardSpawns, config.maxWsBufferBytes, pendingAttachRegistry, pendingResumeIntents, pendingClientCorrelations, pushPrefsMap, () => config.push?.defaults);
+  const browserGateway = createBrowserGateway(sessionManager, eventStore, piGateway, undefined, pendingForkRegistry, sessionOrderManager, preferencesStore, directoryService, terminalManager, pendingDashboardSpawns, config.maxWsBufferBytes, pendingAttachRegistry, pendingResumeIntents, pendingClientCorrelations, pushPrefsMap, () => config.push?.defaults, requireBrowserAuthAtStartup);
 
   // Driver self-report poller (dl-2620): re-reads the driver-state sidecars
   // (written by the `driver-report` CLI) and pushes per-driver progress-% +
@@ -1487,12 +1509,38 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
         // Access check for WebSocket upgrades
         const remoteAddress = request.socket.remoteAddress || "";
         const trusted = config.resolvedTrustedNetworks ?? [];
+
+        // Build 0 (PRINCIPAL-CAPTURE): the multi-operator browser-auth gate
+        // applies ONLY to the browser `/ws` path. When engaged it REQUIRES a
+        // verified token — the loopback / trusted-network bypass is NOT honored
+        // — so every operator device (incl. op-1's own tailnet device) binds a
+        // verified principal. Terminal + editor upgrades keep their existing
+        // access policy (out of Build 0 scope). Reads the STARTUP-frozen flag
+        // (not mutable config.authConfig) so this gate can never diverge from
+        // the browser gateway's send-seam gate on a runtime auth reload. Flag
+        // OFF (default) → always false → single-operator behavior byte-unchanged.
+        const isBrowserWs = request.url === "/ws";
+        const requireBrowserAuth = isBrowserWs && requireBrowserAuthAtStartup;
+
         if (config.authConfig?.secret) {
-          if (!validateWsUpgrade(request.headers.cookie, remoteAddress, config.authConfig.secret, trusted)) {
+          const decision = validateWsUpgrade(request.headers.cookie, remoteAddress, config.authConfig.secret, trusted, requireBrowserAuth);
+          if (!decision.allowed) {
             socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
             socket.destroy();
             return;
           }
+          // Bind the verified principal (may be null in single-operator mode)
+          // to the request so the browser gateway's connection handler can
+          // capture it into its Map<WebSocket, principal>. Additive — nothing
+          // in the single-operator send path reads it.
+          (request as WsUpgradeRequest).wsPrincipal = decision.principal;
+        } else if (requireBrowserAuth) {
+          // Fail CLOSED: the browser-auth gate is engaged but no secret is
+          // configured, so no token can be verified. Never fall through to the
+          // loopback / trusted-net bypass for the browser path.
+          socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
+          socket.destroy();
+          return;
         } else if (!isLoopback(remoteAddress) && (trusted.length === 0 || !isBypassedHost(remoteAddress, trusted))) {
           // No auth configured — only allow loopback or trusted networks.
           // In sandbox mode (Docker), allow all — the container's network

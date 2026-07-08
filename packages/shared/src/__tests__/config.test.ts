@@ -155,6 +155,41 @@ describe("loadConfig", () => {
     expect(config.auth).toBeUndefined();
   });
 
+  // ── Build 0 multi-operator gate: requireBrowserAuth is auth-relevant ──
+  // Regression for gate-pushback-1 BLOCKER: parseAuthConfig used to drop the
+  // whole auth block (→ undefined) BEFORE parsing requireBrowserAuth, so a
+  // multi-op flag with no providers/secret silently fell open to single-op.
+
+  it("should KEEP auth when requireBrowserAuth:true even with no providers/secret", () => {
+    fs.writeFileSync(configFile, JSON.stringify({ auth: { requireBrowserAuth: true } }));
+    const config = loadConfig();
+    expect(config.auth).toBeDefined();
+    expect(config.auth!.requireBrowserAuth).toBe(true);
+  });
+
+  it("should KEEP auth when secret + requireBrowserAuth:true (no providers)", () => {
+    fs.writeFileSync(configFile, JSON.stringify({ auth: { secret: "s", requireBrowserAuth: true } }));
+    const config = loadConfig();
+    expect(config.auth).toBeDefined();
+    expect(config.auth!.secret).toBe("s");
+    expect(config.auth!.requireBrowserAuth).toBe(true);
+  });
+
+  it("should still drop auth when requireBrowserAuth:false with nothing else auth-relevant", () => {
+    fs.writeFileSync(configFile, JSON.stringify({ auth: { requireBrowserAuth: false } }));
+    const config = loadConfig();
+    expect(config.auth).toBeUndefined();
+  });
+
+  it("should not set requireBrowserAuth on a normal provider auth block that omits it", () => {
+    fs.writeFileSync(configFile, JSON.stringify({
+      auth: { secret: "s", providers: { github: { clientId: "id", clientSecret: "cs" } } },
+    }));
+    const config = loadConfig();
+    expect(config.auth).toBeDefined();
+    expect(config.auth!.requireBrowserAuth).toBeUndefined();
+  });
+
   it("should parse auth config with github provider", () => {
     fs.writeFileSync(configFile, JSON.stringify({
       auth: {

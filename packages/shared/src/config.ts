@@ -66,6 +66,21 @@ export interface AuthConfig {
   bypassHosts?: string[];
   /** Admin email override — can list/revoke every user's proxy API keys. */
   admin?: string;
+  /**
+   * Multi-operator principal-capture gate (Build 0). When `true`, the browser
+   * `/ws` gateway REQUIRES a valid `pi_dash_token` — the pre-JWT loopback +
+   * trusted-network bypass is NOT honored for the browser path, so every
+   * connecting operator device (including op-1's own tailnet device) presents
+   * a verified principal that binds to the connection. Default `false` →
+   * single-operator behavior is byte-unchanged (the loopback/trusted-net
+   * bypass stands, no principal is required).
+   *
+   * NOTE (reversibility, two-eyes F7 / contract Alice #6): turning this OFF in
+   * config.json is NOT a clean flip — the `auth.secret` is sticky through the
+   * config API and until-expiry JWT cookies persist. Reverting to fully-open
+   * requires a hand-edit of config.json (remove the auth block) + restart.
+   */
+  requireBrowserAuth?: boolean;
 }
 
 export interface MemoryLimitsConfig {
@@ -324,7 +339,8 @@ const DEFAULTS: DashboardConfig = {
  * Parse and validate the auth config section.
  *
  * Returns undefined ONLY when nothing auth-relevant is configured — that is,
- * when none of `providers`, `bypassHosts`, or `bypassUrls` has any content.
+ * when none of `providers`, `bypassHosts`, `bypassUrls`, or the multi-operator
+ * `requireBrowserAuth` flag has any content.
  *
  * When providers is empty but bypassHosts or bypassUrls is populated, this
  * function returns a valid AuthConfig with an empty providers map. The auth
@@ -337,6 +353,13 @@ const DEFAULTS: DashboardConfig = {
  * before the resolvedTrustedNetworks merge could read it, and users
  * without OAuth lost remote network access after the UI started writing
  * to auth.bypassHosts. See openspec/changes/fix-trusted-networks-no-oauth.
+ *
+ * `requireBrowserAuth:true` is ALSO auth-relevant (Build 0 multi-operator
+ * gate). It must keep the auth block alive even with no providers/bypass —
+ * otherwise `{"auth":{"requireBrowserAuth":true}}` (or secret-only) would be
+ * dropped to `undefined` here and the server would silently run single-op
+ * (fail-OPEN while the operator believes multi-op is ON). This is the same
+ * parser-drop trap the two-eyes teardown flagged for `auth.secret` (M1).
  */
 function parseAuthConfig(raw: any): AuthConfig | undefined {
   if (!raw || typeof raw !== "object") return undefined;
@@ -345,7 +368,9 @@ function parseAuthConfig(raw: any): AuthConfig | undefined {
     providers && typeof providers === "object" && Object.keys(providers).length > 0;
   const hasHosts = Array.isArray(raw.bypassHosts) && raw.bypassHosts.length > 0;
   const hasUrls = Array.isArray(raw.bypassUrls) && raw.bypassUrls.length > 0;
-  if (!hasProviders && !hasHosts && !hasUrls) return undefined;
+  // Build 0: the multi-operator gate flag is auth-relevant on its own.
+  const hasBrowserAuthGate = raw.requireBrowserAuth === true;
+  if (!hasProviders && !hasHosts && !hasUrls && !hasBrowserAuthGate) return undefined;
 
   // Validate each provider has at least clientId and clientSecret.
   // validProviders may end up empty when providers is {} or all entries
@@ -367,9 +392,9 @@ function parseAuthConfig(raw: any): AuthConfig | undefined {
   }
 
   // If providers was declared but all entries are malformed AND there is no
-  // bypass content, fall back to undefined — same "nothing auth-relevant"
-  // rule as the top-level gate.
-  if (Object.keys(validProviders).length === 0 && !hasHosts && !hasUrls) {
+  // bypass content AND the multi-operator gate is not set, fall back to
+  // undefined — same "nothing auth-relevant" rule as the top-level gate.
+  if (Object.keys(validProviders).length === 0 && !hasHosts && !hasUrls && !hasBrowserAuthGate) {
     return undefined;
   }
 
@@ -380,6 +405,9 @@ function parseAuthConfig(raw: any): AuthConfig | undefined {
     bypassUrls: Array.isArray(raw.bypassUrls) ? raw.bypassUrls.filter((u: unknown) => typeof u === "string") : [],
     bypassHosts: Array.isArray(raw.bypassHosts) ? raw.bypassHosts.filter((u: unknown) => typeof u === "string") : [],
     ...(typeof raw.admin === "string" && raw.admin ? { admin: raw.admin } : {}),
+    // Build 0 multi-operator gate. Only honored as `true` when explicitly set.
+    // Absent / non-boolean → false → single-operator behavior unchanged.
+    ...(raw.requireBrowserAuth === true ? { requireBrowserAuth: true } : {}),
   };
 }
 

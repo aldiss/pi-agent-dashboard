@@ -45,6 +45,13 @@ export function registerSystemRoutes(
 ) {
   const { sessionManager, preferencesStore, metaPersistence, config, networkGuard, version, commit, directoryService, piGateway, bootstrapState, eventStore } = deps;
 
+  // Build 0 (PRINCIPAL-CAPTURE): freeze the multi-operator browser-auth gate
+  // flag at route-registration time (== server startup — this runs before any
+  // `/api/config` reload can mutate `config.authConfig`). The `/api/config`
+  // reload path below re-pins the reassigned auth object's flag to THIS value
+  // so a runtime flip is restart-required and the two live gates never diverge.
+  const requireBrowserAuthAtStartup = config.authConfig?.requireBrowserAuth === true;
+
   // Quiesce windows for the bridge `server_restarting` broadcast. See change
   // `fix-restart-bridge-auto-start-race`. Bridges that receive this message
   // suppress only the spawn step in `server-auto-start.ts` for `quiesceMs`;
@@ -150,6 +157,17 @@ export function registerSystemRoutes(
       }
       if (partial.auth !== undefined) {
         config.authConfig = reloaded.auth;
+        // Build 0: the multi-operator browser-auth gate is restart-required.
+        // Both gates (the `/ws` upgrade check + the browser gateway's send-seam
+        // check) read a startup-frozen boolean, NOT this mutable field. Pin the
+        // reassigned object's flag to the startup value so no future reader can
+        // mistake `config.authConfig.requireBrowserAuth` for a live signal — a
+        // flip only takes effect on restart (writeConfigPartial returns
+        // restartRequired:true). Secret/provider/bypass changes still apply
+        // live via _reloadAuth below. See gate-pushback-1 MAJOR (desync).
+        if (config.authConfig) {
+          config.authConfig.requireBrowserAuth = requireBrowserAuthAtStartup;
+        }
         if (reloaded.auth && (fastify as any)._reloadAuth) {
           await (fastify as any)._reloadAuth(reloaded.auth);
         }

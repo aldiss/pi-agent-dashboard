@@ -301,18 +301,64 @@ export async function registerAuthPlugin(
 }
 
 /**
- * Validate auth for a WebSocket upgrade request.
- * Returns true if the request is allowed, false if it should be rejected.
+ * Decision returned by {@link validateWsUpgrade}. Carries both the allow/deny
+ * verdict AND the verified principal bound to the connection (Build 0 —
+ * principal-capture). `validateWsUpgrade` used to return a bare boolean, which
+ * discarded the decoded `TokenPayload`; the multi-operator work needs that
+ * identity to reach the send path, so the gate now returns it.
+ */
+export interface WsUpgradeDecision {
+  /** Whether the WebSocket upgrade is permitted. */
+  allowed: boolean;
+  /**
+   * The verified principal (decoded JWT) bound to this connection, or null.
+   * Non-null only when a valid `pi_dash_token` cookie was presented. In
+   * single-operator mode (`requireBrowserAuth=false`) a loopback/trusted-net
+   * peer is allowed with a null principal (no cookie required) — exactly
+   * today's behavior. In multi-operator mode (`requireBrowserAuth=true`) a
+   * non-null principal is a precondition of `allowed:true`.
+   */
+  principal: TokenPayload | null;
+}
+
+/**
+ * Validate auth for a WebSocket upgrade request AND capture the verified
+ * principal. Returns a {@link WsUpgradeDecision} — `allowed` is the verdict,
+ * `principal` is the decoded token (null when no/invalid cookie).
+ *
+ * @param requireBrowserAuth  Build 0 multi-operator gate. When `true`, the
+ *   loopback + trusted-network bypass is NOT honored: the upgrade is allowed
+ *   ONLY with a valid cookie, so every browser connection binds a verified
+ *   principal. Default `false` → single-operator decision is byte-identical to
+ *   the legacy boolean gate (loopback/trusted-net bypass the token check).
  */
 export function validateWsUpgrade(
   cookieHeader: string | undefined,
   remoteAddress: string,
   secret: string,
   trustedNetworks: string[] = [],
-): boolean {
-  if (isLoopback(remoteAddress)) return true;
-  if (trustedNetworks.length > 0 && isBypassedHost(remoteAddress, trustedNetworks)) return true;
+  requireBrowserAuth = false,
+): WsUpgradeDecision {
+  // Resolve the verified principal once (null when no/invalid cookie).
   const token = parseAuthCookie(cookieHeader);
-  if (!token) return false;
-  return verifyToken(token, secret) !== null;
+  const principal = token ? verifyToken(token, secret) : null;
+
+  // Multi-operator mode: identity is REQUIRED for the browser path. No
+  // loopback / trusted-network bypass — op-1's own tailnet device must present
+  // a verified principal so every turn has an author to bind. This tightening
+  // (in code, gated by the flag) IS the trustedNetworks-close for the browser
+  // gateway (two-eyes F1/F2).
+  if (requireBrowserAuth) {
+    return principal ? { allowed: true, principal } : { allowed: false, principal: null };
+  }
+
+  // Single-operator mode (default): allow/deny is byte-unchanged from the
+  // legacy boolean gate — loopback and trusted networks bypass the token
+  // check. The principal is captured opportunistically (additive) but nothing
+  // in the single-operator send path reads it.
+  if (isLoopback(remoteAddress)) return { allowed: true, principal };
+  if (trustedNetworks.length > 0 && isBypassedHost(remoteAddress, trustedNetworks)) {
+    return { allowed: true, principal };
+  }
+  return principal ? { allowed: true, principal } : { allowed: false, principal: null };
 }

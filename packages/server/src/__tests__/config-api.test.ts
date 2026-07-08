@@ -205,5 +205,62 @@ describe("config-api", () => {
       expect(result.success).toBe(true);
       expect(result.restartRequired).toBe(true);
     });
+
+    // ── Build 0 multi-operator gate: requireBrowserAuth persistence ────
+    // Before the fix, the auth-merge block copied only
+    // secret/providers/allowedUsers/bypassHosts/bypassUrls, silently dropping
+    // requireBrowserAuth on every save → a Settings toggle returned success
+    // but the field never persisted (fail-open after reload).
+
+    it("should persist auth.requireBrowserAuth=true (set) + flag restartRequired", () => {
+      fs.writeFileSync(configFile, JSON.stringify({ port: 8000 }));
+      const result = writeConfigPartial({
+        auth: { providers: {}, requireBrowserAuth: true },
+      });
+      expect(result.success).toBe(true);
+      // Flipping the gate is restart-required (frozen-at-startup boolean).
+      expect(result.restartRequired).toBe(true);
+      const written = JSON.parse(fs.readFileSync(configFile, "utf-8"));
+      expect(written.auth.requireBrowserAuth).toBe(true);
+    });
+
+    it("should clear auth.requireBrowserAuth via explicit false + flag restartRequired", () => {
+      fs.writeFileSync(configFile, JSON.stringify({
+        auth: { providers: {}, requireBrowserAuth: true },
+      }));
+      const result = writeConfigPartial({
+        auth: { requireBrowserAuth: false },
+      });
+      expect(result.success).toBe(true);
+      expect(result.restartRequired).toBe(true);
+      const written = JSON.parse(fs.readFileSync(configFile, "utf-8"));
+      expect(written.auth.requireBrowserAuth).toBe(false);
+    });
+
+    it("should preserve existing auth.requireBrowserAuth when partial omits the key (no restart)", () => {
+      fs.writeFileSync(configFile, JSON.stringify({
+        auth: { providers: {}, requireBrowserAuth: true },
+      }));
+      const result = writeConfigPartial({
+        auth: { allowedUsers: ["alice"] },
+      });
+      expect(result.success).toBe(true);
+      // Unchanged flag → no restart triggered by the auth block.
+      expect(result.restartRequired).toBe(false);
+      const written = JSON.parse(fs.readFileSync(configFile, "utf-8"));
+      expect(written.auth.requireBrowserAuth).toBe(true);
+      expect(written.auth.allowedUsers).toEqual(["alice"]);
+    });
+
+    it("should NOT flag restartRequired when requireBrowserAuth is re-set to its current value", () => {
+      fs.writeFileSync(configFile, JSON.stringify({
+        auth: { providers: {}, requireBrowserAuth: true },
+      }));
+      const result = writeConfigPartial({
+        auth: { requireBrowserAuth: true },
+      });
+      expect(result.success).toBe(true);
+      expect(result.restartRequired).toBe(false);
+    });
   });
 });

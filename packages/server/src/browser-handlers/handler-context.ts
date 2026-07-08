@@ -18,12 +18,29 @@ import type { PendingResumeRegistry } from "../pending-resume-registry.js";
 import type { PendingAttachRegistry } from "../pending-attach-registry.js";
 import type { PendingResumeIntentRegistry } from "../pending-resume-intent-registry.js";
 import type { PendingClientCorrelations } from "../pending-client-correlations.js";
+import type { TokenPayload } from "../auth.js";
 
 export interface BrowserHandlerContext {
   ws: WebSocket;
   sessionManager: SessionManager;
   eventStore: EventStore;
   piGateway: PiGateway;
+  /**
+   * Build 0 (PRINCIPAL-CAPTURE): the verified principal (decoded JWT) bound to
+   * THIS browser connection at the `/ws` upgrade, or null. Non-null only when a
+   * valid `pi_dash_token` cookie was presented. Handlers derive the session
+   * actor from this — NEVER from a client-supplied field in the message body
+   * (anti-spoof; the send handler reconstructs the forwarded object
+   * field-by-field, never `...msg`-spread). See auth-merge contract #1, #2.
+   */
+  principal: TokenPayload | null;
+  /**
+   * Build 0 multi-operator gate flag (`auth.requireBrowserAuth`). When true the
+   * central `authorizeSessionAction` gate requires a bound `human` principal
+   * for session-writes. Default false → gate no-ops (single-operator,
+   * byte-unchanged).
+   */
+  requireBrowserAuth: boolean;
   pendingForkRegistry?: PendingForkRegistry;
   sessionOrderManager?: SessionOrderManager;
   preferencesStore?: PreferencesStore;

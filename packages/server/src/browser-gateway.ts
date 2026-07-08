@@ -10,6 +10,7 @@ import type {
 import type { SessionManager } from "./memory-session-manager.js";
 import type { EventStore } from "./memory-event-store.js";
 import type { PiGateway } from "./pi-gateway.js";
+import type { TokenPayload } from "./auth.js";
 // PendingLoadManager removed — server loads sessions directly via DirectoryService
 import { createHeadlessPidRegistry, type HeadlessPidRegistry } from "./headless-pid-registry.js";
 import type { PendingForkRegistry } from "./pending-fork-registry.js";
@@ -122,6 +123,13 @@ export function createBrowserGateway(
   pendingClientCorrelations?: import("./pending-client-correlations.js").PendingClientCorrelations,
   pushPrefsMap?: Map<string, import("./push/push-types.js").PushPrefs>,
   getPushDefaults?: () => import("@blackbelt-technology/pi-dashboard-shared/config.js").PushDefaults | undefined,
+  /**
+   * Build 0 (PRINCIPAL-CAPTURE) multi-operator gate. When true, every browser
+   * connection is required (at the `/ws` upgrade) to have bound a verified
+   * principal, and the send-seam authorization gate enforces principal
+   * presence. Default false → single-operator, gate no-ops (byte-unchanged).
+   */
+  requireBrowserAuth = false,
 ): BrowserGateway {
   // perMessageDeflate enabled: the sessions_snapshot frame is ~345 KB uncompressed
   // at ~380 sessions and re-ships on every (re)connect; gzip of the identical payload
@@ -136,6 +144,12 @@ export function createBrowserGateway(
 
   // Track subscriptions: ws → Set<sessionId>
   const subscriptions = new Map<WebSocket, Set<string>>();
+  // Build 0 (PRINCIPAL-CAPTURE): bind the verified principal captured at the
+  // `/ws` upgrade to each socket. Null when single-operator mode allowed the
+  // connection with no cookie. Read by handlers via `ctx.principal` so every
+  // session-write derives its actor from the connection, never from the
+  // message body (anti-spoof). See auth-merge contract invariant #2.
+  const principals = new Map<WebSocket, TokenPayload | null>();
   // Track which sessions are mid-replay per WebSocket (suppress live events)
   const replayingSessions = new Map<WebSocket, Set<string>>();
 
@@ -286,6 +300,11 @@ export function createBrowserGateway(
     console.error(`[browser-gw] browser client connected from ${remoteAddr} origin=${origin} ua=${ua.slice(0, 80)} (total: ${subscriptions.size + 1})`);
     const subs = new Set<string>();
     subscriptions.set(ws, subs);
+    // Build 0: bind the principal captured at the `/ws` upgrade (stashed on the
+    // request as `wsPrincipal`) to this socket. `undefined` (no auth secret /
+    // single-operator) is normalized to `null`.
+    const boundPrincipal = (req as { wsPrincipal?: TokenPayload | null } | undefined)?.wsPrincipal ?? null;
+    principals.set(ws, boundPrincipal);
 
     // Per-socket isolation: handle 'error' so a single browser socket fault
     // (reset / abrupt close) can NEVER bubble to an uncaught exception. Tear
@@ -360,6 +379,12 @@ export function createBrowserGateway(
           pendingClientCorrelations,
           pushPrefsMap,
           getPushDefaults,
+          // Build 0 (PRINCIPAL-CAPTURE): the verified principal bound to THIS
+          // socket + the multi-operator gate flag. Handlers derive the actor
+          // from `ctx.principal` (never the message body). See auth-merge
+          // contract invariants #1, #2.
+          principal: principals.get(ws) ?? null,
+          requireBrowserAuth,
           sendTo, broadcast, getSubscribers, replayPendingUiRequests,
           trackUiRequest: trackUiRequest,
           markReplaying(targetWs, sessionId) {
@@ -610,6 +635,8 @@ export function createBrowserGateway(
       console.error(`[browser-gw] browser client disconnected (remaining: ${subscriptions.size - 1})`);
       subscriptions.delete(ws);
       replayingSessions.delete(ws);
+      // Build 0: drop the bound principal so a closed socket holds no identity.
+      principals.delete(ws);
       // Drop this ws from every viewed-session entry so disconnected browsers
       // don't hold sessions in the viewed state. See change: session-card-unread-stripes.
       viewedSessionTracker.unviewAll(ws);

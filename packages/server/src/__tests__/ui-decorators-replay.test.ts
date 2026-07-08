@@ -44,6 +44,8 @@ function createCtx(overrides: Partial<BrowserHandlerContext> = {}): BrowserHandl
     piGateway: { sendToSession: vi.fn() } as any,
     headlessPidRegistry: {} as any,
     pendingResumeRegistry: {} as any,
+    principal: null,
+    requireBrowserAuth: false,
     sendTo: vi.fn(),
     broadcast: vi.fn(),
     getSubscribers: () => [],

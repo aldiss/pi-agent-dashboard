@@ -20,6 +20,7 @@ import {
   findPidByMarker,
 } from "@blackbelt-technology/pi-dashboard-shared/platform/process-identify.js";
 import { shouldInterceptReload } from "./session-action-helpers.js";
+import { authorizeSessionAction } from "../session-authz.js";
 
 /**
  * Status message + code emitted when fork is attempted on a session whose
@@ -220,6 +221,33 @@ export async function handleSendPrompt(
   ctx: BrowserHandlerContext,
 ): Promise<void> {
   const { sessionManager, piGateway, headlessPidRegistry, pendingResumeRegistry, pendingResumeIntents, pendingDashboardSpawns, broadcast, ws, sendTo } = ctx;
+
+  // ── OUTERMOST session-write gate (Build 0 — PRINCIPAL-CAPTURE) ────────────
+  // Every WS send routes through the single central chokepoint. The actor is
+  // derived from the connection-bound principal (`ctx.principal`) — NEVER from
+  // a client-supplied field in `msg`. In single-operator mode
+  // (requireBrowserAuth=false) the gate allows unconditionally (byte-unchanged).
+  // In multi-operator mode a principal-less human is refused here (the `/ws`
+  // upgrade already refuses such connections; this pins the invariant at the
+  // send seam too). A future `service{id}` actor (det-spawn) inherits this same
+  // chokepoint. See auth-merge contract invariants #1, #2, #4.
+  const decision = authorizeSessionAction({
+    actor: { kind: "human", principal: ctx.principal },
+    action: "send_prompt",
+    requireBrowserAuth: ctx.requireBrowserAuth,
+  });
+  if (!decision.allowed) {
+    console.error(
+      `[dashboard] send_prompt refused by auth gate (session ${msg.sessionId}, reason=${decision.reason})`,
+    );
+    sendTo(ws, {
+      type: "send_prompt_failed",
+      sessionId: msg.sessionId,
+      ...(msg.queueNonce ? { queueNonce: msg.queueNonce } : {}),
+      reason: "unauthorized",
+    });
+    return;
+  }
 
   // Intercept `/reload` on active headless sessions — forward the request to
   // our kill-and-respawn handler instead of routing the prompt to the bridge
