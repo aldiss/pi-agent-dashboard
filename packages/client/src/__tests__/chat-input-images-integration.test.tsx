@@ -124,6 +124,16 @@ async function flushFileReader() {
 		await new Promise((r) => setTimeout(r, 0));
 		await new Promise((r) => setTimeout(r, 0));
 	});
+	// The pre-send full-resolution toggle (a useSyncExternalStore singleton the
+	// ImagePreviewStrip subscribes to) can schedule one more store-commit AFTER
+	// the FileReader's onImagesChange state update resolves the act() above; a
+	// final flush tick commits that render so the thumbnail is in the DOM before
+	// we assert. Pure test-flush robustness — the toggle holds only a boolean, so
+	// this does not touch the per-session pending-image state the no-leak
+	// assertions below verify.
+	await act(async () => {
+		await new Promise((r) => setTimeout(r, 0));
+	});
 }
 
 describe("chat-input pending-image integration", () => {
