@@ -1,7 +1,10 @@
 /**
  * Tests for CLI argument parsing.
  */
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, beforeEach } from "vitest";
+import fs from "node:fs";
+import path from "node:path";
+import os from "node:os";
 import { parseArgs, buildConfig } from "../cli.js";
 
 describe("parseArgs", () => {
@@ -156,5 +159,58 @@ describe("daemon spawn jiti resolution", () => {
     } else {
       expect(url).toBeNull();
     }
+  });
+});
+
+// ── PUSHBACK-3 FIX-P3-6 (dual-review MINOR-4): {startup} scope on buildConfig ─────
+// `buildConfig` runs `loadConfig({startup})` before the subcommand switch. A
+// malformed auth config throws when `startup:true` (fail-CLOSED-REFUSE, correct
+// for the server-STARTING verbs) but must NOT throw when `startup:false` (the
+// availability verbs `stop`/`status` must still run — an operator who mis-edits
+// the flag has to be able to stop the daemon + fix the config). This locks the
+// scope so a malformed auth config bricks `start` (fail-closed) but not
+// `stop`/`status` (available).
+describe("buildConfig — {startup} scope (FIX-P3-6: malformed auth config bricks start, not stop/status)", () => {
+  let testDir: string;
+  let configFile: string;
+  let origHome: string | undefined;
+
+  beforeEach(() => {
+    testDir = fs.mkdtempSync(path.join(os.tmpdir(), "b1b-fix3-cli-"));
+    fs.mkdirSync(path.join(testDir, ".pi", "dashboard"), { recursive: true });
+    configFile = path.join(testDir, ".pi", "dashboard", "config.json");
+    origHome = process.env.HOME;
+    process.env.HOME = testDir;
+  });
+  afterEach(() => {
+    if (origHome === undefined) delete process.env.HOME;
+    else process.env.HOME = origHome;
+    if (fs.existsSync(testDir)) fs.rmSync(testDir, { recursive: true, force: true });
+  });
+
+  it("startup:true (start/restart/foreground) THROWS on a malformed auth security flag (fail-closed)", () => {
+    // Red-arm: revert `main` to always `buildConfig(flags, {startup:true})` and
+    // this stays correct; the availability test below is the one that flips.
+    fs.writeFileSync(configFile, JSON.stringify({ auth: { requireBrowserAuth: "true" } }));
+    expect(() => buildConfig({}, { startup: true })).toThrow(/SECURITY CONFIG MALFORMED/);
+  });
+
+  it("startup:false (stop/status/upgrade-pi/resurrect) does NOT throw on the same malformed config (degrades)", () => {
+    // Red-arm: gate `{startup:true}` UNCONDITIONALLY (drop the FIX-P3-6 scoping)
+    // → stop/status brick on a mis-edited flag → this throws → RED (the exact
+    // availability regression the fix closes).
+    fs.writeFileSync(configFile, JSON.stringify({ auth: { requireBrowserAuth: "true" } }));
+    expect(() => buildConfig({}, { startup: false })).not.toThrow();
+  });
+
+  it("default (no opts) stays fail-closed (backward-compatible: every existing caller refuses a malformed flag)", () => {
+    fs.writeFileSync(configFile, JSON.stringify({ auth: { requireBrowserAuth: "true" } }));
+    expect(() => buildConfig({})).toThrow(/SECURITY CONFIG MALFORMED/);
+  });
+
+  it("a VALID auth config builds cleanly under both scopes", () => {
+    fs.writeFileSync(configFile, JSON.stringify({ auth: { requireBrowserAuth: true, secret: "s" } }));
+    expect(() => buildConfig({}, { startup: true })).not.toThrow();
+    expect(() => buildConfig({}, { startup: false })).not.toThrow();
   });
 });

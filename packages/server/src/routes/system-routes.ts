@@ -47,10 +47,22 @@ export function registerSystemRoutes(
 
   // Build 0 (PRINCIPAL-CAPTURE): freeze the multi-operator browser-auth gate
   // flag at route-registration time (== server startup — this runs before any
-  // `/api/config` reload can mutate `config.authConfig`). The `/api/config`
-  // reload path below re-pins the reassigned auth object's flag to THIS value
-  // so a runtime flip is restart-required and the two live gates never diverge.
+  // `/api/config` reload can mutate `config.authConfig`). BOTH live gates (the
+  // `/ws` upgrade check + the browser gateway's send-seam gate) read this ONE
+  // startup-frozen boolean, never the mutable `config.authConfig` field, so a
+  // runtime flip cannot desync them (the flag is restart-required). H-NIT1
+  // (Build 1b): the previous "re-pin `config.authConfig.requireBrowserAuth =
+  // <frozen>` after reload" was DEAD — no live gate ever reads that mutable
+  // field — so it was removed (test-it-or-remove-it: removed).
   const requireBrowserAuthAtStartup = config.authConfig?.requireBrowserAuth === true;
+  // H-M3 (Build 1b): capture the startup verifier secret so a runtime
+  // `PUT /api/config {requireBrowserAuth:false}` under a frozen-ON gate cannot
+  // DROP the secret and lock out still-valid cookies. In flag-only-no-provider
+  // mode `loadConfig()` collapses a secret-only auth block to `undefined` on
+  // reload (config.ts secret-only rule) → `config.authConfig=undefined` → the
+  // frozen-ON `/ws` gate would 401 even valid old cookies. We preserve the prior
+  // secret on the reassigned auth object below so the gate keeps verifying.
+  const authSecretAtStartup = config.authConfig?.secret;
 
   // Quiesce windows for the bridge `server_restarting` broadcast. See change
   // `fix-restart-bridge-auto-start-race`. Bridges that receive this message
@@ -146,7 +158,18 @@ export function registerSystemRoutes(
       }
       const result = writeConfigPartial(partial);
       if (!result.success) {
-        return reply.code(500).send({ success: false, error: result.error });
+        // H-M1 (Build 1b): a malformed security-flag write is a client error
+        // (400 — reject + preserve prior value), distinct from a genuine
+        // disk/serialize failure (500). FOLD-E N1 (PUSHBACK-1): key the split on
+        // the STRUCTURED `validationError` flag, not a brittle English-substring
+        // match on the error text (the substring stays as a defensive fallback
+        // for any pre-flag caller).
+        const isValidationError =
+          result.validationError === true ||
+          (typeof result.error === "string" && result.error.includes("must be a boolean"));
+        return reply
+          .code(isValidationError ? 400 : 500)
+          .send({ success: false, error: result.error });
       }
 
       // Apply runtime-safe changes
@@ -157,16 +180,27 @@ export function registerSystemRoutes(
       }
       if (partial.auth !== undefined) {
         config.authConfig = reloaded.auth;
-        // Build 0: the multi-operator browser-auth gate is restart-required.
-        // Both gates (the `/ws` upgrade check + the browser gateway's send-seam
-        // check) read a startup-frozen boolean, NOT this mutable field. Pin the
-        // reassigned object's flag to the startup value so no future reader can
-        // mistake `config.authConfig.requireBrowserAuth` for a live signal — a
-        // flip only takes effect on restart (writeConfigPartial returns
-        // restartRequired:true). Secret/provider/bypass changes still apply
-        // live via _reloadAuth below. See gate-pushback-1 MAJOR (desync).
-        if (config.authConfig) {
-          config.authConfig.requireBrowserAuth = requireBrowserAuthAtStartup;
+        // Build 0/1b: the multi-operator browser-auth gate is restart-required.
+        // Both live gates read the STARTUP-FROZEN boolean, NOT this reassigned
+        // object, so a flip only takes effect on restart (writeConfigPartial
+        // returns restartRequired:true). Secret/provider/bypass changes still
+        // apply live via _reloadAuth below.
+        //
+        // H-M3 (Build 1b): preserve the verifier secret across the reload when
+        // the gate was frozen ON. In flag-only-no-provider mode a runtime
+        // `{requireBrowserAuth:false}` write makes `loadConfig()` drop the
+        // secret-only auth block to `undefined` (config.ts secret-only rule),
+        // which would leave the frozen-ON `/ws` gate with NO secret → it would
+        // 401 even still-valid old cookies (a self-inflicted lockout). If the
+        // reload produced no auth block (or a secretless one) but we froze ON
+        // with a secret, reconstruct a minimal auth object carrying the prior
+        // secret so the gate keeps verifying existing cookies until restart.
+        if (requireBrowserAuthAtStartup && authSecretAtStartup) {
+          if (!config.authConfig) {
+            config.authConfig = { secret: authSecretAtStartup, providers: {} };
+          } else if (!config.authConfig.secret) {
+            config.authConfig.secret = authSecretAtStartup;
+          }
         }
         if (reloaded.auth && (fastify as any)._reloadAuth) {
           await (fastify as any)._reloadAuth(reloaded.auth);

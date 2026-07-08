@@ -172,6 +172,23 @@ export function verifyToken(token: string, secret: string): TokenPayload | null 
   }
 }
 
+/**
+ * True when a decoded principal carries a usable `sub` — a non-empty, trimmed
+ * string identity (H-M2, Build 1b). `verifyToken` above casts ANY
+ * signature-valid JWT to `TokenPayload` without checking `sub`, so a
+ * secret-signed-but-`sub`-less token yields a non-null principal with no exact
+ * identity. That principal cannot be matched against the operator identity
+ * (`isOperator` in session-authz.ts) and cannot author a turn (Build 2), so a
+ * `human` actor MUST carry a real `sub`. The authorization chokepoint refuses a
+ * `human` whose principal fails this check when the multi-operator gate is ON.
+ *
+ * Purely additive: nothing reads it when `requireBrowserAuth` is off, so
+ * single-operator behavior is byte-unchanged.
+ */
+export function hasUsableSub(principal: TokenPayload | null | undefined): boolean {
+  return !!principal && typeof principal.sub === "string" && principal.sub.trim().length > 0;
+}
+
 // ─── Cookie Parsing ─────────────────────────────────────────────────────────
 
 /**

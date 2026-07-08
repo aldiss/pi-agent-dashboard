@@ -179,6 +179,19 @@ describe("Build 0 v2.1 — the EXACT decoded principal reaches the send-seam gat
     expect(afterA.filter((s) => s != null)).toEqual([SUB_A]);
     expect(afterB.filter((s) => s != null)).toEqual([SUB_B]);
 
+    // H-T1 (Build 1b §7): the A-AFTER-B case. The binding test above sends
+    // A-before-B then B, never A again after B connected — so a global
+    // `lastPrincipal` regression (B's connect clobbering a shared slot) would
+    // pass it. Send from A AGAIN, after B is connected, and assert A's seam
+    // STILL sees A's sub — proving per-socket `Map<WS,principal>` binding, not a
+    // last-writer-wins global. Red-arm: replace the browser-gateway per-socket
+    // Map with a single module-level `lastPrincipal` → this sees SUB_B → fails.
+    observedGateSubs.length = 0;
+    wsA.send(JSON.stringify({ type: "send_prompt", sessionId: "sTwo", text: "from A again" }));
+    await delay(200);
+    const afterAAgain = [...observedGateSubs];
+    expect(afterAAgain.filter((s) => s != null)).toEqual([SUB_A]);
+
     try { wsA.close(); } catch { /* noop */ }
     try { wsB.close(); } catch { /* noop */ }
     bridge.close();

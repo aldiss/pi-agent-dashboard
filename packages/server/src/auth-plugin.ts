@@ -31,6 +31,44 @@ export function isBypassed(url: string, bypassUrls: string[]): boolean {
   return bypassUrls.some((prefix) => url.startsWith(prefix));
 }
 
+/**
+ * Build 1b (C-REST-CLOSURE) — capture the verified REST identity onto the
+ * request for the session-write gate. Derives the actor ONLY from the verified
+ * JWT cookie (`human{principal}`) or the shared-secret Bearer header
+ * (`service`) — NEVER from the request body (anti-spoof). Purely additive: the
+ * session-write gate only reads these when the startup-frozen multi-operator
+ * flag is ON, so single-operator behavior is byte-unchanged.
+ *
+ * Called from BOTH the enforcing onRequest hook (providers configured) and the
+ * capture-only hook (flag-ON-with-secret-but-no-provider) so the capture
+ * semantics are defined once — no drift between two hand-written copies.
+ */
+export function captureRestIdentity(request: FastifyRequest, secret: string): void {
+  const cookieToken = (request.cookies as any)?.[COOKIE_NAME];
+  if (cookieToken) {
+    const payload = verifyToken(cookieToken, secret);
+    if (payload) {
+      // A verified human principal. Cookie identity takes precedence over a
+      // shared-secret header (a real user identity is strictly more specific
+      // than the principal-less service secret).
+      (request as any).restPrincipal = payload;
+      (request as any).restActorKind = "human";
+      return;
+    }
+  }
+  const authHeader = request.headers.authorization;
+  if (
+    (request as any).restActorKind == null &&
+    authHeader &&
+    authHeader.startsWith("Bearer ") &&
+    secret &&
+    authHeader.slice(7) === secret
+  ) {
+    // Shared-secret / skill caller → a principal-less `service` actor.
+    (request as any).restActorKind = "service";
+  }
+}
+
 
 
 /** Escape HTML special characters to prevent XSS in server-rendered pages. */
@@ -118,8 +156,36 @@ export async function registerAuthPlugin(
     bypassHosts: resolvedTrustedNetworks ?? authConfig.bypassHosts ?? [],
   };
 
+  // Tag requests with authentication status (read by createNetworkGuard) and
+  // the Build 1b REST-captured identity. Registered here — BEFORE the
+  // no-providers early-return — so the session-write REST gate always has the
+  // fields even in flag-ON-with-secret-but-no-provider mode.
+  fastify.decorateRequest("isAuthenticated", false);
+  // Build 1b (C-REST-CLOSURE): stash the REST-captured principal + actor kind on
+  // the request so the session-write REST gate can construct the SAME
+  // `SessionActor` the WS seam does — `human{principal}` for a verified JWT
+  // cookie, `service` for the shared-secret / Bearer path. Additive: nothing
+  // reads these when the multi-operator gate is OFF (byte-unchanged).
+  fastify.decorateRequest("restPrincipal", null);
+  fastify.decorateRequest("restActorKind", null);
+
+  // Register the cookie parser now (needed by BOTH the capture hook below and
+  // the full OAuth onRequest hook). Idempotent-safe: registered once here.
+  await fastify.register(cookie);
+
   if (authState.providerRegistry.size === 0) {
-    console.warn("Auth configured but no providers resolved — auth disabled");
+    // No OAuth providers → the login/callback flow can't run, so we do NOT
+    // register the enforcing onRequest hook (that would 401 every request with
+    // no way to log in). BUT the multi-operator gate still needs REST
+    // principal-capture: register a CAPTURE-ONLY hook (no enforcement, no
+    // redirect) so a valid `pi_dash_token` cookie / shared-secret Bearer still
+    // binds its identity for the session-write gate. Build 1b F4-closure +
+    // operator-only enforcement then work in flag-ON-with-secret mode even
+    // before an OAuth provider is configured. See change: fix build1b no-provider capture.
+    console.warn("Auth configured but no providers resolved — OAuth login disabled (REST principal-capture still active)");
+    fastify.addHook("onRequest", async (request: FastifyRequest) => {
+      captureRestIdentity(request, authState.secret);
+    });
     return;
   }
 
@@ -134,11 +200,8 @@ export async function registerAuthPlugin(
     console.log(`🔐 Auth reloaded with providers: ${names.join(", ")}`);
   };
 
-  // Tag requests with authentication status (read by createNetworkGuard)
-  fastify.decorateRequest("isAuthenticated", false);
-
-  // Register cookie plugin
-  await fastify.register(cookie);
+  // (decorators + cookie plugin already registered above, before the
+  // no-providers early-return, so REST principal-capture works in every mode.)
 
   // ─── Auth Routes ────────────────────────────────────────────────────────
 
@@ -244,6 +307,18 @@ export async function registerAuthPlugin(
   // ─── onRequest Hook ─────────────────────────────────────────────────────
 
   fastify.addHook("onRequest", async (request: FastifyRequest, reply: FastifyReply) => {
+    // ── Build 1b REST principal-capture (mandate 3) ─────────────────────────
+    // Capture the verified principal / service-kind FIRST — before ANY bypass
+    // early-return — so a valid-cookie request that would otherwise short-
+    // circuit on the loopback / trusted-net / bypass path (op-1's own device,
+    // the integration tests) still binds its identity for the session-write
+    // gate. This is the REST mirror of the WS `wsPrincipal` capture. Purely
+    // additive: the session-write gate only reads it when the startup-frozen
+    // multi-operator flag is ON, so single-op behavior is byte-unchanged. The
+    // actor derives ONLY from the verified cookie / shared-secret — NEVER from
+    // the request body (anti-spoof).
+    captureRestIdentity(request, authState.secret);
+
     // Localhost bypass
     if (isLoopback(request.ip)) return;
 

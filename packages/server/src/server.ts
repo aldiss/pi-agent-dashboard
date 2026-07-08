@@ -648,7 +648,7 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
     },
   });
 
-  const browserGateway = createBrowserGateway(sessionManager, eventStore, piGateway, undefined, pendingForkRegistry, sessionOrderManager, preferencesStore, directoryService, terminalManager, pendingDashboardSpawns, config.maxWsBufferBytes, pendingAttachRegistry, pendingResumeIntents, pendingClientCorrelations, pushPrefsMap, () => config.push?.defaults, requireBrowserAuthAtStartup);
+  const browserGateway = createBrowserGateway(sessionManager, eventStore, piGateway, undefined, pendingForkRegistry, sessionOrderManager, preferencesStore, directoryService, terminalManager, pendingDashboardSpawns, config.maxWsBufferBytes, pendingAttachRegistry, pendingResumeIntents, pendingClientCorrelations, pushPrefsMap, () => config.push?.defaults, requireBrowserAuthAtStartup, config.authConfig?.operatorUsers);
 
   // Driver self-report poller (dl-2620): re-reads the driver-state sidecars
   // (written by the `driver-report` CLI) and pushes per-driver progress-% +
@@ -931,6 +931,12 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
     // session-api handler prefers the live `piGateway.address()` and falls back
     // to this. See change: pin-on-resurrect.
     serverPiPort: config.piPort,
+    // Build 1b (C-REST-CLOSURE): route every session-write REST route through
+    // the central chokepoint using the SAME startup-frozen gate flag the WS
+    // gate + send-seam gate read (never mutable config.authConfig → no desync)
+    // + the frozen operator identities. Flag OFF → the gate no-ops.
+    requireBrowserAuth: requireBrowserAuthAtStartup,
+    ...(config.authConfig?.operatorUsers ? { operatorUsers: config.authConfig.operatorUsers } : {}),
     ...(config.resurrectVerify ? { resurrectVerify: config.resurrectVerify } : {}),
   });
 
@@ -963,6 +969,10 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
     networkGuard,
     hygieneProbes,
     broadcastSessionUpdated: (id, updates) => browserGateway.broadcastSessionUpdated(id, updates),
+    // Build 1b: retire is a session-write → operator-only through the same
+    // frozen gate. Flag OFF → no-op.
+    requireBrowserAuth: requireBrowserAuthAtStartup,
+    ...(config.authConfig?.operatorUsers ? { operatorUsers: config.authConfig.operatorUsers } : {}),
   });
   registerGitRoutes(fastify, { networkGuard });
   registerFileRoutes(fastify, { sessionManager, preferencesStore, networkGuard });

@@ -81,6 +81,31 @@ export interface AuthConfig {
    * requires a hand-edit of config.json (remove the auth block) + restart.
    */
   requireBrowserAuth?: boolean;
+  /**
+   * Operator-identity source for operator-only session-write enforcement
+   * (Build 1b — C-REST-CLOSURE, mandate 4c). A session-write action classified
+   * `operator-only` (the session-control / lifecycle actions: shutdown,
+   * retire, resurrect, spawn, resume, rename, hide/unhide, model,
+   * thinking-level, flow-control, attach/detach-proposal, kill_process/
+   * force_kill, and the role/preset mutations role_set/flow_management/
+   * role_preset_save/delete/load) is authorized ONLY
+   * when the actor is a `human` whose verified principal matches an entry here
+   * (by `sub`/email or `username`, case-insensitive). A bounded co-driver
+   * (op-2, authenticated but NOT listed) and a `service` actor are structurally
+   * refused for operator-only actions but may still perform co-drive actions:
+   * `send_prompt`, `abort` (the safety emergency-stop — the source-map
+   * `SESSION_WRITE_ACTION_CLASS.abort` is CO-DRIVE, not operator-only), and
+   * `request_roles` (a read).
+   *
+   * INERT when unset/empty OR when `requireBrowserAuth` is off: operator-only
+   * enforcement no-ops, so single-operator (and flag-ON-without-an-operator)
+   * behavior is byte-unchanged. The VALUES (op-1/op-2 emails) are configured at
+   * Build 1 when op-2 is admitted — Build 1b ships the MECHANISM only. Because
+   * enforcement is inert when this is unset, Build 1 MUST set `operatorUsers`
+   * in the SAME config change that admits op-2 (dl-5761: no window for op-2 to
+   * silently hold an operator-only action).
+   */
+  operatorUsers?: string[];
 }
 
 export interface MemoryLimitsConfig {
@@ -370,6 +395,16 @@ function parseAuthConfig(raw: any): AuthConfig | undefined {
   const hasUrls = Array.isArray(raw.bypassUrls) && raw.bypassUrls.length > 0;
   // Build 0: the multi-operator gate flag is auth-relevant on its own.
   const hasBrowserAuthGate = raw.requireBrowserAuth === true;
+
+  // H-M1 / Fix 2 (dl-5775 canon): a security flag PRESENT but NOT a strict
+  // boolean (e.g. "true", 1, [], {}) is a SILENT-misconfig hazard. The LOUD
+  // diagnostic + fail-CLOSED-REFUSE (at startup) is now centralized in
+  // `enforceSecurityFlagIntegrity` (called from `loadConfig` before parse), so
+  // it fires once with startup/runtime scope. Here we keep the strict `=== true`
+  // parse (loose truthy is WORSE — it would flip a hand-typed "false"/0 toward
+  // ON = lockout): a non-boolean resolves the flag UNSET (fail CLOSED to
+  // single-op). No warn here (would double-log with the integrity check).
+
   if (!hasProviders && !hasHosts && !hasUrls && !hasBrowserAuthGate) return undefined;
 
   // Validate each provider has at least clientId and clientSecret.
@@ -408,6 +443,12 @@ function parseAuthConfig(raw: any): AuthConfig | undefined {
     // Build 0 multi-operator gate. Only honored as `true` when explicitly set.
     // Absent / non-boolean → false → single-operator behavior unchanged.
     ...(raw.requireBrowserAuth === true ? { requireBrowserAuth: true } : {}),
+    // Build 1b operator-identity source. Filter to non-empty strings; omit when
+    // empty so operator-only enforcement stays INERT (mandate 4c). The VALUES
+    // are configured at Build 1 (op-2 admission); Build 1b ships the mechanism.
+    ...(Array.isArray(raw.operatorUsers)
+      ? { operatorUsers: raw.operatorUsers.filter((u: unknown) => typeof u === "string" && u.trim().length > 0) }
+      : {}),
   };
 }
 
@@ -612,19 +653,211 @@ function parseTrustedNetworks(raw: any): string[] {
 }
 
 /**
+ * A present-but-malformed / misplaced browser-auth security flag (Build-1b
+ * PUSHBACK-1 Fix 2 + FOLD-C). The operator clearly INTENDED to configure the
+ * multi-operator gate (`requireBrowserAuth` is textually present) but wrote it
+ * in a shape the loader will not honor — so honoring the flag OFF-and-open would
+ * be a SILENT-misconfig (operator believes the gate is ON; the server runs it
+ * OFF, anonymous access open). This is the dl-5775 canon.
+ *
+ * `code` discriminates the two shapes:
+ *   - `malformed`  — `auth.requireBrowserAuth` present but NOT a strict boolean
+ *     (e.g. `"true"`, `1`, `[]`, `{}`). FOLD-C(i).
+ *   - `misplaced`  — `requireBrowserAuth` set at the TOP LEVEL (not under
+ *     `auth`), where the loader never reads it (`config.ts` parses `parsed.auth`
+ *     only). Fix 2 (the silently-ignored top-level placement).
+ */
+export class SecurityFlagConfigError extends Error {
+  readonly code: "malformed" | "misplaced" | "malformed-operator-users";
+  constructor(code: "malformed" | "misplaced" | "malformed-operator-users", message: string) {
+    super(message);
+    this.name = "SecurityFlagConfigError";
+    this.code = code;
+  }
+}
+
+/** Options for {@link loadConfig}. */
+export interface LoadConfigOptions {
+  /**
+   * STARTUP scope (N3): when true, a present-malformed / misplaced browser-auth
+   * security flag → THROW (fail-CLOSED, refuse startup) rather than warn. Set
+   * ONLY by the server-boot caller (`buildConfig` in cli.ts) so a runtime
+   * hand-edit read by a background caller does NOT throw (avoids the
+   * availability regression FOLD-C(iv) names). Default false → warn LOUD and
+   * degrade to the single-op baseline (product-safe: no NEW anonymous-op-2
+   * window — the residual is the single-op posture).
+   */
+  startup?: boolean;
+}
+
+/**
+ * Enforce browser-auth security-flag integrity on the RAW parsed config
+ * (Build-1b PUSHBACK-1 Fix 2 + FOLD-C). Keyed on security-flag-INTENT-present
+ * (the `requireBrowserAuth` text present AND in a shape the loader won't honor),
+ * NOT on any-malformed-config — so an unrelated typo never trips it (FOLD-C(iii)
+ * lenient-on-typo). At STARTUP a violation THROWS (fail-CLOSED-REFUSE); at
+ * runtime it warns LOUD and returns (degrade to single-op baseline).
+ *
+ * Also emits the FOLD-C(ii) coupling-guard: `operatorUsers` present but
+ * `requireBrowserAuth` absent — a LOUD warn (operator wired operator identities
+ * but no gate to enforce them), never a throw (product-safe).
+ */
+/**
+ * True when `auth.operatorUsers` is PRESENT but yields ZERO usable operator
+ * identities (a scalar, a non-string element, or an all-whitespace string).
+ * ABSENT (`undefined`) and EMPTY (`[]`) return false — both are INTENTIONAL
+ * (flag-ON-without-operator = op-1 retains full control), so only the fail-open-
+ * shaped malformed case is flagged. PUSHBACK-4 m-1 (the dl-5761 window).
+ */
+function operatorUsersPresentButUnusable(raw: unknown): boolean {
+  if (raw === undefined) return false; // absent → intentional (no operator admitted)
+  if (Array.isArray(raw) && raw.length === 0) return false; // empty [] → intentional inert
+  const usable = Array.isArray(raw)
+    ? raw.filter((u) => typeof u === "string" && u.trim().length > 0).length
+    : 0; // scalar / object → zero usable identities
+  return usable === 0;
+}
+
+function enforceSecurityFlagIntegrity(parsed: any, startup: boolean): void {
+  const fail = (err: SecurityFlagConfigError) => {
+    if (startup) throw err;
+    console.error(
+      `[dashboard] ${err.message} Running SINGLE-OPERATOR (multi-operator gate ` +
+        `OFF) — fix the config and restart to enable the gate.`,
+    );
+  };
+
+  // ── misplaced: top-level requireBrowserAuth (Fix 2) ──────────────────────
+  // The loader reads `parsed.auth.requireBrowserAuth` only; a top-level
+  // `{"requireBrowserAuth":true,...}` is silently ignored. Refuse it loud (the
+  // operator plainly intended the gate). PUSHBACK-2 FIX-P2-6 (m7): narrow the
+  // refusal to a NON-FALSE presence. A top-level `false` is zero-security-delta
+  // (Build-0 booted single-op-open with the flag absent = the same posture), so
+  // refusing it is a pure AVAILABILITY regression, not a silent-open guard. A
+  // top-level truthy `true`/`"true"`/`1` IS a misconfigured security directive
+  // (the operator intended the gate ON but it is ignored) → still refused.
+  if (
+    parsed &&
+    typeof parsed === "object" &&
+    parsed.requireBrowserAuth !== undefined &&
+    parsed.requireBrowserAuth !== false
+  ) {
+    fail(
+      new SecurityFlagConfigError(
+        "misplaced",
+        `SECURITY CONFIG MISPLACED: requireBrowserAuth is set at the TOP LEVEL ` +
+          `(${JSON.stringify(parsed.requireBrowserAuth)}) but the loader only reads ` +
+          `auth.requireBrowserAuth — the flag is IGNORED there. Move it under "auth".`,
+      ),
+    );
+  }
+
+  // ── malformed: non-boolean auth.requireBrowserAuth (FOLD-C(i)) ───────────
+  const auth = parsed?.auth;
+  if (
+    auth &&
+    typeof auth === "object" &&
+    auth.requireBrowserAuth !== undefined &&
+    auth.requireBrowserAuth !== true &&
+    auth.requireBrowserAuth !== false
+  ) {
+    fail(
+      new SecurityFlagConfigError(
+        "malformed",
+        `SECURITY CONFIG MALFORMED: auth.requireBrowserAuth must be a boolean, got ` +
+          `${JSON.stringify(auth.requireBrowserAuth)} (${typeof auth.requireBrowserAuth}).`,
+      ),
+    );
+  }
+
+  // ── FOLD-C(ii) coupling-guard: operatorUsers set, flag absent (LOUD warn) ─
+  // operator identities configured but no gate to enforce them → the
+  // operator-only enforcement is inert. Product-safe (single-op baseline), so a
+  // warn, never a throw — but LOUD, esp. with more than one allowed user.
+  if (
+    auth &&
+    typeof auth === "object" &&
+    Array.isArray(auth.operatorUsers) &&
+    auth.operatorUsers.some((u: unknown) => typeof u === "string" && u.trim().length > 0) &&
+    auth.requireBrowserAuth !== true
+  ) {
+    const multi = Array.isArray(auth.allowedUsers) && auth.allowedUsers.length > 1;
+    console.error(
+      `[dashboard] SECURITY CONFIG COUPLING: auth.operatorUsers is set but ` +
+        `auth.requireBrowserAuth is not true — operator-only enforcement is INERT ` +
+        `(the gate is OFF, so no session-write is operator-restricted)` +
+        (multi ? ` while allowedUsers lists more than one user` : ``) +
+        `. Set auth.requireBrowserAuth:true to enforce operator-only actions.`,
+    );
+  }
+
+  // ── malformed operatorUsers with the gate ON (PUSHBACK-4 m-1) ─────────────
+  // operatorUsers PRESENT but yielding ZERO usable operators (a scalar, a non-
+  // string element, or an all-whitespace string) WHILE requireBrowserAuth is ON
+  // → `operatorConfigured` silently collapses to false → operator-only
+  // enforcement goes INERT while the operator believes the gate is up → an
+  // admitted op-2 reaches the ENTIRE operator-only surface (shutdown / kill /
+  // spawn / resume / model / prompt-command host-shell) — the dl-5761 window,
+  // previously with NO throw and NO warn. ASYMMETRIC to the loud
+  // requireBrowserAuth guards above; close it symmetrically. An ABSENT or
+  // EMPTY-`[]` operatorUsers stays INTENTIONAL (op-1 retains full control) → no
+  // diagnostic (see operatorUsersPresentButUnusable). At STARTUP a violation
+  // THROWS (fail-CLOSED-REFUSE); at runtime it warns LOUD and degrades.
+  if (
+    auth &&
+    typeof auth === "object" &&
+    auth.requireBrowserAuth === true &&
+    operatorUsersPresentButUnusable(auth.operatorUsers)
+  ) {
+    fail(
+      new SecurityFlagConfigError(
+        "malformed-operator-users",
+        `SECURITY CONFIG MALFORMED: auth.operatorUsers is set ` +
+          `(${JSON.stringify(auth.operatorUsers)}) but yields ZERO usable operator ` +
+          `identities while auth.requireBrowserAuth is ON — operator-only ` +
+          `enforcement would be INERT (every session-write open to any admitted ` +
+          `user). Provide a non-empty array of non-empty strings, or remove ` +
+          `operatorUsers to intentionally run flag-ON-without-operator (op-1 ` +
+          `retains full control).`,
+      ),
+    );
+  }
+}
+
+/**
  * Load configuration from ~/.pi/dashboard/config.json.
  * Returns defaults for missing fields, malformed JSON, or missing file.
+ *
+ * Security-flag integrity (Build-1b PUSHBACK-1 Fix 2 + FOLD-C): at STARTUP
+ * (`opts.startup`) a present-malformed / misplaced / unparseable-with-flag
+ * browser-auth config THROWS (fail-CLOSED-REFUSE); at runtime it warns LOUD and
+ * degrades to the single-op baseline (no availability regression, N3).
  */
-export function loadConfig(): DashboardConfig {
+export function loadConfig(opts?: LoadConfigOptions): DashboardConfig {
+  const startup = opts?.startup === true;
   const configDir = path.join(os.homedir(), ".pi", "dashboard");
   const configFile = path.join(configDir, "config.json");
   const defaults: DashboardConfig = { ...DEFAULTS };
 
+  // Hoisted so the catch can inspect the raw text: H-M1 (Build 1b) fail
+  // CLOSED + LOUD when a config carrying an auth security flag is UNPARSEABLE.
+  // The legacy catch silently returned open single-op defaults — but if the
+  // operator was mid-edit on the auth gate and left the JSON malformed, that
+  // silent degrade is a SILENT-misconfig (operator believes multi-op ON, runs
+  // single-op-open). Only escalate when the auth security flag is textually
+  // present (a bare typo in an unrelated config keeps the lenient default).
+  let rawText: string | undefined;
   try {
     if (!fs.existsSync(configFile)) return defaults;
-    const raw = fs.readFileSync(configFile, "utf-8");
-    if (!raw.trim()) return defaults;
-    const parsed = JSON.parse(raw);
+    rawText = fs.readFileSync(configFile, "utf-8");
+    if (!rawText.trim()) return defaults;
+    const parsed = JSON.parse(rawText);
+
+    // Fix 2 + FOLD-C: enforce security-flag integrity on the raw parsed config
+    // BEFORE we build the result. At startup a present-malformed / misplaced
+    // flag throws (fail-CLOSED-REFUSE); at runtime it warns + degrades.
+    enforceSecurityFlagIntegrity(parsed, startup);
+
     const rawStrategy = parsed.spawnStrategy;
     const spawnStrategy: SpawnStrategy =
       VALID_SPAWN_STRATEGIES.includes(rawStrategy) ? rawStrategy : defaults.spawnStrategy;
@@ -679,7 +912,49 @@ export function loadConfig(): DashboardConfig {
     }
     result.resolvedTrustedNetworks = Array.from(merged);
     return result;
-  } catch {
+  } catch (err) {
+    // A present-malformed / misplaced security flag threw from
+    // enforceSecurityFlagIntegrity (startup scope) — re-throw it UNCHANGED so it
+    // is not re-wrapped as UNPARSEABLE (the JSON parsed fine; the flag shape is
+    // the problem). Fix 2 + FOLD-C.
+    if (err instanceof SecurityFlagConfigError) throw err;
+
+    // H-M1 fail CLOSED + LOUD: an UNPARSEABLE config that textually carries the
+    // browser-auth security flag is refused — never silently degraded to open
+    // single-op defaults. A mid-edit malformed auth gate must not boot the
+    // operator into single-op-open while they believe multi-op is ON.
+    //
+    // N3 (FOLD-C(iv)): SCOPE the throw to STARTUP. A runtime hand-edit read by a
+    // background caller (the ~25 runtime loadConfig callers) must NOT throw — an
+    // availability regression. At runtime we warn LOUD + degrade to defaults.
+    // A malformed config with NO auth security flag keeps the lenient default
+    // (return defaults) so unrelated typos don't brick an already-open server
+    // (FOLD-C(iii) lenient-on-typo — keyed on the flag being present as a JSON
+    // KEY). PUSHBACK-2 FIX-P2-6 (n2): match the `requireBrowserAuth` KEY shape
+    // (the name followed by `:`), NOT a bare substring anywhere — a bare
+    // `/requireBrowserAuth/.test(rawText)` false-matches an incidental occurrence
+    // (an `allowedUsers` email `x@requireBrowserAuth.example`, a string value, a
+    // `//` comment) and bricks boot on a config where the flag is genuinely unset.
+    //
+    // PUSHBACK-3 FIX-P3-5 (dual-review MINOR-2): match the key REGARDLESS OF QUOTING,
+    // case-insensitively. An operator hand-editing `config.json` who drops or
+    // single-quotes the key quotes (`{auth:{requireBrowserAuth:true}}` — a JS
+    // habit) makes JSON.parse throw; the OLD `/"requireBrowserAuth"\s*:/` demanded
+    // a DOUBLE-quoted key, so the regex MISSED it → the catch returned open
+    // single-op defaults with NOT EVEN the loud warn (a SILENT single-op-open on a
+    // config the operator INTENDED multi-op ON). `["']?` around the name accepts
+    // double / single / unquoted; `\s*:` pins it to a key-with-colon (still not an
+    // email — `…requireBrowserAuth.example` has no colon after the token). The
+    // `["']?` AFTER the name also handles the double-quoted `"requireBrowserAuth":`
+    // form (the closing quote sits between the name and the colon).
+    if (rawText !== undefined && /["']?requireBrowserAuth["']?\s*:/i.test(rawText)) {
+      const msg =
+        `[dashboard] SECURITY CONFIG UNPARSEABLE: ${configFile} carries auth.requireBrowserAuth ` +
+        `but is not valid JSON (${err instanceof Error ? err.message : String(err)}). ` +
+        `Refusing to start with silent single-operator defaults — fix the JSON and restart.`;
+      if (startup) throw new Error(msg);
+      console.error(msg + ` (runtime read — degrading to single-op defaults; a restart would refuse.)`);
+    }
     return defaults;
   }
 }

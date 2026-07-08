@@ -147,9 +147,31 @@ export function parseArgs(args: string[]): ParsedArgs {
 
 /**
  * Build the full server config from CLI flags, env vars, and config file.
+ *
+ * `opts.startup` (default true) scopes the H-M1 fail-CLOSED-REFUSE on a
+ * malformed / misplaced / unparseable-with-flag auth config. PUSHBACK-3
+ * FIX-P3-6 (dual-review MINOR-4): the caller (`main`) sets it true ONLY for the
+ * SERVER-STARTING verbs (`start` / `restart` / foreground); the availability
+ * verbs (`stop` / `status` / `upgrade-pi` / `resurrect`) pass false so a malformed
+ * auth config does NOT throw here (they read config tolerantly — warn + degrade —
+ * and still run). Default true keeps every existing caller fail-closed.
  */
-export function buildConfig(flags: Partial<ServerConfig>): ServerConfig {
-  const fileConfig = loadConfig();
+export function buildConfig(
+  flags: Partial<ServerConfig>,
+  opts?: { startup?: boolean },
+): ServerConfig {
+  // STARTUP scope (Build-1b PUSHBACK-1 Fix 2 + FOLD-C / N3; scoped further in
+  // PUSHBACK-3 FIX-P3-6): on a SERVER-STARTING verb this is the server-boot
+  // config read, so a present-malformed / misplaced / unparseable-with-flag
+  // browser-auth config THROWS here (fail-CLOSED-REFUSE) — the server refuses to
+  // start single-op-open while the operator believes the gate is ON. On an
+  // AVAILABILITY verb (`opts.startup === false`) it degrades (warn) instead of
+  // throwing, so a mis-edited flag can't brick `stop`/`status` (the operator must
+  // be able to manage the daemon + fix the config). Runtime loadConfig callers
+  // keep the default (warn + degrade) so a mid-edit hand-edit never throws in a
+  // background caller (no availability regression).
+  const startup = opts?.startup !== false;
+  const fileConfig = loadConfig({ startup });
   return {
     port: flags.port ?? (parseInt(process.env.PI_DASHBOARD_PORT ?? "") || null) ?? fileConfig.port,
     piPort: flags.piPort ?? (parseInt(process.env.PI_DASHBOARD_PI_PORT ?? "") || null) ?? fileConfig.piPort,
@@ -767,7 +789,16 @@ async function main() {
   ensureConfig();
 
   const { subcommand, flags, resurrectId } = parseArgs(process.argv.slice(2));
-  const config = buildConfig(flags);
+  // PUSHBACK-3 FIX-P3-6: fail-CLOSED-REFUSE on a malformed auth config ONLY for
+  // the SERVER-STARTING verbs (`start` / `restart` / foreground = no subcommand).
+  // The availability verbs (`stop` / `status` / `upgrade-pi` / `resurrect`) build
+  // config tolerantly so a mis-edited security flag can't brick the operator's
+  // ability to stop the daemon or read its status (a NEW availability regression
+  // vs Build-0 otherwise). `restart` stays fail-closed: its fallback path calls
+  // `cmdStart`, so a tolerant build there would be a silent single-op-open.
+  const STARTING_VERBS = new Set([null, "start", "restart"]);
+  const startupScoped = STARTING_VERBS.has(subcommand);
+  const config = buildConfig(flags, { startup: startupScoped });
 
   switch (subcommand) {
     case "start":

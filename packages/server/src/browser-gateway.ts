@@ -58,6 +58,7 @@ import { createPendingResumeRegistry, type PendingResumeRegistry } from "./pendi
 import { createViewedSessionTracker, type ViewedSessionTracker } from "./viewed-session-tracker.js";
 import type { TerminalManager } from "./terminal-manager.js";
 import type { BrowserHandlerContext } from "./browser-handlers/handler-context.js";
+import { authorizeWsMessage } from "./ws-session-gate.js";
 import { handleSubscribe } from "./browser-handlers/subscription-handler.js";
 import { handleSendPrompt, handleResumeSession, handleSpawnSession, handleShutdown, handleAbort, handleFlowControl, handleForceKill, handleKillProcess } from "./browser-handlers/session-action-handler.js";
 import { handleRenameSession, handleHideSession, handleUnhideSession, handleAttachProposal, handleDetachProposal, handleFetchContent, handleListSessions } from "./browser-handlers/session-meta-handler.js";
@@ -130,6 +131,14 @@ export function createBrowserGateway(
    * presence. Default false → single-operator, gate no-ops (byte-unchanged).
    */
   requireBrowserAuth = false,
+  /**
+   * Build 1b WS-closure: the startup-frozen operator identities
+   * (`auth.operatorUsers`). Threaded onto every socket's handler context so the
+   * central WS session-write gate enforces operator-only actions. The SAME
+   * frozen values the REST + send-seam gates read. Unset/empty → operator-only
+   * enforcement is INERT; flag OFF → the gate no-ops entirely.
+   */
+  operatorUsers?: string[],
 ): BrowserGateway {
   // perMessageDeflate enabled: the sessions_snapshot frame is ~345 KB uncompressed
   // at ~380 sessions and re-ships on every (re)connect; gzip of the identical payload
@@ -385,6 +394,7 @@ export function createBrowserGateway(
           // contract invariants #1, #2.
           principal: principals.get(ws) ?? null,
           requireBrowserAuth,
+          ...(operatorUsers ? { operatorUsers } : {}),
           sendTo, broadcast, getSubscribers, replayPendingUiRequests,
           trackUiRequest: trackUiRequest,
           markReplaying(targetWs, sessionId) {
@@ -412,6 +422,52 @@ export function createBrowserGateway(
             }
           },
         };
+
+        // ── Build-1b WS-closure: the CENTRAL session-write gate ─────────────
+        // Every browser message passes through the ONE `authorizeSessionAction`
+        // chokepoint BEFORE dispatch. For a non-session-write (pass-through) or
+        // when the multi-operator flag is OFF, this is a no-op and the switch
+        // below runs unchanged (byte-unchanged). For a gated session-write that
+        // an unauthorized actor attempted (op-2 on an operator-only action, a
+        // principal-less human when the flag is ON), we REFUSE here — emit a
+        // best-effort typed failure (for the message-types that carry a result
+        // channel) and RETURN so the handler NEVER runs = no side effect. The
+        // actor derives from the connection-bound principal, never the body
+        // (anti-spoof). `send_prompt` keeps its own in-handler gate (Build 0).
+        {
+          const gate = authorizeWsMessage(msg, ctx);
+          if (!gate.passThrough && !gate.allowed) {
+            const sessionId = (msg as { sessionId?: string }).sessionId;
+            console.error(
+              `[browser-gw] WS ${(msg as { type?: string }).type} refused by auth gate` +
+                ` (action=${gate.action}, reason=${gate.reason}` +
+                (sessionId ? `, session=${sessionId}` : "") + ")",
+            );
+            // Best-effort typed failure on the message-types that have a result
+            // channel; the load-bearing invariant is the suppressed side effect,
+            // the notification is secondary.
+            const requestId = (msg as { requestId?: string }).requestId;
+            switch ((msg as { type?: string }).type) {
+              case "resume_session":
+                sendTo(ws, { type: "resume_result", sessionId: sessionId ?? "", success: false, message: "unauthorized", ...(requestId ? { requestId } : {}) } as any);
+                break;
+              case "spawn_session":
+                sendTo(ws, { type: "spawn_result", cwd: (msg as { cwd?: string }).cwd ?? "", success: false, message: "unauthorized", ...(requestId ? { requestId } : {}) } as any);
+                break;
+              case "force_kill":
+                sendTo(ws, { type: "force_kill_result", sessionId: sessionId ?? "", success: false, message: "unauthorized" } as any);
+                break;
+              default:
+                // shutdown / abort / flow_control / kill_process / rename /
+                // hide / unhide / attach- / detach-proposal / set_model /
+                // set_thinking_level / role_set / flow_management /
+                // role_preset_save|delete|load have no result channel — refusal
+                // is silent-but-logged; the side effect is suppressed.
+                break;
+            }
+            return;
+          }
+        }
 
         switch (msg.type) {
           case "ping":

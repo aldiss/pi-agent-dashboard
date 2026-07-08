@@ -28,6 +28,7 @@ import type { BootstrapStateStore } from "./bootstrap-state.js";
 import type { BootstrapQueue } from "./bootstrap-queue.js";
 import { attachRenameTarget, detachShouldClearName } from "./proposal-attach-naming.js";
 import { FORK_DEGRADED_TO_NEW_MESSAGE, FORK_DEGRADED_TO_NEW_CODE } from "./browser-handlers/session-action-handler.js";
+import { makeRestSessionGate, makeRestPromptGate } from "./rest-session-gate.js";
 import {
   verifyResurrection,
   createProductionProbes,
@@ -86,6 +87,23 @@ export interface SessionApiDeps {
    * See change: pin-on-resurrect.
    */
   serverPiPort?: number;
+  /**
+   * Build 1b (C-REST-CLOSURE): the STARTUP-FROZEN multi-operator browser-auth
+   * gate flag. When true, every session-write REST route routes through the
+   * central `authorizeSessionAction` chokepoint (F4-closure + operator-only
+   * enforcement). Reads the SAME frozen boolean the WS gate + send-seam gate
+   * read (server.ts `requireBrowserAuthAtStartup`) — NOT a live config value —
+   * so the REST gate can never desync from the others on a runtime auth reload.
+   * Default false → the gate no-ops and every route behaves exactly as today
+   * (byte-unchanged). See auth-merge contract invariant #1.
+   */
+  requireBrowserAuth?: boolean;
+  /**
+   * Build 1b operator-identity source (`auth.operatorUsers`), frozen at startup
+   * alongside the flag. Drives operator-only enforcement for the session-control
+   * REST routes. Unset/empty → operator-only enforcement is INERT (mandate 4c).
+   */
+  operatorUsers?: string[];
 }
 
 type IdParams = { Params: { id: string } };
@@ -150,6 +168,41 @@ function getSessionOrFail(sessionManager: SessionManager, id: string): { session
 export function registerSessionApi(fastify: FastifyInstance, deps: SessionApiDeps) {
   const { sessionManager, piGateway, browserGateway, pendingForkRegistry, pendingDashboardSpawns, bootstrapState, bootstrapQueue, pendingResumeIntents, pendingAttachRegistry } = deps;
 
+  // ── Build 1b (C-REST-CLOSURE): the single session-write REST gate ─────────
+  // Every session-write route below is wired through `gate(action)` as a
+  // preHandler — the REST arm of the ONE central `authorizeSessionAction`
+  // chokepoint (the WS seam is the other arm), built from the shared
+  // `makeRestSessionGate` factory (identical actor-construction + gate call as
+  // the retire route, no drift). On `{allowed:false}` the preHandler replies
+  // 401/403 and the route handler never runs, so the F4 backdoor (`/prompt`
+  // reaching piGateway) and every sibling session-write are refused for an
+  // unauthorized actor. Flag OFF → the gate no-ops → every route byte-unchanged.
+  //
+  // `action: SessionWriteAction` (not `string`) makes the enumeration
+  // mechanically total: a route wired with an action token absent from
+  // `SESSION_WRITE_ACTION_CLASS` is a COMPILE error. FOLD-B (PUSHBACK-1): route
+  // coverage DERIVES from the actual fastify route table — the
+  // `build1b-rest-coverage.test.ts` suite drives `registerSessionApi` against an
+  // `onRoute`-collecting stub and asserts EVERY session-write route (a POST that
+  // reaches `sendToSession`/`sessionManager.update`) carries a gate preHandler
+  // whose `__sessionWriteAction` token matches its effect. So a route added
+  // without a gate — or wired to the wrong token — is caught RED, not by a
+  // hand-copied `EXPECTED_ACTIONS` literal. See mandate 2d / Joan refinement-(b).
+  const gate = makeRestSessionGate({
+    requireBrowserAuth: deps.requireBrowserAuth === true,
+    ...(deps.operatorUsers ? { operatorUsers: deps.operatorUsers } : {}),
+  });
+
+  // PUSHBACK-3 FIX-P3-1: the `/prompt` route gets a command-classifying gate.
+  // `send_prompt` is co-drive, but the forwarded TEXT can be a bridge COMMAND the
+  // bridge executes (host shell, shutdown, kill+respawn, model-switch) — a
+  // command-form authorizes operator-only (`prompt-command` → op-2 403); a raw
+  // prompt stays co-drive. Tagged `send_prompt` for the route-table coverage.
+  const promptGate = makeRestPromptGate({
+    requireBrowserAuth: deps.requireBrowserAuth === true,
+    ...(deps.operatorUsers ? { operatorUsers: deps.operatorUsers } : {}),
+  });
+
   // Post-respawn VERIFY gate (build-gate item 2). Production default wires the
   // real oracles (createProductionProbes: kill-0 + :9999 isSessionConnected +
   // sendToSession-boolean + observed session.model change). Tests inject
@@ -212,6 +265,7 @@ export function registerSessionApi(fastify: FastifyInstance, deps: SessionApiDep
   // POST /api/session/:id/prompt
   fastify.post<IdParams & { Body: { text?: string; images?: any[] } }>(
     "/api/session/:id/prompt",
+    { preHandler: promptGate },
     async (request, reply) => {
       const { id } = request.params;
       const { text, images } = request.body ?? {};
@@ -251,6 +305,7 @@ export function registerSessionApi(fastify: FastifyInstance, deps: SessionApiDep
   // POST /api/session/:id/abort
   fastify.post<IdParams>(
     "/api/session/:id/abort",
+    { preHandler: gate("abort") },
     async (request, reply) => {
       const { id } = request.params;
       const result = getSessionOrFail(sessionManager, id);
@@ -266,6 +321,7 @@ export function registerSessionApi(fastify: FastifyInstance, deps: SessionApiDep
   // POST /api/session/:id/shutdown
   fastify.post<IdParams>(
     "/api/session/:id/shutdown",
+    { preHandler: gate("shutdown") },
     async (request, reply) => {
       const { id } = request.params;
       const result = getSessionOrFail(sessionManager, id);
@@ -284,6 +340,7 @@ export function registerSessionApi(fastify: FastifyInstance, deps: SessionApiDep
   // POST /api/session/:id/rename
   fastify.post<IdParams & { Body: { name?: string } }>(
     "/api/session/:id/rename",
+    { preHandler: gate("rename") },
     async (request, reply) => {
       const { id } = request.params;
       const { name } = request.body ?? {};
@@ -348,6 +405,7 @@ export function registerSessionApi(fastify: FastifyInstance, deps: SessionApiDep
   //           respawn (the existing path). mode:"respawn".
   fastify.post<IdParams>(
     "/api/session/:id/resurrect",
+    { preHandler: gate("resurrect") },
     async (request, reply) => {
       const { id } = request.params;
       const result = getSessionOrFail(sessionManager, id);
@@ -503,6 +561,7 @@ export function registerSessionApi(fastify: FastifyInstance, deps: SessionApiDep
   // POST /api/session/:id/hide
   fastify.post<IdParams>(
     "/api/session/:id/hide",
+    { preHandler: gate("hide") },
     async (request, reply) => {
       const { id } = request.params;
       const result = getSessionOrFail(sessionManager, id);
@@ -520,6 +579,7 @@ export function registerSessionApi(fastify: FastifyInstance, deps: SessionApiDep
   // POST /api/session/:id/unhide
   fastify.post<IdParams>(
     "/api/session/:id/unhide",
+    { preHandler: gate("unhide") },
     async (request, reply) => {
       const { id } = request.params;
       const result = getSessionOrFail(sessionManager, id);
@@ -537,6 +597,7 @@ export function registerSessionApi(fastify: FastifyInstance, deps: SessionApiDep
   // POST /api/session/spawn
   fastify.post<{ Body: { cwd?: string; spawnMode?: string; branch?: string; baseBranch?: string; label?: string } }>(
     "/api/session/spawn",
+    { preHandler: gate("spawn") },
     async (request, reply) => {
       const { cwd, spawnMode, branch, baseBranch, label } = request.body ?? {};
       if (!cwd) {
@@ -673,6 +734,7 @@ export function registerSessionApi(fastify: FastifyInstance, deps: SessionApiDep
   // POST /api/session/:id/resume
   fastify.post<IdParams & { Body: { mode?: string } }>(
     "/api/session/:id/resume",
+    { preHandler: gate("resume") },
     async (request, reply) => {
       const { id } = request.params;
       const { mode } = request.body ?? {};
@@ -779,6 +841,7 @@ export function registerSessionApi(fastify: FastifyInstance, deps: SessionApiDep
   // POST /api/session/:id/flow-control
   fastify.post<IdParams & { Body: { action?: string } }>(
     "/api/session/:id/flow-control",
+    { preHandler: gate("flow-control") },
     async (request, reply) => {
       const { id } = request.params;
       const { action } = request.body ?? {};
@@ -799,6 +862,7 @@ export function registerSessionApi(fastify: FastifyInstance, deps: SessionApiDep
   // POST /api/session/:id/model
   fastify.post<IdParams & { Body: { provider?: string; modelId?: string } }>(
     "/api/session/:id/model",
+    { preHandler: gate("model") },
     async (request, reply) => {
       const { id } = request.params;
       const { provider, modelId } = request.body ?? {};
@@ -819,6 +883,7 @@ export function registerSessionApi(fastify: FastifyInstance, deps: SessionApiDep
   // POST /api/session/:id/thinking-level
   fastify.post<IdParams & { Body: { level?: string } }>(
     "/api/session/:id/thinking-level",
+    { preHandler: gate("thinking-level") },
     async (request, reply) => {
       const { id } = request.params;
       const { level } = request.body ?? {};
@@ -839,6 +904,7 @@ export function registerSessionApi(fastify: FastifyInstance, deps: SessionApiDep
   // POST /api/session/:id/attach-proposal
   fastify.post<IdParams & { Body: { changeName?: string } }>(
     "/api/session/:id/attach-proposal",
+    { preHandler: gate("attach-proposal") },
     async (request, reply) => {
       const { id } = request.params;
       const { changeName } = request.body ?? {};
@@ -868,6 +934,7 @@ export function registerSessionApi(fastify: FastifyInstance, deps: SessionApiDep
   // POST /api/session/:id/detach-proposal
   fastify.post<IdParams>(
     "/api/session/:id/detach-proposal",
+    { preHandler: gate("detach-proposal") },
     async (request, reply) => {
       const { id } = request.params;
       const result = getSessionOrFail(sessionManager, id);

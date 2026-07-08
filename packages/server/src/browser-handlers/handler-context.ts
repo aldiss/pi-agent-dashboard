@@ -41,6 +41,16 @@ export interface BrowserHandlerContext {
    * byte-unchanged).
    */
   requireBrowserAuth: boolean;
+  /**
+   * Build 1b WS-closure: the startup-frozen operator identities
+   * (`auth.operatorUsers`), threaded onto the socket context so the central WS
+   * session-write gate enforces operator-only actions against the connection-
+   * bound principal (never the message body). The SAME frozen values the REST +
+   * send-seam gates read (no new mutable read, no desync). Unset/empty →
+   * operator-only enforcement is INERT (op-1 keeps full control before op-2 is
+   * admitted); flag OFF → the gate no-ops entirely.
+   */
+  operatorUsers?: string[];
   pendingForkRegistry?: PendingForkRegistry;
   sessionOrderManager?: SessionOrderManager;
   preferencesStore?: PreferencesStore;

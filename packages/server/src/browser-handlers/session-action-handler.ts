@@ -21,6 +21,7 @@ import {
 } from "@blackbelt-technology/pi-dashboard-shared/platform/process-identify.js";
 import { shouldInterceptReload } from "./session-action-helpers.js";
 import { authorizeSessionAction } from "../session-authz.js";
+import { classifySendPromptAction } from "../send-prompt-authz.js";
 
 /**
  * Status message + code emitted when fork is attempted on a session whose
@@ -254,13 +255,104 @@ export async function handleSendPrompt(
   // (the bridge has no programmatic reload path on RPC).
   // See change: headless-reload-via-respawn.
   if (shouldInterceptReload(msg, headlessPidRegistry)) {
+    // PUSHBACK-2 FIX-P2-4: the `/reload` intercept is a process KILL+RESPAWN
+    // (an operator-only lifecycle primitive), NOT a co-drive prompt. It must
+    // NOT ride the co-drive `send_prompt` verdict above — re-authorize the
+    // distinct operator-only `reload` action through the ONE chokepoint FIRST,
+    // deriving the actor from the connection-bound principal (never the body).
+    // op-2 (a bounded co-driver, refused kill_process/force_kill on the WS seam)
+    // must not SIGTERM+respawn a headless pi via `send_prompt {text:"/reload"}`.
+    const reloadDecision = authorizeSessionAction({
+      actor: { kind: "human", principal: ctx.principal },
+      action: "reload",
+      requireBrowserAuth: ctx.requireBrowserAuth,
+      ...(ctx.operatorUsers ? { operatorUsers: ctx.operatorUsers } : {}),
+    });
+    if (!reloadDecision.allowed) {
+      console.error(
+        `[dashboard] /reload refused by auth gate (session ${msg.sessionId}, reason=${reloadDecision.reason}) — kill+respawn is operator-only`,
+      );
+      sendTo(ws, {
+        type: "send_prompt_failed",
+        sessionId: msg.sessionId,
+        ...(msg.queueNonce ? { queueNonce: msg.queueNonce } : {}),
+        reason: "unauthorized",
+      });
+      return;
+    }
     await handleHeadlessReload(msg, ctx);
     return;
+  }
+
+  // ── PUSHBACK-3 FIX-P3-1: command-form send_prompt is operator-only ─────────
+  // `send_prompt` is co-drive, but the bridge PARSES the forwarded text into
+  // COMMANDS it EXECUTES (`!`/`!!` host shell, `/quit`/`/exit` shutdown, `/new`
+  // spawn, `/model …` model-switch, `/compact`, any `/slash`, and — on a
+  // non-headless session, below the reload intercept — `/reload`). So a bounded
+  // co-driver could reach the operator-only/host command surface via prompt
+  // TEXT. Classify the text through the SHARED `classifySendPromptAction` (the
+  // SAME `parseSendPrompt` the bridge executes — no drift). A RAW passthrough is
+  // already covered by the co-drive `send_prompt` gate above (one authorize), so
+  // we ONLY escalate here for a COMMAND FORM: re-authorize the operator-only
+  // `prompt-command` action (op-2 REFUSED). The actor is the connection-bound
+  // principal, NEVER the body. Flag OFF → allowed (byte-unchanged). Subsumes P2-4
+  // for the interactive `/reload` (a command form).
+  const promptAction = classifySendPromptAction(msg.text);
+  if (promptAction === "prompt-command") {
+    const commandDecision = authorizeSessionAction({
+      actor: { kind: "human", principal: ctx.principal },
+      action: "prompt-command",
+      requireBrowserAuth: ctx.requireBrowserAuth,
+      ...(ctx.operatorUsers ? { operatorUsers: ctx.operatorUsers } : {}),
+    });
+    if (!commandDecision.allowed) {
+      console.error(
+        `[dashboard] send_prompt command-form refused by auth gate (session ${msg.sessionId}, ` +
+          `reason=${commandDecision.reason}) — bridge commands are operator-only`,
+      );
+      sendTo(ws, {
+        type: "send_prompt_failed",
+        sessionId: msg.sessionId,
+        ...(msg.queueNonce ? { queueNonce: msg.queueNonce } : {}),
+        reason: "unauthorized",
+      });
+      return;
+    }
   }
 
   const promptSession = sessionManager.get(msg.sessionId);
 
   if (promptSession?.status === "ended") {
+    // ── PUSHBACK-3 FIX-P3-4 (dual-review BLOCKER-1): resurrecting an ENDED session
+    // via send_prompt is the operator-only `resume` effect, not co-driving a
+    // live one. The auto-resume below is byte-identical to
+    // `handleResumeSession` (spawnPiSession + buildInteractiveResumeOptions),
+    // yet it fires AFTER the co-drive send_prompt gate with ZERO operator re-auth
+    // — so op-2 could resurrect ANY ended session (wider than P2-4's /reload,
+    // which needs an active headless pid). Re-authorize the operator-only
+    // `resume` action through the ONE chokepoint BEFORE the auto-resume spawn
+    // (actor from the connection-bound principal, mirroring the P2-4 /reload
+    // block). Flag OFF → allowed (byte-unchanged). A raw prompt on an ALIVE
+    // session is unaffected (co-drive, the else-branch below).
+    const resumeDecision = authorizeSessionAction({
+      actor: { kind: "human", principal: ctx.principal },
+      action: "resume",
+      requireBrowserAuth: ctx.requireBrowserAuth,
+      ...(ctx.operatorUsers ? { operatorUsers: ctx.operatorUsers } : {}),
+    });
+    if (!resumeDecision.allowed) {
+      console.error(
+        `[dashboard] send_prompt auto-resume refused by auth gate (session ${msg.sessionId}, ` +
+          `reason=${resumeDecision.reason}) — resurrecting an ended session is operator-only`,
+      );
+      sendTo(ws, {
+        type: "send_prompt_failed",
+        sessionId: msg.sessionId,
+        ...(msg.queueNonce ? { queueNonce: msg.queueNonce } : {}),
+        reason: "unauthorized",
+      });
+      return;
+    }
     if (!promptSession.sessionFile) {
       console.error(`[dashboard] auto-resume failed: no session file for session ${msg.sessionId}`);
       return;

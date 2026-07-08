@@ -49,6 +49,13 @@ export interface WriteConfigResult {
   success: boolean;
   restartRequired: boolean;
   error?: string;
+  /**
+   * True when the failure is a client-side VALIDATION error (a rejected write —
+   * e.g. a non-boolean `requireBrowserAuth`), distinct from a genuine
+   * disk/serialize failure. FOLD-E N1: the route keys its 400-vs-500 on this
+   * STRUCTURED flag, not a brittle English-substring match on `error`.
+   */
+  validationError?: boolean;
 }
 
 /**
@@ -101,14 +108,55 @@ export function writeConfigPartial(partial: Record<string, any>): WriteConfigRes
         mergedAuth.allowedUsers = partial.auth.allowedUsers;
       }
 
+      // Build 1b PUSHBACK-1 Fix 3: persist operatorUsers through the config write
+      // path. Without this branch `writeConfigPartial({auth:{operatorUsers:[…]}})`
+      // returned success:true but DROPPED the value — so if Build 1 sets the
+      // operator identity via the config API/UI it never persists → operator-only
+      // enforcement stays INERT (op-2 silently gets operator-only actions, the
+      // exact dl-5761 hazard). `!== undefined` (not truthiness) lets an empty
+      // array clear all entries; omitting the key preserves the existing value
+      // (carried by the `{ ...existingAuth }` seed above).
+      if (partial.auth.operatorUsers !== undefined) {
+        // PUSHBACK-2 FIX-P2-3 (MAJOR-1): an operatorUsers change is
+        // RESTART-REQUIRED. The live gates freeze operatorUsers at startup
+        // (server.ts:651 `createBrowserGateway(..., operatorUsers)`, plus the
+        // REST-closure gate closures) — the SAME freeze semantics as
+        // `requireBrowserAuth`. `_reloadAuth` re-threads secret/providers/
+        // allowedUsers/bypass* but NEVER operatorUsers. So a runtime write that
+        // returned `restartRequired:false` would tell the operator "no restart
+        // needed" while the live process keeps the stale roster → op-2 retains
+        // (or a revoked op-1 keeps) operator capability until a manual restart.
+        // Mark it restart-required (honest, consistent with the requireBrowserAuth
+        // freeze) — do NOT attempt to live-reload the frozen closures.
+        const priorOperators = JSON.stringify(existingAuth.operatorUsers ?? null);
+        const nextOperators = JSON.stringify(partial.auth.operatorUsers ?? null);
+        if (priorOperators !== nextOperators) {
+          restartRequired = true;
+        }
+        mergedAuth.operatorUsers = partial.auth.operatorUsers;
+      }
+
       // Build 0 multi-operator gate. Persist requireBrowserAuth explicitly so a
-      // Settings/API toggle survives reload. `!== undefined` (not truthiness)
-      // lets an explicit `false` clear it; omitting the key preserves the
-      // existing value (carried by the `{ ...existingAuth }` seed above).
-      // NOTE: this flag is restart-required (see writeConfigPartial's
-      // restart-detection below + system-routes' reload path) — persisting it
-      // here writes it to disk; it takes effect on the next server start.
+      // Settings/API toggle survives reload. H-M1 (Build 1b): a security flag
+      // must be a STRICT boolean — reject a non-boolean write with an error and
+      // PRESERVE the prior value (never coerce a string/number toward on/off:
+      // coercing a hand-typed "false"/0 could flip the gate ON = lockout, or a
+      // "true" that the strict loader ignores = silent single-op-open). The
+      // route surfaces this as a 400. `!== undefined` (not truthiness) still
+      // lets an explicit boolean `false` clear it; omitting the key preserves
+      // the existing value (carried by the `{ ...existingAuth }` seed above).
       if (partial.auth.requireBrowserAuth !== undefined) {
+        if (typeof partial.auth.requireBrowserAuth !== "boolean") {
+          return {
+            success: false,
+            restartRequired: false,
+            validationError: true,
+            error:
+              `auth.requireBrowserAuth must be a boolean (got ` +
+              `${typeof partial.auth.requireBrowserAuth}) — refusing to persist a ` +
+              `malformed security flag; prior value preserved.`,
+          };
+        }
         const next = partial.auth.requireBrowserAuth === true;
         // Flipping the browser-auth gate is restart-required: the browser
         // gateway captures it at construction (a frozen boolean) and the `/ws`

@@ -14,6 +14,15 @@ import { filterHiddenCommands } from "./bridge-context.js";
 import { expandPromptTemplateFromDisk } from "./prompt-expander.js";
 import { tryDispatchExtensionCommand } from "./slash-dispatch.js";
 import { buildProviderCatalogue } from "./provider-register.js";
+// `parseSendPrompt` moved to shared (PUSHBACK-3 FIX-P3-1) so the SERVER
+// authorizes a `send_prompt` text against the SAME parser the bridge EXECUTES —
+// no drift between a server-side command classifier and the bridge (a divergent
+// copy is the next escape). Re-exported here for the bridge + existing callers.
+export {
+  parseSendPrompt,
+  type ParsedPrompt,
+} from "@blackbelt-technology/pi-dashboard-shared/prompt-command.js";
+import { parseSendPrompt } from "@blackbelt-technology/pi-dashboard-shared/prompt-command.js";
 
 const IGNORE_DIRS = new Set([".git", "node_modules", ".next", "dist", "build", ".cache", "__pycache__", ".venv"]);
 const MAX_RESULTS = 20;
@@ -40,95 +49,6 @@ function searchFiles(cwd: string, query: string): FileEntry[] {
 
   walk(cwd, 0);
   return results;
-}
-
-/** Parsed result from parseSendPrompt */
-export type ParsedPrompt =
-  | { type: "bash"; command: string; excludeFromContext: boolean }
-  | { type: "compact"; customInstructions: string | undefined }
-  | { type: "model"; provider: string; modelId: string }
-  | { type: "shutdown" }
-  | { type: "reload" }
-  | { type: "new" }
-  | { type: "mgmt"; event: string; data: Record<string, unknown> }
-  | { type: "slash"; text: string }
-  | { type: "passthrough"; text: string };
-
-/** pi-flows management commands with known event mappings.
- *  These are dispatched via pi.events instead of flow:run.
- *  Flow management commands (flows:new, flows:edit, flows:delete) are
- *  handled in bridge.ts sessionPrompt callback which passes cachedCtx
- *  as fallback context for headless sessions. */
-const MANAGEMENT_COMMAND_EVENTS: Record<string, {
-  event: string;
-  dataFn: (args: string) => Record<string, unknown>;
-}> = {};
-
-/** Parse input text to detect pi internal command prefixes */
-export function parseSendPrompt(text: string): ParsedPrompt {
-  // 1. Check !! (must check before !)
-  if (text.startsWith("!!")) {
-    const command = text.slice(2).trim();
-    if (!command) return { type: "passthrough", text };
-    return { type: "bash", command, excludeFromContext: true };
-  }
-
-  // 2. Check !
-  if (text.startsWith("!")) {
-    const command = text.slice(1).trim();
-    if (!command) return { type: "passthrough", text };
-    return { type: "bash", command, excludeFromContext: false };
-  }
-
-  // 3. Check /compact
-  if (text === "/compact" || text.startsWith("/compact ")) {
-    const args = text.startsWith("/compact ") ? text.slice(9).trim() : undefined;
-    return { type: "compact", customInstructions: args || undefined };
-  }
-
-  // 4. Check /quit and /exit
-  if (text === "/quit" || text === "/exit") {
-    return { type: "shutdown" };
-  }
-
-  // 4b. Check /reload
-  if (text === "/reload") {
-    return { type: "reload" };
-  }
-
-  // 4c. Check /new
-  if (text === "/new") {
-    return { type: "new" };
-  }
-
-  // 4d. Check /model <provider/id>
-  if (text.startsWith("/model ")) {
-    const modelStr = text.slice(7).trim();
-    const slashIdx = modelStr.indexOf("/");
-    if (slashIdx > 0) {
-      return { type: "model", provider: modelStr.slice(0, slashIdx), modelId: modelStr.slice(slashIdx + 1) };
-    }
-  }
-
-  // 5. Check management commands (/flows:new, etc.) with known event mappings
-  if (text.startsWith("/") && !text.includes("\n")) {
-    const cmdText = text.slice(1);
-    const spaceIdx = cmdText.indexOf(" ");
-    const cmdName = spaceIdx === -1 ? cmdText : cmdText.slice(0, spaceIdx);
-    const cmdArgs = spaceIdx === -1 ? "" : cmdText.slice(spaceIdx + 1);
-    const mgmt = MANAGEMENT_COMMAND_EVENTS[cmdName];
-    if (mgmt) {
-      return { type: "mgmt", event: mgmt.event, data: mgmt.dataFn(cmdArgs) };
-    }
-  }
-
-  // 6. Check / prefix (generic slash command)
-  if (text.startsWith("/") && !text.includes("\n")) {
-    return { type: "slash", text };
-  }
-
-  // 5. Passthrough
-  return { type: "passthrough", text };
 }
 
 const BASH_TIMEOUT = 30_000;

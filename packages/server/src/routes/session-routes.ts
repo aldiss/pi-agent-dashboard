@@ -9,6 +9,7 @@ import type { EventStore } from "../memory-event-store.js";
 import type { ApiResponse, DashboardSession } from "@blackbelt-technology/pi-dashboard-shared/types.js";
 import type { NetworkGuard } from "./route-deps.js";
 import { extractFileChanges, enrichWithGitDiff } from "../session-diff.js";
+import { makeRestSessionGate } from "../rest-session-gate.js";
 import {
   reconcileSessionHygiene,
   evaluateRetire,
@@ -30,11 +31,28 @@ export function registerSessionRoutes(
     hygieneGraceMs?: number;
     /** Injected clock (tests). */
     now?: () => number;
+    /**
+     * Build 1b (C-REST-CLOSURE): startup-frozen multi-operator gate flag +
+     * operator identities. `POST /api/sessions/retire` is a session-WRITE
+     * (hides rows) → gated `operator-only` through the SAME central chokepoint.
+     * Default false → the gate no-ops (byte-unchanged).
+     */
+    requireBrowserAuth?: boolean;
+    operatorUsers?: string[];
   },
 ) {
   const { sessionManager, eventStore, networkGuard, hygieneProbes, broadcastSessionUpdated } = deps;
   const nowFn = deps.now ?? (() => Date.now());
   const hygieneGraceMs = deps.hygieneGraceMs ?? 0;
+
+  // Build 1b: the retire route's operator-only session-write gate. Runs AFTER
+  // networkGuard (Fastify runs a preHandler array in order) so a non-loopback
+  // unauthenticated caller is still 403'd by the network guard first; the
+  // session-write gate then enforces operator-only when the flag is on.
+  const gate = makeRestSessionGate({
+    requireBrowserAuth: deps.requireBrowserAuth === true,
+    ...(deps.operatorUsers ? { operatorUsers: deps.operatorUsers } : {}),
+  });
 
   // GET /api/sessions — read-path hygiene (F1 reap + demote, F2 name-canon,
   // false-ended rescue) via reconcileSessionHygiene, then return the reconciled
@@ -66,7 +84,7 @@ export function registerSessionRoutes(
   // succeeded; the F1 read-path kill-0 backstop covers any miss next scan).
   fastify.post<{ Body: RetireKey }>(
     "/api/sessions/retire",
-    { preHandler: networkGuard },
+    { preHandler: [networkGuard, gate("retire")] },
     async (request) => {
       const body = (request.body ?? {}) as RetireKey;
       const key: RetireKey = {
