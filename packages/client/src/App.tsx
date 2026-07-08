@@ -35,6 +35,8 @@ import { TokenStatsBar } from "./components/TokenStatsBar.js";
 
 import { CommandInput } from "./components/CommandInput.js";
 import { readAllDrafts, writeDraft, deleteDraft } from "./lib/draft-storage.js";
+import { resizeImagesForSend } from "./lib/image-resize.js";
+import { getSendFullResolution } from "./hooks/useSendFullResolution.js";
 import { extractUserPromptHistory } from "./lib/message-history.js";
 import { StatusBar } from "./components/StatusBar.js";
 import { LandingPage } from "./components/LandingPage.js";
@@ -719,10 +721,23 @@ export default function App() {
         console.warn(`[extension-ui] Dropping module "${colliding.id}" — command ${colliding.command} collides with a built-in.`);
       }
     }
-    handleSend(text, images);
-    if (selectedId) {
-      clearDraftForSession(selectedId);
-      clearImagesForSession(selectedId);
+    const finishClear = () => {
+      if (selectedId) {
+        clearDraftForSession(selectedId);
+        clearImagesForSession(selectedId);
+      }
+    };
+    // Downscale attached images just before send (default ON) to keep phone
+    // photos from ballooning the payload + session history. A resize failure
+    // must never block the send → fall back to the originals.
+    if (images && images.length > 0 && !getSendFullResolution()) {
+      resizeImagesForSend(images)
+        .then((resized) => handleSend(text, resized))
+        .catch(() => handleSend(text, images)) // fail-safe: send originals
+        .finally(finishClear);
+    } else {
+      handleSend(text, images);
+      finishClear();
     }
   }, [handleSend, selectedId, clearDraftForSession, clearImagesForSession, sessions, BUILTIN_SLASH_COMMANDS]);
 

@@ -57,6 +57,7 @@
     "test:worktree-api:docker": "docker build -f qa/worktree-api/Dockerfile -t pi-dashboard-worktree-api . && docker run --rm pi-dashboard-worktree-api",
     "test:e2e": "playwright test --config e2e/playwright.config.ts",
     "test:e2e:composer": "playwright test --config qa/composer-interaction/playwright.config.ts",
+    "test:e2e:image-resize": "playwright test --config qa/image-resize/playwright.config.ts",
     "test:e2e:update": "playwright test --config e2e/playwright.config.ts --update-snapshots",
     "lint": "tsc --noEmit",
     "reload": "./scripts/reload-all.sh",

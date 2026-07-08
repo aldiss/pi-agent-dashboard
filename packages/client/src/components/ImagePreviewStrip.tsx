@@ -12,9 +12,11 @@
 
 import React, { useState } from "react";
 import { Icon } from "@mdi/react";
-import { mdiClose } from "@mdi/js";
+import { mdiClose, mdiArrowCollapse, mdiImageSizeSelectLarge } from "@mdi/js";
 import type { ImageContent } from "@blackbelt-technology/pi-dashboard-shared/types.js";
 import { ImageLightbox } from "./ImageLightbox.js";
+import { useSendFullResolution } from "../hooks/useSendFullResolution.js";
+import { IMAGE_MAX_LONG_EDGE } from "../lib/image-resize.js";
 
 interface Props {
 	images: ImageContent[];
@@ -24,6 +26,7 @@ interface Props {
 
 export function ImagePreviewStrip({ images, error, onRemove }: Props) {
 	const [lightboxSrc, setLightboxSrc] = useState<{ src: string; alt: string } | null>(null);
+	const [fullRes, setFullRes] = useSendFullResolution();
 
 	if (images.length === 0 && !error) return null;
 
@@ -59,6 +62,27 @@ export function ImagePreviewStrip({ images, error, onRemove }: Props) {
 						</div>
 					))}
 				</div>
+			)}
+			{images.length > 0 && (
+				<button
+					type="button"
+					onClick={() => setFullRes(!fullRes)}
+					data-testid="send-full-resolution-toggle"
+					aria-pressed={fullRes}
+					title={
+						fullRes
+							? "Sending full-resolution originals — larger payload, more context used."
+							: `Images are downscaled to ${IMAGE_MAX_LONG_EDGE}px on the long edge before sending to save context. Click to send full resolution.`
+					}
+					className={`mb-2 inline-flex items-center gap-1 rounded border px-2 py-0.5 text-[11px] transition-colors ${
+						fullRes
+							? "border-[var(--accent)] text-[var(--accent)]"
+							: "border-[var(--border-secondary)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+					}`}
+				>
+					<Icon path={fullRes ? mdiImageSizeSelectLarge : mdiArrowCollapse} size={0.5} />
+					{fullRes ? "Full resolution" : `Resized to ${IMAGE_MAX_LONG_EDGE}px`}
+				</button>
 			)}
 			{lightboxSrc && (
 				<ImageLightbox
