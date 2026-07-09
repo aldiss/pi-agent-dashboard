@@ -365,6 +365,49 @@ export interface ImageContent {
   mimeType: string;
 }
 
+/**
+ * Per-turn author identity (multi-operator, Surface A — attribution).
+ *
+ * A STRUCTURED field threaded PARALLEL to the message `text` end-to-end. It
+ * tells the model + the UI WHO wrote a turn without ever folding into the raw
+ * `text` upstream of the send boundary.
+ *
+ * ANTI-SPOOF PIN: `author` is ALWAYS derived SERVER-SIDE from the
+ * connection-bound principal (`ctx.principal`, Build 0 PRINCIPAL-CAPTURE) —
+ * NEVER read from a client-supplied field at any layer. The client→server
+ * `send_prompt` deliberately carries NO author; the server stamps it after the
+ * authorization gate and threads it onward. See auth-merge contract #1, #2.
+ *
+ * - `sub`     — the exact decoded cookie sub from the verified `TokenPayload`
+ *               (the identity key; email in the current provider set).
+ * - `display` — the human-facing label for UI chrome (OAuth `name` when set,
+ *               else `username`, else `sub`).
+ */
+export interface MessageAuthor {
+  sub: string;
+  display: string;
+}
+
+/**
+ * A participant present in a live session (multi-operator, Surface B).
+ *
+ * The presence surface is the union of the distinct HUMAN co-drivers (deduped
+ * per authenticated principal — B2) and, in future, an AGENT participant
+ * contributed through the greenfield agent-presence interface (`getAgentPresence`,
+ * B3 — a NO-OP returning `null` today; D fills it post-C-land).
+ *
+ * - `id`      — stable identity key. For humans this is the principal `sub`; for
+ *               an agent, an agent-scoped id (D defines).
+ * - `kind`    — `'human'` | `'agent'`. Lets the UI render distinct chrome and
+ *               lets D extend the surface WITHOUT re-implementing presence-UI.
+ * - `display` — human-facing label.
+ */
+export interface PresenceParticipant {
+  id: string;
+  kind: "human" | "agent";
+  display: string;
+}
+
 /** File entry from directory listing */
 export interface FileEntry {
   path: string;

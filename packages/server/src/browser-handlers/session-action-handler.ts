@@ -22,6 +22,7 @@ import {
 import { shouldInterceptReload } from "./session-action-helpers.js";
 import { authorizeSessionAction } from "../session-authz.js";
 import { classifySendPromptAction } from "../send-prompt-authz.js";
+import { deriveAuthor } from "../derive-author.js";
 
 /**
  * Status message + code emitted when fork is attempted on a session whose
@@ -358,11 +359,17 @@ export async function handleSendPrompt(
       return;
     }
     const alreadyResuming = promptSession.resuming;
+    // Capture the author at RECORD-TIME (Surface A) — the replay in
+    // event-wiring.ts has no ctx.principal (cwd-keyed bridge event), so it
+    // cannot be re-derived there. Server-derived, NEVER from msg. Downstream of
+    // the Build-1b operator-only `resume` gate above (attribution ⊥ authz).
+    const resumeAuthor = deriveAuthor(ctx.principal);
     pendingResumeRegistry.record(promptSession.cwd, {
       text: msg.text,
       images: msg.images,
       oldSessionId: msg.sessionId,
       sessionFile: promptSession.sessionFile,
+      ...(resumeAuthor ? { author: resumeAuthor } : {}),
     });
     if (alreadyResuming) return;
     // Tag the resume intent as "front" so the upcoming ended→alive
@@ -396,11 +403,21 @@ export async function handleSendPrompt(
       headlessPidRegistry.register(spawnResult.pid, promptSession.cwd, spawnResult.process);
     }
   } else {
+    // Locus-1 author-stamp (multi-operator, Surface A). Derive the author
+    // SERVER-SIDE from the connection-bound principal — NEVER from `msg` (the
+    // client cannot claim it). Downstream of the Build-1b co-drive/operator-only
+    // gates above (attribution ⊥ authorization, Contract-3). The send stays
+    // field-by-field (NOT a `...msg` spread) — the anti-spoof invariant.
+    // Conditional-spread keeps flag-off byte-unchanged: single-operator derives
+    // no principal → no `author` key. This carrier's attribution is enforced by
+    // the derived-carrier-guard (`surface-attribution-carrier-guard.test.ts`).
+    const author = deriveAuthor(ctx.principal);
     const sent = piGateway.sendToSession(msg.sessionId, {
       type: "send_prompt",
       sessionId: msg.sessionId,
       text: msg.text,
       images: msg.images,
+      ...(author ? { author } : {}),
       // Thread the client's queue correlation id to the bridge so it can
       // reuse it as the queued message's queueNonce (the client's optimistic
       // card reconciles by exact match). See change: dashboard-message-queue.

@@ -56,6 +56,10 @@ export function buildOpenSpecConnectSnapshot(
 }
 import { createPendingResumeRegistry, type PendingResumeRegistry } from "./pending-resume-registry.js";
 import { createViewedSessionTracker, type ViewedSessionTracker } from "./viewed-session-tracker.js";
+import { createSessionPresenceTracker } from "./session-presence-tracker.js";
+import { getAgentPresence } from "./agent-presence.js";
+import { deriveAuthor } from "./derive-author.js";
+import { buildPromptResponseForward } from "./prompt-response-forward.js";
 import type { TerminalManager } from "./terminal-manager.js";
 import type { BrowserHandlerContext } from "./browser-handlers/handler-context.js";
 import { authorizeWsMessage } from "./ws-session-gate.js";
@@ -168,6 +172,30 @@ export function createBrowserGateway(
   // Track which browser is viewing which session (for unread state machine).
   // See change: session-card-unread-stripes.
   const viewedSessionTracker = createViewedSessionTracker();
+
+  // SURFACE B: per-PRINCIPAL presence (dedup tabs by sub) for presence-of-two.
+  // Separate from viewedSessionTracker (which is per-WebSocket + anonymous) to
+  // keep the unread/push contract unpolluted. See session-presence-tracker.ts.
+  const sessionPresenceTracker = createSessionPresenceTracker();
+
+  /**
+   * Build the additive `presence_update` payload for a session: distinct human
+   * co-drivers (deduped per principal) + any agent participant from the
+   * greenfield NO-OP interface (`getAgentPresence` → null today).
+   */
+  function buildPresenceParticipants(sessionId: string) {
+    const humans = sessionPresenceTracker.humansOf(sessionId);
+    const agent = getAgentPresence(sessionId);
+    return agent ? [...humans, agent] : humans;
+  }
+
+  /** Emit `presence_update` to a session's subscribers (additive, on change). */
+  function emitPresenceUpdate(sessionId: string) {
+    const participants = buildPresenceParticipants(sessionId);
+    for (const ws of getSubscribers(sessionId)) {
+      sendTo(ws, { type: "presence_update", sessionId, participants });
+    }
+  }
 
   // Track pending interactive UI requests per session for replay on reconnect
   const pendingUiRequests = new Map<string, Map<string, { requestId: string; method: string; params: Record<string, unknown> }>>();
@@ -560,8 +588,26 @@ export function createBrowserGateway(
           }
 
           case "prompt_response": {
-            // Route PromptBus response from browser to extension
-            ctx.piGateway.sendToSession((msg as any).sessionId, msg as any);
+            // Route PromptBus response from browser to extension.
+            // BA-2 COVER (multi-operator, Surface A): reconstruct the forwarded
+            // object FIELD-BY-FIELD — never a wholesale `msg as any` spread (the
+            // anti-spoof hole: a spread would let a client-forged `author`/
+            // identity field ride through to the extension). The pure helper
+            // preserves the functional PromptBus round-trip fields (sessionId,
+            // promptId, answer, cancelled, source — consumed by
+            // promptBus.respond) and stamps the `author` SERVER-SIDE from the
+            // connection-bound principal (`principals.get(ws)`), NEVER from the
+            // message body. Delivery is unaffected: the answer still reaches
+            // PromptBus.respond.
+            // The forwarded value is an OBJECT LITERAL with a static
+            // `type: "prompt_response"` (spreading the field-by-field helper) so
+            // the Build-1b WS-coverage AST classifies this carrier by its static
+            // channel — it never forwards a browser-chosen/dynamic payload type.
+            const pr = msg as import("@blackbelt-technology/pi-dashboard-shared/browser-protocol.js").PromptResponseBrowserMessage;
+            ctx.piGateway.sendToSession(pr.sessionId, {
+              ...buildPromptResponseForward(pr, principals.get(ws) ?? null),
+              type: "prompt_response",
+            });
             break;
           }
 
@@ -650,6 +696,31 @@ export function createBrowserGateway(
             // Track the (sessionId, ws) pair AND clear `unread` if set.
             // See change: session-card-unread-stripes.
             viewedSessionTracker.view(msg.sessionId, ws);
+            // SURFACE B: record per-principal presence. Always send the
+            // current set to the entering socket (so a freshly-opened tab is
+            // initialized), and broadcast to the OTHER subscribers only when a
+            // NEW distinct human appeared (dedup same-human tabs → no spam).
+            const viewer = principals.get(ws) ?? null;
+            const presencePrincipal = viewer
+              ? { sub: viewer.sub, display: deriveAuthor(viewer)?.display ?? viewer.sub }
+              : null;
+            const distinctChanged = sessionPresenceTracker.enter(msg.sessionId, ws, presencePrincipal);
+            sendTo(ws, {
+              type: "presence_update",
+              sessionId: msg.sessionId,
+              participants: buildPresenceParticipants(msg.sessionId),
+            });
+            if (distinctChanged) {
+              for (const other of getSubscribers(msg.sessionId)) {
+                if (other !== ws) {
+                  sendTo(other, {
+                    type: "presence_update",
+                    sessionId: msg.sessionId,
+                    participants: buildPresenceParticipants(msg.sessionId),
+                  });
+                }
+              }
+            }
             const session = sessionManager.get(msg.sessionId);
             if (session?.unread) {
               sessionManager.update(msg.sessionId, { unread: false });
@@ -663,6 +734,10 @@ export function createBrowserGateway(
           }
           case "session_unview": {
             viewedSessionTracker.unview(msg.sessionId, ws);
+            // SURFACE B: drop this socket from presence; emit on real change.
+            if (sessionPresenceTracker.leave(msg.sessionId, ws)) {
+              emitPresenceUpdate(msg.sessionId);
+            }
             break;
           }
           case "set_push_prefs": {
@@ -696,6 +771,12 @@ export function createBrowserGateway(
       // Drop this ws from every viewed-session entry so disconnected browsers
       // don't hold sessions in the viewed state. See change: session-card-unread-stripes.
       viewedSessionTracker.unviewAll(ws);
+      // SURFACE B: drop this socket from per-principal presence; emit
+      // presence_update to remaining subscribers for each session whose
+      // distinct-human set changed (this human's LAST tab just closed).
+      for (const sessionId of sessionPresenceTracker.removeSocket(ws)) {
+        emitPresenceUpdate(sessionId);
+      }
     });
   });
 

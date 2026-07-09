@@ -9,10 +9,11 @@ import type {
   ExtensionToServerMessage,
 } from "@blackbelt-technology/pi-dashboard-shared/protocol.js";
 import { killProcessByPgid } from "./process-scanner.js";
-import type { FileEntry, PiSessionInfo } from "@blackbelt-technology/pi-dashboard-shared/types.js";
+import type { FileEntry, PiSessionInfo, MessageAuthor } from "@blackbelt-technology/pi-dashboard-shared/types.js";
 import { filterHiddenCommands } from "./bridge-context.js";
 import { expandPromptTemplateFromDisk } from "./prompt-expander.js";
 import { tryDispatchExtensionCommand } from "./slash-dispatch.js";
+import { wrapForSend } from "./speaker-wrap.js";
 import { buildProviderCatalogue } from "./provider-register.js";
 // `parseSendPrompt` moved to shared (PUSHBACK-3 FIX-P3-1) so the SERVER
 // authorizes a `send_prompt` text against the SAME parser the bridge EXECUTES —
@@ -89,7 +90,7 @@ export function createCommandHandler(
      * events emitted by the dispatch path arrive before this turn returns.
      * See change: fix-extension-slash-commands-in-dashboard.
      */
-    sessionPrompt?: (text: string) => void | Promise<void>;
+    sessionPrompt?: (text: string, author?: MessageAuthor) => void | Promise<void>;
   },
 ): CommandHandler {
   const getSessionId = typeof sessionIdOrGetter === "function" ? sessionIdOrGetter : () => sessionIdOrGetter;
@@ -224,7 +225,9 @@ export function createCommandHandler(
               // extension-command dispatch. Do NOT emit completed here — would
               // duplicate the dispatch path's terminal event.
               // See change: fix-extension-slash-commands-in-dashboard.
-              await options.sessionPrompt(parsed.text);
+              // Surface A: thread the server-stamped author so the bridge's
+              // terminal sendUserMessage bakes in the <speaker> label.
+              await options.sessionPrompt(parsed.text, msg.author);
             } else {
               // Test / non-bridge callers: apply the extension-command dispatch
               // branch inline before falling through to sendUserMessage. Keeps
@@ -238,8 +241,11 @@ export function createCommandHandler(
               if (!handled) {
                 // sendUserMessage exempt from gating: only typed single-line
                 // slashes that are NOT extension commands reach this — i.e.
-                // skills, prompt templates, unrecognized slashes.
-                pi.sendUserMessage(parsed.text);
+                // skills, prompt templates, unrecognized slashes. Surface A:
+                // wrap the <speaker> label in HERE, the terminal boundary,
+                // strictly downstream of all queue logic (author undefined in
+                // single-op → returned unchanged, byte-unchanged).
+                pi.sendUserMessage(wrapForSend(parsed.text, msg.author));
               }
             }
             return undefined;
@@ -259,7 +265,7 @@ export function createCommandHandler(
           if (outgoing.startsWith("/")) {
             outgoing = expandPromptTemplateFromDisk(outgoing, process.cwd(), pi);
           }
-          sendUserMessageWithImages(pi, outgoing, msg.images);
+          sendUserMessageWithImages(pi, outgoing, msg.images, msg.author);
           return undefined;
         }
 
@@ -422,13 +428,18 @@ export function createCommandHandler(
 }
 
 /** Send a user message with optional image validation.
- * Uses deliverAs: "followUp" so messages queue properly when the agent is streaming. */
+ * Uses deliverAs: "followUp" so messages queue properly when the agent is streaming.
+ * Surface A: `author`, when present (multi-op, flag on), bakes the <speaker>
+ * label into the TEXT at this terminal boundary — strictly downstream of all
+ * queue logic. Undefined author → text unchanged (byte-unchanged single-op). */
 function sendUserMessageWithImages(
   pi: ExtensionAPI,
   text: string,
   images?: Array<{ type: string; data: string; mimeType: string }>,
+  author?: MessageAuthor,
 ): void {
   const sendOptions = { deliverAs: "followUp" as const };
+  const wrapped = wrapForSend(text, author);
   if (images && images.length > 0) {
     const validMimeTypes = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
     const validImages = images.filter((img) => {
@@ -448,7 +459,7 @@ function sendUserMessageWithImages(
     });
     if (validImages.length > 0) {
       const content = [
-        { type: "text" as const, text },
+        { type: "text" as const, text: wrapped },
         ...validImages.map((img) => ({
           type: "image" as const,
           data: img.data,
@@ -458,10 +469,10 @@ function sendUserMessageWithImages(
       console.error(`[dashboard] Sending message with ${validImages.length} image(s), mimeTypes: ${validImages.map(i => i.mimeType).join(", ")}`);
       (pi.sendUserMessage as any)(content, sendOptions);
     } else {
-      (pi.sendUserMessage as any)(text, sendOptions);
+      (pi.sendUserMessage as any)(wrapped, sendOptions);
     }
   } else {
-    (pi.sendUserMessage as any)(text, sendOptions);
+    (pi.sendUserMessage as any)(wrapped, sendOptions);
   }
 }
 

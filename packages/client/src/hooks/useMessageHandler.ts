@@ -4,7 +4,7 @@
  */
 import { useCallback } from "react";
 import { createInitialState, reduceEvent, addInteractiveRequest, resolveInteractiveRequest, dismissInteractiveRequest, markQueueEntryFailed, type SessionState } from "../lib/event-reducer.js";
-import type { DashboardSession, CommandInfo, FlowInfo, FileEntry, OpenSpecData, OpenSpecGroup, ModelInfo, RoleInfo } from "@blackbelt-technology/pi-dashboard-shared/types.js";
+import type { DashboardSession, CommandInfo, FlowInfo, FileEntry, OpenSpecData, OpenSpecGroup, ModelInfo, RoleInfo, PresenceParticipant } from "@blackbelt-technology/pi-dashboard-shared/types.js";
 import { encodeFolderPath } from "../lib/folder-encoding.js";
 import type { TerminalSession } from "@blackbelt-technology/pi-dashboard-shared/terminal-types.js";
 import type { EditorInstanceStatus } from "@blackbelt-technology/pi-dashboard-shared/editor-types.js";
@@ -52,6 +52,8 @@ export interface MessageHandlerSetters {
   setDiscoveredServers: React.Dispatch<React.SetStateAction<DiscoveredServerInfo[]>>;
   setSpawnErrors: React.Dispatch<React.SetStateAction<Map<string, SpawnErrorDetail>>>;
   setResumeErrors: React.Dispatch<React.SetStateAction<Map<string, string>>>;
+  /** Surface B: per-session presence participant set (multi-operator). */
+  setPresenceMap: React.Dispatch<React.SetStateAction<Map<string, PresenceParticipant[]>>>;
 }
 
 export interface MessageHandlerDeps {
@@ -81,7 +83,7 @@ export function useMessageHandler(
     setSessions, setSessionStates, setSessionCommands, setSessionFlows,
     setFileResults, setOpenspecMap, setOpenspecGroupsMap, setModelsMap, setRolesMap, setSpawnResult,
     setSessionOrderMap, setPinnedDirectories, setTerminals, setEditorStatuses,
-    setDiscoveredServers, setSpawnErrors, setResumeErrors,
+    setDiscoveredServers, setSpawnErrors, setResumeErrors, setPresenceMap,
   } = setters;
   const { send, navigate, clearSpawningCwd, spawningCwdsRef, subscribedRef, pendingTerminalCwdRef, lastCreatedTerminalIdRef, maxSeqMapRef, selectedSessionIdRef, pendingSpawnsRef } = deps;
 
@@ -171,6 +173,17 @@ export function useMessageHandler(
           if (existing) {
             next.set(msg.sessionId, { ...existing, status: "ended" });
           }
+          return next;
+        });
+        break;
+
+      case "presence_update":
+        // Surface B: store the session's distinct co-driver set. Additive —
+        // ignored by the rest of the app; only the presence-of-two indicator
+        // reads it. Single-operator sessions carry ≤1 participant → no chrome.
+        setPresenceMap((prev) => {
+          const next = new Map(prev);
+          next.set(msg.sessionId, msg.participants);
           return next;
         });
         break;

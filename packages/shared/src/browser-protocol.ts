@@ -14,6 +14,7 @@ import type {
   PiSessionInfo,
   ExtensionUiModule,
   DecoratorDescriptor,
+  PresenceParticipant,
 } from "./types.js";
 import type { TerminalSession } from "./terminal-types.js";
 import type { EditorInstanceStatus } from "./editor-types.js";
@@ -42,6 +43,22 @@ export interface SessionUpdatedMessage {
 export interface SessionRemovedMessage {
   type: "session_removed";
   sessionId: string;
+}
+
+/**
+ * Server → browser: the set of participants currently co-driving a session
+ * (multi-operator, Surface B). ADDITIVE — a new event type that perturbs no
+ * existing message; clients that don't handle it simply ignore it. Emitted to a
+ * session's subscribers whenever its distinct-participant set changes (a human
+ * enters/leaves). `participants` is the union of distinct human co-drivers
+ * (deduped per principal) + any agent participant from `getAgentPresence`
+ * (NO-OP today → none). Single-operator (flag off) → the set is at most one
+ * human, so no presence-of-two chrome renders (byte-unchanged).
+ */
+export interface PresenceUpdateMessage {
+  type: "presence_update";
+  sessionId: string;
+  participants: PresenceParticipant[];
 }
 
 export interface EventMessage {
@@ -560,6 +577,7 @@ export type ServerToBrowserMessage =
   | SessionAddedMessage
   | SessionUpdatedMessage
   | SessionRemovedMessage
+  | PresenceUpdateMessage
   | EventMessage
   | EventReplayMessage
   | BrowserCommandsListMessage
@@ -622,6 +640,14 @@ export interface SendPromptToBrowserMessage {
   sessionId: string;
   text: string;
   images?: ImageContent[];
+  /**
+   * ANTI-SPOOF PIN (multi-operator, Surface A): this client→server message
+   * carries NO `author` field — a client CANNOT claim who it is. The server
+   * derives the author SERVER-SIDE from the connection-bound principal
+   * (`ctx.principal`) AFTER the authorization gate and stamps it onto the
+   * downstream `send_prompt` to the extension. Do NOT add an `author` field
+   * here. See MessageAuthor + auth-merge contract #1, #2.
+   */
   /**
    * Client-minted correlation id for the message-queue lifecycle
    * (dashboard-message-queue/v1). Threaded verbatim to the bridge's

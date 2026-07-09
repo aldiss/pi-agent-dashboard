@@ -29,6 +29,7 @@ import type { BootstrapQueue } from "./bootstrap-queue.js";
 import { attachRenameTarget, detachShouldClearName } from "./proposal-attach-naming.js";
 import { FORK_DEGRADED_TO_NEW_MESSAGE, FORK_DEGRADED_TO_NEW_CODE } from "./browser-handlers/session-action-handler.js";
 import { makeRestSessionGate, makeRestPromptGate } from "./rest-session-gate.js";
+import { deriveAuthor } from "./derive-author.js";
 import {
   verifyResurrection,
   createProductionProbes,
@@ -278,11 +279,21 @@ export function registerSessionApi(fastify: FastifyInstance, deps: SessionApiDep
         reply.code(404);
         return result.error;
       }
+      // Locus-3 REST author-stamp (multi-operator, Surface A — §16.1 merge). The
+      // REST `/prompt` send is the THIRD author carrier. Derive the author from
+      // Build-1b's `request.restPrincipal` (stashed by auth-plugin.ts's onRequest
+      // hook, read by rest-session-gate.ts) — server-derived, NEVER from the
+      // request body, so BA-2 holds by construction. Downstream of the
+      // `promptGate` preHandler (attribution ⊥ authorization, Contract-3).
+      // Conditional-spread keeps flag-off byte-unchanged. REUSES the Build-1b
+      // REST-identity stash — no second REST-identity path.
+      const restAuthor = deriveAuthor((request as any).restPrincipal ?? null);
       const sent = piGateway.sendToSession(id, {
         type: "send_prompt",
         sessionId: id,
         text,
         images,
+        ...(restAuthor ? { author: restAuthor } : {}),
       });
       if (!sent) {
         reply.code(502);

@@ -1,11 +1,12 @@
 import React, { useState, useEffect, useRef } from "react";
 import { Icon } from "@mdi/react";
 import { mdiPencilOutline, mdiArrowLeft, mdiPaperclip, mdiRefresh, mdiLinkOff, mdiPlay, mdiFileCompare, mdiHeadLightbulb, mdiViewGridOutline, mdiPlayCircleOutline, mdiSourceFork, mdiFilterVariant, mdiMagnify, mdiChevronRight } from "@mdi/js";
-import type { DashboardSession, OpenSpecChange, CommandInfo, FlowInfo, ImageContent } from "@blackbelt-technology/pi-dashboard-shared/types.js";
+import type { DashboardSession, OpenSpecChange, CommandInfo, FlowInfo, ImageContent, PresenceParticipant } from "@blackbelt-technology/pi-dashboard-shared/types.js";
 import type { SessionState } from "../lib/event-reducer.js";
 import type { DetectedEditor } from "../lib/editor-api.js";
 import { getSessionDisplayName } from "../lib/session-display-name.js";
 import { InlineRenameInput } from "./InlineRenameInput.js";
+import { PresenceIndicator } from "./PresenceIndicator.js";
 import { MobileActionMenu } from "./MobileActionMenu.js";
 import { useMobile } from "../hooks/useMobile.js";
 import { FlowLaunchDialog } from "@blackbelt-technology/pi-dashboard-flows-plugin/client";
@@ -90,6 +91,12 @@ interface Props {
      *  mobile header's model row becomes a tappable button. */
     onOpenModelSheet?: () => void;
   };
+  /**
+   * Surface B: distinct participants co-driving this session (multi-operator).
+   * Rendered as a presence-of-two indicator next to the session name. ≤1
+   * participant → nothing renders (single-operator byte-unchanged).
+   */
+  presence?: PresenceParticipant[];
 }
 
 /** Separate attach/detach icon button for mobile session header */
@@ -185,7 +192,7 @@ function MobileAttachButton({ session, openspecChanges, onAttach, onDetach }: {
  *  the bottom of this file renders the same model + thinkingLevel pair
  *  inline next to the session name.
  *  Cell: mobile-pwa-chatgpt-style-restructure/v1 (MintOwl). */
-function MobileHeader({ session, state, showBack, onBack, isRenaming, onConfirmRename, onCancelRename, canRename, onStartRename, mobileActions, onReadArtifact, onSearchToggle }: {
+function MobileHeader({ session, state, showBack, onBack, isRenaming, onConfirmRename, onCancelRename, canRename, onStartRename, mobileActions, onReadArtifact, onSearchToggle, presence }: {
   session: DashboardSession;
   state?: SessionState;
   showBack?: boolean;
@@ -198,6 +205,7 @@ function MobileHeader({ session, state, showBack, onBack, isRenaming, onConfirmR
   mobileActions?: SessionHeaderMobileActions;
   onReadArtifact?: (changeName: string, artifactId: string) => void;
   onSearchToggle?: () => void;
+  presence?: PresenceParticipant[];
 }) {
   // Look up the attached change in the polled openspecChanges list. When
   // present, render the artifact-letters pill + task counter inside the
@@ -233,6 +241,9 @@ function MobileHeader({ session, state, showBack, onBack, isRenaming, onConfirmR
         />
       ) : (
         <span className="font-medium truncate flex-1">{getSessionDisplayName(session)}</span>
+      )}
+      {presence && presence.length >= 2 && (
+        <div className="flex-shrink-0"><PresenceIndicator participants={presence} /></div>
       )}
       {mobileActions && (
         <MobileAttachButton
@@ -397,7 +408,7 @@ function formatDuration(ms: number): string {
   return `${seconds}s`;
 }
 
-export function SessionHeader({ session, state, onRename, showBack, onBack, mobileActions, commands, flows, onSendPrompt, openspecChanges, onAttachProposal, onDetachProposal, hasFileChanges, onOpenDiffView, onRefresh, onReadArtifact, onOpenExtensionModulePicker, onResume, onFilterToggle, isFilterActive, onSearchToggle }: Props) {
+export function SessionHeader({ session, state, onRename, showBack, onBack, mobileActions, commands, flows, onSendPrompt, openspecChanges, onAttachProposal, onDetachProposal, hasFileChanges, onOpenDiffView, onRefresh, onReadArtifact, onOpenExtensionModulePicker, onResume, onFilterToggle, isFilterActive, onSearchToggle, presence }: Props) {
   const [now, setNow] = useState(Date.now());
   const [isRenaming, setIsRenaming] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
@@ -465,6 +476,7 @@ export function SessionHeader({ session, state, onRename, showBack, onBack, mobi
         mobileActions={mobileActions}
         onReadArtifact={onReadArtifact}
         onSearchToggle={onSearchToggle}
+        presence={presence}
       />
     );
   }
@@ -519,6 +531,7 @@ export function SessionHeader({ session, state, onRename, showBack, onBack, mobi
           )}
         </span>
       )}
+      {presence && presence.length >= 2 && <PresenceIndicator participants={presence} />}
       {(state.model || session.model) && <span className="text-[var(--text-secondary)]">{state.model || session.model}</span>}
       {(state.thinkingLevel || session.thinkingLevel) && (
         <span className="text-[var(--text-tertiary)] inline-flex items-center gap-0.5"><Icon path={mdiHeadLightbulb} size={0.45} /> {state.thinkingLevel || session.thinkingLevel}</span>

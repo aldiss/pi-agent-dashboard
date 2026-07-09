@@ -675,6 +675,11 @@ export function wireEvents(deps: EventWiringDeps): void {
           sessionId,
           text: pendingResume.text,
           images: pendingResume.images,
+          // Carry the RECORD-TIME author (Surface A). This replay reacts to a
+          // cwd-keyed bridge event with NO ctx.principal, so the author cannot
+          // be re-derived here — it rides the registry entry (server-side-only,
+          // not client-spoofable). Absent single-operator → omitted.
+          ...(pendingResume.author ? { author: pendingResume.author } : {}),
         });
         sessionManager.update(sessionId, { resuming: false });
         browserGateway.broadcastSessionUpdated(sessionId, { resuming: false });

@@ -2,7 +2,7 @@
  * Event reducer: builds session UI state from a stream of events.
  * (state, event) → new state
  */
-import type { DashboardEvent, FlowState, ArchitectState } from "@blackbelt-technology/pi-dashboard-shared/types.js";
+import type { DashboardEvent, FlowState, ArchitectState, MessageAuthor } from "@blackbelt-technology/pi-dashboard-shared/types.js";
 import { isFlowEvent, reduceFlowEvent } from "@blackbelt-technology/pi-dashboard-flows-plugin/reducer";
 import { isArchitectEvent, reduceArchitectEvent } from "@blackbelt-technology/pi-dashboard-flows-plugin/reducer";
 import { parseSkillBlock, type SkillBlock } from "@blackbelt-technology/pi-dashboard-shared/skill-block-parser.js";
@@ -50,6 +50,14 @@ export interface ChatMessage {
    * See change: render-skill-invocations-collapsibly.
    */
   skill?: SkillBlock;
+  /**
+   * SERVER-STAMPED author of this turn (multi-operator, Surface A). Present on
+   * a committed user turn only when a per-author queue entry correlated it
+   * (dashboard-message-queue path, flag on). The renderer shows op-1/op-2
+   * attribution chrome ONLY when this is set — absent in single-operator mode
+   * (flag off) → no chrome, byte-unchanged. See MessageAuthor.
+   */
+  author?: MessageAuthor;
 }
 
 export interface ToolCallState {
@@ -108,6 +116,13 @@ export interface QueuedMessage {
   state: "optimistic" | "confirmed" | "failed";
   /** Origin — "dashboard" (this client or another) vs "tui" (pi's own terminal). */
   source?: "dashboard" | "tui";
+  /**
+   * SERVER-STAMPED author of this queued turn (multi-operator, Surface A).
+   * Threaded from `message_enqueued`/`queue_state`; carried PARALLEL to `text`.
+   * A just THREADS it (so a committed turn can render attribution); the
+   * `(author,text)` reconciliation is a later slice. Absent single-operator.
+   */
+  author?: MessageAuthor;
   /** Epoch ms when this entry was created client-side (for stuck-timeout). */
   createdAt: number;
 }
@@ -848,6 +863,21 @@ function mapWireImagesToChat(images: unknown): ChatImage[] | undefined {
 }
 
 /**
+ * Validate a wire-shape `author` into a `MessageAuthor` (multi-operator,
+ * Surface A). Defensive: both `sub` and `display` must be non-empty strings;
+ * anything else (undefined, partial, wrong type) → undefined (no chrome). A
+ * only THREADS the server-stamped author — it never mints or trusts a
+ * client-supplied one (the server already enforces derivation).
+ */
+function extractMessageAuthor(author: unknown): MessageAuthor | undefined {
+  if (!author || typeof author !== "object") return undefined;
+  const a = author as Record<string, unknown>;
+  if (typeof a.sub !== "string" || a.sub.length === 0) return undefined;
+  if (typeof a.display !== "string" || a.display.length === 0) return undefined;
+  return { sub: a.sub, display: a.display };
+}
+
+/**
  * Flip the matching `optimistic` queue entry to `failed` (stuck-timeout fired
  * before the bridge confirmed it — disconnect failure mode). No-op if the
  * entry is absent or already confirmed/failed. Pure: returns a new state only
@@ -882,9 +912,9 @@ export function removeQueueEntry(
 
 /**
  * Conservative same-text reconciliation lookup (dashboard-message-queue/v1
- * AMEND #3). Returns the index of the OPTIMISTIC queue entry matching `text`,
- * but ONLY when EXACTLY ONE such entry exists — and that entry is the
- * FIFO-oldest by construction (it's the only one).
+ * AMEND #3; Surface B per-author refinement). Returns the index of the
+ * OPTIMISTIC queue entry matching `text`, but ONLY when EXACTLY ONE such entry
+ * exists — and that entry is the FIFO-oldest by construction (it's the only one).
  *
  * Why this shape (architect-mandated, closes the AMEND #2 nonce-swap seam):
  * the queueNonce IS the reply-linkage + dispatch identity. With TWO genuine
@@ -897,19 +927,47 @@ export function removeQueueEntry(
  * match or the authoritative `queue_state` snapshot to reconcile in send-order
  * — preserving reply-linkage. Mis-adopting is worse than waiting.
  *
- * Returns -1 when there are zero OR multiple optimistic same-text matches.
+ * SURFACE B — per-author adoption (free-for-all co-drive). When the confirming
+ * message carries a server-stamped `author` (multi-operator), the match is
+ * scoped to that author: an optimistic entry is a candidate ONLY when its
+ * `author.sub === author.sub` AND `text` matches. This REFUSES cross-author
+ * adoption — op-2's confirmation can never re-key op-1's same-text card onto
+ * op-2's nonce (transient mis-attribution + wrong reply-linkage). The
+ * count-of-1 conservatism is preserved PER-AUTHOR: >1 same-(author,text)
+ * optimistic → -1 (do not guess).
+ *
+ * FLAG-OFF byte-unchanged (load-bearing): when `author` is undefined
+ * (single-operator — A derives no author), the match DEGRADES to TEXT-ONLY —
+ * today's exact behavior. The per-author refusal engages ONLY when the
+ * confirming author is present. An optimistic entry with no `author` is matched
+ * by text alone in that degraded path.
+ *
+ * Returns -1 when there are zero OR multiple matches (per the active scope).
  */
 export function findSoleOptimisticByText(
   queue: readonly QueuedMessage[],
   text: string,
+  author?: MessageAuthor,
 ): number {
   if (!text) return -1;
   let foundIdx = -1;
   for (let i = 0; i < queue.length; i++) {
-    if (queue[i].state === "optimistic" && queue[i].text === text) {
-      if (foundIdx !== -1) return -1; // more than one → do NOT guess
-      foundIdx = i;
-    }
+    const q = queue[i];
+    if (q.state !== "optimistic" || q.text !== text) continue;
+    // SURFACE B per-author refusal. When the confirming message carries an
+    // `author` (multi-operator), adopt ONLY a card of the SAME author. Client
+    // optimistic cards are AUTHOR-LESS at creation (the client cannot know its
+    // own server-derived author — anti-spoof), so a same-author confirmation
+    // reconciles via the EXACT-NONCE path (the client-minted queueNonce rides
+    // send_prompt → bridge → confirmation), NEVER this text-fallback. Therefore
+    // an authored confirmation reaching THIS text-fallback against an
+    // author-less (or differently-authored) card is the CROSS-AUTHOR hazard —
+    // refuse it (op-2's confirm must not re-key op-1's same-text card). When
+    // the confirming `author` is absent (flag-off single-op), the guard is
+    // inert and the match DEGRADES to text-only — today's byte-unchanged path.
+    if (author && q.author?.sub !== author.sub) continue;
+    if (foundIdx !== -1) return -1; // more than one candidate → do NOT guess
+    foundIdx = i;
   }
   return foundIdx;
 }
@@ -989,9 +1047,20 @@ export function reduceEvent(state: SessionState, event: DashboardEvent): Session
         // OLD send's text grab the NEW card (no flip-flop). See
         // SessionState.supersededNonces.
         const dispatchSuperseded = dispatchedNonce !== undefined && next.supersededNonces.has(dispatchedNonce);
+        // Server-stamped author of the dispatched queue entry (Surface A).
+        // Captured BEFORE the entry is filtered out so the committed user
+        // bubble below can render op-1/op-2 attribution. A just THREADS.
+        let dispatchedAuthor: MessageAuthor | undefined;
+        // SURFACE B: server-stamped author carried on the committing user
+        // `message_start` itself (the bridge stamps the immediate-0-queue turn's
+        // author here — see bridge stampImmediateAuthor). Used for (a) per-author
+        // text-fallback refusal and (b) rendering the immediate turn's author
+        // when there is no queue entry to inherit it from.
+        const startAuthor = extractMessageAuthor(data.author);
         if (dispatchSuperseded) {
           removedByNonce = true; // suppress text-fallback for this ghost dispatch
         } else if (dispatchedNonce && next.queue.some((q) => q.queueNonce === dispatchedNonce)) {
+          dispatchedAuthor = next.queue.find((q) => q.queueNonce === dispatchedNonce)?.author;
           next.queue = next.queue.filter((q) => q.queueNonce !== dispatchedNonce);
           removedByNonce = true;
         }
@@ -1030,8 +1099,12 @@ export function reduceEvent(state: SessionState, event: DashboardEvent): Session
         // when ambiguous we wait for the exact nonce / queue_state snapshot.
         // See change: dashboard-message-queue (AMEND #2, AMEND #3).
         if (!removedByNonce && text && next.queue.length > 0) {
-          const soleIdx = findSoleOptimisticByText(next.queue, text);
+          // SURFACE B: pass the committing message's server-stamped author so
+          // the sole-match REFUSES cross-author adoption (op-2's confirm never
+          // re-keys op-1's same-text card). Flag-off (no author) → text-only.
+          const soleIdx = findSoleOptimisticByText(next.queue, text, startAuthor);
           if (soleIdx !== -1) {
+            if (!dispatchedAuthor) dispatchedAuthor = next.queue[soleIdx].author;
             next.queue = next.queue.filter((_, i) => i !== soleIdx);
           }
         }
@@ -1039,6 +1112,10 @@ export function reduceEvent(state: SessionState, event: DashboardEvent): Session
         // a collapsible card and ArrowUp recall can return the slash form.
         // See change: render-skill-invocations-collapsibly.
         const skill = parseSkillBlock(text) ?? undefined;
+        // SURFACE B: the committed turn's author — prefer the dispatched queue
+        // entry's author (queued path, Surface A), else the author stamped on
+        // this very `message_start` (immediate-0-queue turn-initiating path).
+        const committedAuthor = dispatchedAuthor ?? startAuthor;
         next.messages = [
           ...next.messages,
           {
@@ -1046,6 +1123,7 @@ export function reduceEvent(state: SessionState, event: DashboardEvent): Session
             role: "user",
             content: text,
             ...(skill ? { skill } : {}),
+            ...(committedAuthor ? { author: committedAuthor } : {}),
             images,
             timestamp: event.timestamp,
             // entryId from data.entryId is correct ONLY for replayed events
@@ -1566,13 +1644,20 @@ export function reduceEvent(state: SessionState, event: DashboardEvent): Session
       const text = typeof data.text === "string" ? data.text : "";
       const source = data.source === "tui" ? "tui" : "dashboard";
       const images = mapWireImagesToChat(data.images);
+      // Server-stamped author (Surface A). Thread it onto the queue entry so a
+      // committed turn can render attribution; A just THREADS, no reconciliation.
+      const author = extractMessageAuthor(data.author);
       let existingIdx = next.queue.findIndex((q) => q.queueNonce === queueNonce);
       // Conservative text fallback: no exact nonce match → the SOLE FIFO-oldest
       // optimistic entry with matching text (or -1 when zero/multiple). Re-key
       // it to the bridge's nonce.
+      // SURFACE B: scope the fallback to the confirming author — REFUSE
+      // cross-author re-key (op-2's message_enqueued must never adopt op-1's
+      // same-text optimistic card onto op-2's nonce). Flag-off (no author) →
+      // text-only, byte-unchanged.
       let reKey = false;
       if (existingIdx === -1) {
-        const soleIdx = findSoleOptimisticByText(next.queue, text);
+        const soleIdx = findSoleOptimisticByText(next.queue, text, author);
         if (soleIdx !== -1) {
           existingIdx = soleIdx;
           reKey = true;
@@ -1590,6 +1675,7 @@ export function reduceEvent(state: SessionState, event: DashboardEvent): Session
           // optimistic createdAt for stable ordering/age.
           text: text || next.queue[existingIdx].text,
           ...(images ? { images } : {}),
+          ...(author ? { author } : {}),
         };
       } else {
         // SOURCE-AWARE append (AMEND #4 F3): the append branch must NOT add a
@@ -1617,6 +1703,7 @@ export function reduceEvent(state: SessionState, event: DashboardEvent): Session
             ...(images ? { images } : {}),
             state: "confirmed",
             source,
+            ...(author ? { author } : {}),
             createdAt: event.timestamp,
           },
         ];

@@ -140,8 +140,13 @@ function makeSpoofCtx(principal: TokenPayload | null, requireBrowserAuth: boolea
 }
 
 describe("Build 0 (b) anti-spoof — send_prompt does not adopt a client-supplied author", () => {
-  it("drops a client-supplied `author`/`principal` field; forwards only the reconstructed fields", async () => {
-    const principal = { sub: "op1@example.com", name: "Op One", username: "op1", provider: "github", exp: 0 } as TokenPayload;
+  it("drops a client-supplied `author`/`principal` field; stamps the SERVER-DERIVED author from the bound principal", async () => {
+    // Mint the bound sub as a per-test NONCE so a hardcoded wrong value in the
+    // send path cannot coincidentally match (Build-0 §11.9 sister). The forged
+    // author below is a fixed string — only a genuine derive-from-principal
+    // yields this nonce.
+    const nonceSub = `op-${Math.floor(performance.now() * 1000)}@example.com`;
+    const principal = { sub: nonceSub, name: "Op One", username: "op1", provider: "github", exp: 0 } as TokenPayload;
     const { ctx, forwarded } = makeSpoofCtx(principal, /* multi-op */ true);
 
     // Attacker crafts a send carrying a forged author + principal.
@@ -157,21 +162,24 @@ describe("Build 0 (b) anti-spoof — send_prompt does not adopt a client-supplie
 
     // Exactly one forward to the bridge.
     expect(forwarded).toHaveLength(1);
-    const obj = forwarded[0];
+    const obj = forwarded[0] as any;
 
-    // The forged fields MUST NOT ride through — the handler reconstructs the
-    // forwarded object field-by-field (never `...msg`-spread).
-    expect(obj).not.toHaveProperty("author");
+    // Surface A: the forwarded `author` is the SERVER-DERIVED one (the bound
+    // principal's nonce sub), NEVER the client-forged string. The handler
+    // reconstructs field-by-field (never `...msg`-spread), so the forged
+    // top-level `principal` field never rides through either.
+    expect(obj.author).toEqual({ sub: nonceSub, display: "Op One" });
+    expect(obj.author.sub).not.toBe("president@whitehouse.gov");
     expect(obj).not.toHaveProperty("principal");
 
-    // Only the expected reconstructed fields are present.
+    // Only the expected reconstructed fields are present (now incl. author).
     expect(obj.type).toBe("send_prompt");
     expect(obj.sessionId).toBe("s1");
     expect(obj.text).toBe("hello");
-    expect(Object.keys(obj).sort()).toEqual(["images", "sessionId", "text", "type"].sort());
+    expect(Object.keys(obj).sort()).toEqual(["author", "images", "sessionId", "text", "type"].sort());
   });
 
-  it("single-op OFF: same anti-spoof holds (forged author never forwarded)", async () => {
+  it("single-op OFF: same anti-spoof holds AND no author is stamped (byte-unchanged)", async () => {
     const { ctx, forwarded } = makeSpoofCtx(/* principal */ null, /* multi-op */ false);
     const spoofMsg = {
       type: "send_prompt",
@@ -183,6 +191,7 @@ describe("Build 0 (b) anti-spoof — send_prompt does not adopt a client-supplie
     await handleSendPrompt(spoofMsg, ctx);
 
     expect(forwarded).toHaveLength(1);
+    // Flag OFF → null principal → NO author key at all (byte-unchanged single-op).
     expect(forwarded[0]).not.toHaveProperty("author");
   });
 });

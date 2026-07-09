@@ -38,6 +38,7 @@ import { scanChildProcesses } from "./process-scanner.js";
 import type { BridgeContext } from "./bridge-context.js";
 import { filterHiddenCommands, extractFirstMessage, getCurrentModelString } from "./bridge-context.js";
 import { tryDispatchExtensionCommand } from "./slash-dispatch.js";
+import { wrapForSend } from "./speaker-wrap.js";
 import { sendStateSync as _sendStateSync, replaySessionEntries as _replaySessionEntries, handleSessionChange as _handleSessionChange } from "./session-sync.js";
 import { sendModelUpdateIfChanged as _sendModelUpdateIfChanged, sendSessionNameIfChanged as _sendSessionNameIfChanged, sendGitInfoIfChanged as _sendGitInfoIfChanged, resetReconnectCaches as _resetReconnectCaches } from "./model-tracker.js";
 import { registerFlowEventListeners, FLOW_EVENT_MAP, SUBAGENT_EVENT_MAP } from "./flow-event-wiring.js";
@@ -284,6 +285,16 @@ function initBridge(pi: ExtensionAPI) {
   const nextNonce = (): string => `n-${++nonceCounter}-${Date.now()}`;
   let appendMessageWrapped = false;
   let lastWrappedSm: any = null;
+
+  // SURFACE B — immediate-0-queue author correlation. When a dashboard
+  // `send_prompt` carrying a server-stamped `author` is dispatched on the
+  // IMMEDIATE (agent-idle) path — i.e. NOT enqueued as a follow-up — pi echoes a
+  // turn-initiating user `message_start` that has no queue entry to inherit the
+  // author from. We record the author here and stamp it onto that very next
+  // user `message_start` the bridge forwards, so the committed turn renders its
+  // author. Consumed exactly once (per-session sends are serialized). Absent in
+  // single-operator mode (no author) → never set → byte-unchanged.
+  let pendingImmediateAuthor: import("@blackbelt-technology/pi-dashboard-shared/types.js").MessageAuthor | undefined;
 
   // ---------------------------------------------------------------------
   // Markdown-image inliner state (chat-markdown-local-images-and-math).
@@ -651,6 +662,7 @@ function initBridge(pi: ExtensionAPI) {
           (msg as any).queueNonce,
           (msg as any).text ?? "",
           (msg as any).images,
+          (msg as any).author,
         );
         connection.send({
           type: "event_forward",
@@ -662,6 +674,13 @@ function initBridge(pi: ExtensionAPI) {
           },
         });
         forwardQueueState("dashboard");
+      } else if ((msg as any).type === "send_prompt" && (msg as any).author) {
+        // SURFACE B immediate-0-queue path: a dashboard send that is NOT
+        // enqueued (agent idle) commits as a turn-initiating user message_start
+        // with no queue entry to carry the author. Record the server-stamped
+        // author so the next forwarded user message_start stamps it. Sends are
+        // serialized per session, so this correlates to that exact turn.
+        pendingImmediateAuthor = (msg as any).author;
       }
 
       const response = await commandHandler.handle(msg);
@@ -808,7 +827,7 @@ function initBridge(pi: ExtensionAPI) {
     spawnNew: () => {
       connection.send({ type: "spawn_new_session", sessionId, cwd: process.cwd() });
     },
-    sessionPrompt: async (text) => {
+    sessionPrompt: async (text, author) => {
       // Route slash commands: management events, flow:run, extension dispatch, then fallback.
       // See change: fix-extension-slash-commands-in-dashboard.
       if (text.startsWith("/") && pi.events) {
@@ -839,8 +858,11 @@ function initBridge(pi: ExtensionAPI) {
       // Uses deliverAs:followUp so it queues properly when agent is streaming.
       // expandPromptTemplateFromDisk handles skill commands (/skill:xxx) and
       // prompt templates by reading the file content from disk.
+      // Surface A: this is a TERMINAL send boundary — bake the <speaker> label
+      // in HERE (author from the server-stamped send_prompt), strictly
+      // downstream of all queue logic. Undefined author → unchanged.
       const expanded = expandPromptTemplateFromDisk(text, process.cwd(), pi);
-      (pi.sendUserMessage as any)(expanded, { deliverAs: "followUp" });
+      (pi.sendUserMessage as any)(wrapForSend(expanded, author), { deliverAs: "followUp" });
     },
   });
 
@@ -1017,7 +1039,23 @@ function initBridge(pi: ExtensionAPI) {
           if (isUser) {
             queueNonce = queueTracker.classifyDequeue(extractUserMessageText(messageRef));
           }
-          const enriched = { ...event, nonce, ...(queueNonce ? { queueNonce } : {}) };
+          // SURFACE B: stamp the immediate-0-queue author onto a turn-initiating
+          // user message_start (no queueNonce → no queue entry carries it). The
+          // queued/dequeued path (queueNonce present) already carries the author
+          // via the queue entry on the client, so only the immediate turn needs
+          // this. Consume the pending author on ANY user message_start so a
+          // stale value never leaks onto a later turn.
+          let immediateAuthor: typeof pendingImmediateAuthor;
+          if (isUser) {
+            immediateAuthor = pendingImmediateAuthor;
+            pendingImmediateAuthor = undefined;
+          }
+          const enriched = {
+            ...event,
+            nonce,
+            ...(queueNonce ? { queueNonce } : {}),
+            ...(isUser && !queueNonce && immediateAuthor ? { author: immediateAuthor } : {}),
+          };
           const msg = mapEventToProtocol(sessionId, enriched);
           connection.send(msg);
           // Recompute queue_state after the classify (corroborated by

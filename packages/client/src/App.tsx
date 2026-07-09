@@ -209,6 +209,9 @@ export default function App() {
   // empirical cluster (cell dashboard-pwa-cold-load-fix/v1 deliverable c).
   useSessionsBootstrap({ setSessions, wsStatus: status });
   const [sessionStates, setSessionStates] = useState<Map<string, SessionState>>(new Map());
+  // Surface B: per-session distinct co-driver presence set (multi-operator).
+  // Empty/≤1 participant → no presence-of-two chrome (single-op byte-unchanged).
+  const [presenceMap, setPresenceMap] = useState<Map<string, import("@blackbelt-technology/pi-dashboard-shared/types.js").PresenceParticipant[]>>(new Map());
   // Per-session chat-input drafts. Hydrated once from localStorage on mount,
   // then persisted (debounced) whenever the map changes.
   const [drafts, setDrafts] = useState<Map<string, string>>(() => readAllDrafts());
@@ -369,7 +372,7 @@ export default function App() {
   }, []);
 
   const handleMessage = useMessageHandler(
-    { setSessions, setSessionStates, setSessionCommands, setSessionFlows, setFileResults, setOpenspecMap, setOpenspecGroupsMap, setModelsMap, setRolesMap, setSpawnResult, setSessionOrderMap, setPinnedDirectories, setTerminals, setEditorStatuses, setDiscoveredServers, setSpawnErrors, setResumeErrors },
+    { setSessions, setSessionStates, setSessionCommands, setSessionFlows, setFileResults, setOpenspecMap, setOpenspecGroupsMap, setModelsMap, setRolesMap, setSpawnResult, setSessionOrderMap, setPinnedDirectories, setTerminals, setEditorStatuses, setDiscoveredServers, setSpawnErrors, setResumeErrors, setPresenceMap },
     { send, navigate, clearSpawningCwd, spawningCwdsRef, subscribedRef, pendingTerminalCwdRef, lastCreatedTerminalIdRef, maxSeqMapRef, selectedSessionIdRef, pendingSpawnsRef },
   );
 
@@ -969,6 +972,7 @@ export default function App() {
         showBack
         onBack={isMobile ? () => navigate("/") : goBackDesktop}
         onResume={selectedId ? (mode) => handleResumeSession(selectedId, mode) : undefined}
+        presence={selectedId ? presenceMap.get(selectedId) : undefined}
         mobileActions={isMobile ? {
           editors: selectedCwd ? editorMap.get(selectedCwd) : undefined,
           openspecChanges: selectedCwd ? openspecMap.get(selectedCwd)?.changes : undefined,

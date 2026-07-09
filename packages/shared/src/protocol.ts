@@ -1,7 +1,7 @@
 /**
  * Extension ↔ Server WebSocket protocol messages.
  */
-import type { DashboardEvent, CommandInfo, FlowInfo, SessionSource, ImageContent, FileEntry, TurnUsage, ContextUsage, ModelInfo, ProviderInfo, PiSessionInfo, OpenSpecPhase, RoleInfo, ExtensionUiModule, DecoratorDescriptor } from "./types.js";
+import type { DashboardEvent, CommandInfo, FlowInfo, SessionSource, ImageContent, FileEntry, TurnUsage, ContextUsage, ModelInfo, ProviderInfo, PiSessionInfo, OpenSpecPhase, RoleInfo, ExtensionUiModule, DecoratorDescriptor, MessageAuthor } from "./types.js";
 
 // ── Extension → Server ──────────────────────────────────────────────
 
@@ -131,6 +131,14 @@ export interface MessageEnqueuedEventData {
   images?: ImageContent[];
   /** Where the message was queued from. */
   source: "dashboard" | "tui";
+  /**
+   * SERVER-STAMPED author of this queued turn (multi-operator, Surface A).
+   * Carried so every subscribed client renders + reconciles per-author. Present
+   * only for dashboard-origin sends the server stamped (flag on); absent for
+   * TUI-origin enqueues and single-operator mode. The client THREADS it onto
+   * the queue entry; the `(author,text)` reconciliation is a later slice.
+   */
+  author?: MessageAuthor;
 }
 
 /**
@@ -148,7 +156,7 @@ export interface QueueStateEventData {
    * snapshot entry text-supersedes a dashboard optimistic. See change:
    * dashboard-message-queue.
    */
-  followUp: Array<{ queueNonce?: string; text: string; source: "dashboard" | "tui" }>;
+  followUp: Array<{ queueNonce?: string; text: string; source: "dashboard" | "tui"; author?: MessageAuthor }>;
   /**
    * Count of steering-queue messages. v1 surfaces a count only (the bridge
    * cannot enumerate the steering queue — see resolution note). Usually 0.
@@ -173,6 +181,14 @@ export interface QueueStateEventData {
  *   queued, now dispatched into work). The client transitions exactly that
  *   `queue[]` entry into the committed user bubble. Absent when the user
  *   message was the turn-initiating message (degenerate 0-queue case).
+ *
+ * - A dispatched user `message_start` that carries a `queueNonce` correlates to
+ *   a `queue[]` entry that already holds the server-stamped `author` (threaded
+ *   via `message_enqueued`/`queue_state`), so the client renders per-author
+ *   attribution on the committed turn WITHOUT the author ever riding the raw
+ *   model turn. Wiring the author onto the IMMEDIATE (0-queue) user
+ *   `message_start` — the turn-initiating case with no prior queue entry — is a
+ *   later slice (couples to per-author reconciliation), NOT this build.
  */
 
 export interface CommandsListMessage {
@@ -425,6 +441,16 @@ export interface SendPromptToExtensionMessage {
   text: string;
   images?: ImageContent[];
   /**
+   * SERVER-STAMPED author of this turn (multi-operator, Surface A). Derived
+   * server-side from the connection-bound principal AFTER the authorization
+   * gate — NEVER from the client message body (which carries no author). The
+   * extension uses it to bake the `<speaker>` label into the model-facing turn
+   * at the terminal send boundary (`pi.sendUserMessage`), STRICTLY downstream
+   * of all queue logic (`classifyDequeue` matches RAW `text`). Absent in
+   * single-operator mode (flag off) → no wrap, byte-unchanged. See MessageAuthor.
+   */
+  author?: MessageAuthor;
+  /**
    * Client-minted correlation id for the message-queue lifecycle
    * (dashboard-message-queue/v1). When present AND the agent is streaming AND
    * the message parses as a plain follow-up (passthrough), the bridge reuses
@@ -608,6 +634,14 @@ export interface PromptResponseServerMessage {
   answer?: string;
   cancelled?: boolean;
   source: string;
+  /**
+   * SERVER-STAMPED author of the respondent (multi-operator, Surface A).
+   * Derived server-side from the connection-bound principal at the browser
+   * gateway — NEVER from the client message body (the BA-2 anti-spoof COVER).
+   * Absent single-operator. PromptBus delivery ignores it (round-trip uses
+   * promptId/answer/cancelled/source); it rides for attribution only.
+   */
+  author?: MessageAuthor;
 }
 
 /**

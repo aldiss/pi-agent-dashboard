@@ -481,7 +481,9 @@ describe("CommandHandler", () => {
 
       await handler.handle({ type: "send_prompt", sessionId: "s1", text: "/some-command args" });
 
-      expect(sessionPrompt).toHaveBeenCalledWith("/some-command args");
+      // Surface A: sessionPrompt now receives (text, author). Single-operator
+      // (no author on the message) → author arg is undefined (byte-unchanged).
+      expect(sessionPrompt).toHaveBeenCalledWith("/some-command args", undefined);
       expect(pi.sendUserMessage).not.toHaveBeenCalled();
     });
 

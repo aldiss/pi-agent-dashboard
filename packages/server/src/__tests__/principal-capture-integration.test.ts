@@ -145,8 +145,12 @@ describe("Build 0 v2 — flag-activation surface (config-load → /ws)", () => {
     const forwarded = bridgeInbox.find((m) => m.type === "send_prompt" && m.sessionId === "sBind");
     expect(forwarded).toBeDefined();
     expect(forwarded.text).toBe("hello from op1");
-    // Anti-spoof still holds end-to-end: no author/principal rides through.
-    expect(forwarded).not.toHaveProperty("author");
+    // Surface A end-to-end anti-spoof: the browser sent NO author in the body,
+    // yet the forwarded send carries the SERVER-DERIVED author from the bound
+    // cookie principal (op1) — proving the author is derived server-side from
+    // the connection, never from the message body. A forged top-level
+    // `principal` field never rides through (field-by-field reconstruct).
+    expect(forwarded.author).toEqual({ sub: "op1@example.com", display: "Op One" });
     expect(forwarded).not.toHaveProperty("principal");
 
     // Sibling: a NO-cookie /ws against the same server is refused.

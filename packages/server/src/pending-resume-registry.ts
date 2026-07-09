@@ -3,7 +3,7 @@
  * being resumed. Entries expire after 30 seconds if not consumed.
  */
 
-import type { ImageContent } from "@blackbelt-technology/pi-dashboard-shared/types.js";
+import type { ImageContent, MessageAuthor } from "@blackbelt-technology/pi-dashboard-shared/types.js";
 
 const EXPIRY_MS = 30_000;
 
@@ -12,6 +12,16 @@ export interface PendingResumeEntry {
   images?: ImageContent[];
   oldSessionId: string;
   sessionFile: string;
+  /**
+   * SERVER-STAMPED author captured at RECORD-TIME (multi-operator, Surface A).
+   * The ended-session auto-resume replays this prompt from `event-wiring.ts`
+   * reacting to a cwd-keyed bridge event — where there is NO `ctx.principal`,
+   * so the author CANNOT be re-derived at replay. It MUST be captured here (the
+   * record call has `ctx.principal` in scope) and carried, so the replayed turn
+   * stays attributed. Server-side-only → not client-spoofable by construction.
+   * Absent in single-operator mode → replay omits author, byte-unchanged.
+   */
+  author?: MessageAuthor;
 }
 
 interface InternalEntry extends PendingResumeEntry {

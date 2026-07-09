@@ -25,6 +25,7 @@ import { findRetriedErrorIds, findActiveInteractiveToolResultIds } from "../lib/
 import { RetriedErrorBadge } from "./RetriedErrorBadge.js";
 import { ImageLightbox } from "./ImageLightbox.js";
 import { SkillInvocationCard } from "./SkillInvocationCard.js";
+import { AttributionChip } from "./AttributionChip.js";
 import { ChatSearch } from "./ChatSearch.js";
 import {
   getMessageFilter,
@@ -744,6 +745,11 @@ export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ se
                 {...(msg.entryId ? { "data-entry-id": msg.entryId } : {})}
               >
                 <div className={bubbleMax}>
+                  {msg.author && (
+                    <div className="flex justify-end">
+                      <AttributionChip author={msg.author} />
+                    </div>
+                  )}
                   {msg.images && msg.images.length > 0 && (
                     <div className="mb-2">
                       <ImageAttachments images={msg.images} />
@@ -763,10 +769,11 @@ export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ se
           return (
             <div
               key={msg.id}
-              className="mt-4 mb-4 flex justify-end"
+              className="mt-4 mb-4 flex flex-col items-end"
               {...(msg.turnIndex != null ? { "data-turn": msg.turnIndex } : {})}
               {...(msg.entryId ? { "data-entry-id": msg.entryId } : {})}
             >
+              {msg.author && <AttributionChip author={msg.author} />}
               <div className={`editorial-userbubble bg-blue-500/10 border border-blue-500/20 border-l-2 border-l-blue-400 rounded-xl shadow-md px-4 py-2 ${bubbleMax}`}>
                 {msg.images && msg.images.length > 0 && (
                   <ImageAttachments images={msg.images} />

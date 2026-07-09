@@ -43,7 +43,7 @@ import type {
   MessageEnqueuedEventData,
   QueueStateEventData,
 } from "@blackbelt-technology/pi-dashboard-shared/protocol.js";
-import type { ImageContent } from "@blackbelt-technology/pi-dashboard-shared/types.js";
+import type { ImageContent, MessageAuthor } from "@blackbelt-technology/pi-dashboard-shared/types.js";
 
 /** One entry in the bridge's reconstructed follow-up FIFO. */
 export interface QueueEntry {
@@ -51,6 +51,14 @@ export interface QueueEntry {
   text: string;
   images?: ImageContent[];
   source: "dashboard" | "tui";
+  /**
+   * SERVER-STAMPED author of this queued turn (multi-operator, Surface A).
+   * Carried PARALLEL to `text` so the queue state is per-author. NEVER folded
+   * into `text` — `classifyDequeue` matches RAW `text` by exact-equality and
+   * must stay author-blind (Contract-1). Present only for server-stamped
+   * dashboard sends (flag on); absent for TUI-origin + single-operator.
+   */
+  author?: MessageAuthor;
 }
 
 export class QueueTracker {
@@ -82,14 +90,16 @@ export class QueueTracker {
     queueNonce: string | undefined,
     text: string,
     images?: ImageContent[],
+    author?: MessageAuthor,
   ): MessageEnqueuedEventData {
     const nonce = queueNonce ?? this.mintNonce();
-    this.followUp.push({ queueNonce: nonce, text, images, source: "dashboard" });
+    this.followUp.push({ queueNonce: nonce, text, images, source: "dashboard", ...(author ? { author } : {}) });
     return {
       queueNonce: nonce,
       text,
       ...(images && images.length > 0 ? { images } : {}),
       source: "dashboard",
+      ...(author ? { author } : {}),
     };
   }
 
@@ -187,7 +197,9 @@ export class QueueTracker {
     return {
       // Carry each entry's own origin (AMEND #6 / F5) so the client reconciles
       // origin-aware — a "tui" entry never supersedes a dashboard optimistic.
-      followUp: this.followUp.map((e) => ({ queueNonce: e.queueNonce, text: e.text, source: e.source })),
+      // Also carry the server-stamped `author` (Surface A) so the snapshot is
+      // per-author; `text` stays RAW (author never folds into it).
+      followUp: this.followUp.map((e) => ({ queueNonce: e.queueNonce, text: e.text, source: e.source, ...(e.author ? { author: e.author } : {}) })),
       steeringCount: 0,
       pendingMessageCount: this.followUp.length,
       source,
