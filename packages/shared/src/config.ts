@@ -61,6 +61,14 @@ export interface AuthProviderConfig {
 export interface AuthConfig {
   secret: string;
   providers: Record<string, AuthProviderConfig>;
+  /**
+   * Public base URL when the dashboard is fronted by a fixed-hostname reverse
+   * proxy / tunnel (e.g. Cloudflare Tunnel → https://dash.example.com). Used as
+   * the OAuth redirect_uri base so the provider callback matches the registered
+   * public callback; takes precedence over the dynamic zrok tunnel URL. Unset →
+   * redirect falls back to the zrok tunnel URL, else http://localhost:<port>.
+   */
+  publicUrl?: string;
   allowedUsers?: string[];
   bypassUrls?: string[];
   bypassHosts?: string[];
@@ -436,6 +444,7 @@ function parseAuthConfig(raw: any): AuthConfig | undefined {
   return {
     secret: raw.secret ?? "",
     providers: validProviders,
+    ...(typeof raw.publicUrl === "string" && raw.publicUrl.trim() ? { publicUrl: raw.publicUrl.trim() } : {}),
     ...(Array.isArray(raw.allowedUsers) ? { allowedUsers: raw.allowedUsers } : Array.isArray(raw.allowedEmails) ? { allowedUsers: raw.allowedEmails } : {}),
     bypassUrls: Array.isArray(raw.bypassUrls) ? raw.bypassUrls.filter((u: unknown) => typeof u === "string") : [],
     bypassHosts: Array.isArray(raw.bypassHosts) ? raw.bypassHosts.filter((u: unknown) => typeof u === "string") : [],

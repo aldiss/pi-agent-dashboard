@@ -833,6 +833,16 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
     logger: false,
     keepAliveTimeout: 30_000,
     connectionTimeout: 10_000,
+    // Trust X-Forwarded-* ONLY from a loopback reverse proxy (Cloudflare Tunnel
+    // / cloudflared connects to 127.0.0.1:<port>). Load-bearing for auth: the
+    // onRequest hook bypasses auth for isLoopback(request.ip), so without this
+    // the cloudflared loopback connection would make ALL tunnel traffic look
+    // loopback → auth bypassed. With 'loopback', request.ip resolves to the
+    // real client via X-Forwarded-For (→ auth enforced for tunnel traffic) and
+    // request.protocol reflects X-Forwarded-Proto (→ Secure cookie). Only
+    // loopback peers' forwarded headers are trusted, so a direct LAN client to
+    // :<port> cannot spoof X-Forwarded-For to fake a loopback/bypassed IP.
+    trustProxy: "loopback",
   });
 
   // Compression: gzip/deflate for HTTP responses. Critical for large client

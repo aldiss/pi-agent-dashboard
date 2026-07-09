@@ -229,8 +229,20 @@ export function isUserAllowed(email: string, username: string, allowedUsers?: st
 
 // ─── Redirect URI Builder ───────────────────────────────────────────────────
 
+// Public-URL override for the OAuth redirect_uri. When the dashboard is fronted
+// by a fixed-hostname reverse proxy / tunnel (e.g. Cloudflare Tunnel →
+// https://dash.example.com), the provider callback must be that public https
+// URL — not localhost or a rotating zrok share. Set from auth.publicUrl at
+// plugin load; takes precedence over the dynamic zrok tunnel URL.
+let publicUrlOverride: string | undefined;
+
+export function setPublicUrlOverride(url: string | undefined): void {
+  const trimmed = typeof url === "string" ? url.trim().replace(/\/+$/, "") : "";
+  publicUrlOverride = trimmed.length > 0 ? trimmed : undefined;
+}
+
 export function buildRedirectUri(provider: string, port: number): string {
-  const base = getTunnelUrl() ?? `http://localhost:${port}`;
+  const base = publicUrlOverride ?? getTunnelUrl() ?? `http://localhost:${port}`;
   return `${base}/auth/callback/${provider}`;
 }
 

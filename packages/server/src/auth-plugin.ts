@@ -16,6 +16,7 @@ import {
   parseAuthCookie,
   isUserAllowed,
   buildRedirectUri,
+  setPublicUrlOverride,
   buildAuthorizeUrl,
   exchangeCode,
   fetchUserInfo,
@@ -147,6 +148,9 @@ export async function registerAuthPlugin(
 ): Promise<void> {
   const { authConfig, port, resolvedTrustedNetworks } = options;
 
+  // Public-URL override for OAuth redirect_uri (fixed-hostname tunnel front).
+  setPublicUrlOverride(authConfig.publicUrl);
+
   // Mutable auth state — can be rebuilt at runtime via reloadAuth()
   const authState = {
     secret: ensureAuthSecret(authConfig),
@@ -191,6 +195,7 @@ export async function registerAuthPlugin(
 
   // Expose reload function on the fastify instance for runtime config updates
   (fastify as any)._reloadAuth = async (newConfig: AuthConfig) => {
+    setPublicUrlOverride(newConfig.publicUrl);
     authState.secret = ensureAuthSecret(newConfig);
     authState.providerRegistry = await buildProviderRegistry(newConfig.providers);
     authState.allowedUsers = newConfig.allowedUsers;
