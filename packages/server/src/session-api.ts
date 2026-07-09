@@ -105,6 +105,13 @@ export interface SessionApiDeps {
    * REST routes. Unset/empty → operator-only enforcement is INERT (mandate 4c).
    */
   operatorUsers?: string[];
+  /**
+   * Stream-2 D: the shared bounded-cell (N=2) admission tracker — the SAME
+   * instance the WS gate reads (threaded from `server.ts`). Passed into both REST
+   * gate factories so a session is bounded to 2 distinct humans from the ONE
+   * chokepoint. Unset → admission SKIPPED (byte-unchanged).
+   */
+  operatorSet?: import("./operator-set-tracker.js").OperatorSetTracker;
 }
 
 type IdParams = { Params: { id: string } };
@@ -192,6 +199,7 @@ export function registerSessionApi(fastify: FastifyInstance, deps: SessionApiDep
   const gate = makeRestSessionGate({
     requireBrowserAuth: deps.requireBrowserAuth === true,
     ...(deps.operatorUsers ? { operatorUsers: deps.operatorUsers } : {}),
+    ...(deps.operatorSet ? { operatorSet: deps.operatorSet } : {}),
   });
 
   // PUSHBACK-3 FIX-P3-1: the `/prompt` route gets a command-classifying gate.
@@ -202,6 +210,7 @@ export function registerSessionApi(fastify: FastifyInstance, deps: SessionApiDep
   const promptGate = makeRestPromptGate({
     requireBrowserAuth: deps.requireBrowserAuth === true,
     ...(deps.operatorUsers ? { operatorUsers: deps.operatorUsers } : {}),
+    ...(deps.operatorSet ? { operatorSet: deps.operatorSet } : {}),
   });
 
   // Post-respawn VERIFY gate (build-gate item 2). Production default wires the

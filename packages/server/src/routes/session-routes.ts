@@ -39,6 +39,13 @@ export function registerSessionRoutes(
      */
     requireBrowserAuth?: boolean;
     operatorUsers?: string[];
+    /**
+     * Stream-2 D: the shared bounded-cell (N=2) tracker. Threaded for wiring
+     * uniformity with the other REST gate; the retire route carries its
+     * sessionId in the BODY (no `params.id`) so admission is naturally skipped
+     * there — retire stays operator-only regardless.
+     */
+    operatorSet?: import("../operator-set-tracker.js").OperatorSetTracker;
   },
 ) {
   const { sessionManager, eventStore, networkGuard, hygieneProbes, broadcastSessionUpdated } = deps;
@@ -52,6 +59,7 @@ export function registerSessionRoutes(
   const gate = makeRestSessionGate({
     requireBrowserAuth: deps.requireBrowserAuth === true,
     ...(deps.operatorUsers ? { operatorUsers: deps.operatorUsers } : {}),
+    ...(deps.operatorSet ? { operatorSet: deps.operatorSet } : {}),
   });
 
   // GET /api/sessions — read-path hygiene (F1 reap + demote, F2 name-canon,

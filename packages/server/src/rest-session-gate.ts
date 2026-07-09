@@ -21,11 +21,31 @@ import {
   type SessionWriteAction,
 } from "./session-authz.js";
 import { classifySendPromptAction } from "./send-prompt-authz.js";
+import type { OperatorSetTracker } from "./operator-set-tracker.js";
 
 /** Frozen-at-startup gate policy, threaded from `requireBrowserAuthAtStartup`. */
 export interface RestGatePolicy {
   requireBrowserAuth: boolean;
   operatorUsers?: string[];
+  /**
+   * Stream-2 D: the shared bounded-cell (N=2) admission tracker — the SAME
+   * instance the WS arm reads, so a session is bounded to 2 distinct humans from
+   * the ONE chokepoint (a 3rd distinct human cannot bypass a connection-only cap
+   * by driving via REST). Unset → admission SKIPPED (byte-unchanged).
+   */
+  operatorSet?: OperatorSetTracker;
+}
+
+/**
+ * Extract the session id a REST session-write targets, from `request.params.id`
+ * (every session-write route is `/api/session(s)/:id/...`). Returns undefined
+ * when absent (a body-only route) so admission degrades to skipped rather than
+ * keying a cell on "". Never the body (anti-spoof — same discipline as the
+ * actor).
+ */
+function restSessionId(request: FastifyRequest): string | undefined {
+  const id = (request.params as { id?: unknown } | undefined)?.id;
+  return typeof id === "string" && id.length > 0 ? id : undefined;
 }
 
 /**
@@ -69,16 +89,20 @@ export type SessionWriteGatePreHandler = ((
 export function makeRestSessionGate(policy: RestGatePolicy) {
   const requireBrowserAuth = policy.requireBrowserAuth === true;
   const operatorUsers = policy.operatorUsers;
+  const operatorSet = policy.operatorSet;
   return function gate(action: SessionWriteAction): SessionWriteGatePreHandler {
     const preHandler = async function sessionWriteGate(
       request: FastifyRequest,
       reply: FastifyReply,
     ): Promise<void> {
+      const sessionId = restSessionId(request);
       const decision = authorizeSessionAction({
         actor: buildActorFromRequest(request),
         action,
         requireBrowserAuth,
         ...(operatorUsers ? { operatorUsers } : {}),
+        ...(sessionId ? { sessionId } : {}),
+        ...(operatorSet ? { operatorSet } : {}),
       });
       if (!decision.allowed) {
         const code =
@@ -120,17 +144,21 @@ export function makeRestSessionGate(policy: RestGatePolicy) {
 export function makeRestPromptGate(policy: RestGatePolicy): SessionWriteGatePreHandler {
   const requireBrowserAuth = policy.requireBrowserAuth === true;
   const operatorUsers = policy.operatorUsers;
+  const operatorSet = policy.operatorSet;
   const preHandler = async function sessionPromptGate(
     request: FastifyRequest,
     reply: FastifyReply,
   ): Promise<void> {
     const text = (request.body as { text?: unknown } | undefined)?.text;
     const action = classifySendPromptAction(text);
+    const sessionId = restSessionId(request);
     const decision = authorizeSessionAction({
       actor: buildActorFromRequest(request),
       action,
       requireBrowserAuth,
       ...(operatorUsers ? { operatorUsers } : {}),
+      ...(sessionId ? { sessionId } : {}),
+      ...(operatorSet ? { operatorSet } : {}),
     });
     if (!decision.allowed) {
       const code =

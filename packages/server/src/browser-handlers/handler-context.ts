@@ -19,6 +19,7 @@ import type { PendingAttachRegistry } from "../pending-attach-registry.js";
 import type { PendingResumeIntentRegistry } from "../pending-resume-intent-registry.js";
 import type { PendingClientCorrelations } from "../pending-client-correlations.js";
 import type { TokenPayload } from "../auth.js";
+import type { OperatorSetTracker } from "../operator-set-tracker.js";
 
 export interface BrowserHandlerContext {
   ws: WebSocket;
@@ -51,6 +52,15 @@ export interface BrowserHandlerContext {
    * admitted); flag OFF → the gate no-ops entirely.
    */
   operatorUsers?: string[];
+  /**
+   * Stream-2 D: the shared bounded-cell (N=2) admission tracker. The SAME
+   * instance the REST arm reads, so a session is bounded to 2 distinct humans
+   * from the ONE `authorizeSessionAction` chokepoint (not per-arm). Threaded
+   * onto every socket's context; the WS gate passes it (+ the message's
+   * `sessionId`) into the chokepoint for `human` actors. Unset → admission
+   * SKIPPED (flag-off / non-multi-operator servers are byte-unchanged).
+   */
+  operatorSet?: OperatorSetTracker;
   pendingForkRegistry?: PendingForkRegistry;
   sessionOrderManager?: SessionOrderManager;
   preferencesStore?: PreferencesStore;

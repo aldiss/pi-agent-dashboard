@@ -56,6 +56,8 @@ import { createWebPushTransport } from "./push/push-transports/web-push.js";
 import { loadOrGenerateVapidKeys } from "./push/push-vapid.js";
 import type { PushPrefs } from "./push/push-types.js";
 import { registerSessionApi } from "./session-api.js";
+import { createOperatorSetTracker } from "./operator-set-tracker.js";
+import { configureAgentPresence, resetAgentPresence } from "./agent-presence.js";
 import { registerSessionRoutes } from "./routes/session-routes.js";
 import { registerGitRoutes } from "./routes/git-routes.js";
 import { registerFileRoutes } from "./routes/file-routes.js";
@@ -307,6 +309,33 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
   // via `/api/config` writes to disk + returns `restartRequired:true`, and
   // only the next server start observes it. See gate-pushback-1 MAJOR (desync).
   const requireBrowserAuthAtStartup = config.authConfig?.requireBrowserAuth === true;
+
+  // Stream-2 D: the ONE bounded-cell (N=2) admission tracker. A SINGLE instance
+  // shared by BOTH the WS gate (via the browser gateway) and the REST gate
+  // policies below, so a session is bounded to 2 distinct humans from the ONE
+  // `authorizeSessionAction` chokepoint — a 3rd distinct human cannot bypass a
+  // connection-only cap by driving via REST. Inert when the flag is off (the
+  // gate returns allowed before consulting it) → byte-unchanged single-operator.
+  const operatorSetTracker = createOperatorSetTracker();
+
+  // Stream-2 D (agent-as-presence): wire the live-agent signal into the
+  // greenfield `getAgentPresence` seam ONLY when the multi-operator flag is ON,
+  // so a flag-off server stays the B-era NO-OP (presence humans-only /
+  // byte-unchanged). The source is narrow — the session's liveness `status` +
+  // display `name` off the SessionManager (the registry of connected pi
+  // instances); `status !== "ended"` is the authoritative live-agent bit.
+  if (requireBrowserAuthAtStartup) {
+    configureAgentPresence((sessionId) => {
+      const s = sessionManager.get(sessionId);
+      return s ? { status: s.status, ...(s.name ? { name: s.name } : {}) } : null;
+    });
+  } else {
+    // Stream-2 D (fix-1 MINOR-1): `agentSource` is a module-global. Clear any
+    // stale source from a prior same-process flag-ON server so a flag-OFF server
+    // is the B-era NO-OP (presence humans-only, byte-unchanged) — closes the
+    // test-isolation + latent flag-off-violation hazard on flag-on→off sequences.
+    resetAgentPresence();
+  }
 
   // Ensure bridge extension is registered in pi's global settings
   // (needed for bundled installs where pi can't discover it from package.json)
@@ -648,7 +677,7 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
     },
   });
 
-  const browserGateway = createBrowserGateway(sessionManager, eventStore, piGateway, undefined, pendingForkRegistry, sessionOrderManager, preferencesStore, directoryService, terminalManager, pendingDashboardSpawns, config.maxWsBufferBytes, pendingAttachRegistry, pendingResumeIntents, pendingClientCorrelations, pushPrefsMap, () => config.push?.defaults, requireBrowserAuthAtStartup, config.authConfig?.operatorUsers);
+  const browserGateway = createBrowserGateway(sessionManager, eventStore, piGateway, undefined, pendingForkRegistry, sessionOrderManager, preferencesStore, directoryService, terminalManager, pendingDashboardSpawns, config.maxWsBufferBytes, pendingAttachRegistry, pendingResumeIntents, pendingClientCorrelations, pushPrefsMap, () => config.push?.defaults, requireBrowserAuthAtStartup, config.authConfig?.operatorUsers, operatorSetTracker);
 
   // Driver self-report poller (dl-2620): re-reads the driver-state sidecars
   // (written by the `driver-report` CLI) and pushes per-driver progress-% +
@@ -938,6 +967,8 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
     requireBrowserAuth: requireBrowserAuthAtStartup,
     ...(config.authConfig?.operatorUsers ? { operatorUsers: config.authConfig.operatorUsers } : {}),
     ...(config.resurrectVerify ? { resurrectVerify: config.resurrectVerify } : {}),
+    // Stream-2 D: the ONE bounded-cell tracker shared with the WS gate.
+    operatorSet: operatorSetTracker,
   });
 
   // Register route modules
@@ -973,6 +1004,8 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
     // frozen gate. Flag OFF → no-op.
     requireBrowserAuth: requireBrowserAuthAtStartup,
     ...(config.authConfig?.operatorUsers ? { operatorUsers: config.authConfig.operatorUsers } : {}),
+    // Stream-2 D: the ONE bounded-cell tracker shared with the WS + session-api gates.
+    operatorSet: operatorSetTracker,
   });
   registerGitRoutes(fastify, { networkGuard });
   registerFileRoutes(fastify, { sessionManager, preferencesStore, networkGuard });

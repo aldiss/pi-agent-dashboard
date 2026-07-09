@@ -30,6 +30,7 @@
  */
 import type { TokenPayload } from "./auth.js";
 import { hasUsableSub } from "./auth.js";
+import type { OperatorSetTracker } from "./operator-set-tracker.js";
 
 /**
  * The authenticated actor behind a session-write, discriminated by kind.
@@ -252,6 +253,21 @@ export function actionClass(action: string): SessionWriteActionClass | undefined
 }
 
 /**
+ * Session-CREATING actions — they bring a NEW session into existence rather than
+ * acting on an existing one, so they legitimately carry NO `sessionId` (there is
+ * nothing to bound yet). fix-2 MINOR-3 exemption: the fail-closed-on-absent-
+ * sessionId rule targets a session-SCOPED action whose id went missing (an
+ * inconsistency / potential bypass); a session-creating action with no id is
+ * NOT that — it is the normal shape. So admission is SKIPPED for these (the
+ * per-action operator-only rule still refuses a non-operator). Today only
+ * `spawn`: `POST /api/session/spawn` has no `:id`, creates a fresh session, and
+ * is operator-only — op-2 must get `operator-only`, and op-1 (operator) must be
+ * allowed. (`resume` is session-scoped on REST — `/api/session/:id/resume` —
+ * so it is NOT exempt.)
+ */
+export const SESSION_CREATING_ACTIONS = new Set<string>(["spawn"]);
+
+/**
  * True when a verified principal matches the configured operator identity
  * (mandate 4c). Matches by `sub` (email) OR `username`, case-insensitive. When
  * `operatorUsers` is unset/empty, NO principal is an operator → operator-only
@@ -292,6 +308,24 @@ export interface AuthorizeSessionActionInput {
    * unset/empty, operator-only enforcement is INERT (see {@link isOperator}).
    */
   operatorUsers?: string[];
+  /**
+   * The session the action targets (Stream-2 D — N=2 admission). Required
+   * together with {@link operatorSet} for the bounded-cell admission check to
+   * run; when either is absent, admission is SKIPPED (the gate degrades to the
+   * Build-1b identity + operator-only behavior — byte-unchanged for every
+   * existing caller that does not thread the cell). The two live gate arms (WS +
+   * REST) BOTH thread these so a session is bounded to 2 distinct humans from the
+   * ONE chokepoint, not per-arm.
+   */
+  sessionId?: string;
+  /**
+   * The shared bounded-cell tracker (Stream-2 D). The SAME instance is threaded
+   * by BOTH the WS and REST arms so admission is derived from one source (a 3rd
+   * distinct human cannot bypass a connection-only cap via REST). Consulted ONLY
+   * for `human` actors (a `service` actor is infra, not one of the 2 humans, and
+   * is never admission-counted). Absent → admission SKIPPED (see `sessionId`).
+   */
+  operatorSet?: OperatorSetTracker;
 }
 
 export interface AuthorizeSessionActionResult {
@@ -300,6 +334,7 @@ export interface AuthorizeSessionActionResult {
   reason?:
     | "no-principal"
     | "invalid-principal"
+    | "session-full"
     | "operator-only"
     | "unclassified-action"
     | "ui-management-forged";
@@ -316,13 +351,24 @@ export interface AuthorizeSessionActionResult {
  *   2. A `human` principal must carry a usable `sub` (H-M2) — else
  *      `invalid-principal` (a secret-signed but `sub`-less token has no exact
  *      identity to authorize / attribute).
- *   3. An operator-only action requires `isOperator(principal, operatorUsers)`
+ *   3. N=2 ADMISSION (Stream-2 D, Contract-2 / Joan pin 2 — runs BEFORE the
+ *      per-action check): when `operatorSet` + `sessionId` are threaded, a
+ *      `human` `sub` is admitted to the session's bounded cell iff it is already
+ *      a member OR a slot is free (`< 2` distinct subs). A 3rd DISTINCT human is
+ *      refused `session-full` at ADMISSION — before any per-action verdict, so a
+ *      non-member never learns a per-action outcome. Two tabs of the SAME `sub`
+ *      are ONE operator (Set dedup). A `service` actor is NOT admission-counted
+ *      (infra, not one of the 2 humans) — it bypasses admission but still faces
+ *      the per-action operator-only rule (det-spawn-inherit unbroken). Absent
+ *      cell/sessionId → admission SKIPPED (byte-unchanged for non-threading
+ *      callers).
+ *   4. An operator-only action requires `isOperator(principal, operatorUsers)`
  *      — a non-operator human (op-2) or a `service` actor is refused with
  *      `operator-only`. When `operatorUsers` is unset/empty this rule is INERT
  *      (no principal is an operator → the check no-ops for the co-drive class,
  *      but an operator-only action then has NO operator to satisfy it, so it is
  *      refused for humans only when an operator IS configured — see below).
- *   4. An unknown action token (not in the enumeration) is refused
+ *   5. An unknown action token (not in the enumeration) is refused
  *      `unclassified-action` — fail-CLOSED so a route added without an
  *      enumeration entry cannot silently pass.
  *
@@ -340,7 +386,7 @@ export interface AuthorizeSessionActionResult {
 export function authorizeSessionAction(
   input: AuthorizeSessionActionInput,
 ): AuthorizeSessionActionResult {
-  const { actor, action, requireBrowserAuth, operatorUsers } = input;
+  const { actor, action, requireBrowserAuth, operatorUsers, sessionId, operatorSet } = input;
 
   if (!requireBrowserAuth) {
     // Single-operator: no-op gate, byte-unchanged behavior.
@@ -355,6 +401,60 @@ export function authorizeSessionAction(
     // H-M2: a human actor must carry a real `sub`.
     if (!hasUsableSub(actor.principal)) {
       return { allowed: false, reason: "invalid-principal" };
+    }
+  }
+
+  // ── N=2 ADMISSION (Contract-2 / Joan pin 2: admission-FIRST) ────────────
+  // Bound the session to 2 DISTINCT humans BEFORE any per-action check. A 3rd
+  // distinct human is refused here — a non-member never reaches (nor learns the
+  // verdict of) the per-action gate below. Only `human` actors with a real
+  // `sub` (guaranteed by the identity checks above) are admission-counted; a
+  // `service` actor is infra (not one of the 2 humans) and bypasses admission
+  // — it remains bound by the per-action operator-only rule (det-spawn-inherit
+  // unbroken).
+  //
+  // check-then-commit (fix-2 MAJOR-2): `canAdmit` is NON-mutating — it decides
+  // admissibility here WITHOUT reserving a slot, so a subsequently-refused
+  // action (unclassified / operator-only, below) commits NOTHING (no stranded
+  // slot → no REST op-2 lockout). The commit (the ONLY admission mutation)
+  // happens on the allowed path only, just before the final return.
+  //
+  // Admission engages when `operatorSet` is threaded (the caller opts in). With
+  // NO `operatorSet` threaded → fully opt-out, SKIPPED (byte-unchanged for the
+  // send-seam's in-handler gate + the unit tests). fix-2 MINOR-3: when the cell
+  // IS threaded for a `human` but `sessionId` is ABSENT, fail-CLOSED (refuse) for
+  // a session-SCOPED action — a caller that threads the cell is opting into
+  // admission, so a missing sessionId is an inconsistency. EXCEPT a session-
+  // CREATING action (`spawn`, SESSION_CREATING_ACTIONS): it has no sessionId by
+  // nature (it makes a NEW session), so it is exempt — admission is skipped and
+  // the per-action operator-only rule still applies (Bastion-gated, fix-2).
+  let needsCommit = false;
+  // The human `sub` to commit on the allowed path, captured INSIDE the
+  // `actor.kind === "human"` narrowing so the commit below needs no re-narrow
+  // (and never touches a `service` actor's shape). Empty when admission is not
+  // engaged / the actor is not an admission-counted human.
+  let commitSub = "";
+  if (actor.kind === "human" && operatorSet) {
+    if (!sessionId) {
+      // MINOR-3: admission engaged but no session to bound. A session-SCOPED
+      // action whose sessionId went missing is an inconsistency → fail-closed.
+      // A session-CREATING action (`spawn`) legitimately has no sessionId (it
+      // makes a NEW session) → NOT an inconsistency → SKIP admission and fall
+      // through to the per-action operator-only rule (op-2 refused operator-only,
+      // op-1 operator allowed). See SESSION_CREATING_ACTIONS.
+      if (!SESSION_CREATING_ACTIONS.has(action)) {
+        return { allowed: false, reason: "session-full" };
+      }
+    } else {
+      const verdict = operatorSet.canAdmit(sessionId, actor.principal!.sub);
+      if (!verdict.admissible) {
+        return { allowed: false, reason: "session-full" };
+      }
+      // A NEW distinct sub that passed the check — commit it ONLY if the action
+      // is ultimately allowed (below). `member` is used ONLY here (commit-vs-
+      // skip), NEVER as an authorization ALLOW input (membership ≠ permission).
+      needsCommit = !verdict.member;
+      commitSub = actor.principal!.sub;
     }
   }
 
@@ -377,6 +477,14 @@ export function authorizeSessionAction(
     if (operatorConfigured && !isOperator(actor.principal, operatorUsers)) {
       return { allowed: false, reason: "operator-only" };
     }
+  }
+
+  // ── Commit the admission slot (allowed path ONLY — check-then-commit) ────
+  // Every refusal above returned BEFORE here, so a refused action strands no
+  // slot. This is the ONLY place the cell is mutated for admission. `commitSub`
+  // is non-empty only when a human passed the non-mutating `canAdmit` above.
+  if (needsCommit && operatorSet && sessionId) {
+    operatorSet.commit(sessionId, commitSub);
   }
 
   // co-drive / service-allowed, or operator-only satisfied → allowed.

@@ -144,6 +144,13 @@ export function authorizeWsMessage(
         return { passThrough: false, allowed: false, reason: "ui-management-forged" };
       }
       if (disposition === "read") {
+        // Stream-2 D (fix-1 MINOR-2): a validated `ui_management` READ
+        // (`action:"list"` on an advertised dataEvent) passes through WITHOUT
+        // admission by design. N=2 bounds the co-drive WRITE surface (send_prompt
+        // + gated writes), NOT reads: a read mutates nothing, and a FORGED
+        // payload is already fail-closed above. A non-member 3rd human's READ is
+        // therefore intentionally not admission-bound; the corresponding MUTATION
+        // (below) DOES thread `operatorSet`+`sessionId` through the chokepoint.
         return { passThrough: true, allowed: true };
       }
       // mutation → operator-only through the ONE chokepoint.
@@ -152,6 +159,8 @@ export function authorizeWsMessage(
         action: "ui_management",
         requireBrowserAuth: ctx.requireBrowserAuth,
         ...(ctx.operatorUsers ? { operatorUsers: ctx.operatorUsers } : {}),
+        ...(sessionId ? { sessionId } : {}),
+        ...(ctx.operatorSet ? { operatorSet: ctx.operatorSet } : {}),
       });
       return { ...decision, action: "ui_management", passThrough: false };
     }
@@ -173,6 +182,10 @@ export function authorizeWsMessage(
     action,
     requireBrowserAuth: ctx.requireBrowserAuth,
     ...(ctx.operatorUsers ? { operatorUsers: ctx.operatorUsers } : {}),
+    ...(((msg as { sessionId?: string }).sessionId)
+      ? { sessionId: (msg as { sessionId?: string }).sessionId }
+      : {}),
+    ...(ctx.operatorSet ? { operatorSet: ctx.operatorSet } : {}),
   });
   return { ...decision, action, passThrough: false };
 }

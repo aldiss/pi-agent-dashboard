@@ -143,6 +143,14 @@ export function createBrowserGateway(
    * enforcement is INERT; flag OFF → the gate no-ops entirely.
    */
   operatorUsers?: string[],
+  /**
+   * Stream-2 D: the shared bounded-cell (N=2) admission tracker. The SAME
+   * instance passed to the REST gate policy in `server.ts`, so WS + REST bound a
+   * session to 2 distinct humans from ONE source. Threaded onto every socket's
+   * handler context (the WS gate consults it) and freed here on last-socket-leave
+   * + session removal. Unset → admission SKIPPED (byte-unchanged).
+   */
+  operatorSet?: import("./operator-set-tracker.js").OperatorSetTracker,
 ): BrowserGateway {
   // perMessageDeflate enabled: the sessions_snapshot frame is ~345 KB uncompressed
   // at ~380 sessions and re-ships on every (re)connect; gzip of the identical payload
@@ -423,6 +431,7 @@ export function createBrowserGateway(
           principal: principals.get(ws) ?? null,
           requireBrowserAuth,
           ...(operatorUsers ? { operatorUsers } : {}),
+          ...(operatorSet ? { operatorSet } : {}),
           sendTo, broadcast, getSubscribers, replayPendingUiRequests,
           trackUiRequest: trackUiRequest,
           markReplaying(targetWs, sessionId) {
@@ -735,6 +744,13 @@ export function createBrowserGateway(
           case "session_unview": {
             viewedSessionTracker.unview(msg.sessionId, ws);
             // SURFACE B: drop this socket from presence; emit on real change.
+            // Stream-2 D (fix-1 MAJOR-1): un-VIEWing does NOT free the operator
+            // slot — admission is WRITE-based, not view-based. A human who
+            // navigates away but keeps a socket open can still co-drive (another
+            // tab / REST), so releasing on unview would let a 3rd human bump a
+            // still-connected co-driver. The slot frees on LAST-socket-close
+            // (see `ws.on("close")`), not on view-change. Presence (view-based
+            // by design) still updates here.
             if (sessionPresenceTracker.leave(msg.sessionId, ws)) {
               emitPresenceUpdate(msg.sessionId);
             }
@@ -766,6 +782,9 @@ export function createBrowserGateway(
       console.error(`[browser-gw] browser client disconnected (remaining: ${subscriptions.size - 1})`);
       subscriptions.delete(ws);
       replayingSessions.delete(ws);
+      // Stream-2 D: capture this socket's `sub` BEFORE dropping the principal, so
+      // the operator-cell release below (keyed by `sub`) can free the slot.
+      const closingSub = principals.get(ws)?.sub;
       // Build 0: drop the bound principal so a closed socket holds no identity.
       principals.delete(ws);
       // Drop this ws from every viewed-session entry so disconnected browsers
@@ -776,6 +795,27 @@ export function createBrowserGateway(
       // distinct-human set changed (this human's LAST tab just closed).
       for (const sessionId of sessionPresenceTracker.removeSocket(ws)) {
         emitPresenceUpdate(sessionId);
+      }
+      // Stream-2 D (fix-1 MAJOR-1): free the operator-cell slot on LAST-socket
+      // close, INDEPENDENT of the presence-view path. A human admitted by a WRITE
+      // (send_prompt / abort) without ever `session_view`-ing is invisible to the
+      // presence tracker, so releasing off `removeSocket` alone leaks the slot and
+      // a departed co-driver permanently locks out a legitimate 2nd operator.
+      // Guard on last-socket (scan the remaining principals for another live tab
+      // of the SAME `sub`) so one of two tabs closing does NOT free the slot; then
+      // release from EVERY session this `sub` is admitted to. The pure-REST-only
+      // admit (no socket ever) has no close event → still covered by the
+      // `broadcastSessionRemoved`→`clearSession` leak-guard (documented residual).
+      if (operatorSet && closingSub) {
+        let hasOtherSocket = false;
+        for (const p of principals.values()) {
+          if (p?.sub === closingSub) { hasOtherSocket = true; break; }
+        }
+        if (!hasOtherSocket) {
+          for (const sessionId of operatorSet.sessionsAdmitted(closingSub)) {
+            operatorSet.release(sessionId, closingSub);
+          }
+        }
       }
     });
   });
@@ -823,6 +863,10 @@ export function createBrowserGateway(
     },
 
     broadcastSessionRemoved(sessionId: string) {
+      // Stream-2 D: leak guard — drop the whole bounded cell on session removal
+      // so a REST-only admit (no persistent socket, never freed by socket-leave)
+      // cannot permanently hold a slot on an ended session.
+      operatorSet?.clearSession(sessionId);
       broadcast({ type: "session_removed", sessionId });
     },
 

@@ -237,6 +237,16 @@ export async function handleSendPrompt(
     actor: { kind: "human", principal: ctx.principal },
     action: "send_prompt",
     requireBrowserAuth: ctx.requireBrowserAuth,
+    // Stream-2 D (fix-1 BLOCKER-1): `send_prompt` is a WS_SELF_GATED_TYPE (it
+    // bypasses the central `authorizeWsMessage`, so admission must be threaded
+    // HERE). This is the PRIMARY co-drive action — N=2 admission MUST bound it:
+    // an authorized co-drive POPULATES the cell, and a 3rd distinct human is
+    // refused `session-full` admission-first, BEFORE the forward to the bridge.
+    // `ctx.operatorSet` is the SAME shared cell the WS/REST gates thread; absent
+    // (flag-off / non-multi-op) → admission SKIPPED (byte-unchanged). Actor
+    // derivation unchanged (anti-spoof — never the body).
+    ...(msg.sessionId ? { sessionId: msg.sessionId } : {}),
+    ...(ctx.operatorSet ? { operatorSet: ctx.operatorSet } : {}),
   });
   if (!decision.allowed) {
     console.error(
@@ -268,6 +278,12 @@ export async function handleSendPrompt(
       action: "reload",
       requireBrowserAuth: ctx.requireBrowserAuth,
       ...(ctx.operatorUsers ? { operatorUsers: ctx.operatorUsers } : {}),
+      // Stream-2 D (fix-1): admission-first consistency. Harmless — reload is
+      // operator-only (a non-member is refused regardless), but a 3rd non-member
+      // should hit `session-full` at admission first. Idempotent for a member
+      // already admitted by the :236 co-drive gate above.
+      ...(msg.sessionId ? { sessionId: msg.sessionId } : {}),
+      ...(ctx.operatorSet ? { operatorSet: ctx.operatorSet } : {}),
     });
     if (!reloadDecision.allowed) {
       console.error(
@@ -305,6 +321,10 @@ export async function handleSendPrompt(
       action: "prompt-command",
       requireBrowserAuth: ctx.requireBrowserAuth,
       ...(ctx.operatorUsers ? { operatorUsers: ctx.operatorUsers } : {}),
+      // Stream-2 D (fix-1): admission-first consistency (operator-only action —
+      // idempotent for a member already admitted at :236).
+      ...(msg.sessionId ? { sessionId: msg.sessionId } : {}),
+      ...(ctx.operatorSet ? { operatorSet: ctx.operatorSet } : {}),
     });
     if (!commandDecision.allowed) {
       console.error(
@@ -340,6 +360,10 @@ export async function handleSendPrompt(
       action: "resume",
       requireBrowserAuth: ctx.requireBrowserAuth,
       ...(ctx.operatorUsers ? { operatorUsers: ctx.operatorUsers } : {}),
+      // Stream-2 D (fix-1): admission-first consistency (operator-only action —
+      // idempotent for a member already admitted at :236).
+      ...(msg.sessionId ? { sessionId: msg.sessionId } : {}),
+      ...(ctx.operatorSet ? { operatorSet: ctx.operatorSet } : {}),
     });
     if (!resumeDecision.allowed) {
       console.error(
