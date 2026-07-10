@@ -34,6 +34,23 @@ const MODEL_PROXY_ROUTES = new Set([
   "POST /v1/messages",
 ]);
 
+export const GUEST_SESSION_HTTP_ROUTES: ReadonlyMap<string, "id" | "sessionId"> = new Map([
+  ["POST /api/session/:id/prompt", "id"],
+  ["POST /api/session/:id/abort", "id"],
+  ["POST /api/session/:id/shutdown", "id"],
+  ["POST /api/session/:id/rename", "id"],
+  ["POST /api/session/:id/resurrect", "id"],
+  ["POST /api/session/:id/hide", "id"],
+  ["POST /api/session/:id/unhide", "id"],
+  ["POST /api/session/:id/resume", "id"],
+  ["POST /api/session/:id/flow-control", "id"],
+  ["POST /api/session/:id/model", "id"],
+  ["POST /api/session/:id/thinking-level", "id"],
+  ["POST /api/session/:id/attach-proposal", "id"],
+  ["POST /api/session/:id/detach-proposal", "id"],
+  ["GET /api/events/:sessionId/:seq", "sessionId"],
+]);
+
 export function cellHttpRouteKey(method: string, route: string): string {
   return `${method.toUpperCase()} ${route}`;
 }
@@ -47,12 +64,8 @@ export function classifyCellHttpRoute(method: string, route: string): CellHttpRo
   if (route === "/api/session-file" || route === "/api/session-diff") {
     return { kind: "operator-only" };
   }
-  if (route === "/api/events/:sessionId/:seq" && m === "GET") {
-    return { kind: "session", param: "sessionId" };
-  }
-  if (route.startsWith("/api/session/:id/")) {
-    return { kind: "session", param: "id" };
-  }
+  const sessionParam = GUEST_SESSION_HTTP_ROUTES.get(cellHttpRouteKey(m, route));
+  if (sessionParam) return { kind: "session", param: sessionParam };
   if (
     (route === "/api/push/register" && m === "POST")
     || (route === "/api/push/register/:tokenId" && m === "DELETE")
@@ -139,10 +152,13 @@ export function createCellAccessHttpGate(options: CellAccessHttpGateOptions) {
 
     const declaredPath = routePath(request);
     let scope = classifyCellHttpRoute(request.method, declaredPath);
-    if (scope.kind === "safe-public" || scope.kind === "health" || scope.kind === "service-only") {
+    if (scope.kind !== "operator-only") {
       const coreOwned = options.isCoreRoute?.(request.method, declaredPath) ?? true;
-      if (coreOwned) return;
-      scope = { kind: "operator-only" };
+      if (!coreOwned) {
+        scope = { kind: "operator-only" };
+      } else if (scope.kind === "safe-public" || scope.kind === "health" || scope.kind === "service-only") {
+        return;
+      }
     }
     if (actor === "service" || actor === "local") return;
 

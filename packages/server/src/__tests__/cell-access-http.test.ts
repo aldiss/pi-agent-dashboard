@@ -9,6 +9,8 @@ import {
   classifyCellHttpRoute,
   createCellAccessHttpGate,
 } from "../cell-access-http.js";
+import { registerSessionApi } from "../session-api.js";
+import { registerSessionRoutes } from "../routes/session-routes.js";
 
 const OP = { sub: "op@example.com", username: "op", name: "Op", provider: "github", exp: 0 } as TokenPayload;
 const GUEST = { sub: "guest@example.com", username: "guest", name: "Guest", provider: "github", exp: 0 } as TokenPayload;
@@ -74,10 +76,14 @@ describe("HTTP cell route/actor classification", () => {
     expect(classifyCellHttpRoute("POST", "/api/new-core-route")).toEqual({ kind: "operator-only" });
   });
 
-  it("classifies session, filtered collection, push-self and safe-public surfaces", () => {
+  it("classifies only exact registered session routes as session scope", () => {
     expect(classifyCellHttpRoute("GET", "/api/sessions")).toEqual({ kind: "session-collection" });
     expect(classifyCellHttpRoute("POST", "/api/session/:id/prompt")).toEqual({ kind: "session", param: "id" });
+    expect(classifyCellHttpRoute("POST", "/api/session/:id/abort")).toEqual({ kind: "session", param: "id" });
     expect(classifyCellHttpRoute("GET", "/api/events/:sessionId/:seq")).toEqual({ kind: "session", param: "sessionId" });
+    expect(classifyCellHttpRoute("GET", "/api/session/:id/planted-plugin-leak")).toEqual({ kind: "operator-only" });
+    expect(classifyCellHttpRoute("POST", "/api/session/:id/future-core-route")).toEqual({ kind: "operator-only" });
+    expect(classifyCellHttpRoute("POST", "/api/session/:id/shutdown")).toEqual({ kind: "session", param: "id" });
     expect(classifyCellHttpRoute("GET", "/api/session-file")).toEqual({ kind: "operator-only" });
     expect(classifyCellHttpRoute("POST", "/api/push/register")).toEqual({ kind: "push-self" });
     expect(classifyCellHttpRoute("GET", "/api/push/vapid-public-key")).toEqual({ kind: "safe-public" });
@@ -92,7 +98,75 @@ describe("HTTP cell route/actor classification", () => {
   });
 });
 
-describe("root HTTP cell preHandler", () => {
+describe("derived registered session-route coverage", () => {
+  function collect(register: (app: ReturnType<typeof Fastify>) => void) {
+    const app = Fastify();
+    const routes: Array<{ method: string; url: string }> = [];
+    app.addHook("onRoute", (route) => {
+      const methods = Array.isArray(route.method) ? route.method : [route.method];
+      for (const method of methods) routes.push({ method: String(method), url: route.url });
+    });
+    register(app);
+    return routes;
+  }
+
+  it("only the explicit core-owned inventory derives session reachability", () => {
+    const apiDeps: any = {
+      sessionManager: { get: () => undefined, update: () => {}, listAll: () => [], unregister: () => {} },
+      piGateway: { sendToSession: () => true, isSessionConnected: () => false, address: () => 0 },
+      browserGateway: {
+        headlessPidRegistry: { register: () => {}, killBySessionId: () => {} },
+        broadcastSessionUpdated: () => {}, broadcastSessionRemoved: () => {}, broadcastToAll: () => {},
+      },
+      requireBrowserAuth: true,
+      operatorUsers: ["op@example.com"],
+    };
+    const routeDeps: any = {
+      sessionManager: { listAll: () => [], update: () => {}, get: () => undefined },
+      eventStore: { getEvents: () => [], getEvent: () => undefined },
+      networkGuard: async () => {},
+      hygieneProbes: {},
+      broadcastSessionUpdated: () => {},
+      requireBrowserAuth: true,
+      operatorUsers: ["op@example.com"],
+    };
+    const routes = [
+      ...collect((app) => registerSessionApi(app, apiDeps)),
+      ...collect((app) => registerSessionRoutes(app, routeDeps)),
+    ];
+    const guestCapable = [...new Set(routes
+      .filter((route) => {
+        const kind = classifyCellHttpRoute(route.method, route.url).kind;
+        return kind === "session" || kind === "session-collection";
+      })
+      .map((route) => `${route.method} ${route.url}`))].sort();
+    expect(guestCapable).toEqual([
+      "GET /api/events/:sessionId/:seq",
+      "GET /api/sessions",
+      "POST /api/session/:id/abort",
+      "POST /api/session/:id/attach-proposal",
+      "POST /api/session/:id/detach-proposal",
+      "POST /api/session/:id/flow-control",
+      "POST /api/session/:id/hide",
+      "POST /api/session/:id/model",
+      "POST /api/session/:id/prompt",
+      "POST /api/session/:id/rename",
+      "POST /api/session/:id/resume",
+      "POST /api/session/:id/resurrect",
+      "POST /api/session/:id/shutdown",
+      "POST /api/session/:id/thinking-level",
+      "POST /api/session/:id/unhide",
+    ]);
+
+    const accidental = routes
+      .filter((route) => route.url.startsWith("/api/session"))
+      .filter((route) => !guestCapable.includes(`${route.method} ${route.url}`))
+      .filter((route) => classifyCellHttpRoute(route.method, route.url).kind !== "operator-only");
+    expect(accidental).toEqual([]);
+  });
+});
+
+describe("root HTTP cell onRequest", () => {
   const gate = createCellAccessHttpGate({
     cellAccess: access,
     getSession: (id) => sessions.get(id),
@@ -156,11 +230,16 @@ describe("root HTTP cell preHandler", () => {
     app.addHook("onRequest", createCellAccessHttpGate({
       cellAccess: access,
       getSession,
-      isCoreRoute: () => false,
+      isCoreRoute: (_method, route) => route === "/api/session/:id/planted-core-leak",
     }));
     // Models later ctx.fastify plugin registrations with early reply hooks,
     // including exact reserved core names while the owning subsystem is absent.
     app.get("/api/plugins/planted/leak", { onRequest: pluginOnRequest }, handler);
+    app.get("/api/session/:id/planted-plugin-leak", { onRequest: pluginOnRequest }, handler);
+    app.get("/api/session/:id/planted-core-leak", { onRequest: pluginOnRequest }, handler);
+    app.post("/api/session/:id/prompt", { onRequest: pluginOnRequest }, handler);
+    app.get("/api/sessions", { onRequest: pluginOnRequest }, handler);
+    app.post("/api/push/register", { onRequest: pluginOnRequest }, handler);
     app.get("/auth/login", { onRequest: pluginOnRequest }, handler);
     app.post("/api/health", { onRequest: pluginOnRequest }, handler);
     await app.ready();
@@ -168,6 +247,18 @@ describe("root HTTP cell preHandler", () => {
     const guestResult = await app.inject({ method: "GET", url: "/api/plugins/planted/leak", headers: { "x-test-user": "guest" } });
     expect(guestResult.statusCode).toBe(403);
     expect(handler).not.toHaveBeenCalled();
+    expect(pluginOnRequest).not.toHaveBeenCalled();
+
+    const pluginPrefix = await app.inject({ method: "GET", url: "/api/session/a/planted-plugin-leak", headers: { "x-test-user": "guest" } });
+    const unknownCorePrefix = await app.inject({ method: "GET", url: "/api/session/a/planted-core-leak", headers: { "x-test-user": "guest" } });
+    const spoofedSessionScope = await app.inject({ method: "POST", url: "/api/session/a/prompt", headers: { "x-test-user": "guest" } });
+    const spoofedCollectionScope = await app.inject({ method: "GET", url: "/api/sessions", headers: { "x-test-user": "guest" } });
+    const spoofedPushScope = await app.inject({ method: "POST", url: "/api/push/register", headers: { "x-test-user": "guest" } });
+    expect(pluginPrefix.statusCode).toBe(403);
+    expect(unknownCorePrefix.statusCode).toBe(403);
+    expect(spoofedSessionScope.statusCode).toBe(403);
+    expect(spoofedCollectionScope.statusCode).toBe(403);
+    expect(spoofedPushScope.statusCode).toBe(403);
     expect(pluginOnRequest).not.toHaveBeenCalled();
 
     const reservedAuth = await app.inject({ method: "GET", url: "/auth/login", headers: { "x-test-user": "guest" } });
