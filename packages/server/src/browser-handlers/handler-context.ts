@@ -20,6 +20,7 @@ import type { PendingResumeIntentRegistry } from "../pending-resume-intent-regis
 import type { PendingClientCorrelations } from "../pending-client-correlations.js";
 import type { TokenPayload } from "../auth.js";
 import type { OperatorSetTracker } from "../operator-set-tracker.js";
+import type { CellAccessController } from "../cell-access.js";
 
 export interface BrowserHandlerContext {
   ws: WebSocket;
@@ -61,6 +62,8 @@ export interface BrowserHandlerContext {
    * SKIPPED (flag-off / non-multi-operator servers are byte-unchanged).
    */
   operatorSet?: OperatorSetTracker;
+  /** Direct-dashboard guest→cell policy; absent preserves phase 1. */
+  cellAccess?: CellAccessController;
   pendingForkRegistry?: PendingForkRegistry;
   sessionOrderManager?: SessionOrderManager;
   preferencesStore?: PreferencesStore;

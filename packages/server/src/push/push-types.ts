@@ -19,11 +19,19 @@ export interface PushSubscriptionJSON {
 /**
  * A persisted push token representing one device/browser.
  */
+export interface PushPrincipal {
+  provider: string;
+  sub: string;
+  username: string;
+}
+
 export interface PushToken {
   id: string;
   deviceToken: PushSubscriptionJSON;
   transport: string;
   userId?: string;
+  /** Verified owner stamped by the server. Missing means legacy/quarantined. */
+  owner?: PushPrincipal;
   registeredAt: string;
   lastUsedAt: string;
 }

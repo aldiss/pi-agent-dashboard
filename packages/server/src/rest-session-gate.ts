@@ -22,6 +22,8 @@ import {
 } from "./session-authz.js";
 import { classifySendPromptAction } from "./send-prompt-authz.js";
 import type { OperatorSetTracker } from "./operator-set-tracker.js";
+import type { CellAccessController } from "./cell-access.js";
+import type { DashboardSession } from "@blackbelt-technology/pi-dashboard-shared/types.js";
 
 /** Frozen-at-startup gate policy, threaded from `requireBrowserAuthAtStartup`. */
 export interface RestGatePolicy {
@@ -34,6 +36,8 @@ export interface RestGatePolicy {
    * by driving via REST). Unset → admission SKIPPED (byte-unchanged).
    */
   operatorSet?: OperatorSetTracker;
+  cellAccess?: CellAccessController;
+  getSession?: (id: string) => DashboardSession | undefined;
 }
 
 /**
@@ -90,6 +94,8 @@ export function makeRestSessionGate(policy: RestGatePolicy) {
   const requireBrowserAuth = policy.requireBrowserAuth === true;
   const operatorUsers = policy.operatorUsers;
   const operatorSet = policy.operatorSet;
+  const cellAccess = policy.cellAccess;
+  const getSession = policy.getSession;
   return function gate(action: SessionWriteAction): SessionWriteGatePreHandler {
     const preHandler = async function sessionWriteGate(
       request: FastifyRequest,
@@ -103,8 +109,14 @@ export function makeRestSessionGate(policy: RestGatePolicy) {
         ...(operatorUsers ? { operatorUsers } : {}),
         ...(sessionId ? { sessionId } : {}),
         ...(operatorSet ? { operatorSet } : {}),
+        ...(cellAccess ? { cellAccess } : {}),
+        ...(sessionId && getSession ? { session: getSession(sessionId) } : {}),
       });
       if (!decision.allowed) {
+        if (decision.reason === "session-unavailable") {
+          reply.code(404).send({ success: false, error: "session not found" });
+          return;
+        }
         const code =
           decision.reason === "no-principal" || decision.reason === "invalid-principal"
             ? 401
@@ -145,6 +157,8 @@ export function makeRestPromptGate(policy: RestGatePolicy): SessionWriteGatePreH
   const requireBrowserAuth = policy.requireBrowserAuth === true;
   const operatorUsers = policy.operatorUsers;
   const operatorSet = policy.operatorSet;
+  const cellAccess = policy.cellAccess;
+  const getSession = policy.getSession;
   const preHandler = async function sessionPromptGate(
     request: FastifyRequest,
     reply: FastifyReply,
@@ -159,8 +173,14 @@ export function makeRestPromptGate(policy: RestGatePolicy): SessionWriteGatePreH
       ...(operatorUsers ? { operatorUsers } : {}),
       ...(sessionId ? { sessionId } : {}),
       ...(operatorSet ? { operatorSet } : {}),
+      ...(cellAccess ? { cellAccess } : {}),
+      ...(sessionId && getSession ? { session: getSession(sessionId) } : {}),
     });
     if (!decision.allowed) {
+      if (decision.reason === "session-unavailable") {
+        reply.code(404).send({ success: false, error: "session not found" });
+        return;
+      }
       const code =
         decision.reason === "no-principal" || decision.reason === "invalid-principal"
           ? 401

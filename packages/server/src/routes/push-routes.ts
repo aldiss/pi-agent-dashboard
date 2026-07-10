@@ -14,8 +14,10 @@
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import type { PushTokenRegistry } from "../push/push-token-registry.js";
 import type { PushDispatcher } from "../push/push-dispatcher.js";
-import type { PushPayload } from "../push/push-types.js";
+import type { PushPayload, PushPrincipal, PushToken, PushTokenMeta } from "../push/push-types.js";
 import type { VapidKeys } from "../push/push-vapid.js";
+import type { CellAccessController } from "../cell-access.js";
+import { classifyCellHttpActor, requestPrincipal } from "../cell-access-http.js";
 
 // Simple in-memory rate limiter per endpoint
 const rateLimiters = new Map<string, Map<string, number[]>>();
@@ -78,6 +80,31 @@ export interface PushRouteDeps {
   tokenRegistry: PushTokenRegistry;
   dispatcher: PushDispatcher;
   vapidKeys: VapidKeys;
+  cellAccess?: CellAccessController;
+}
+
+function pushPrincipal(request: FastifyRequest): PushPrincipal | undefined {
+  const principal = requestPrincipal(request);
+  if (!principal) return undefined;
+  return { provider: principal.provider, sub: principal.sub, username: principal.username ?? "" };
+}
+
+function tokenOwnedBy(token: PushToken, owner: PushPrincipal): boolean {
+  return !!token.owner
+    && typeof token.owner.provider === "string"
+    && typeof token.owner.sub === "string"
+    && token.owner.provider === owner.provider
+    && token.owner.sub.toLowerCase() === owner.sub.toLowerCase();
+}
+
+function tokenMeta(token: PushToken): PushTokenMeta {
+  return {
+    id: token.id,
+    transport: token.transport,
+    endpointLast4: token.deviceToken.endpoint.slice(-4),
+    registeredAt: token.registeredAt,
+    lastUsedAt: token.lastUsedAt,
+  };
 }
 
 export function registerPushRoutes(
@@ -130,9 +157,14 @@ export function registerPushRoutes(
       }
 
       try {
+        const owner = deps.cellAccess?.enabled ? pushPrincipal(request) : undefined;
+        if (deps.cellAccess?.enabled && !owner) {
+          return reply.code(401).send({ error: "authentication_required" });
+        }
         const tokenId = tokenRegistry.add({
           deviceToken,
           transport: transport || "web-push",
+          ...(owner ? { owner } : {}),
         });
         return { tokenId, registered: true };
       } catch (err) {
@@ -150,6 +182,11 @@ export function registerPushRoutes(
         return reply.code(429).send({ error: "rate_limited" });
       }
 
+      if (deps.cellAccess?.enabled && classifyCellHttpActor(request, deps.cellAccess) === "guest") {
+        const owner = pushPrincipal(request)!;
+        const token = tokenRegistry.list().find((item) => item.id === request.params.tokenId);
+        if (!token || !tokenOwnedBy(token, owner)) return reply.code(404).send({ error: "not_found" });
+      }
       tokenRegistry.remove(request.params.tokenId);
       return reply.code(204).send();
     },
@@ -162,6 +199,10 @@ export function registerPushRoutes(
       return reply.code(429).send({ error: "rate_limited" });
     }
 
+    if (deps.cellAccess?.enabled && classifyCellHttpActor(request, deps.cellAccess) === "guest") {
+      const owner = pushPrincipal(request)!;
+      return { tokens: tokenRegistry.list().filter((token) => tokenOwnedBy(token, owner)).map(tokenMeta) };
+    }
     return { tokens: tokenRegistry.listMeta() };
   });
 
@@ -183,9 +224,13 @@ export function registerPushRoutes(
         url: "/",
       };
 
-      const results = await dispatcher.sendNow(payload, {
-        tokenIds: tokenId ? [tokenId] : undefined,
-      });
+      let tokenIds = tokenId ? [tokenId] : undefined;
+      if (deps.cellAccess?.enabled && classifyCellHttpActor(request, deps.cellAccess) === "guest") {
+        const owner = pushPrincipal(request)!;
+        const ownedIds = tokenRegistry.list().filter((token) => tokenOwnedBy(token, owner)).map((token) => token.id);
+        tokenIds = tokenId ? ownedIds.filter((id) => id === tokenId) : ownedIds;
+      }
+      const results = await dispatcher.sendNow(payload, { tokenIds });
       return { results };
     },
   );
@@ -197,6 +242,10 @@ export function registerPushRoutes(
       const caller = getCallerId(request);
       if (!checkRateLimit("/api/push/send", caller, 2)) {
         return reply.code(429).send({ error: "rate_limited" });
+      }
+
+      if (deps.cellAccess?.enabled && classifyCellHttpActor(request, deps.cellAccess) === "guest") {
+        return reply.code(403).send({ error: "unauthorized" });
       }
 
       const { title, body, url } = request.body || {};

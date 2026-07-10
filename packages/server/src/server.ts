@@ -57,6 +57,8 @@ import { loadOrGenerateVapidKeys } from "./push/push-vapid.js";
 import type { PushPrefs } from "./push/push-types.js";
 import { registerSessionApi } from "./session-api.js";
 import { createOperatorSetTracker } from "./operator-set-tracker.js";
+import { createCellAccessController } from "./cell-access.js";
+import { cellHttpRouteKey, createCellAccessHttpGate } from "./cell-access-http.js";
 import { configureAgentPresence, resetAgentPresence } from "./agent-presence.js";
 import { registerSessionRoutes } from "./routes/session-routes.js";
 import { registerGitRoutes } from "./routes/git-routes.js";
@@ -376,6 +378,7 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
   /** Per-session push preferences (in-memory, resets on restart). */
   const pushPrefsMap = new Map<string, PushPrefs>();
   const metaPersistence = createMetaPersistence();
+  let sessionCellAccess: import("./cell-access.js").CellAccessController | undefined;
   const sessionOrderManager = createSessionOrderManager(preferencesStore);
   const pendingForkRegistry = createPendingForkRegistry();
   // Maps spawnToken → originating browser requestId. Surfaced as
@@ -411,7 +414,10 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
   // Save per-session .meta.json on any change
   sessionManager.onChange = (sessionId: string, ctx) => {
     const session = sessionManager.get(sessionId);
-    if (!session?.sessionFile) return;
+    if (!session) return;
+    const resolvedCell = sessionCellAccess?.resolveSessionCell(session);
+    if (resolvedCell !== undefined) session.accessCellId = resolvedCell;
+    if (!session.sessionFile) return;
     metaPersistence.save(session.sessionFile, {
       source: session.source,
       name: session.name,
@@ -431,6 +437,7 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
       contextTokens: session.contextTokens ?? undefined,
       contextWindow: session.contextWindow,
       firstMessage: session.firstMessage,
+      accessCellId: session.accessCellId,
       // Persist unread bit so it survives server restart.
       // See change: session-card-unread-stripes.
       unread: session.unread,
@@ -677,7 +684,36 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
     },
   });
 
-  const browserGateway = createBrowserGateway(sessionManager, eventStore, piGateway, undefined, pendingForkRegistry, sessionOrderManager, preferencesStore, directoryService, terminalManager, pendingDashboardSpawns, config.maxWsBufferBytes, pendingAttachRegistry, pendingResumeIntents, pendingClientCorrelations, pushPrefsMap, () => config.push?.defaults, requireBrowserAuthAtStartup, config.authConfig?.operatorUsers, operatorSetTracker);
+  const cellAccess = createCellAccessController({ authConfig: config.authConfig });
+  sessionCellAccess = cellAccess;
+  if (cellAccess.enabled) {
+    for (const session of sessionManager.listAll()) {
+      const resolved = cellAccess.resolveSessionCell(session);
+      if (resolved !== undefined && resolved !== session.accessCellId) {
+        sessionManager.update(session.id, { accessCellId: resolved });
+      }
+    }
+  }
+
+  const browserGateway = createBrowserGateway(sessionManager, eventStore, piGateway, undefined, pendingForkRegistry, sessionOrderManager, preferencesStore, directoryService, terminalManager, pendingDashboardSpawns, config.maxWsBufferBytes, pendingAttachRegistry, pendingResumeIntents, pendingClientCorrelations, pushPrefsMap, () => config.push?.defaults, requireBrowserAuthAtStartup, config.authConfig?.operatorUsers, operatorSetTracker, cellAccess);
+
+  let stopCellAccessRefresh = () => {};
+  if (cellAccess.enabled) {
+    const refreshTimer = setInterval(() => {
+      if (!cellAccess.refresh()) return;
+      if (cellAccess.snapshot().valid) {
+        for (const session of sessionManager.listAll()) {
+          const resolved = cellAccess.resolveSessionCell(session);
+          if (resolved !== session.accessCellId) {
+            sessionManager.update(session.id, { accessCellId: resolved });
+          }
+        }
+      }
+      browserGateway.refreshAccessSnapshots();
+    }, 2_000);
+    if (typeof refreshTimer.unref === "function") refreshTimer.unref();
+    stopCellAccessRefresh = () => clearInterval(refreshTimer);
+  }
 
   // Driver self-report poller (dl-2620): re-reads the driver-state sidecars
   // (written by the `driver-report` CLI) and pushes per-driver progress-% +
@@ -754,6 +790,23 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
         transports,
         registry: pushTokenRegistry,
         coalesceWindowMs: config.push.coalesceWindowMs,
+        canDeliver(token, sessionId) {
+          if (!cellAccess.enabled) return true;
+          if (
+            !token.owner
+            || typeof token.owner.provider !== "string"
+            || typeof token.owner.sub !== "string"
+            || !token.owner.sub.trim()
+            || typeof token.owner.username !== "string"
+          ) return false; // legacy/malformed token quarantine
+          const principal = {
+            ...token.owner,
+            name: token.owner.username || token.owner.sub,
+            exp: 0,
+          } as TokenPayload;
+          return cellAccess.isPrincipalAdmitted(principal)
+            && cellAccess.canViewSession(principal, sessionManager.get(sessionId));
+        },
       });
       console.log("[dashboard] Push notifications enabled");
     } catch (err) {
@@ -844,6 +897,27 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
     // :<port> cannot spoof X-Forwarded-For to fake a loopback/bypassed IP.
     trustProxy: "loopback",
   });
+
+  // Record routes owned by core registration. Plugin routes load later in
+  // start(); reserved public names are safe only when this set proves core owns
+  // the exact method+path.
+  const coreCellRoutes = new Set<string>();
+  let recordCoreCellRoutes = true;
+  fastify.addHook("onRoute", (route) => {
+    if (!recordCoreCellRoutes) return;
+    const methods = Array.isArray(route.method) ? route.method : [route.method];
+    for (const method of methods) coreCellRoutes.add(cellHttpRouteKey(String(method), route.url));
+  });
+
+  // Root-scoped fail-closed HTTP boundary. `onRequest` runs before any plugin
+  // route hook can answer early. It captures verified identity independently;
+  // auth-plugin repeats capture later for the existing request decorations.
+  fastify.addHook("onRequest", createCellAccessHttpGate({
+    cellAccess,
+    getSession: (id) => sessionManager.get(id),
+    getAuthSecret: () => config.authConfig?.secret,
+    isCoreRoute: (method, route) => coreCellRoutes.has(cellHttpRouteKey(method, route)),
+  }));
 
   // Compression: gzip/deflate for HTTP responses. Critical for large client
   // bundles (~3 MB JS) served over tunnels like zrok which abort big transfers.
@@ -979,6 +1053,7 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
     ...(config.resurrectVerify ? { resurrectVerify: config.resurrectVerify } : {}),
     // Stream-2 D: the ONE bounded-cell tracker shared with the WS gate.
     operatorSet: operatorSetTracker,
+    cellAccess,
   });
 
   // Register route modules
@@ -1016,6 +1091,7 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
     ...(config.authConfig?.operatorUsers ? { operatorUsers: config.authConfig.operatorUsers } : {}),
     // Stream-2 D: the ONE bounded-cell tracker shared with the WS + session-api gates.
     operatorSet: operatorSetTracker,
+    cellAccess,
   });
   registerGitRoutes(fastify, { networkGuard });
   registerFileRoutes(fastify, { sessionManager, preferencesStore, networkGuard });
@@ -1053,7 +1129,7 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
     networkGuard,
     store: openspecGroupStore,
   });
-  registerSystemRoutes(fastify, { sessionManager, preferencesStore, metaPersistence, config, networkGuard, version: pkgVersion, commit: deployCommit, directoryService, piGateway, bootstrapState, eventStore });
+  registerSystemRoutes(fastify, { sessionManager, preferencesStore, metaPersistence, config, networkGuard, version: pkgVersion, commit: deployCommit, directoryService, piGateway, bootstrapState, eventStore, cellAccess, onCellAccessChanged: () => browserGateway.refreshAccessSnapshots() });
   // Path B sister-coupling primitive — operator-active-surfaces canonical index.
   // See packages/server/src/routes/surfaces-routes.ts + cell:
   // pi-agent-dashboard-ux-message-discoverability/v1 (W4.4 + W6 Feature 4).
@@ -1068,7 +1144,7 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
   // ── Push routes (conditional) ────────────────────────────────────
   if (config.push?.enabled) {
     if (pushDispatcher && pushTokenRegistry && pushVapidKeys) {
-      registerPushRoutes(fastify, { tokenRegistry: pushTokenRegistry, dispatcher: pushDispatcher, vapidKeys: pushVapidKeys });
+      registerPushRoutes(fastify, { tokenRegistry: pushTokenRegistry, dispatcher: pushDispatcher, vapidKeys: pushVapidKeys, cellAccess });
     } else {
       registerPushMisconfiguredMiddleware(fastify, config.push.errors ?? ["push enabled but no webPush transport configured"]);
     }
@@ -1504,7 +1580,9 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
       // Load plugin server entries BEFORE fastify.listen() so plugins can
       // register routes. Fastify rejects route registration after listen().
       // Failure-isolated per-plugin via loader; awaited so all routes are
-      // mounted before requests can arrive.
+      // mounted before requests can arrive. From this point on, onRoute entries
+      // are plugin-owned and cannot claim reserved core public route names.
+      recordCoreCellRoutes = false;
       try {
         await loadServerEntries({
           isEnabled: (pluginId) => {
@@ -1527,7 +1605,7 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
                   return events.length > 0 ? events[events.length - 1] : undefined;
                 },
               },
-              broadcastToSubscribers: (msg) => browserGateway.broadcast(msg as any),
+              broadcastToSubscribers: (msg) => browserGateway.broadcastPluginMessage(msg),
               registerPiHandler: (_type, _handler) => {},
               registerBrowserHandler: (_type, _handler) => {},
               getPluginConfig: (id) => {
@@ -1581,6 +1659,22 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
             socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
             socket.destroy();
             return;
+          }
+          // Terminal/editor upgrades are host-global, never guest cell scope.
+          // A direct local caller may remain cookie-less for native tooling;
+          // loopback reverse-proxy traffic carries X-Forwarded-For and therefore
+          // is NOT treated as direct local.
+          const isHostWs = request.url?.startsWith("/ws/terminal/") || request.url?.startsWith("/editor/");
+          if (cellAccess.enabled && isHostWs) {
+            const forwarded = request.headers["x-forwarded-for"] !== undefined;
+            const directLocal = !decision.principal && isLoopback(remoteAddress) && !forwarded;
+            const operator = !!decision.principal
+              && cellAccess.roleForPrincipal(decision.principal) === "operator";
+            if (!operator && !directLocal) {
+              socket.write("HTTP/1.1 403 Forbidden\r\n\r\n");
+              socket.destroy();
+              return;
+            }
           }
           // Bind the verified principal (may be null in single-operator mode)
           // to the request so the browser gateway's connection handler can
@@ -1755,6 +1849,7 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
       directoryService.stopPolling();
       stopDriverSelfReportPolling();
       stopSessionHygieneSweep();
+      stopCellAccessRefresh();
       browserGateway.shutdownHeadlessProcesses();
       metaPersistence.flushAll();
       metaPersistence.dispose();

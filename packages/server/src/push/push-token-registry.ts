@@ -76,6 +76,7 @@ export function createPushTokenRegistry(opts: { path: string }): PushTokenRegist
       if (existing) {
         existing.lastUsedAt = now;
         if (token.userId !== undefined) existing.userId = token.userId;
+        if (token.owner !== undefined) existing.owner = token.owner;
         save(tokens);
         return existing.id;
       }
@@ -86,6 +87,7 @@ export function createPushTokenRegistry(opts: { path: string }): PushTokenRegist
         deviceToken: token.deviceToken,
         transport: token.transport,
         ...(token.userId !== undefined ? { userId: token.userId } : {}),
+        ...(token.owner !== undefined ? { owner: token.owner } : {}),
         registeredAt: now,
         lastUsedAt: now,
       };

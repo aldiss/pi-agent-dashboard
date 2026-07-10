@@ -27,6 +27,8 @@ export interface SessionMeta {
   startedAt?: number;
   endedAt?: number;
   firstMessage?: string;
+  /** Server-derived orchestration cell binding. Never client-authored. */
+  accessCellId?: string;
 
   // Cached stats (extracted from .jsonl, avoids re-parsing)
   model?: string;

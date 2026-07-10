@@ -13,13 +13,15 @@
 import type { DashboardSession, DashboardEvent } from "@blackbelt-technology/pi-dashboard-shared/types.js";
 import type { PushTokenRegistry } from "./push-token-registry.js";
 import type { PushTransport } from "./push-transports/types.js";
-import type { PushPayload } from "./push-types.js";
+import type { PushPayload, PushToken } from "./push-types.js";
 import { buildPushPayload } from "./build-push-payload.js";
 
 export interface PushDispatcherOptions {
   transports: Map<string, PushTransport>;
   registry: PushTokenRegistry;
   coalesceWindowMs: number;
+  /** Optional automatic-fanout authorization. Default allows every token. */
+  canDeliver?: (token: PushToken, sessionId: string) => boolean;
 }
 
 export interface SendResult {
@@ -52,6 +54,7 @@ export interface PushDispatcher {
  */
 export function createPushDispatcher(opts: PushDispatcherOptions): PushDispatcher {
   const { transports, registry, coalesceWindowMs } = opts;
+  const canDeliver = opts.canDeliver ?? (() => true);
 
   // Coalescing map: `${sessionId}::${tokenId}` → last dispatch timestamp
   const coalesceMap = new Map<string, number>();
@@ -106,6 +109,7 @@ export function createPushDispatcher(opts: PushDispatcherOptions): PushDispatche
         expireCoalesceMap(now);
 
         for (const token of tokens) {
+          if (!canDeliver(token, sessionId)) continue;
           const key = coalesceKey(sessionId, token.id);
           const lastSend = coalesceMap.get(key);
 

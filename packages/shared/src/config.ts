@@ -114,6 +114,44 @@ export interface AuthConfig {
    * silently hold an operator-only action).
    */
   operatorUsers?: string[];
+  /**
+   * Optional guest → orchestration-cell allowlist. Presence activates the
+   * direct dashboard cell boundary for every authenticated non-operator;
+   * absence preserves the legacy dashboard-wide guest posture.
+   */
+  guestCellGrants?: Record<string, string[]>;
+}
+
+export type GuestCellGrants = Record<string, string[]>;
+
+export type GuestCellGrantsValidation =
+  | { ok: true; value: GuestCellGrants }
+  | { ok: false; error: string };
+
+/** Strict validation for the security-sensitive guest→cell map. */
+export function validateGuestCellGrants(raw: unknown): GuestCellGrantsValidation {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return { ok: false, error: "auth.guestCellGrants must be an object map" };
+  }
+  const value: GuestCellGrants = {};
+  for (const [rawSelector, rawCells] of Object.entries(raw as Record<string, unknown>)) {
+    const selector = rawSelector.trim();
+    if (!selector) {
+      return { ok: false, error: "auth.guestCellGrants contains an empty guest selector" };
+    }
+    if (!Array.isArray(rawCells)) {
+      return { ok: false, error: `auth.guestCellGrants.${rawSelector} must be an array` };
+    }
+    const cells: string[] = [];
+    for (const rawCell of rawCells) {
+      if (typeof rawCell !== "string" || !rawCell.trim()) {
+        return { ok: false, error: `auth.guestCellGrants.${rawSelector} contains an invalid cell id` };
+      }
+      cells.push(rawCell.trim());
+    }
+    value[selector] = [...new Set(cells)];
+  }
+  return { ok: true, value };
 }
 
 export interface MemoryLimitsConfig {
@@ -403,6 +441,12 @@ function parseAuthConfig(raw: any): AuthConfig | undefined {
   const hasUrls = Array.isArray(raw.bypassUrls) && raw.bypassUrls.length > 0;
   // Build 0: the multi-operator gate flag is auth-relevant on its own.
   const hasBrowserAuthGate = raw.requireBrowserAuth === true;
+  // Presence (including an empty map) activates the cell boundary and must keep
+  // the auth block alive. Integrity/coupling is enforced before parsing.
+  const hasGuestCellGrants = raw.guestCellGrants !== undefined;
+  const guestCellGrantsValidation = hasGuestCellGrants
+    ? validateGuestCellGrants(raw.guestCellGrants)
+    : undefined;
 
   // H-M1 / Fix 2 (dl-5775 canon): a security flag PRESENT but NOT a strict
   // boolean (e.g. "true", 1, [], {}) is a SILENT-misconfig hazard. The LOUD
@@ -413,7 +457,7 @@ function parseAuthConfig(raw: any): AuthConfig | undefined {
   // ON = lockout): a non-boolean resolves the flag UNSET (fail CLOSED to
   // single-op). No warn here (would double-log with the integrity check).
 
-  if (!hasProviders && !hasHosts && !hasUrls && !hasBrowserAuthGate) return undefined;
+  if (!hasProviders && !hasHosts && !hasUrls && !hasBrowserAuthGate && !hasGuestCellGrants) return undefined;
 
   // Validate each provider has at least clientId and clientSecret.
   // validProviders may end up empty when providers is {} or all entries
@@ -437,7 +481,7 @@ function parseAuthConfig(raw: any): AuthConfig | undefined {
   // If providers was declared but all entries are malformed AND there is no
   // bypass content AND the multi-operator gate is not set, fall back to
   // undefined — same "nothing auth-relevant" rule as the top-level gate.
-  if (Object.keys(validProviders).length === 0 && !hasHosts && !hasUrls && !hasBrowserAuthGate) {
+  if (Object.keys(validProviders).length === 0 && !hasHosts && !hasUrls && !hasBrowserAuthGate && !hasGuestCellGrants) {
     return undefined;
   }
 
@@ -457,6 +501,9 @@ function parseAuthConfig(raw: any): AuthConfig | undefined {
     // are configured at Build 1 (op-2 admission); Build 1b ships the mechanism.
     ...(Array.isArray(raw.operatorUsers)
       ? { operatorUsers: raw.operatorUsers.filter((u: unknown) => typeof u === "string" && u.trim().length > 0) }
+      : {}),
+    ...(guestCellGrantsValidation?.ok
+      ? { guestCellGrants: guestCellGrantsValidation.value }
       : {}),
   };
 }
@@ -677,8 +724,21 @@ function parseTrustedNetworks(raw: any): string[] {
  *     only). Fix 2 (the silently-ignored top-level placement).
  */
 export class SecurityFlagConfigError extends Error {
-  readonly code: "malformed" | "misplaced" | "malformed-operator-users";
-  constructor(code: "malformed" | "misplaced" | "malformed-operator-users", message: string) {
+  readonly code:
+    | "malformed"
+    | "misplaced"
+    | "malformed-operator-users"
+    | "malformed-cell-grants"
+    | "cell-grants-coupling";
+  constructor(
+    code:
+      | "malformed"
+      | "misplaced"
+      | "malformed-operator-users"
+      | "malformed-cell-grants"
+      | "cell-grants-coupling",
+    message: string,
+  ) {
     super(message);
     this.name = "SecurityFlagConfigError";
     this.code = code;
@@ -831,6 +891,26 @@ function enforceSecurityFlagIntegrity(parsed: any, startup: boolean): void {
       ),
     );
   }
+
+  // Cell-boundary activation is security-sensitive. Presence (even `{}`) must
+  // never silently degrade to phase-1 dashboard-wide access.
+  if (auth && typeof auth === "object" && auth.guestCellGrants !== undefined) {
+    const grants = validateGuestCellGrants(auth.guestCellGrants);
+    if (!grants.ok) {
+      fail(new SecurityFlagConfigError("malformed-cell-grants", grants.error));
+    }
+    const usableOperator = Array.isArray(auth.operatorUsers)
+      && auth.operatorUsers.some((u: unknown) => typeof u === "string" && u.trim().length > 0);
+    if (auth.requireBrowserAuth !== true || !usableOperator) {
+      fail(
+        new SecurityFlagConfigError(
+          "cell-grants-coupling",
+          `SECURITY CONFIG COUPLING: auth.guestCellGrants requires ` +
+            `auth.requireBrowserAuth:true and at least one usable auth.operatorUsers identity.`,
+        ),
+      );
+    }
+  }
 }
 
 /**
@@ -956,9 +1036,10 @@ export function loadConfig(opts?: LoadConfigOptions): DashboardConfig {
     // email — `…requireBrowserAuth.example` has no colon after the token). The
     // `["']?` AFTER the name also handles the double-quoted `"requireBrowserAuth":`
     // form (the closing quote sits between the name and the colon).
-    if (rawText !== undefined && /["']?requireBrowserAuth["']?\s*:/i.test(rawText)) {
+    const securityKey = rawText?.match(/["']?(requireBrowserAuth|guestCellGrants)["']?\s*:/i)?.[1];
+    if (rawText !== undefined && securityKey) {
       const msg =
-        `[dashboard] SECURITY CONFIG UNPARSEABLE: ${configFile} carries auth.requireBrowserAuth ` +
+        `[dashboard] SECURITY CONFIG UNPARSEABLE: ${configFile} carries auth.${securityKey} ` +
         `but is not valid JSON (${err instanceof Error ? err.message : String(err)}). ` +
         `Refusing to start with silent single-operator defaults — fix the JSON and restart.`;
       if (startup) throw new Error(msg);

@@ -31,6 +31,8 @@
 import type { TokenPayload } from "./auth.js";
 import { hasUsableSub } from "./auth.js";
 import type { OperatorSetTracker } from "./operator-set-tracker.js";
+import type { DashboardSession } from "@blackbelt-technology/pi-dashboard-shared/types.js";
+import type { CellAccessController } from "./cell-access.js";
 
 /**
  * The authenticated actor behind a session-write, discriminated by kind.
@@ -326,6 +328,10 @@ export interface AuthorizeSessionActionInput {
    * is never admission-counted). Absent → admission SKIPPED (see `sessionId`).
    */
   operatorSet?: OperatorSetTracker;
+  /** Direct-dashboard guest→cell boundary. Absent/disabled preserves phase 1. */
+  cellAccess?: CellAccessController;
+  /** Server-resolved target session; never a client-supplied ownership claim. */
+  session?: DashboardSession;
 }
 
 export interface AuthorizeSessionActionResult {
@@ -335,6 +341,7 @@ export interface AuthorizeSessionActionResult {
     | "no-principal"
     | "invalid-principal"
     | "session-full"
+    | "session-unavailable"
     | "operator-only"
     | "unclassified-action"
     | "ui-management-forged";
@@ -386,7 +393,16 @@ export interface AuthorizeSessionActionResult {
 export function authorizeSessionAction(
   input: AuthorizeSessionActionInput,
 ): AuthorizeSessionActionResult {
-  const { actor, action, requireBrowserAuth, operatorUsers, sessionId, operatorSet } = input;
+  const {
+    actor,
+    action,
+    requireBrowserAuth,
+    operatorUsers,
+    sessionId,
+    operatorSet,
+    cellAccess,
+    session,
+  } = input;
 
   if (!requireBrowserAuth) {
     // Single-operator: no-op gate, byte-unchanged behavior.
@@ -402,6 +418,22 @@ export function authorizeSessionAction(
     if (!hasUsableSub(actor.principal)) {
       return { allowed: false, reason: "invalid-principal" };
     }
+  }
+
+  // ── STATIC GUEST→CELL BOUNDARY (before D admission/action disclosure) ──
+  // Operators stay dashboard-wide. Services are autonomous infrastructure and
+  // remain outside the trusted-co-driver boundary. A non-operator human must
+  // target a server-resolved session in one of their configured cells. Missing
+  // and outside sessions deliberately share one reason so the guest cannot use
+  // the action gate as an existence oracle. Session-creating actions carry no
+  // target and continue to the existing operator-only rule below.
+  if (
+    actor.kind === "human"
+    && cellAccess?.enabled
+    && !SESSION_CREATING_ACTIONS.has(action)
+    && !cellAccess.canViewSession(actor.principal, session)
+  ) {
+    return { allowed: false, reason: "session-unavailable" };
   }
 
   // ── N=2 ADMISSION (Contract-2 / Joan pin 2: admission-FIRST) ────────────

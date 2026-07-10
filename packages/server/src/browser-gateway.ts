@@ -68,6 +68,11 @@ import { handleSendPrompt, handleResumeSession, handleSpawnSession, handleShutdo
 import { handleRenameSession, handleHideSession, handleUnhideSession, handleAttachProposal, handleDetachProposal, handleFetchContent, handleListSessions } from "./browser-handlers/session-meta-handler.js";
 import { handleCreateTerminal, handleKillTerminal, handleRenameTerminal } from "./browser-handlers/terminal-handler.js";
 import { handlePinDirectory, handleUnpinDirectory, handleReorderPinnedDirs, handleReorderSessions, handleOpenSpecRefresh, handleOpenSpecBulkArchive, handleExtensionUiResponse, handlePiGatewayForward } from "./browser-handlers/directory-handler.js";
+import type { CellAccessController } from "./cell-access.js";
+import {
+  authorizeGuestBrowserMessage,
+  filterServerMessageForPrincipal,
+} from "./cell-access-ws.js";
 
 
 
@@ -109,6 +114,10 @@ export interface BrowserGateway {
   onConnect?: (ws: WebSocket) => void;
   /** Broadcast a message to all connected clients */
   broadcast(msg: ServerToBrowserMessage): void;
+  /** Plugin-origin broadcast. Unscoped plugin messages are operator-only. */
+  broadcastPluginMessage(msg: unknown): void;
+  /** Re-send principal-filtered replacement snapshots after registry changes. */
+  refreshAccessSnapshots(): void;
 }
 
 export function createBrowserGateway(
@@ -151,6 +160,8 @@ export function createBrowserGateway(
    * + session removal. Unset → admission SKIPPED (byte-unchanged).
    */
   operatorSet?: import("./operator-set-tracker.js").OperatorSetTracker,
+  /** Optional direct-dashboard guest→cell boundary. */
+  cellAccess?: CellAccessController,
 ): BrowserGateway {
   // perMessageDeflate enabled: the sessions_snapshot frame is ~345 KB uncompressed
   // at ~380 sessions and re-ships on every (re)connect; gzip of the identical payload
@@ -171,6 +182,9 @@ export function createBrowserGateway(
   // session-write derives its actor from the connection, never from the
   // message body (anti-spoof). See auth-merge contract invariant #2.
   const principals = new Map<WebSocket, TokenPayload | null>();
+  // Principal-filtered session ids currently projected to each browser. Needed
+  // so a later session_removed can clear a row after the manager binding is gone.
+  const visibleSessionIds = new Map<WebSocket, Set<string>>();
   // Track which sessions are mid-replay per WebSocket (suppress live events)
   const replayingSessions = new Map<WebSocket, Set<string>>();
 
@@ -294,8 +308,26 @@ export function createBrowserGateway(
   /** Max buffered bytes per browser WebSocket before dropping messages (0 = no limit) */
   const MAX_WS_BUFFER = maxWsBufferBytes ?? 4 * 1024 * 1024; // 4MB default
 
-  function sendTo(ws: WebSocket, msg: ServerToBrowserMessage) {
+  function sendTo(ws: WebSocket, msg: ServerToBrowserMessage, origin: "core" | "plugin" = "core") {
     if (ws.readyState !== WebSocket.OPEN) return;
+    let outgoing = msg;
+    if (cellAccess?.enabled) {
+      let visible = visibleSessionIds.get(ws);
+      if (!visible) {
+        visible = new Set<string>();
+        visibleSessionIds.set(ws, visible);
+      }
+      const filtered = filterServerMessageForPrincipal(
+        msg,
+        principals.get(ws) ?? null,
+        cellAccess,
+        (id) => sessionManager.get(id),
+        visible,
+        origin,
+      );
+      if (!filtered) return;
+      outgoing = filtered;
+    }
     // Drop messages if the send buffer is full (browser not consuming)
     if (MAX_WS_BUFFER > 0 && ws.bufferedAmount > MAX_WS_BUFFER) return;
     // Guard against V8's hard string-length cap (~512MB on 64-bit) and
@@ -311,10 +343,10 @@ export function createBrowserGateway(
     // can identify the offending session for downstream pagination work.
     let payload: string;
     try {
-      payload = JSON.stringify(msg);
+      payload = JSON.stringify(outgoing);
     } catch (err) {
-      const msgType = (msg as { type?: unknown } | null | undefined)?.type;
-      const sessionId = (msg as { sessionId?: unknown } | null | undefined)?.sessionId;
+      const msgType = (outgoing as { type?: unknown } | null | undefined)?.type;
+      const sessionId = (outgoing as { sessionId?: unknown } | null | undefined)?.sessionId;
       console.error(
         `[browser-gw] sendTo: JSON.stringify failed (type=${String(msgType)} sessionId=${String(sessionId)}): ` +
           `${err instanceof Error ? err.message : String(err)}`,
@@ -328,6 +360,17 @@ export function createBrowserGateway(
     for (const [ws] of subscriptions) {
       sendTo(ws, msg);
     }
+  }
+
+  function sendSessionsSnapshot(ws: WebSocket): void {
+    const sessionsSnapshot = sessionManager.listAll();
+    const orders: Record<string, string[]> = {};
+    if (sessionOrderManager) {
+      for (const [cwd, sessionIds] of Object.entries(sessionOrderManager.getAllOrders())) {
+        if (sessionIds.length > 0) orders[cwd] = sessionIds;
+      }
+    }
+    sendTo(ws, { type: "sessions_snapshot", sessions: sessionsSnapshot, orders });
   }
 
   // Per-seam boundary (Fault B / open-risk #8): isolate + LOUD-log a browser
@@ -350,6 +393,7 @@ export function createBrowserGateway(
     // single-operator) is normalized to `null`.
     const boundPrincipal = (req as { wsPrincipal?: TokenPayload | null } | undefined)?.wsPrincipal ?? null;
     principals.set(ws, boundPrincipal);
+    visibleSessionIds.set(ws, new Set());
 
     // Per-socket isolation: handle 'error' so a single browser socket fault
     // (reset / abrupt close) can NEVER bubble to an uncaught exception. Tear
@@ -365,16 +409,7 @@ export function createBrowserGateway(
     // `sessions` Map and `sessionOrderMap` on receipt so stale ids from a
     // previous server lifetime are dropped atomically.
     // See change: fix-stale-sessions-on-reconnect.
-    {
-      const sessionsSnapshot = sessionManager.listAll();
-      const orders: Record<string, string[]> = {};
-      if (sessionOrderManager) {
-        for (const [cwd, sessionIds] of Object.entries(sessionOrderManager.getAllOrders())) {
-          if (sessionIds.length > 0) orders[cwd] = sessionIds;
-        }
-      }
-      sendTo(ws, { type: "sessions_snapshot", sessions: sessionsSnapshot, orders });
-    }
+    sendSessionsSnapshot(ws);
 
     // Send pinned directories on connect
     if (preferencesStore) {
@@ -432,6 +467,7 @@ export function createBrowserGateway(
           requireBrowserAuth,
           ...(operatorUsers ? { operatorUsers } : {}),
           ...(operatorSet ? { operatorSet } : {}),
+          ...(cellAccess ? { cellAccess } : {}),
           sendTo, broadcast, getSubscribers, replayPendingUiRequests,
           trackUiRequest: trackUiRequest,
           markReplaying(targetWs, sessionId) {
@@ -459,6 +495,25 @@ export function createBrowserGateway(
             }
           },
         };
+
+        // ── Direct guest→cell ingress boundary ──────────────────────────────
+        // Runs before D admission/action classification so outside and missing
+        // session ids have one observable result and never reach a handler.
+        if (cellAccess?.enabled) {
+          const boundary = authorizeGuestBrowserMessage(
+            msg,
+            ctx.principal,
+            cellAccess,
+            (id) => sessionManager.get(id),
+          );
+          if (!boundary.allowed) {
+            console.error(
+              `[browser-gw] browser message refused by cell boundary ` +
+                `(type=${String((msg as any).type)}, reason=${boundary.reason})`,
+            );
+            return;
+          }
+        }
 
         // ── Build-1b WS-closure: the CENTRAL session-write gate ─────────────
         // Every browser message passes through the ONE `authorizeSessionAction`
@@ -782,6 +837,7 @@ export function createBrowserGateway(
       console.error(`[browser-gw] browser client disconnected (remaining: ${subscriptions.size - 1})`);
       subscriptions.delete(ws);
       replayingSessions.delete(ws);
+      visibleSessionIds.delete(ws);
       // Stream-2 D: capture this socket's `sub` BEFORE dropping the principal, so
       // the operator-cell release below (keyed by `sub`) can free the slot.
       const closingSub = principals.get(ws)?.sub;
@@ -829,6 +885,14 @@ export function createBrowserGateway(
 
     broadcast(msg: ServerToBrowserMessage) {
       broadcast(msg);
+    },
+
+    broadcastPluginMessage(msg: unknown) {
+      for (const [ws] of subscriptions) sendTo(ws, msg as ServerToBrowserMessage, "plugin");
+    },
+
+    refreshAccessSnapshots() {
+      for (const [ws] of subscriptions) sendSessionsSnapshot(ws);
     },
 
     broadcastEvent(sessionId: string, seq: number, event: any) {

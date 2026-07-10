@@ -553,6 +553,10 @@ export interface BrowserAssetRegisterMessage {
   data: string;
 }
 
+export interface PongMessage {
+  type: "pong";
+}
+
 /** Per-session push notification preferences update. */
 export interface PushPrefsUpdateMessage {
   type: "push_prefs_update";
@@ -573,6 +577,7 @@ export interface PluginConfigUpdateMessage {
 }
 
 export type ServerToBrowserMessage =
+  | PongMessage
   | PluginConfigUpdateMessage
   | SessionAddedMessage
   | SessionUpdatedMessage
@@ -623,6 +628,10 @@ export type ServerToBrowserMessage =
   | BrowserExtUiDecoratorMessage
   | BrowserAssetRegisterMessage
   | PushPrefsUpdateMessage;
+
+export interface PingMessage {
+  type: "ping";
+}
 
 export interface SubscribeMessage {
   type: "subscribe";
@@ -1007,6 +1016,7 @@ export interface UiManagementBrowserMessage {
 }
 
 export type BrowserToServerMessage =
+  | PingMessage
   | SubscribeMessage
   | UnsubscribeMessage
   | BrowserExtensionUiResponseMessage

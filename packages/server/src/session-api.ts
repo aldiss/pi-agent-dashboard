@@ -112,6 +112,7 @@ export interface SessionApiDeps {
    * chokepoint. Unset → admission SKIPPED (byte-unchanged).
    */
   operatorSet?: import("./operator-set-tracker.js").OperatorSetTracker;
+  cellAccess?: import("./cell-access.js").CellAccessController;
 }
 
 type IdParams = { Params: { id: string } };
@@ -200,6 +201,8 @@ export function registerSessionApi(fastify: FastifyInstance, deps: SessionApiDep
     requireBrowserAuth: deps.requireBrowserAuth === true,
     ...(deps.operatorUsers ? { operatorUsers: deps.operatorUsers } : {}),
     ...(deps.operatorSet ? { operatorSet: deps.operatorSet } : {}),
+    ...(deps.cellAccess ? { cellAccess: deps.cellAccess } : {}),
+    getSession: (id) => sessionManager.get(id),
   });
 
   // PUSHBACK-3 FIX-P3-1: the `/prompt` route gets a command-classifying gate.
@@ -211,6 +214,8 @@ export function registerSessionApi(fastify: FastifyInstance, deps: SessionApiDep
     requireBrowserAuth: deps.requireBrowserAuth === true,
     ...(deps.operatorUsers ? { operatorUsers: deps.operatorUsers } : {}),
     ...(deps.operatorSet ? { operatorSet: deps.operatorSet } : {}),
+    ...(deps.cellAccess ? { cellAccess: deps.cellAccess } : {}),
+    getSession: (id) => sessionManager.get(id),
   });
 
   // Post-respawn VERIFY gate (build-gate item 2). Production default wires the

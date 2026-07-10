@@ -4,7 +4,12 @@
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { loadConfig, type DashboardConfig, type AuthConfig } from "@blackbelt-technology/pi-dashboard-shared/config.js";
+import {
+  loadConfig,
+  validateGuestCellGrants,
+  type DashboardConfig,
+  type AuthConfig,
+} from "@blackbelt-technology/pi-dashboard-shared/config.js";
 import { refreshModelRegistry } from "./model-proxy/registry-singleton.js";
 
 const REDACTED = "***";
@@ -166,6 +171,45 @@ export function writeConfigPartial(partial: Record<string, any>): WriteConfigRes
           restartRequired = true;
         }
         mergedAuth.requireBrowserAuth = next;
+      }
+
+      // Per-cell guest boundary. Presence activates enforcement; malformed or
+      // uncoupled writes are refused before disk mutation.
+      if (partial.auth.guestCellGrants !== undefined) {
+        const validation = validateGuestCellGrants(partial.auth.guestCellGrants);
+        if (!validation.ok) {
+          return {
+            success: false,
+            restartRequired: false,
+            validationError: true,
+            error: validation.error,
+          };
+        }
+        if (
+          JSON.stringify(existingAuth.guestCellGrants ?? null)
+          !== JSON.stringify(validation.value)
+        ) {
+          restartRequired = true;
+        }
+        mergedAuth.guestCellGrants = validation.value;
+      }
+
+      if (mergedAuth.guestCellGrants !== undefined) {
+        const validation = validateGuestCellGrants(mergedAuth.guestCellGrants);
+        const usableOperator = Array.isArray(mergedAuth.operatorUsers)
+          && mergedAuth.operatorUsers.some(
+            (u: unknown) => typeof u === "string" && u.trim().length > 0,
+          );
+        if (!validation.ok || mergedAuth.requireBrowserAuth !== true || !usableOperator) {
+          return {
+            success: false,
+            restartRequired: false,
+            validationError: true,
+            error: !validation.ok
+              ? validation.error
+              : "auth.guestCellGrants requires auth.requireBrowserAuth:true and at least one usable auth.operatorUsers identity",
+          };
+        }
       }
 
       // fix-trusted-networks-no-oauth: propagate bypassHosts / bypassUrls

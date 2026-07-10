@@ -26,6 +26,7 @@ import { readSpawnFailures } from "../spawn-failure-log.js";
 import { getPluginStatusStore } from "@blackbelt-technology/dashboard-plugin-runtime/server";
 import type { NetworkInterface } from "@blackbelt-technology/pi-dashboard-shared/rest-api.js";
 import type { BootstrapStateStore } from "../bootstrap-state.js";
+import { classifyCellHttpActor } from "../cell-access-http.js";
 
 export function registerSystemRoutes(
   fastify: FastifyInstance,
@@ -41,6 +42,8 @@ export function registerSystemRoutes(
     piGateway?: PiGateway;
     bootstrapState?: BootstrapStateStore;
     eventStore?: EventStore;
+    cellAccess?: import("../cell-access.js").CellAccessController;
+    onCellAccessChanged?: () => void;
   },
 ) {
   const { sessionManager, preferencesStore, metaPersistence, config, networkGuard, version, commit, directoryService, piGateway, bootstrapState, eventStore } = deps;
@@ -202,6 +205,10 @@ export function registerSystemRoutes(
             config.authConfig.secret = authSecretAtStartup;
           }
         }
+        if (partial.auth.allowedUsers !== undefined && deps.cellAccess?.enabled) {
+          deps.cellAccess.updateAllowedUsers(reloaded.auth?.allowedUsers);
+          deps.onCellAccessChanged?.();
+        }
         if (reloaded.auth && (fastify as any)._reloadAuth) {
           await (fastify as any)._reloadAuth(reloaded.auth);
         }
@@ -239,7 +246,7 @@ export function registerSystemRoutes(
   });
 
   // Health endpoint — includes server + agent process metrics
-  fastify.get("/api/health", async () => {
+  fastify.get("/api/health", async (request) => {
     const mem = process.memoryUsage();
     const activeSessions = sessionManager.listActive();
     const agentMetrics = activeSessions
@@ -286,6 +293,24 @@ export function registerSystemRoutes(
       health.push = { errors: config.push.errors };
     }
 
+    if (deps.cellAccess?.enabled) {
+      const actor = classifyCellHttpActor(request, deps.cellAccess);
+      const principal = (request as any).restPrincipal ?? null;
+      if (
+        actor === "guest"
+        || actor === "anonymous"
+        || (actor === "operator" && !deps.cellAccess.isPrincipalAdmitted(principal))
+      ) {
+        return {
+          ok: health.ok,
+          version: health.version,
+          commit: health.commit,
+          uptime: health.uptime,
+          mode: health.mode,
+          gatewayListening: health.gatewayListening,
+        };
+      }
+    }
     return health;
   });
 

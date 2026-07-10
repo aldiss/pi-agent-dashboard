@@ -161,6 +161,8 @@ export function authorizeWsMessage(
         ...(ctx.operatorUsers ? { operatorUsers: ctx.operatorUsers } : {}),
         ...(sessionId ? { sessionId } : {}),
         ...(ctx.operatorSet ? { operatorSet: ctx.operatorSet } : {}),
+        ...(ctx.cellAccess ? { cellAccess: ctx.cellAccess } : {}),
+        ...(session ? { session } : {}),
       });
       return { ...decision, action: "ui_management", passThrough: false };
     }
@@ -186,6 +188,10 @@ export function authorizeWsMessage(
       ? { sessionId: (msg as { sessionId?: string }).sessionId }
       : {}),
     ...(ctx.operatorSet ? { operatorSet: ctx.operatorSet } : {}),
+    ...(ctx.cellAccess ? { cellAccess: ctx.cellAccess } : {}),
+    ...(((msg as { sessionId?: string }).sessionId)
+      ? { session: ctx.sessionManager.get((msg as { sessionId: string }).sessionId) }
+      : {}),
   });
   return { ...decision, action, passThrough: false };
 }

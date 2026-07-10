@@ -53,6 +53,12 @@ export interface DashboardSession {
   id: string;
   cwd: string;
   name?: string;
+  /**
+   * Server-derived orchestration cell identity used by the guest access boundary.
+   * Never accepted from browser/bridge payloads. Persisted only after an exact
+   * registry/session identity bind; missing/ambiguous means guest-hidden.
+   */
+  accessCellId?: string;
   source: SessionSource;
   status: SessionStatus;
   model?: string;

@@ -247,6 +247,8 @@ export async function handleSendPrompt(
     // derivation unchanged (anti-spoof — never the body).
     ...(msg.sessionId ? { sessionId: msg.sessionId } : {}),
     ...(ctx.operatorSet ? { operatorSet: ctx.operatorSet } : {}),
+    ...(ctx.cellAccess ? { cellAccess: ctx.cellAccess } : {}),
+    ...(msg.sessionId ? { session: sessionManager.get(msg.sessionId) } : {}),
   });
   if (!decision.allowed) {
     console.error(
@@ -284,6 +286,8 @@ export async function handleSendPrompt(
       // already admitted by the :236 co-drive gate above.
       ...(msg.sessionId ? { sessionId: msg.sessionId } : {}),
       ...(ctx.operatorSet ? { operatorSet: ctx.operatorSet } : {}),
+      ...(ctx.cellAccess ? { cellAccess: ctx.cellAccess } : {}),
+      ...(msg.sessionId ? { session: sessionManager.get(msg.sessionId) } : {}),
     });
     if (!reloadDecision.allowed) {
       console.error(
@@ -325,6 +329,8 @@ export async function handleSendPrompt(
       // idempotent for a member already admitted at :236).
       ...(msg.sessionId ? { sessionId: msg.sessionId } : {}),
       ...(ctx.operatorSet ? { operatorSet: ctx.operatorSet } : {}),
+      ...(ctx.cellAccess ? { cellAccess: ctx.cellAccess } : {}),
+      ...(msg.sessionId ? { session: sessionManager.get(msg.sessionId) } : {}),
     });
     if (!commandDecision.allowed) {
       console.error(
@@ -364,6 +370,8 @@ export async function handleSendPrompt(
       // idempotent for a member already admitted at :236).
       ...(msg.sessionId ? { sessionId: msg.sessionId } : {}),
       ...(ctx.operatorSet ? { operatorSet: ctx.operatorSet } : {}),
+      ...(ctx.cellAccess ? { cellAccess: ctx.cellAccess } : {}),
+      ...(msg.sessionId ? { session: sessionManager.get(msg.sessionId) } : {}),
     });
     if (!resumeDecision.allowed) {
       console.error(

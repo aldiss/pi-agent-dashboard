@@ -10,6 +10,7 @@ import type { ApiResponse, DashboardSession } from "@blackbelt-technology/pi-das
 import type { NetworkGuard } from "./route-deps.js";
 import { extractFileChanges, enrichWithGitDiff } from "../session-diff.js";
 import { makeRestSessionGate } from "../rest-session-gate.js";
+import { classifyCellHttpActor } from "../cell-access-http.js";
 import {
   reconcileSessionHygiene,
   evaluateRetire,
@@ -46,6 +47,7 @@ export function registerSessionRoutes(
      * there — retire stays operator-only regardless.
      */
     operatorSet?: import("../operator-set-tracker.js").OperatorSetTracker;
+    cellAccess?: import("../cell-access.js").CellAccessController;
   },
 ) {
   const { sessionManager, eventStore, networkGuard, hygieneProbes, broadcastSessionUpdated } = deps;
@@ -60,6 +62,8 @@ export function registerSessionRoutes(
     requireBrowserAuth: deps.requireBrowserAuth === true,
     ...(deps.operatorUsers ? { operatorUsers: deps.operatorUsers } : {}),
     ...(deps.operatorSet ? { operatorSet: deps.operatorSet } : {}),
+    ...(deps.cellAccess ? { cellAccess: deps.cellAccess } : {}),
+    getSession: (id) => sessionManager.get(id),
   });
 
   // GET /api/sessions — read-path hygiene (F1 reap + demote, F2 name-canon,
@@ -67,16 +71,26 @@ export function registerSessionRoutes(
   // list. Each action is applied to the in-memory manager AND broadcast so both
   // the responding fetch and live subscribers converge. (The cadence sweep in
   // server.ts runs the same reconcile on a timer with the post-restart grace.)
-  fastify.get("/api/sessions", async () => {
-    const actions = reconcileSessionHygiene(sessionManager.listAll(), hygieneProbes, {
-      nowMs: nowFn(),
-      graceMs: hygieneGraceMs,
-    });
-    for (const a of actions) {
-      sessionManager.update(a.sessionId, a.updates);
-      broadcastSessionUpdated(a.sessionId, a.updates);
+  fastify.get("/api/sessions", async (request) => {
+    const cellAccess = deps.cellAccess;
+    const actor = cellAccess ? classifyCellHttpActor(request, cellAccess) : "operator";
+    // A guest list read must not trigger global hygiene mutations in outside
+    // cells. The existing cadence sweep remains the mutation owner.
+    if (actor !== "guest") {
+      const actions = reconcileSessionHygiene(sessionManager.listAll(), hygieneProbes, {
+        nowMs: nowFn(),
+        graceMs: hygieneGraceMs,
+      });
+      for (const a of actions) {
+        sessionManager.update(a.sessionId, a.updates);
+        broadcastSessionUpdated(a.sessionId, a.updates);
+      }
     }
-    return { success: true, data: sessionManager.listAll() } satisfies ApiResponse;
+    const all = sessionManager.listAll();
+    const data = actor === "guest" && cellAccess
+      ? cellAccess.filterSessions((request as any).restPrincipal ?? null, all)
+      : all;
+    return { success: true, data } satisfies ApiResponse;
   });
 
   // POST /api/sessions/retire — the reaper consumer endpoint (AutoHandoffDriver
