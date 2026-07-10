@@ -8,6 +8,34 @@
 
 | File | Purpose |
 |------|---------|
+| `packages/server/src/__tests__/cell-access-authz.test.ts` | Tests cell check before D N=2 admission; pins operator/service access and existing guest action limits. |
+| `packages/server/src/__tests__/cell-access-config.test.ts` | Tests `guestCellGrants` parsing, fail-closed coupling, partial-write preservation, and restart flag. |
+| `packages/server/src/__tests__/cell-access-e2e.test.ts` | Tests assembled REST + WS boundary. Pins same-CWD isolation, plugin-origin denial, SPA deep links, service continuity, and live `allowedUsers` revocation snapshots. |
+| `packages/server/src/__tests__/cell-access-health.test.ts` | Tests liveness-only health for anonymous/guest/trusted-network callers and full health for operator/local/service callers. |
+| `packages/server/src/__tests__/cell-access-http.test.ts` | Tests exact HTTP route classification, session `404`, trusted-network denial, core ownership, and root `onRequest` before plugin hooks. |
+| `packages/server/src/__tests__/cell-access-push-routes.test.ts` | Tests verified push ownership, guest self-service scope, cross-owner `404`, and operator-only manual send. |
+| `packages/server/src/__tests__/cell-access-push.test.ts` | Tests owner persistence, legacy-token quarantine, and per-cell automatic fanout. |
+| `packages/server/src/__tests__/cell-access-ws.test.ts` | Tests exact guest WS allowlists, replacement snapshots, `session_removed`, safe `pong`, unknown-type denial, and plugin origin. |
+| `packages/server/src/__tests__/cell-access.test.ts` | Tests registry-derived cell identity, exact log/session joins, no CWD/PID authority, selector union, and absent-map legacy mode. |
+| `packages/server/src/browser-gateway.ts` | Applies final WS filtering. Tracks plugin origin. Sends principal-filtered replacement snapshots after registry or `allowedUsers` changes. |
+| `packages/server/src/browser-handlers/handler-context.ts` | Carries `CellAccessController` through browser handlers. |
+| `packages/server/src/browser-handlers/session-action-handler.ts` | Passes server-resolved target into `send_prompt`, `/reload`, command-form, and auto-resume authorization. Abort gate stays in `browser-gateway.ts`. |
+| `packages/server/src/cell-access-http.ts` | Runs root `onRequest`. Captures identity before plugin hooks. Requires exact method+path and core ownership for safe exceptions. Preserves SPA deep links. |
+| `packages/server/src/cell-access-ws.ts` | Defines exact guest ingress/egress allowlists. Rebuilds snapshot projection. Preserves deletion via `session_removed`. Rejects plugin origin. |
+| `packages/server/src/cell-access.ts` | Resolves registry-derived cell identity. Computes roles/grants. Rechecks mutable `allowedUsers` admission. |
+| `packages/server/src/config-api.ts` | Validates and persists `guestCellGrants`. Preserves omitted auth fields. Marks grant/operator/browser-auth changes restart-required. |
+| `packages/server/src/push/push-dispatcher.ts` | Applies optional per-token/session `canDeliver` gate before automatic fanout. |
+| `packages/server/src/push/push-token-registry.ts` | Persists server-stamped push-token owner metadata. |
+| `packages/server/src/push/push-types.ts` | Defines `PushPrincipal` and optional verified `PushToken.owner`. |
+| `packages/server/src/rest-session-gate.ts` | Applies cell access before REST action gates; maps outside/missing sessions to identical `404`. |
+| `packages/server/src/routes/push-routes.ts` | Stamps push owners; scopes guest token list/delete/test; keeps manual send operator-only. |
+| `packages/server/src/routes/session-routes.ts` | Filters guest session collections; skips guest-triggered global hygiene mutation; gates session endpoints. |
+| `packages/server/src/routes/system-routes.ts` | Returns six-field boundary-mode guest health. Applies `allowedUsers` live to `CellAccessController`. Triggers replacement snapshots. |
+| `packages/server/src/server.ts` | Installs root HTTP `onRequest`; records core routes before plugin load; routes plugin broadcasts with origin; composes cell, WS, push, and upgrade gates. |
+| `packages/server/src/session-api.ts` | Threads cell controller and session lookup into REST session gates. |
+| `packages/server/src/session-authz.ts` | Enforces guest cell visibility before D admission and action classification. |
+| `packages/server/src/session-scanner.ts` | Restores server-derived `accessCellId` from session metadata. |
+| `packages/server/src/ws-session-gate.ts` | Threads cell controller and server-resolved target into central WS action authorization. |
 | `src/server/git-operations.ts` | Server-side git commands: branch listing, checkout, init, stash pop |
 | `src/server/routes/plugin-config-routes.ts` | `POST /api/config/plugins/:id` — validates `:id`, validates body against `configSchema`, merges into `plugins.<id>.*`, atomic-writes, broadcasts `plugin_config_update`. Auth-gated. |
 | `src/server/session-stats-reader.ts` | Reads cumulative stats + context usage from session JSONL files at startup |

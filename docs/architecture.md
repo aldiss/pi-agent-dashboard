@@ -849,7 +849,7 @@ The content area (right panel) shows one view at a time: ChatView, ArchiveBrowse
 
 ### Network Access Control
 
-The server has a two-layer access model:
+Server uses three access layers:
 
 **Layer 1: Network Guard (`createNetworkGuard`)** — Fastify `preHandler` on all sensitive routes. Allows requests via three paths:
 1. **Loopback** — `127.0.0.1`, `::1`, `::ffff:127.0.0.1` (always allowed)
@@ -860,11 +860,15 @@ Otherwise → 403. The guard strips `::ffff:` IPv4-mapped prefixes before matchi
 
 **Layer 2: Auth Plugin (`onRequest` hook)** — Only registered when `auth` is configured. Skips loopback, trusted networks, `/auth/*`, `/api/health`, and `bypassUrls`. Validates JWT cookie for all other requests. Tags valid requests with `request.isAuthenticated = true`.
 
-**Execution order**: `onRequest` (auth) → `preHandler` (guard) → handler. This means the auth hook tags the request before the guard checks it.
+**Layer 3: per-cell guest boundary (`createCellAccessHttpGate`)** — Activates when `auth.guestCellGrants` exists. Runs as root `onRequest`. Registers before auth plugin and plugin loading. Verifies JWT cookie or shared-secret Bearer header. Captures identity before downstream plugin hooks. Verified human identity outranks network location. Principal-less trusted-network callers cannot reach session/global routes. Unknown routes default operator-only.
 
-**WebSocket upgrades** follow the same logic: loopback → trusted network → JWT cookie validation.
+Safe auth, health, and `/v1` exceptions require exact method+declared path. `onRoute` records core ownership until plugin loading starts. Plugin routes cannot inherit reserved exceptions or answer through early hooks before root denial. Unmatched GET/HEAD outside `/api/` and `/editor/` remains guest-loadable for SPA deep links.
 
-**Zrok tunnel** connections appear as `127.0.0.1` (zrok proxies to localhost), so both layers pass automatically.
+**Execution order**: root cell-boundary `onRequest` → auth-plugin `onRequest` → plugin/route `onRequest` → route network-guard `preHandler` → handler.
+
+**WebSocket upgrades** use network/auth validation first. Boundary mode then restricts terminal/editor upgrades to operators or direct cookie-less loopback callers. Browser WebSocket messages pass separate cell ingress/egress gates.
+
+**Zrok tunnel** connections reach loopback transport. Verified browser principal still controls per-cell role when boundary mode runs.
 
 **`GET /api/network-interfaces`** returns detected non-internal IPv4 interfaces with computed CIDRs. Used by the Settings UI "Add Local Network" button. This endpoint uses the legacy `localhostGuard` (localhost-only, not network-guard-aware) since it exposes machine network topology.
 
@@ -877,18 +881,130 @@ Optional OAuth2 authentication protects the dashboard when accessed remotely.
 3. The `onRequest` hook skips localhost requests (`isLoopback`), trusted network IPs (`resolvedTrustedNetworks`), `/auth/*` paths, `/api/health`, and configured `bypassUrls` path prefixes
 4. External requests without a valid `pi_dash_token` JWT cookie are redirected to `/auth/login`
 5. `/auth/login` shows a provider picker (or auto-redirects if single provider)
-6. OAuth callback exchanges code for token, fetches user info, validates against `allowedEmails`
+6. OAuth callback exchanges code for token, fetches user info, validates against `allowedUsers`
 7. On success, a signed JWT cookie is set (7-day expiry) and user is redirected back
 8. WebSocket upgrade requests are also validated — external connections without valid cookie or trusted network get 401
 9. Supported providers: GitHub (hardcoded endpoints), Google/Keycloak/OIDC (via OIDC discovery)
 
+### Per-cell guest boundary
+
+`auth.guestCellGrants` enables direct dashboard/API isolation for authenticated non-operators.
+
+#### Threat model A: trusted co-driver
+
+- Boundary covers direct HTTP, REST, browser WebSocket, terminal/editor upgrade, Web Push, and plugin/broadcast delivery.
+- Allowed agent runs as dashboard OS user.
+- `<speaker>` labels model-visible author. It does not restrict agent tool calls.
+- Guest can prompt allowed agent to read host files, call loopback APIs, mutate registries, spawn children, or relay outside-cell data.
+- Those mediated actions remain outside v1 contract.
+- Feature provides no hard sandbox or hard guest-origin confinement.
+
+#### Config activation
+
+| Config state | Result |
+|---|---|
+| `auth.guestCellGrants` absent | Preserve legacy authenticated-guest behavior |
+| `auth.guestCellGrants: {}` | Activate boundary; expose zero sessions to every guest |
+| Matching selector | Union cells from exact verified email/username matches; compare selectors case-insensitively |
+| Unmatched selector | Expose zero sessions |
+
+Present map requires `auth.requireBrowserAuth === true` and one usable `auth.operatorUsers` identity.
+
+Malformed map, malformed entry, missing browser-auth gate, or missing operator identity refuses startup and config write.
+
+Cell IDs compare exactly. Selector wildcards receive no special handling.
+
+Partial config writes preserve omitted grants, OAuth secrets, providers, and operator users.
+
+`auth.allowedUsers` changes apply live. Server updates `CellAccessController` and sends replacement `sessions_snapshot` messages immediately. Existing cookies removed from allowlist lose protected REST, browser WebSocket, and push access without restart. Socket transport may stay open; message gates deny access and replacement snapshot clears projection.
+
+`auth.guestCellGrants`, `auth.operatorUsers`, and `auth.requireBrowserAuth` changes set `restartRequired`. Grant activation and revocation require restart.
+
+#### Registry-derived cell identity
+
+Access cell equals `drivers.<driver-name>.cell` from `~/.pi/orchestration-state/cell-driver-registry.json`.
+
+Server resolves pi sessions through exact messenger `sessionId` → driver name/PID → driver entry.
+
+Server resolves CC/non-mesh sessions through exact `session_log` UUID/path binding.
+
+PID only never grants membership. PID mismatch rejects stale name binding.
+
+CWD, branch, display name, client payload, and request body never grant membership.
+
+Conflicting exact bindings produce unclassified sessions. Guests cannot view unclassified sessions.
+
+Missing live binding stays unclassified unless validated persisted `accessCellId` supplies historical binding.
+
+Server persists derived `accessCellId` in session `.meta.json`.
+
+Persisted `accessCellId` authorizes only while valid current registry snapshot recognizes same cell.
+
+Invalid registry snapshot fails guest resolution closed. Operators and background work keep full internal state.
+
+Registry poll runs every 2 seconds. Changed registry sends principal-filtered replacement snapshots.
+
+#### Authorization composition
+
+Human session action applies:
+
+`verified principal ∩ allowedUsers ∩ guestCellGrants ∩ D N=2 admission ∩ existing action class`
+
+Operators bypass cell grants. Verified service actors and direct local automation keep existing internal behavior.
+
+Guests inside granted cells receive session view/co-drive surface:
+
+- Session snapshot, chat/event replay, incremental events, and read-only command/model/role metadata.
+- Raw `send_prompt`, `abort`, interactive prompt responses, and extension UI responses.
+- Existing command-form, lifecycle, model, thinking, flow, spawn, resume, shutdown, rename, hide, and preference restrictions.
+
+Guests never receive host/global/CWD administration:
+
+- Terminal/editor, config, restart, shutdown, tunnel, provider, model-proxy-key, package, and global-preference APIs.
+- File, browse, git, OpenSpec, pinned-directory, session-file, session-diff, `list_sessions`, and `list_files` surfaces.
+- Global orchestration sessions unless separately registered inside granted cell.
+
+#### Server enforcement and non-enumerability
+
+Client hiding provides UX only. Server gates provide authority.
+
+| Surface | Boundary behavior |
+|---|---|
+| WS snapshot | Filter `sessions_snapshot` and `orders`; clear and rebuild per-socket visible IDs; omit hidden IDs and empty CWD keys |
+| WS ingress | Require exact core-message allowlist plus `canViewSession`; deny unknown types even with allowed `sessionId` |
+| WS egress | Require exact core-message allowlist at final `sendTo`; drop outside, unknown, and unscoped carriers |
+| Plugin WS egress | Tag plugin origin; keep every plugin broadcast operator-only |
+| WS safe-global | Rebuild exact `pong` payload; discard added fields |
+| REST collection | Filter `GET /api/sessions`; skip read-triggered global hygiene mutation for guest request |
+| REST session route | Check cell before handler; return `404 {"success":false,"error":"session not found"}` for outside and missing IDs |
+| REST global/CWD route | Return guest denial before handler |
+| SPA fallback | Allow unmatched non-API GET/HEAD deep links for guest shell loading |
+| Terminal/editor upgrade | Require operator or direct cookie-less loopback caller |
+
+Replacement `sessions_snapshot` clears and rebuilds socket projection. Client replaces session/order maps atomically. `session_removed` handles deletion when manager binding disappears before final broadcast.
+
+Outside-cell direct probes never reach bridge/manager side effects.
+
+#### Health, push, outbound, and plugin closure
+
+- Remote anonymous, principal-less trusted-network, and guest `/api/health` callers receive exactly `ok`, `version`, `commit`, `uptime`, `mode`, `gatewayListening`.
+- Operator, verified service, and direct loopback health callers retain full diagnostics.
+- Push registration stamps verified `{ provider, sub, username }` owner. Request body cannot choose owner.
+- Automatic push fanout rechecks current `allowedUsers` admission and cell visibility.
+- Existing cookies and push tokens lose protected access immediately after `allowedUsers` revocation.
+- Ownerless or malformed legacy push tokens stay quarantined until re-registration.
+- Guest push list/delete/test operations target own tokens only. `/api/push/send` remains operator-only. VAPID public key remains public.
+- Root `onRequest` covers plugin routes registered later through `ctx.fastify`. Exact safe-route exceptions also require pre-plugin core ownership. Plugin early hooks cannot bypass denial.
+- `ServerPluginContext.broadcastToSubscribers` marks plugin origin. Final `sendTo` keeps plugin broadcasts operator-only, including core-type or `sessionId` spoofing.
+- Public health omits plugin status and fleet inventory.
+
 ### Settings Panel
-The web client includes a Settings panel (gear icon in sidebar header → `/settings` route) that lets users view and edit all dashboard configuration. The panel:
+The web client includes a Settings panel (gear icon in sidebar header → `/settings` route) for UI-exposed configuration. `auth.guestCellGrants` remains config-file/partial-API only in v1. The panel:
 1. Loads config via `GET /api/config` (secrets redacted as `***`)
 2. Renders grouped form fields per tab — General: Server, Sessions, Tunnel, Developer; Security: Authentication (OAuth providers, Allowed Users, Bypass URL Prefixes) and Trusted Networks (writes `auth.bypassHosts`, with "+ Add Local Network" auto-detect + manual IP/wildcard/CIDR entry)
 3. Sends only changed fields via `PUT /api/config` (partial merge)
 4. Server preserves `***` secrets (doesn't overwrite real values), writes to disk, and applies runtime-safe changes
-5. Port/piPort changes flag `restartRequired` in the response
+5. Port, piPort, `auth.requireBrowserAuth`, `auth.operatorUsers`, and `auth.guestCellGrants` changes flag `restartRequired`. `auth.allowedUsers` applies live.
 
 ### Reconnection Flow
 1. Browser reconnects with `subscribe` message including `lastSeq`
@@ -954,7 +1070,7 @@ The per-message ⤘ Fork button needs each chat bubble to carry the entry id of 
 |------|---------|---------|
 | Events | In-memory Map | LRU eviction, max 100 sessions. Pinned if active bridge or browser subscribers. |
 | Sessions | In-memory Map + `.meta.json` | In-memory registry. Each session's state cached in per-session `.meta.json` sidecar next to `.jsonl`. On startup, `session-scanner.ts` scans `~/.pi/agent/sessions/*/` to restore all sessions from cached meta. |
-| Session meta | `~/.pi/agent/sessions/…/<id>.meta.json` | Per-session sidecar: dashboard-owned state (name, attachedProposal, hidden, source) + cached stats (tokens, cost, model, status). Debounced per-session writes (max 1/sec). Stale cache detected via `cachedAt` vs `.jsonl` mtime. |
+| Session meta | `~/.pi/agent/sessions/…/<id>.meta.json` | Dashboard state + cached stats + server-derived `accessCellId`. Guest auth revalidates cached cell against current registry snapshot. Debounced writes, max 1/sec. |
 | Pinned directories | `~/.pi/dashboard/preferences.json` | Ordered array of cwd paths. Pinned dirs always visible in sidebar. |
 | Session order | `~/.pi/dashboard/preferences.json` | Per-cwd ordering managed by `session-order-manager.ts`. |
 | Server PID | `~/.pi/dashboard/server.pid` | Tracks running server process for daemon management. |
@@ -974,6 +1090,9 @@ Precedence: CLI flags → environment variables → config file (`~/.pi/dashboar
 | `autoShutdown` | false | Server shuts down after idle period (disabled by default; enable for TUI auto-start scenarios) |
 | `shutdownIdleSeconds` | 300 | Idle timeout before auto-shutdown |
 | `spawnStrategy` | `"headless"` | How to spawn new sessions: `"headless"` or `"tmux"` |
+| `auth.requireBrowserAuth` | false | Require verified browser principals. Must equal `true` with `auth.guestCellGrants` |
+| `auth.operatorUsers` | absent | Exact operator identities. At least one usable entry required with `auth.guestCellGrants` |
+| `auth.guestCellGrants` | absent | Optional guest selector → registry cell-ID map. Presence activates guest boundary |
 | `tunnel.enabled` | true | Enable zrok tunnel for remote access |
 | `tunnel.reservedToken` | _(auto)_ | Reserved zrok share token for persistent URL (auto-created on first run) |
 
@@ -1417,6 +1536,7 @@ Two separate predicates in `event-status-extraction.ts`, evaluated independently
 - **Replay suppression**: push never fires on replay events.
 - **Stale-view TTL**: `viewedSessionTracker.isViewedByAnyone(sessionId, {staleMs: 60_000})`. Background tabs and sleeping laptops suppress push for ≤60s after last view, then push resumes.
 - **Config opt-in**: `push.enabled === false` by default. No dispatcher, no routes, no VAPID keys. Zero cost for non-users.
+- **Cell boundary**: automatic fanout checks token owner admission and current session visibility. Outside-cell events produce no guest notification.
 
 ### Coalescing
 
@@ -1433,10 +1553,24 @@ Per-send 10s timeout enforced via `AbortController` + `setTimeout`. Transport in
 Tokens persisted to `~/.pi/dashboard/push-tokens.json` with `0600` permissions (atomic write via `json-store.ts`). Token shape:
 
 ```ts
-{ id, deviceToken: { endpoint, keys: { p256dh, auth } }, transport, userId?, registeredAt, lastUsedAt }
+{
+  id,
+  deviceToken: { endpoint, keys: { p256dh, auth } },
+  transport,
+  userId?,
+  owner?: { provider, sub, username },
+  registeredAt,
+  lastUsedAt
+}
 ```
 
-Uniqueness by `deviceToken.endpoint`. Idempotent re-registration updates `lastUsedAt`. Dead tokens (410/404 from push service) auto-pruned by dispatcher.
+Uniqueness uses `deviceToken.endpoint`. Idempotent re-registration updates `lastUsedAt` and verified owner.
+
+Boundary mode stamps owner from server-verified principal. Request body never supplies owner.
+
+Ownerless legacy tokens remain stored but receive no automatic fanout until re-registration.
+
+Dead tokens (410/404 from push service) auto-prune through dispatcher.
 
 ### Web Push Transport
 
@@ -1471,6 +1605,8 @@ When `enabled: true` and no `webPush.contactEmail`, `errors` populates `["missin
 | GET | `/api/push/vapid-public-key` | 30/min | VAPID public key for subscribe |
 
 `/api/push/send` validates `url` (single `/`, no `//`, same-origin), caps `title`≤200 + `body`≤500, and audit-logs every call.
+
+Boundary mode lets guests register, list, delete, and test only their own verified-principal tokens. Cross-owner token deletion returns `404`. Manual `/api/push/send` stays operator-only. `GET /api/push/vapid-public-key` stays safe-public.
 
 ### Skill Auth
 

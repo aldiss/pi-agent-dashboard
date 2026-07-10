@@ -170,7 +170,7 @@ Optional:
 
 - **Config file:** `~/.pi/dashboard/config.json` (auto-created with defaults on first run)
 - **Tool overrides (machine-local):** `~/.pi/dashboard/tool-overrides.json` — see [Tool overrides](#tool-overrides)
-- **Settings UI:** click the ⚙ gear icon in the sidebar header to edit all fields from the browser
+- **Settings UI:** click the ⚙ gear icon in the sidebar header to edit supported fields from the browser
 
 ### Precedence & keys
 
@@ -219,7 +219,7 @@ The bridge also honours `PI_DASHBOARD_URL=ws://host:port` to point at a remote s
 
 ### Authentication (optional)
 
-OAuth2 authentication guards external (tunnel) access. Localhost is always unguarded.
+OAuth2 authentication guards external (tunnel) access. Direct localhost callers remain available for local tooling.
 
 ```json
 {
@@ -230,7 +230,12 @@ OAuth2 authentication guards external (tunnel) access. Localhost is always ungua
       "google":   { "clientId": "...", "clientSecret": "..." },
       "keycloak": { "clientId": "...", "clientSecret": "...", "issuerUrl": "https://keycloak.example.com/realms/myrealm" }
     },
-    "allowedUsers": ["octocat", "user@example.com", "*@company.com"]
+    "allowedUsers": ["owner@example.com", "friend@example.com"],
+    "requireBrowserAuth": true,
+    "operatorUsers": ["owner@example.com"],
+    "guestCellGrants": {
+      "friend@example.com": ["example-cell/v1"]
+    }
   }
 }
 ```
@@ -239,11 +244,35 @@ OAuth2 authentication guards external (tunnel) access. Localhost is always ungua
 |-----|----------|-------------|
 | `auth.secret` | No | JWT signing secret (auto-generated if omitted) |
 | `auth.providers` | Yes | Map of provider → `{ clientId, clientSecret, issuerUrl? }` |
-| `auth.allowedUsers` | No | Allowlist: usernames, emails, or `*@domain` wildcards. Empty = allow all |
+| `auth.allowedUsers` | No | Login allowlist: usernames, emails, or `*@domain` wildcards. Empty = allow all |
+| `auth.requireBrowserAuth` | With `guestCellGrants` | Must be literal `true`; requires verified browser principals |
+| `auth.operatorUsers` | With `guestCellGrants` | Exact operator usernames/emails. Operators retain dashboard-wide access |
+| `auth.guestCellGrants` | No | Guest selector → registry cell-ID array. Exact email/username matching, case-insensitive; no wildcard expansion |
 
 **Supported providers:** `github`, `google`, `keycloak`, `oidc` (generic OIDC with `issuerUrl`).
 
 **Callback URL:** register `https://<tunnel-url>/auth/callback/<provider>` in your OAuth provider settings. The tunnel URL is stable across restarts (reserved shares are auto-created).
+
+#### Per-cell guest boundary
+
+`auth.guestCellGrants` constrains authenticated non-operators to selected orchestration cells.
+
+- Map absent: legacy authenticated-guest behavior remains unchanged.
+- Map present, including `{}`: boundary activates for every non-operator. Unmatched guests see zero sessions.
+- Multiple matching email/username selectors union their cell lists. Cell IDs match exactly.
+- Present map requires `auth.requireBrowserAuth: true` and at least one usable `auth.operatorUsers` entry. Malformed or uncoupled config refuses startup and config writes.
+- `auth.allowedUsers` changes apply live. Server refreshes `CellAccessController` and sends replacement `sessions_snapshot` messages. Existing revoked cookies lose protected REST, browser WebSocket, and push access immediately.
+- `auth.guestCellGrants`, `auth.operatorUsers`, and `auth.requireBrowserAuth` changes require a server restart. Partial config writes preserve omitted grants and OAuth secrets. No Settings UI exists for the grant map.
+- Cell identity comes from `~/.pi/orchestration-state/cell-driver-registry.json` → `drivers.<driver>.cell`, joined to exact session registry/log identity. CWD, branch, display name, and browser payload never grant membership.
+- Guests can view and co-drive sessions inside granted cells: chat/events, raw prompts, abort, and interactive responses. Existing command-form and lifecycle restrictions still apply.
+- Host/global/CWD surfaces remain operator-only: terminals, editors, files, git, OpenSpec, packages, config, restart, shutdown, preferences, and session file/diff APIs.
+- Root HTTP boundary runs at `onRequest` and captures identity before plugin hooks. Safe auth/health/`/v1` exceptions require exact method+path and core ownership recorded before plugin load. Plugin early hooks cannot bypass. SPA deep-link GET/HEAD stays guest-loadable.
+- Server filters REST and WebSocket ingress/egress. Outside-cell and nonexistent REST session IDs return the same `404`; outside WebSocket state never reaches the guest.
+- Browser WebSocket gates use exact core-message allowlists. Unknown types stay blocked even with a granted `sessionId`. Plugin broadcasts carry plugin origin and remain operator-only.
+- Replacement snapshots clear and rebuild the client session projection. `session_removed` handles actual deletion after a session leaves the server registry.
+- Boundary mode reduces remote anonymous/guest health to liveness fields, scopes push tokens/fanout by verified owner and cell, and quarantines ownerless legacy tokens.
+
+> **Trusted-co-driver boundary:** this mode constrains direct dashboard/API access. It does not sandbox an allowed agent running as the same OS user. A guest can ask that agent to use tools, read host files, call loopback APIs, mutate registries, spawn children, or relay outside-cell data. Use only with a trusted co-driver.
 
 > **Security note:** `/api/spawn-failures` is reachable to any caller on deployments without auth; entries contain `cwd` paths. Enable auth before exposing via tunnel.
 
@@ -568,11 +597,13 @@ The health endpoint provides server and agent process metrics:
 curl -s http://localhost:8000/api/health | jq
 ```
 
-Returns:
+Authenticated operators, verified service callers, and direct loopback callers receive:
 - `mode` — `"dev"` or `"production"`
 - `server.rss`, `server.heapUsed`, `server.heapTotal` — server memory
 - `server.activeSessions`, `server.totalSessions` — session counts
 - `agents[]` — per-agent metrics (CPU%, RSS, heap, event loop max delay, system load)
+
+With `auth.guestCellGrants` present, remote anonymous callers, trusted-network callers without a principal, and authenticated guests receive only `ok`, `version`, `commit`, `uptime`, `mode`, and `gatewayListening`.
 
 Agent metrics are collected every 15s via heartbeats and include `eventLoopMaxMs` — useful for diagnosing connection drops during long-running operations.
 
