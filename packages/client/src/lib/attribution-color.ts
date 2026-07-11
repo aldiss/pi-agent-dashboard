@@ -57,14 +57,44 @@ const GUEST_TINT: AttributionTint = {
   text: "#eef0f6",
 };
 
+/** Theme axis for the L3 tint. Kept as a local literal so this module stays framework-free. */
+export type TintTheme = "light" | "dark";
+
 /**
- * Role-anchored bubble tint. `author.isOperator === true` → AMBER; anything else
- * (explicit guest `false`, or absent) → VIOLET. The two are DISTINCT by
- * construction, so the collision the hash could produce for two operators is
- * gone. DISPLAY-ONLY: `isOperator` never feeds any enforcement path.
+ * LIGHT-theme tints. The dark tints above (low-alpha fill + near-white text) are
+ * unreadable on the light/editorial cream background (#f4ece1): the 0.20 fill
+ * vanishes and near-white text on a pale bubble fails contrast both ways. The
+ * light variants use DARK text + a stronger, defined border so the bubble reads
+ * on cream/white. WCAG-checked over both #f4ece1 (editorial) and #ffffff (plain
+ * light): text-vs-bubble ≥ 7:1, border-vs-bg ≥ 4:1.
  */
-export function bubbleTintFor(author: MessageAuthor): AttributionTint {
-  return author.isOperator === true ? OPERATOR_TINT : GUEST_TINT;
+const OPERATOR_TINT_LIGHT: AttributionTint = {
+  bg: "rgba(245,158,11,0.38)",
+  border: "rgb(180,83,9)",
+  text: "rgb(74,49,5)",
+};
+
+const GUEST_TINT_LIGHT: AttributionTint = {
+  bg: "rgba(139,92,246,0.30)",
+  border: "rgb(109,40,217)",
+  text: "rgb(55,35,105)",
+};
+
+/**
+ * Role-anchored bubble tint, THEME-AWARE. `author.isOperator === true` → AMBER;
+ * anything else (explicit guest `false`, or absent) → VIOLET. The two are
+ * DISTINCT by construction, so the collision the hash could produce for two
+ * operators is gone. The `theme` axis picks the LIGHT vs DARK palette so the
+ * tint stays readable on the cream light theme (the dark low-alpha/near-white
+ * tint is unreadable there). DISPLAY-ONLY: `isOperator` never feeds any
+ * enforcement path.
+ */
+export function bubbleTintFor(author: MessageAuthor, theme: TintTheme): AttributionTint {
+  const isOperator = author.isOperator === true;
+  if (theme === "light") {
+    return isOperator ? OPERATOR_TINT_LIGHT : GUEST_TINT_LIGHT;
+  }
+  return isOperator ? OPERATOR_TINT : GUEST_TINT;
 }
 
 /**
