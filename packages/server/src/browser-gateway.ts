@@ -669,7 +669,7 @@ export function createBrowserGateway(
             // channel — it never forwards a browser-chosen/dynamic payload type.
             const pr = msg as import("@blackbelt-technology/pi-dashboard-shared/browser-protocol.js").PromptResponseBrowserMessage;
             ctx.piGateway.sendToSession(pr.sessionId, {
-              ...buildPromptResponseForward(pr, principals.get(ws) ?? null),
+              ...buildPromptResponseForward(pr, principals.get(ws) ?? null, operatorUsers),
               type: "prompt_response",
             });
             break;
@@ -766,7 +766,7 @@ export function createBrowserGateway(
             // NEW distinct human appeared (dedup same-human tabs → no spam).
             const viewer = principals.get(ws) ?? null;
             const presencePrincipal = viewer
-              ? { sub: viewer.sub, display: deriveAuthor(viewer)?.display ?? viewer.sub }
+              ? { sub: viewer.sub, display: deriveAuthor(viewer, operatorUsers)?.display ?? viewer.sub }
               : null;
             const distinctChanged = sessionPresenceTracker.enter(msg.sessionId, ws, presencePrincipal);
             sendTo(ws, {

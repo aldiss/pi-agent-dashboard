@@ -392,6 +392,15 @@ export interface ImageContent {
 export interface MessageAuthor {
   sub: string;
   display: string;
+  /**
+   * DISPLAY-ONLY — server-derived for UI color anchoring; NEVER read by any
+   * authorization/enforcement path. Set from `isOperator(principal, operatorUsers)`
+   * at the same server-side derivation point as `sub`/`display`. Drives the
+   * role-anchored attribution color (operator → amber, guest → violet) so two
+   * co-driving operators are guaranteed visually distinct without a hash collision.
+   * Absent/false when `operatorUsers` is unset/empty (inert, single-operator).
+   */
+  isOperator?: boolean;
 }
 
 /**

@@ -20,8 +20,9 @@ import { deriveAuthor } from "./derive-author.js";
 export function buildPromptResponseForward(
   msg: PromptResponseBrowserMessage,
   principal: TokenPayload | null,
+  operatorUsers?: string[],
 ): PromptResponseServerMessage {
-  const author = deriveAuthor(principal);
+  const author = deriveAuthor(principal, operatorUsers);
   return {
     type: "prompt_response",
     sessionId: msg.sessionId,

@@ -395,7 +395,7 @@ export async function handleSendPrompt(
     // event-wiring.ts has no ctx.principal (cwd-keyed bridge event), so it
     // cannot be re-derived there. Server-derived, NEVER from msg. Downstream of
     // the Build-1b operator-only `resume` gate above (attribution ⊥ authz).
-    const resumeAuthor = deriveAuthor(ctx.principal);
+    const resumeAuthor = deriveAuthor(ctx.principal, ctx.operatorUsers);
     pendingResumeRegistry.record(promptSession.cwd, {
       text: msg.text,
       images: msg.images,
@@ -443,7 +443,7 @@ export async function handleSendPrompt(
     // Conditional-spread keeps flag-off byte-unchanged: single-operator derives
     // no principal → no `author` key. This carrier's attribution is enforced by
     // the derived-carrier-guard (`surface-attribution-carrier-guard.test.ts`).
-    const author = deriveAuthor(ctx.principal);
+    const author = deriveAuthor(ctx.principal, ctx.operatorUsers);
     const sent = piGateway.sendToSession(msg.sessionId, {
       type: "send_prompt",
       sessionId: msg.sessionId,

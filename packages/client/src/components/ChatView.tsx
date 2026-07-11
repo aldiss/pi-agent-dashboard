@@ -9,6 +9,7 @@ import { RetryBanner } from "./RetryBanner";
 import type { SessionState, ChatImage, InteractiveUiRequest } from "../lib/event-reducer.js";
 import type { ToolContext } from "./tool-renderers/index.js";
 import { MarkdownContent } from "./MarkdownContent.js";
+import { stripSpeakerEnvelopeForDisplay } from "../lib/strip-speaker-envelope.js";
 import { CopyButton } from "./CopyButton.js";
 import { ToolCallStep } from "./ToolCallStep.js";
 import { ThinkingBlock } from "./ThinkingBlock.js";
@@ -26,6 +27,8 @@ import { RetriedErrorBadge } from "./RetriedErrorBadge.js";
 import { ImageLightbox } from "./ImageLightbox.js";
 import { SkillInvocationCard } from "./SkillInvocationCard.js";
 import { AttributionChip } from "./AttributionChip.js";
+import { bubbleTintFor } from "../lib/attribution-color.js";
+import { useAuthStatus } from "../hooks/useAuthStatus.js";
 import { ChatSearch } from "./ChatSearch.js";
 import {
   getMessageFilter,
@@ -279,6 +282,13 @@ export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ se
   const scrollRef = useRef<HTMLDivElement>(null);
   const isNearBottom = useRef(true);
   const reducedMotion = useReducedMotion() ?? false;
+  // Viewer identity for "You vs them" attribution labeling (multi-operator,
+  // Surface A — Option B). The verified principal's `sub` is the email in the
+  // current provider set, so `authStatus.user?.email` ≈ the author `sub` the
+  // server stamps. Undefined when auth is off/loading → AttributionChip shows
+  // display names only (no "You"), which is the correct single-operator behavior.
+  const { authStatus } = useAuthStatus();
+  const viewerSub = authStatus?.user?.email;
   const programmaticScroll = useRef(false);
   // viewportResizing — true during the iOS-rotation / keyboard-show / address-bar-collapse
   // animation envelope (~350 ms). iOS Safari fires multiple onScroll events during a
@@ -736,6 +746,12 @@ export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ se
           // doesn't show walls of expanded skill body. Plain user messages
           // continue to render as the existing blue bubble.
           // See change: render-skill-invocations-collapsibly.
+          // Strip the model-facing <speaker> envelope for DISPLAY so the
+          // per-message auth nonce never renders in the operator's bubble
+          // (display-only; agent-facing content + auth/wrap untouched).
+          const displayContent = msg.content
+            ? stripSpeakerEnvelopeForDisplay(msg.content)
+            : msg.content;
           if (msg.skill) {
             return (
               <div
@@ -747,7 +763,7 @@ export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ se
                 <div className={bubbleMax}>
                   {msg.author && (
                     <div className="flex justify-end">
-                      <AttributionChip author={msg.author} />
+                      <AttributionChip author={msg.author} viewerSub={viewerSub} />
                     </div>
                   )}
                   {msg.images && msg.images.length > 0 && (
@@ -757,7 +773,7 @@ export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ se
                   )}
                   <SkillInvocationCard
                     skill={msg.skill}
-                    rawContent={msg.content}
+                    rawContent={displayContent}
                     timestamp={msg.timestamp}
                     entryId={msg.entryId}
                     onFork={onForkFromMessage}
@@ -766,6 +782,16 @@ export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ se
               </div>
             );
           }
+          // Level-3 full-bubble tint (multi-operator, Surface A — Option B).
+          // A user turn that carries an author gets a ROLE-anchored tint
+          // (operator → amber, guest → violet). To beat the editorial skin's
+          // `.editorial-userbubble { ... !important }` background/border rule
+          // (inline style loses to !important), the tinted branch DROPS the
+          // `editorial-userbubble` + blue Tailwind classes entirely and paints
+          // via inline style — with no matching class, no !important rule fires,
+          // so the inline tint wins. A no-author turn keeps the class + blue
+          // classes BYTE-UNCHANGED (single-operator / flag-off path).
+          const userTint = msg.author ? bubbleTintFor(msg.author) : null;
           return (
             <div
               key={msg.id}
@@ -773,14 +799,24 @@ export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ se
               {...(msg.turnIndex != null ? { "data-turn": msg.turnIndex } : {})}
               {...(msg.entryId ? { "data-entry-id": msg.entryId } : {})}
             >
-              {msg.author && <AttributionChip author={msg.author} />}
-              <div className={`editorial-userbubble bg-blue-500/10 border border-blue-500/20 border-l-2 border-l-blue-400 rounded-xl shadow-md px-4 py-2 ${bubbleMax}`}>
+              {msg.author && <AttributionChip author={msg.author} viewerSub={viewerSub} />}
+              <div
+                className={
+                  userTint
+                    ? `border border-l-2 rounded-xl shadow-md px-4 py-2 ${bubbleMax}`
+                    : `editorial-userbubble bg-blue-500/10 border border-blue-500/20 border-l-2 border-l-blue-400 rounded-xl shadow-md px-4 py-2 ${bubbleMax}`
+                }
+                {...(userTint
+                  ? { style: { backgroundColor: userTint.bg, borderColor: userTint.border, color: userTint.text } }
+                  : {})}
+                data-attribution-tint={userTint ? (msg.author?.isOperator ? "operator" : "guest") : undefined}
+              >
                 {msg.images && msg.images.length > 0 && (
                   <ImageAttachments images={msg.images} />
                 )}
-                {msg.content && (
+                {displayContent && (
                   <MessageBubble
-                    content={msg.content}
+                    content={displayContent}
                     className=""
                     timestamp={msg.timestamp}
                     entryId={msg.entryId}
