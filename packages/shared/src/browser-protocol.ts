@@ -15,6 +15,7 @@ import type {
   ExtensionUiModule,
   DecoratorDescriptor,
   PresenceParticipant,
+  MessageAuthor,
 } from "./types.js";
 import type { TerminalSession } from "./terminal-types.js";
 import type { EditorInstanceStatus } from "./editor-types.js";
@@ -627,6 +628,7 @@ export type ServerToBrowserMessage =
   | BrowserUiDataListMessage
   | BrowserExtUiDecoratorMessage
   | BrowserAssetRegisterMessage
+  | HuddleTurnBrowserMessage
   | PushPrefsUpdateMessage;
 
 export interface PingMessage {
@@ -1018,6 +1020,32 @@ export interface HuddleStartBrowserMessage {
 export interface HuddleRecallBrowserMessage {
   type: "huddle_recall";
   sessionId: string;
+}
+
+/**
+ * C1/C5 — server→browser PRIVATE per-turn huddle carrier (audience-broadcast
+ * consumer). Emitted for every recorded huddle turn so the OTHER admitted
+ * co-driver sees it LIVE. Routed by `operatorSet.operatorsOf(sessionId)` at the
+ * egress (`filterServerMessageForPrincipal`, M-D) — NOT `canViewSession` — so a
+ * 3rd cell viewer (even an operator) never sees the private exchange. The author
+ * is the server-derived record-time author (never body-claimed); role/origin are
+ * server-resolved.
+ */
+export interface HuddleTurnBrowserMessage {
+  type: "huddle_turn";
+  sessionId: string;
+  /** Monotonic per-(session,epoch) turn sequence (C1 ledger authority). */
+  seq: number;
+  /** The huddle epoch this turn belongs to. */
+  epoch: number;
+  /** Server-derived record-time author (sub/display/isOperator). */
+  author: MessageAuthor;
+  /** Server-resolved role for UI chrome (operator | guest). */
+  role: "operator" | "guest";
+  /** The raw human text of the turn (private to the co-driver audience). */
+  text: string;
+  /** Server record-time stamp (epoch millis). */
+  recordedAt: number;
 }
 
 /**

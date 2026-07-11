@@ -5,6 +5,7 @@ import type {
 import type { DashboardSession } from "@blackbelt-technology/pi-dashboard-shared/types.js";
 import type { TokenPayload } from "./auth.js";
 import type { CellAccessController } from "./cell-access.js";
+import type { OperatorSetTracker } from "./operator-set-tracker.js";
 
 export interface BrowserCellDecision {
   allowed: boolean;
@@ -103,6 +104,13 @@ function filterOrders(
 /**
  * Final server→browser egress policy. Unknown/unscoped messages are
  * operator-only by default. Safe globals are reconstructed field-by-field.
+ *
+ * C5 (M-D): the `huddle_turn` private-audience carrier is routed by
+ * `operatorSet.operatorsOf(sessionId)` — DISTINCT from `canViewSession` and from
+ * the dashboard-wide operator role. Even an operator viewing the cell who is NOT
+ * an admitted co-driver of THAT session must not see the private huddle exchange
+ * (closes the M3 leak: a 3rd cell viewer never sees it). Gated BEFORE the
+ * operator-wide early-return below; fail-closed when `operatorSet` is absent.
  */
 export function filterServerMessageForPrincipal(
   msg: ServerToBrowserMessage,
@@ -111,6 +119,7 @@ export function filterServerMessageForPrincipal(
   getSession: (id: string) => DashboardSession | undefined,
   visibleSessionIds: Set<string>,
   origin: "core" | "plugin" = "core",
+  operatorSet?: OperatorSetTracker,
 ): ServerToBrowserMessage | null {
   if (!cellAccess.enabled) return msg;
   if (!principal) return null;
@@ -120,6 +129,31 @@ export function filterServerMessageForPrincipal(
       return { type: "sessions_snapshot", sessions: [], orders: {} } as ServerToBrowserMessage;
     }
     return null;
+  }
+  // ── C5 huddle private-audience quarantine (M-D) ──────────────────────────
+  // A `huddle_turn` (and the block notice `huddle_catchup_blocked`, an equally
+  // private signal) is delivered ONLY to a principal whose `sub` is in the
+  // session's admitted co-driver set (operatorsOf) — NOT by canViewSession, NOT
+  // by the dashboard-wide operator role. This runs BEFORE the operator-wide
+  // allow so a non-admitted operator/viewer never sees the private exchange.
+  // A `plugin`-origin carrier spoofing this type is refused (no session scope).
+  {
+    const t = (msg as any)?.type;
+    if (t === "huddle_turn" || t === "huddle_catchup_blocked") {
+      if (origin === "plugin") return null;
+      const sessionId = (msg as any)?.sessionId;
+      const sub = principal.sub;
+      if (
+        typeof sessionId !== "string"
+        || !sessionId
+        || !operatorSet
+        || typeof sub !== "string"
+        || !operatorSet.operatorsOf(sessionId).includes(sub)
+      ) {
+        return null; // fail-closed — not an admitted co-driver of THIS session
+      }
+      return msg; // admitted co-driver — deliver the private carrier
+    }
   }
   if (cellAccess.roleForPrincipal(principal) === "operator") return msg;
   // Current plugin broadcast API declares no session scope. Treat every plugin

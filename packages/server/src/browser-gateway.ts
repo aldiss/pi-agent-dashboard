@@ -324,6 +324,7 @@ export function createBrowserGateway(
         (id) => sessionManager.get(id),
         visible,
         origin,
+        operatorSet,
       );
       if (!filtered) return;
       outgoing = filtered;
