@@ -444,6 +444,39 @@ export async function handleSendPrompt(
     // no principal → no `author` key. This carrier's attribution is enforced by
     // the derived-carrier-guard (`surface-attribution-carrier-guard.test.ts`).
     const author = deriveAuthor(ctx.principal, ctx.operatorUsers);
+    // ── C1 (M-A) capture — the huddle human-turn ledger write ────────────────
+    // This point is STRICTLY downstream of the command-form verdict (a refused
+    // `!!`/`/slash` returned at :347 and never reaches here), so only gate-passed
+    // turns are recorded — the C1 invariant holds by construction. When a huddle
+    // is ACTIVE for this session, the turn does NOT go to the (paused) agent: it
+    // is recorded to the ledger (which auto-broadcasts the PRIVATE huddle_turn to
+    // the co-driver audience via onAudienceTurn → C5-gated egress) and HELD for
+    // the C4 catch-up drained at recall. Absent SM/ledger (single-operator) or
+    // phase idle → falls through to the normal agent forward (byte-unchanged).
+    if (
+      author
+      && ctx.huddleStateMachine
+      && ctx.huddleLedger
+      && ctx.huddleStateMachine.isHuddling(msg.sessionId)
+    ) {
+      const role: "operator" | "guest" = author.isOperator ? "operator" : "guest";
+      ctx.huddleLedger.record({
+        sessionId: msg.sessionId,
+        epoch: ctx.huddleStateMachine.epochOf(msg.sessionId),
+        kind: "human_turn",
+        author,
+        role,
+        origin: "ws",
+        // The command-form verdict: a passed command-form vs a raw prompt. Both
+        // are gate-allowed here; the ledger records which (M-A gateResult).
+        gateResult: classifySendPromptAction(msg.text) === "prompt-command" ? "prompt-command" : "raw",
+        text: msg.text,
+        ...(msg.images ? { images: msg.images } : {}),
+      });
+      // Do NOT forward to the agent — it is paused for the huddle span. The
+      // client's optimistic queue card is reconciled by the huddle_turn echo.
+      return;
+    }
     const sent = piGateway.sendToSession(msg.sessionId, {
       type: "send_prompt",
       sessionId: msg.sessionId,

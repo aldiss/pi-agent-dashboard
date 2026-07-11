@@ -162,6 +162,15 @@ export function createBrowserGateway(
   operatorSet?: import("./operator-set-tracker.js").OperatorSetTracker,
   /** Optional direct-dashboard guest→cell boundary. */
   cellAccess?: CellAccessController,
+  /**
+   * C3 — the huddle pause state machine (multi-operator). Threaded onto every
+   * socket's handler context so `handleSendPrompt` can consult the phase (M-A
+   * capture) and the huddle handlers drive it. Absent → single-operator, the
+   * huddle handlers no-op (byte-unchanged).
+   */
+  huddleStateMachine?: import("./huddle-state-machine.js").HuddleStateMachine,
+  /** C1 — the huddle ledger (written at the M-A capture point). */
+  huddleLedger?: import("./huddle-ledger.js").HuddleLedger,
 ): BrowserGateway {
   // perMessageDeflate enabled: the sessions_snapshot frame is ~345 KB uncompressed
   // at ~380 sessions and re-ships on every (re)connect; gzip of the identical payload
@@ -469,6 +478,8 @@ export function createBrowserGateway(
           ...(operatorUsers ? { operatorUsers } : {}),
           ...(operatorSet ? { operatorSet } : {}),
           ...(cellAccess ? { cellAccess } : {}),
+          ...(huddleStateMachine ? { huddleStateMachine } : {}),
+          ...(huddleLedger ? { huddleLedger } : {}),
           sendTo, broadcast, getSubscribers, replayPendingUiRequests,
           trackUiRequest: trackUiRequest,
           markReplaying(targetWs, sessionId) {

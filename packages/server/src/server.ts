@@ -57,6 +57,8 @@ import { loadOrGenerateVapidKeys } from "./push/push-vapid.js";
 import type { PushPrefs } from "./push/push-types.js";
 import { registerSessionApi } from "./session-api.js";
 import { createOperatorSetTracker } from "./operator-set-tracker.js";
+import { createHuddleStateMachine } from "./huddle-state-machine.js";
+import { createHuddleLedger } from "./huddle-ledger.js";
 import { createCellAccessController } from "./cell-access.js";
 import { cellHttpRouteKey, createCellAccessHttpGate } from "./cell-access-http.js";
 import { configureAgentPresence, resetAgentPresence } from "./agent-presence.js";
@@ -319,6 +321,36 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
   // connection-only cap by driving via REST. Inert when the flag is off (the
   // gate returns allowed before consulting it) → byte-unchanged single-operator.
   const operatorSetTracker = createOperatorSetTracker();
+
+  // Huddle (C1 + C3) — the pause state machine + the human-turn ledger. Built
+  // ONLY when multi-operator mode is engaged (a huddle is a 2-co-driver
+  // primitive; single-operator has no second human to confer with) → a flag-off
+  // server leaves both undefined and every huddle path no-ops (byte-unchanged).
+  // The ledger's audience-broadcast consumer emits the PRIVATE huddle_turn
+  // carrier; the browser egress (C5 / M-D) gates it to operatorsOf(sessionId).
+  let huddleStateMachine: import("./huddle-state-machine.js").HuddleStateMachine | undefined;
+  let huddleLedger: import("./huddle-ledger.js").HuddleLedger | undefined;
+  if (requireBrowserAuthAtStartup) {
+    huddleStateMachine = createHuddleStateMachine();
+    huddleLedger = createHuddleLedger({
+      onAudienceTurn: (turn) => {
+        // C1 audience-broadcast consumer → private per-turn carrier. Broadcast to
+        // ALL browsers; the C5 egress (filterServerMessageForPrincipal) delivers
+        // it ONLY to a principal in operatorsOf(sessionId) — a 3rd viewer never
+        // sees it (M-D / M3 leak closed).
+        browserGateway.broadcast({
+          type: "huddle_turn",
+          sessionId: turn.sessionId,
+          seq: turn.seq,
+          epoch: turn.epoch,
+          author: turn.author,
+          role: turn.role,
+          text: turn.text,
+          recordedAt: turn.recordedAt,
+        });
+      },
+    });
+  }
 
   // Stream-2 D (agent-as-presence): wire the live-agent signal into the
   // greenfield `getAgentPresence` seam ONLY when the multi-operator flag is ON,
@@ -695,7 +727,7 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
     }
   }
 
-  const browserGateway = createBrowserGateway(sessionManager, eventStore, piGateway, undefined, pendingForkRegistry, sessionOrderManager, preferencesStore, directoryService, terminalManager, pendingDashboardSpawns, config.maxWsBufferBytes, pendingAttachRegistry, pendingResumeIntents, pendingClientCorrelations, pushPrefsMap, () => config.push?.defaults, requireBrowserAuthAtStartup, config.authConfig?.operatorUsers, operatorSetTracker, cellAccess);
+  const browserGateway = createBrowserGateway(sessionManager, eventStore, piGateway, undefined, pendingForkRegistry, sessionOrderManager, preferencesStore, directoryService, terminalManager, pendingDashboardSpawns, config.maxWsBufferBytes, pendingAttachRegistry, pendingResumeIntents, pendingClientCorrelations, pushPrefsMap, () => config.push?.defaults, requireBrowserAuthAtStartup, config.authConfig?.operatorUsers, operatorSetTracker, cellAccess, huddleStateMachine, huddleLedger);
 
   let stopCellAccessRefresh = () => {};
   if (cellAccess.enabled) {
@@ -861,6 +893,8 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
     pushDispatcher,
     pushPrefsMap,
     getPushDefaults: () => config.push?.defaults,
+    ...(huddleStateMachine ? { huddleStateMachine } : {}),
+    ...(huddleLedger ? { huddleLedger } : {}),
   });
 
   // Auto-shutdown idle timer
