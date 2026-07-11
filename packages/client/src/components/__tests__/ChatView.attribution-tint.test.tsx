@@ -43,7 +43,7 @@ beforeAll(() => {
   });
 });
 
-afterEach(() => cleanup());
+afterEach(() => { cleanup(); localStorage.clear(); });
 
 function stateWithUser(content: string, author?: MessageAuthor) {
   const state = createInitialState();
@@ -142,5 +142,40 @@ describe("ChatView — authored turn gets the L3 role tint", () => {
     );
     expect(container.querySelector("[data-attribution-sub]")).not.toBeNull();
     expect(getByText("You")).toBeTruthy();
+  });
+});
+
+describe("ChatView — LIGHT theme uses the readable dark-text tint (the light-theme palette fix)", () => {
+  function renderLight(state: ReturnType<typeof stateWithUser>) {
+    // Force the light theme (STORAGE_KEY "dashboard:theme") so ChatView passes
+    // resolved="light" into bubbleTintFor; the top-level afterEach clears it.
+    localStorage.setItem("dashboard:theme", "light");
+    return render(
+      <ThemeProvider><ChatView state={state} toolContext={defaultToolContext} /></ThemeProvider>,
+    );
+  }
+
+  it("operator (light) → AMBER-LIGHT: stronger bg + defined border + DARK text (not near-white)", () => {
+    const { container } = renderLight(
+      stateWithUser("hi", { sub: "op1@example.com", display: "Op One", isOperator: true }),
+    );
+    const bubble = container.querySelector('[data-attribution-tint="operator"]') as HTMLElement;
+    expect(bubble).not.toBeNull();
+    expect(bubble.style.backgroundColor).toBe("rgba(245, 158, 11, 0.38)");
+    expect(bubble.style.borderColor).toBe("rgb(180, 83, 9)");
+    expect(bubble.style.color).toBe("rgb(74, 49, 5)"); // dark text — readable on cream
+    // NOT the dark theme's near-white text (#f5efe6) — that was the low-contrast bug.
+    expect(bubble.style.color).not.toBe("rgb(245, 239, 230)");
+  });
+
+  it("guest (light) → VIOLET-LIGHT: dark text", () => {
+    const { container } = renderLight(
+      stateWithUser("hi", { sub: "guest@example.com", display: "Guest", isOperator: false }),
+    );
+    const bubble = container.querySelector('[data-attribution-tint="guest"]') as HTMLElement;
+    expect(bubble).not.toBeNull();
+    expect(bubble.style.backgroundColor).toBe("rgba(139, 92, 246, 0.3)");
+    expect(bubble.style.borderColor).toBe("rgb(109, 40, 217)");
+    expect(bubble.style.color).toBe("rgb(55, 35, 105)");
   });
 });

@@ -29,6 +29,7 @@ import { SkillInvocationCard } from "./SkillInvocationCard.js";
 import { AttributionChip } from "./AttributionChip.js";
 import { bubbleTintFor } from "../lib/attribution-color.js";
 import { useAuthStatus } from "../hooks/useAuthStatus.js";
+import { useThemeContext } from "./ThemeProvider.js";
 import { ChatSearch } from "./ChatSearch.js";
 import {
   getMessageFilter,
@@ -289,6 +290,9 @@ export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ se
   // display names only (no "You"), which is the correct single-operator behavior.
   const { authStatus } = useAuthStatus();
   const viewerSub = authStatus?.user?.email;
+  // Resolved theme drives the L3 bubble-tint palette (light vs dark) so the
+  // operator/guest tint stays readable on the cream light theme.
+  const { resolved: resolvedTheme } = useThemeContext();
   const programmaticScroll = useRef(false);
   // viewportResizing — true during the iOS-rotation / keyboard-show / address-bar-collapse
   // animation envelope (~350 ms). iOS Safari fires multiple onScroll events during a
@@ -791,7 +795,7 @@ export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ se
           // via inline style — with no matching class, no !important rule fires,
           // so the inline tint wins. A no-author turn keeps the class + blue
           // classes BYTE-UNCHANGED (single-operator / flag-off path).
-          const userTint = msg.author ? bubbleTintFor(msg.author) : null;
+          const userTint = msg.author ? bubbleTintFor(msg.author, resolvedTheme) : null;
           return (
             <div
               key={msg.id}
