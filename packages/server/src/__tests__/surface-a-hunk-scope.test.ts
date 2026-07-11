@@ -51,7 +51,7 @@ describe("Surface A #6 — BA-3 hunk-scope: author-stamp stays out of the gate",
   it("the author-stamp IS present, but only in the else-branch send (downstream of the gate)", () => {
     const src = readHandler();
     const gateStart = src.indexOf("const decision = authorizeSessionAction({");
-    const authorStamp = src.indexOf("const author = deriveAuthor(ctx.principal);");
+    const authorStamp = src.indexOf("const author = deriveAuthor(ctx.principal, ctx.operatorUsers);");
     // The stamp exists…
     expect(authorStamp).toBeGreaterThan(-1);
     // …and strictly AFTER the gate (downstream), never inside/above it.

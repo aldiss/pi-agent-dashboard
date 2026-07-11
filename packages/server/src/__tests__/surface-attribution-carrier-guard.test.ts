@@ -155,12 +155,16 @@ describe("Derived-carrier-guard — classify EACH carrier over the authoritative
     const forward = fs.readFileSync(path.resolve(__dirname, "../prompt-response-forward.ts"), "utf8");
 
     // send_prompt — WS locus-1 (else-branch) + REST locus-3 both derive server-side.
-    expect(handler).toMatch(/const author = deriveAuthor\(ctx\.principal\)/);
+    // The author's FIRST arg is the server-bound principal (anti-spoof: never the
+    // client body). The SECOND arg is the startup-frozen `operatorUsers` (also
+    // server-side) that sources the DISPLAY-ONLY `isOperator` bit — it feeds UI
+    // color anchoring, never any enforcement path. See change: multi-op-color-distinction.
+    expect(handler).toMatch(/const author = deriveAuthor\(ctx\.principal, ctx\.operatorUsers\)/);
     expect(sessionApi).toMatch(/deriveAuthor\(\s*\(request as any\)\.restPrincipal/);
     // prompt_response — the COVER routes through the field-by-field helper that
-    // stamps deriveAuthor(principal) server-side.
-    expect(gateway).toMatch(/buildPromptResponseForward\(pr, principals\.get\(ws\) \?\? null\)/);
-    expect(forward).toMatch(/deriveAuthor\(principal\)/);
+    // stamps deriveAuthor(principal, operatorUsers) server-side.
+    expect(gateway).toMatch(/buildPromptResponseForward\(pr, principals\.get\(ws\) \?\? null, operatorUsers\)/);
+    expect(forward).toMatch(/deriveAuthor\(principal, operatorUsers\)/);
   });
 
   it("no attributed carrier derives its author from the client message BODY (BA-2)", () => {
