@@ -9,7 +9,7 @@
  */
 import { describe, it, expect } from "vitest";
 import type { MessageAuthor } from "@blackbelt-technology/pi-dashboard-shared/types.js";
-import { bubbleTintFor, attributionColorFor } from "../attribution-color.js";
+import { bubbleTintFor, bubbleRailFor, attributionColorFor } from "../attribution-color.js";
 
 const OPERATOR_AMBER_DARK = { bg: "rgba(245,158,11,0.20)", border: "rgba(245,158,11,0.40)", text: "#f5efe6" };
 const GUEST_VIOLET_DARK = { bg: "rgba(139,92,246,0.20)", border: "rgba(139,92,246,0.40)", text: "#eef0f6" };
@@ -63,6 +63,29 @@ describe("bubbleTintFor — role-anchored, theme-aware L3 tint", () => {
   it("absent isOperator (older payload / N>2) → falls to VIOLET (guest default) in both themes", () => {
     expect(bubbleTintFor(author("legacy@example.com"), "dark")).toEqual(GUEST_VIOLET_DARK);
     expect(bubbleTintFor(author("legacy@example.com"), "light")).toEqual(GUEST_VIOLET_LIGHT);
+  });
+});
+
+describe("bubbleRailFor — role-anchored accent-rail color (L2 sides-only, operator preference)", () => {
+  it("DARK: operator → amber-500, guest → violet-500", () => {
+    expect(bubbleRailFor(author("op@example.com", true), "dark")).toBe("rgb(245,158,11)");
+    expect(bubbleRailFor(author("guest@example.com", false), "dark")).toBe("rgb(139,92,246)");
+  });
+
+  it("LIGHT: operator → dark-amber (WCAG border hue), guest → dark-violet", () => {
+    expect(bubbleRailFor(author("op@example.com", true), "light")).toBe("rgb(180,83,9)");
+    expect(bubbleRailFor(author("guest@example.com", false), "light")).toBe("rgb(109,40,217)");
+  });
+
+  it("operator and guest rails are DISTINCT in both themes", () => {
+    for (const theme of ["light", "dark"] as const) {
+      expect(bubbleRailFor(author("a", true), theme)).not.toBe(bubbleRailFor(author("b", false), theme));
+    }
+  });
+
+  it("absent isOperator → guest rail in both themes", () => {
+    expect(bubbleRailFor(author("legacy"), "dark")).toBe("rgb(139,92,246)");
+    expect(bubbleRailFor(author("legacy"), "light")).toBe("rgb(109,40,217)");
   });
 });
 

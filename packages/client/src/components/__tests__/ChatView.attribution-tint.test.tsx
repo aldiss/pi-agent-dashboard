@@ -89,38 +89,34 @@ describe("ChatView — no-author turn is byte-unchanged (blue bubble)", () => {
   });
 });
 
-describe("ChatView — authored turn gets the L3 role tint", () => {
-  it("operator author → AMBER inline tint, drops editorial-userbubble + blue classes", () => {
+describe("ChatView — authored turn gets the L2 accent rail (sides-only)", () => {
+  it("operator author → AMBER right-rail (inset box-shadow), KEEPS default bubble, no full-fill", () => {
     const state = stateWithUser("hi from operator", { sub: "op1@example.com", display: "Op One", isOperator: true });
     const { container } = render(
       <ThemeProvider><ChatView state={state} toolContext={defaultToolContext} /></ThemeProvider>,
     );
     const bubble = container.querySelector('[data-attribution-tint="operator"]') as HTMLElement;
     expect(bubble).not.toBeNull();
-    // Amber rgba applied inline (jsdom normalizes 0.20 → 0.2).
-    expect(bubble.style.backgroundColor).toBe("rgba(245, 158, 11, 0.2)");
-    expect(bubble.style.borderColor).toBe("rgba(245, 158, 11, 0.4)");
-    // The !important-carrying skin class + blue classes are GONE so inline wins.
-    expect(bubble.className).not.toContain("editorial-userbubble");
-    expect(bubble.className).not.toContain("bg-blue-500/10");
-    expect(bubble.className).not.toContain("border-l-blue-400");
-    // Structure preserved.
+    // Dark-theme amber rail via inset box-shadow on the right edge; NO full-fill bg.
+    expect(bubble.style.boxShadow).toMatch(/inset -3px 0 0 0 rgb\(245,\s*158,\s*11\)/);
+    expect(bubble.style.backgroundColor).toBe(""); // default cream bg kept (no full-fill)
+    // The default editorial bubble is KEPT (rail composes over it, not dropped).
+    expect(bubble.className).toContain("editorial-userbubble");
     expect(bubble.className).toContain("rounded-xl");
-    expect(bubble.className).toContain("shadow-md");
   });
 
-  it("guest author → VIOLET inline tint", () => {
+  it("guest author → VIOLET right-rail", () => {
     const state = stateWithUser("hi from guest", { sub: "guest@example.com", display: "Guest", isOperator: false });
     const { container } = render(
       <ThemeProvider><ChatView state={state} toolContext={defaultToolContext} /></ThemeProvider>,
     );
     const bubble = container.querySelector('[data-attribution-tint="guest"]') as HTMLElement;
     expect(bubble).not.toBeNull();
-    expect(bubble.style.backgroundColor).toBe("rgba(139, 92, 246, 0.2)");
-    expect(bubble.style.borderColor).toBe("rgba(139, 92, 246, 0.4)");
+    expect(bubble.style.boxShadow).toMatch(/inset -3px 0 0 0 rgb\(139,\s*92,\s*246\)/);
+    expect(bubble.style.backgroundColor).toBe("");
   });
 
-  it("operator and guest bubbles are visually DISTINCT (amber vs violet)", () => {
+  it("operator and guest rails are visually DISTINCT (amber vs violet)", () => {
     const opState = stateWithUser("op", { sub: "a", display: "A", isOperator: true });
     const guestState = stateWithUser("guest", { sub: "b", display: "B", isOperator: false });
     const { container: opC } = render(
@@ -131,7 +127,7 @@ describe("ChatView — authored turn gets the L3 role tint", () => {
     );
     const opBubble = opC.querySelector('[data-attribution-tint="operator"]') as HTMLElement;
     const guestBubble = guestC.querySelector('[data-attribution-tint="guest"]') as HTMLElement;
-    expect(opBubble.style.backgroundColor).not.toBe(guestBubble.style.backgroundColor);
+    expect(opBubble.style.boxShadow).not.toBe(guestBubble.style.boxShadow);
   });
 
   it("renders the AttributionChip with 'You' when the authored turn is the viewer's own", () => {
@@ -145,37 +141,32 @@ describe("ChatView — authored turn gets the L3 role tint", () => {
   });
 });
 
-describe("ChatView — LIGHT theme uses the readable dark-text tint (the light-theme palette fix)", () => {
+describe("ChatView — LIGHT theme accent rail (theme-aware, readable on cream)", () => {
   function renderLight(state: ReturnType<typeof stateWithUser>) {
     // Force the light theme (STORAGE_KEY "dashboard:theme") so ChatView passes
-    // resolved="light" into bubbleTintFor; the top-level afterEach clears it.
+    // resolved="light" into bubbleRailFor; the top-level afterEach clears it.
     localStorage.setItem("dashboard:theme", "light");
     return render(
       <ThemeProvider><ChatView state={state} toolContext={defaultToolContext} /></ThemeProvider>,
     );
   }
 
-  it("operator (light) → AMBER-LIGHT: stronger bg + defined border + DARK text (not near-white)", () => {
+  it("operator (light) → dark-amber rail (WCAG border hue), default bg kept", () => {
     const { container } = renderLight(
       stateWithUser("hi", { sub: "op1@example.com", display: "Op One", isOperator: true }),
     );
     const bubble = container.querySelector('[data-attribution-tint="operator"]') as HTMLElement;
     expect(bubble).not.toBeNull();
-    expect(bubble.style.backgroundColor).toBe("rgba(245, 158, 11, 0.38)");
-    expect(bubble.style.borderColor).toBe("rgb(180, 83, 9)");
-    expect(bubble.style.color).toBe("rgb(74, 49, 5)"); // dark text — readable on cream
-    // NOT the dark theme's near-white text (#f5efe6) — that was the low-contrast bug.
-    expect(bubble.style.color).not.toBe("rgb(245, 239, 230)");
+    expect(bubble.style.boxShadow).toMatch(/inset -3px 0 0 0 rgb\(180,\s*83,\s*9\)/);
+    expect(bubble.style.backgroundColor).toBe(""); // no full-fill; default cream bg
   });
 
-  it("guest (light) → VIOLET-LIGHT: dark text", () => {
+  it("guest (light) → dark-violet rail", () => {
     const { container } = renderLight(
       stateWithUser("hi", { sub: "guest@example.com", display: "Guest", isOperator: false }),
     );
     const bubble = container.querySelector('[data-attribution-tint="guest"]') as HTMLElement;
     expect(bubble).not.toBeNull();
-    expect(bubble.style.backgroundColor).toBe("rgba(139, 92, 246, 0.3)");
-    expect(bubble.style.borderColor).toBe("rgb(109, 40, 217)");
-    expect(bubble.style.color).toBe("rgb(55, 35, 105)");
+    expect(bubble.style.boxShadow).toMatch(/inset -3px 0 0 0 rgb\(109,\s*40,\s*217\)/);
   });
 });

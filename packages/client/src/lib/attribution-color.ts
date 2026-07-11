@@ -98,6 +98,25 @@ export function bubbleTintFor(author: MessageAuthor, theme: TintTheme): Attribut
 }
 
 /**
+ * Role-anchored ACCENT-RAIL color (Level 2 — sides-only; the operator's preferred
+ * treatment). Operator → AMBER, guest → VIOLET, theme-aware so the rail reads on
+ * both the dark theme and the light/editorial cream (#f4ece1). Returned as a
+ * solid CSS color for a 3px edge rail applied as an INSET box-shadow (see
+ * ChatView) — so it composes over the default bubble bg without fighting the
+ * editorial `!important` border. Reuses the WCAG-checked border hues from the L3
+ * light tokens (border-vs-bg ≥ 4:1 on cream + white); the dark rail uses the
+ * saturated amber/violet (amber-500 / violet-500) which read on the dark bubble.
+ * DISPLAY-ONLY: `isOperator` never feeds any enforcement path.
+ */
+export function bubbleRailFor(author: MessageAuthor, theme: TintTheme): string {
+  const isOperator = author.isOperator === true;
+  if (theme === "light") {
+    return isOperator ? "rgb(180,83,9)" : "rgb(109,40,217)";
+  }
+  return isOperator ? "rgb(245,158,11)" : "rgb(139,92,246)";
+}
+
+/**
  * Curated accents (avoid blue — the user bubble already owns blue, so the
  * attribution must not blend into it). Ordered; selection is hash-stable.
  */

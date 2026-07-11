@@ -27,7 +27,7 @@ import { RetriedErrorBadge } from "./RetriedErrorBadge.js";
 import { ImageLightbox } from "./ImageLightbox.js";
 import { SkillInvocationCard } from "./SkillInvocationCard.js";
 import { AttributionChip } from "./AttributionChip.js";
-import { bubbleTintFor } from "../lib/attribution-color.js";
+import { bubbleRailFor } from "../lib/attribution-color.js";
 import { useAuthStatus } from "../hooks/useAuthStatus.js";
 import { useThemeContext } from "./ThemeProvider.js";
 import { ChatSearch } from "./ChatSearch.js";
@@ -786,16 +786,17 @@ export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ se
               </div>
             );
           }
-          // Level-3 full-bubble tint (multi-operator, Surface A — Option B).
-          // A user turn that carries an author gets a ROLE-anchored tint
-          // (operator → amber, guest → violet). To beat the editorial skin's
-          // `.editorial-userbubble { ... !important }` background/border rule
-          // (inline style loses to !important), the tinted branch DROPS the
-          // `editorial-userbubble` + blue Tailwind classes entirely and paints
-          // via inline style — with no matching class, no !important rule fires,
-          // so the inline tint wins. A no-author turn keeps the class + blue
-          // classes BYTE-UNCHANGED (single-operator / flag-off path).
-          const userTint = msg.author ? bubbleTintFor(msg.author, resolvedTheme) : null;
+          // Level-2 accent rail (multi-operator, Surface A — Option B, operator
+          // preference). A user turn that carries an author keeps the DEFAULT
+          // bubble (cream/editorial bg) and gets a 3px ROLE-anchored accent rail
+          // on the RIGHT edge (operator → amber, guest → violet), theme-aware.
+          // The rail is an inset box-shadow — NOT a border — so it composes over
+          // the editorial skin's `.editorial-userbubble { ...!important }`
+          // background/border without fighting it (a border would lose to the
+          // !important; box-shadow is a separate property). Operator-recognition
+          // (the amber chip/dot) is carried by AttributionChip, unchanged. A
+          // no-author turn is BYTE-UNCHANGED (single-operator / flag-off path).
+          const railColor = msg.author ? bubbleRailFor(msg.author, resolvedTheme) : null;
           return (
             <div
               key={msg.id}
@@ -806,14 +807,14 @@ export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ se
               {msg.author && <AttributionChip author={msg.author} viewerSub={viewerSub} />}
               <div
                 className={
-                  userTint
-                    ? `border border-l-2 rounded-xl shadow-md px-4 py-2 ${bubbleMax}`
+                  railColor
+                    ? `editorial-userbubble bg-blue-500/10 border border-blue-500/20 rounded-xl shadow-md px-4 py-2 ${bubbleMax}`
                     : `editorial-userbubble bg-blue-500/10 border border-blue-500/20 border-l-2 border-l-blue-400 rounded-xl shadow-md px-4 py-2 ${bubbleMax}`
                 }
-                {...(userTint
-                  ? { style: { backgroundColor: userTint.bg, borderColor: userTint.border, color: userTint.text } }
+                {...(railColor
+                  ? { style: { boxShadow: `inset -3px 0 0 0 ${railColor}, 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1)` } }
                   : {})}
-                data-attribution-tint={userTint ? (msg.author?.isOperator ? "operator" : "guest") : undefined}
+                data-attribution-tint={railColor ? (msg.author?.isOperator ? "operator" : "guest") : undefined}
               >
                 {msg.images && msg.images.length > 0 && (
                   <ImageAttachments images={msg.images} />
