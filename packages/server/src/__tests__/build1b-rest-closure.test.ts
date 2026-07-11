@@ -85,6 +85,8 @@ describe("Build 1b (d) — session-write action enumeration is mechanically tota
   // ui_management = the mutating action-gated ui_management; both operator-only) +
   // the PUSHBACK-3 prompt-command (a command-form send_prompt text = operator-only,
   // BOTH seams, no distinct message-type — classified from the text)
+  // + the 2 huddle-control actions (huddle-start/huddle-recall = operator-only,
+  // WS-only, no REST twin — C2/N-2)
   // so completeness stays total across BOTH seams.
   const EXPECTED_ACTIONS = [
     "send_prompt", "abort", "shutdown", "rename", "resurrect", "hide", "unhide",
@@ -95,6 +97,7 @@ describe("Build 1b (d) — session-write action enumeration is mechanically tota
     "role_preset_load", "request_roles",
     "reload", "ui_management",
     "prompt-command",
+    "huddle-start", "huddle-recall",
   ].sort();
   // co-drive actions (both op-1 and op-2 may perform): send_prompt + abort (the
   // safety emergency-stop) + request_roles (a READ — lists roles, no mutation,

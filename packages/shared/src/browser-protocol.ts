@@ -998,6 +998,29 @@ export interface SessionViewBrowserMessage {
 }
 
 /**
+ * C2 — request to START a huddle on a session (operator-only, N-2). The two
+ * admitted co-drivers confer privately while the agent pauses. Server-gated
+ * operator-only via `SESSION_WRITE_ACTION_CLASS['huddle-start']`; a guest WS
+ * cannot send it (absent from `GUEST_SESSION_MESSAGE_TYPES`) and there is no
+ * REST twin (absent from `GUEST_SESSION_HTTP_ROUTES`). Carries only the
+ * sessionId — the actor is the connection-bound principal, never the body.
+ */
+export interface HuddleStartBrowserMessage {
+  type: "huddle_start";
+  sessionId: string;
+}
+
+/**
+ * C2 — request to RECALL the agent from a huddle (operator-only, N-2). Drains
+ * the held span into the C4 catch-up and returns the C3 phase to idle. Same
+ * operator-only gating + guest-map absence as `huddle_start`.
+ */
+export interface HuddleRecallBrowserMessage {
+  type: "huddle_recall";
+  sessionId: string;
+}
+
+/**
  * Browser → server: declares the browser is no longer displaying the session
  * (e.g. user navigated away from `/session/:id`).
  * See change: session-card-unread-stripes.
@@ -1061,4 +1084,6 @@ export type BrowserToServerMessage =
   | SessionViewBrowserMessage
   | SessionUnviewBrowserMessage
   | KillProcessBrowserMessage
+  | HuddleStartBrowserMessage
+  | HuddleRecallBrowserMessage
   | SetPushPrefsBrowserMessage;

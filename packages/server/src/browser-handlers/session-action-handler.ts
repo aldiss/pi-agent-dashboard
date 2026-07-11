@@ -804,3 +804,62 @@ export async function handleForceKill(
   const suffix = killResult.forced ? " (SIGKILL)" : "";
   sendTo(ws, { type: "force_kill_result", sessionId: msg.sessionId, success: true, message: `Process terminated${suffix}` });
 }
+
+// ── C2/C3 — huddle control (operator-only, N-2) ─────────────────────────────
+// Reached ONLY when the central WS gate (`authorizeWsMessage`) allowed the
+// operator-only `huddle-start`/`huddle-recall` action (op-2 + guest already
+// refused upstream — session-authz maps). So these handlers do NOT re-authorize;
+// they drive the C3 CAS state machine and forward the `huddle_control` carrier to
+// the bridge, which owns the phase enactment (M-E fence) and ACKs back
+// (`huddle_ack` → `handleHuddleAck` in event-wiring). Absent SM (single-operator
+// / flag-off) → no-op, byte-unchanged.
+
+export function handleHuddleStart(
+  msg: Extract<BrowserToServerMessage, { type: "huddle_start" }>,
+  ctx: BrowserHandlerContext,
+): void {
+  const { huddleStateMachine, piGateway } = ctx;
+  if (!huddleStateMachine) return; // feature not engaged — byte-unchanged
+  const result = huddleStateMachine.requestArm(msg.sessionId);
+  if (!result.ok) {
+    // A huddle is already in flight (CAS refused idle→arming). Idempotent-safe:
+    // the operator double-clicked / two operators both started — the first wins,
+    // the second is a no-op. No bridge carrier is sent for a refused transition.
+    console.error(
+      `[huddle] start refused for ${msg.sessionId}: already ${result.phase}`,
+    );
+    return;
+  }
+  // Propose the transition to the bridge; it fences local-TUI input and ACKs
+  // `phase:"active"` for this epoch (arming→active on the ack).
+  piGateway.sendToSession(msg.sessionId, {
+    type: "huddle_control",
+    sessionId: msg.sessionId,
+    epoch: result.epoch,
+    transition: "arm",
+  });
+}
+
+export function handleHuddleRecall(
+  msg: Extract<BrowserToServerMessage, { type: "huddle_recall" }>,
+  ctx: BrowserHandlerContext,
+): void {
+  const { huddleStateMachine, piGateway } = ctx;
+  if (!huddleStateMachine) return; // feature not engaged — byte-unchanged
+  const result = huddleStateMachine.requestRecall(msg.sessionId);
+  if (!result.ok) {
+    console.error(
+      `[huddle] recall refused for ${msg.sessionId}: phase is ${result.phase} (not active)`,
+    );
+    return;
+  }
+  // Propose recall; the bridge releases the fence and ACKs `phase:"idle"`. The
+  // C4 catch-up composition + outbox drain happen on that ack (handleHuddleAck),
+  // downstream of the bridge's confirmation that its input fence is released.
+  piGateway.sendToSession(msg.sessionId, {
+    type: "huddle_control",
+    sessionId: msg.sessionId,
+    epoch: result.epoch,
+    transition: "recall",
+  });
+}

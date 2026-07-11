@@ -404,6 +404,22 @@ export interface AssetRegisterMessage {
   data: string;
 }
 
+/**
+ * C3 — bridge→server huddle phase ACK. The bridge returns the STABLE phase it
+ * reached after enacting a `HuddleControlExtensionMessage` transition, so the
+ * server CAS state machine advances only on a real bridge ack (never optimistically):
+ * - `active` — the bridge armed + fenced its local-TUI input (arming→active).
+ * - `idle`   — the bridge released the fence (recalling→idle).
+ * `epoch` echoes the control message's epoch; the server DROPS an ack whose epoch
+ * ≠ the current huddle epoch (a stale ack from a prior span never advances the SM).
+ */
+export interface HuddleAckMessage {
+  type: "huddle_ack";
+  sessionId: string;
+  epoch: number;
+  phase: "active" | "idle";
+}
+
 export type ExtensionToServerMessage =
   | SessionRegisterMessage
   | SessionUnregisterMessage
@@ -431,6 +447,7 @@ export type ExtensionToServerMessage =
   | UiModulesListMessage
   | UiDataListMessage
   | ExtUiDecoratorMessage
+  | HuddleAckMessage
   | AssetRegisterMessage;
 
 // ── Server → Extension ──────────────────────────────────────────────
@@ -526,6 +543,23 @@ export interface SetModelMessage {
 export interface ShutdownExtensionMessage {
   type: "shutdown";
   sessionId: string;
+}
+
+/**
+ * C3 — server→bridge huddle phase-transition control (serialized, bridge-ACKed).
+ * The SERVER proposes the transition; the BRIDGE owns the phase enactment (it
+ * fences its own local-TUI `pi.on("input")` for the span — M-E primary) and
+ * ACKs by returning the stable phase it reached (`HuddleAckExtensionMessage`).
+ * `epoch` is the C3 monotonic huddle epoch — a stale ACK (wrong epoch) is
+ * ignored, so a serialized CAS transition never races a prior span.
+ * - `arm`    — idle→arming: fence local-TUI input, then ACK `phase:"active"`.
+ * - `recall` — active→recalling: release the fence, then ACK `phase:"idle"`.
+ */
+export interface HuddleControlExtensionMessage {
+  type: "huddle_control";
+  sessionId: string;
+  epoch: number;
+  transition: "arm" | "recall";
 }
 
 export interface FlowControlExtensionMessage {
@@ -688,4 +722,5 @@ export type ServerToExtensionMessage =
   | RequestRolesMessage
   | UiManagementMessage
   | KillProcessMessage
+  | HuddleControlExtensionMessage
   | ServerRestartingExtensionMessage;

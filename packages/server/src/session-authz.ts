@@ -174,6 +174,15 @@ export const SESSION_WRITE_ACTION_CLASS = {
   // spawn, model-switch), so a co-driver could reach the operator-only/host
   // command surface via prompt TEXT. A raw passthrough prompt stays co-drive.
   "prompt-command": "operator-only",
+  // operator-only — C2 huddle control (N-2). Starting/recalling a huddle pauses
+  // the agent + opens a PRIVATE co-driver exchange + gates the ended-replay
+  // delivery (M-B) — a session-control effect a bounded co-driver must not hold
+  // (design F4 who-starts = operator-only; the brief's operator-only huddle-start).
+  // WS-only, no REST twin: deliberately ABSENT from GUEST_SESSION_HTTP_ROUTES so
+  // REST defaults operator-only, and ABSENT from GUEST_SESSION_MESSAGE_TYPES so a
+  // guest WS cannot send it (N-2 map #4/#5 = deliberate absences).
+  "huddle-start": "operator-only",
+  "huddle-recall": "operator-only",
 } as const satisfies Record<string, SessionWriteActionClass>;
 
 /** The canonical action tokens (keys of {@link SESSION_WRITE_ACTION_CLASS}). */
@@ -232,6 +241,12 @@ export const WS_SESSION_WRITE_MESSAGE_ACTION = {
   role_preset_delete: "role_preset_delete",
   role_preset_load: "role_preset_load",
   request_roles: "request_roles",
+  // C2 huddle control (N-2 map #2). The WS message-type IS the action token
+  // (WS-only, no REST twin). Each derives its operator-only class from the ONE
+  // SESSION_WRITE_ACTION_CLASS above → auto-gated on the WS seam (map #3
+  // `WS_GATED_TYPES` derives from these keys) → op-2 refused, guest WS refused.
+  huddle_start: "huddle-start",
+  huddle_recall: "huddle-recall",
 } as const satisfies Record<string, SessionWriteAction>;
 
 /** WS message-types that carry a session-write action (keys of the registry). */

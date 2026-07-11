@@ -21,6 +21,8 @@ import type { PendingClientCorrelations } from "../pending-client-correlations.j
 import type { TokenPayload } from "../auth.js";
 import type { OperatorSetTracker } from "../operator-set-tracker.js";
 import type { CellAccessController } from "../cell-access.js";
+import type { HuddleStateMachine } from "../huddle-state-machine.js";
+import type { HuddleLedger } from "../huddle-ledger.js";
 
 export interface BrowserHandlerContext {
   ws: WebSocket;
@@ -64,6 +66,19 @@ export interface BrowserHandlerContext {
   operatorSet?: OperatorSetTracker;
   /** Direct-dashboard guest→cell policy; absent preserves phase 1. */
   cellAccess?: CellAccessController;
+  /**
+   * C3 — the huddle pause state machine (multi-operator, N=2). Present only when
+   * the huddle feature is engaged (multi-operator mode); absent → the huddle
+   * handlers no-op and every capture point is byte-unchanged (single-operator).
+   * The SAME instance the event-wiring (M-B) + egress (C5) read.
+   */
+  huddleStateMachine?: HuddleStateMachine;
+  /**
+   * C1 — the huddle human-turn ledger. Present alongside `huddleStateMachine`.
+   * Written at the `deriveAuthor` capture point (M-A) only while a huddle is
+   * active; the split consumers feed the private audience (C5) + the C4 catch-up.
+   */
+  huddleLedger?: HuddleLedger;
   pendingForkRegistry?: PendingForkRegistry;
   sessionOrderManager?: SessionOrderManager;
   preferencesStore?: PreferencesStore;
