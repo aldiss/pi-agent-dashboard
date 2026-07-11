@@ -79,6 +79,14 @@ export interface BrowserHandlerContext {
    * active; the split consumers feed the private audience (C5) + the C4 catch-up.
    */
   huddleLedger?: HuddleLedger;
+  /**
+   * Server-owned huddle activation capability (default-OFF, fail-closed). Gates
+   * `handleHuddleStart` so a crafted WS / alternate client cannot activate the
+   * half-built huddle while its client control + audience surface is unshipped
+   * (dl-6893/6910/6916). Startup-frozen + never client-asserted; undefined =>
+   * treated as false. Recall is intentionally NOT gated on this (safe unwind).
+   */
+  huddleEnabled?: boolean;
   pendingForkRegistry?: PendingForkRegistry;
   sessionOrderManager?: SessionOrderManager;
   preferencesStore?: PreferencesStore;

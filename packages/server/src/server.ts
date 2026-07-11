@@ -313,6 +313,15 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
   // via `/api/config` writes to disk + returns `restartRequired:true`, and
   // only the next server start observes it. See gate-pushback-1 MAJOR (desync).
   const requireBrowserAuthAtStartup = config.authConfig?.requireBrowserAuth === true;
+  // Huddle activation capability — server-owned + startup-frozen (sister to
+  // requireBrowserAuthAtStartup; restart-required to avoid gate desync). DEFAULT
+  // OFF: the huddle client control + audience surface is not yet shipped
+  // (dl-6893/6910/6916), so `handleHuddleStart` is rejected unless this is
+  // explicitly enabled server-side — a crafted WS / alternate client cannot
+  // activate the half-built feature. Never client-asserted.
+  const huddleEnabledAtStartup =
+    process.env.PI_DASHBOARD_HUDDLE_ENABLED === "1"
+    || process.env.PI_DASHBOARD_HUDDLE_ENABLED === "true";
 
   // Stream-2 D: the ONE bounded-cell (N=2) admission tracker. A SINGLE instance
   // shared by BOTH the WS gate (via the browser gateway) and the REST gate
@@ -727,7 +736,7 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
     }
   }
 
-  const browserGateway = createBrowserGateway(sessionManager, eventStore, piGateway, undefined, pendingForkRegistry, sessionOrderManager, preferencesStore, directoryService, terminalManager, pendingDashboardSpawns, config.maxWsBufferBytes, pendingAttachRegistry, pendingResumeIntents, pendingClientCorrelations, pushPrefsMap, () => config.push?.defaults, requireBrowserAuthAtStartup, config.authConfig?.operatorUsers, operatorSetTracker, cellAccess, huddleStateMachine, huddleLedger);
+  const browserGateway = createBrowserGateway(sessionManager, eventStore, piGateway, undefined, pendingForkRegistry, sessionOrderManager, preferencesStore, directoryService, terminalManager, pendingDashboardSpawns, config.maxWsBufferBytes, pendingAttachRegistry, pendingResumeIntents, pendingClientCorrelations, pushPrefsMap, () => config.push?.defaults, requireBrowserAuthAtStartup, config.authConfig?.operatorUsers, operatorSetTracker, cellAccess, huddleStateMachine, huddleLedger, huddleEnabledAtStartup);
 
   let stopCellAccessRefresh = () => {};
   if (cellAccess.enabled) {

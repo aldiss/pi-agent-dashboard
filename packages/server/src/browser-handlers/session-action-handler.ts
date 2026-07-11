@@ -852,6 +852,23 @@ export function handleHuddleStart(
   ctx: BrowserHandlerContext,
 ): void {
   const { huddleStateMachine, piGateway } = ctx;
+  // ── Default-OFF activation gate (server-owned; fail-closed; dl-6893/6910/6916) ──
+  // The huddle client control + private-audience surface is NOT yet shipped
+  // (orphaned: no production client emits huddle_start/recalled; no client
+  // renders huddle_turn). Until that activation build lands AND the capability is
+  // enabled server-side, REJECT huddle_start even for an authenticated operator,
+  // so a crafted WS / alternate client cannot activate the half-built feature.
+  // The flag is server-owned + startup-frozen (never client-asserted); undefined
+  // => false (fail-closed). `handleHuddleRecall` is intentionally NOT gated so an
+  // already-active span (e.g. across a restart that flipped the flag) can always
+  // unwind to safe idle — never wedged, never advanced.
+  if (!ctx.huddleEnabled) {
+    console.error(
+      `[huddle] start REJECTED for ${msg.sessionId} — capability default-OFF `
+        + `(client control+audience surface not yet shipped)`,
+    );
+    return;
+  }
   if (!huddleStateMachine) return; // feature not engaged — byte-unchanged
   const result = huddleStateMachine.requestArm(msg.sessionId);
   if (!result.ok) {

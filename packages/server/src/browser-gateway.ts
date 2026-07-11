@@ -171,6 +171,13 @@ export function createBrowserGateway(
   huddleStateMachine?: import("./huddle-state-machine.js").HuddleStateMachine,
   /** C1 — the huddle ledger (written at the M-A capture point). */
   huddleLedger?: import("./huddle-ledger.js").HuddleLedger,
+  /**
+   * Server-owned huddle activation capability (default-OFF, fail-closed). Threaded
+   * into every socket's ctx so `handleHuddleStart` can reject a crafted WS /
+   * alternate-client start while the huddle client control + audience surface is
+   * unshipped (dl-6893/6910/6916). Startup-frozen; never client-asserted.
+   */
+  huddleEnabled: boolean = false,
 ): BrowserGateway {
   // perMessageDeflate enabled: the sessions_snapshot frame is ~345 KB uncompressed
   // at ~380 sessions and re-ships on every (re)connect; gzip of the identical payload
@@ -480,6 +487,7 @@ export function createBrowserGateway(
           ...(cellAccess ? { cellAccess } : {}),
           ...(huddleStateMachine ? { huddleStateMachine } : {}),
           ...(huddleLedger ? { huddleLedger } : {}),
+          huddleEnabled,
           sendTo, broadcast, getSubscribers, replayPendingUiRequests,
           trackUiRequest: trackUiRequest,
           markReplaying(targetWs, sessionId) {
