@@ -1290,7 +1290,7 @@ function initBridge(pi: ExtensionAPI) {
     // Register push_notify_user tool for agent-proactive push (Auto mode).
     // Tool is registered unconditionally; the description is proactive — agents
     // decide when to use it based on context. Server fanout handles Off/On modes.
-    registerPushNotifyUserTool(pi);
+    registerPushNotifyUserTool(pi, () => huddleState.isActive());
 
     // On session switch/fork (0.65.0+: event.reason replaces session_switch/session_fork events),
     // unregister the old session before re-registering the new one.

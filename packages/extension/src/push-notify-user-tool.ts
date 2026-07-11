@@ -13,7 +13,17 @@ import { spawnSync } from "@blackbelt-technology/pi-dashboard-shared/platform/ex
 
 let toolRegistered = false;
 
-export function registerPushNotifyUserTool(pi: ExtensionAPI): void {
+/**
+ * @param isHuddleActive N-1 huddle-epoch scope: when it returns true, the
+ * push tool is DEFAULT-CLOSED — it refuses to push. A huddle keeps silent-work
+ * OUT (the agent is idle → no tool calls → dormant), but this is defense-in-depth
+ * so ANY unexpected active path (e.g. a mis-gated M-B replay) cannot push
+ * unscoped during the private span. Absent (single-operator) → never closed.
+ */
+export function registerPushNotifyUserTool(
+  pi: ExtensionAPI,
+  isHuddleActive?: () => boolean,
+): void {
   if (toolRegistered) return;
   toolRegistered = true;
 
@@ -47,6 +57,16 @@ Call POST /api/push/send with title and body via the dashboard server.`;
       required: ["title", "body"],
     },
     async execute(_toolCallId: any, params: any, _signal: any, _onUpdate: any, _ctx: any) {
+      // N-1 — default-closed for the huddle epoch. During an active huddle the
+      // agent is paused and the exchange is private to the co-drivers; no agent
+      // text may escape to a device out-of-band. Refuse loud (not silent) so a
+      // mis-gated active path is visible, not a silent unscoped push.
+      if (isHuddleActive?.()) {
+        return {
+          content: [{ type: "text", text: "push_notify_user is disabled during an active huddle (private operator span)." }],
+          details: {},
+        };
+      }
       const title = String(params.title ?? "");
       const body = String(params.body ?? "");
       const url = typeof params.url === "string" ? params.url : undefined;

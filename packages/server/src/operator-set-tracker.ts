@@ -100,6 +100,24 @@ export interface OperatorSetTracker {
    * presence alone leaks the slot).
    */
   sessionsAdmitted(sub: string): string[];
+  /**
+   * M-F — reserve `sub`'s slot in `sessionId` for `ttlMs` (huddle recovery). The
+   * huddle initiator's slot must survive a brief browser RELOAD (the last socket
+   * closes → `release` frees the slot → a 3rd identity could fill it mid-reload,
+   * the M5 wedge). `reserve` holds the slot across that gap:
+   *   - OWNER-BOUND — only the SAME `sub` reclaims it; a DIFFERENT sub is refused
+   *     admission while the reservation is live (it counts against N=2).
+   *   - COUNTS against N=2 — a reserved slot occupies a cell slot, so a 3rd
+   *     distinct sub is refused mid-reload.
+   *   - TTL'd + SELF-EVICTING — expires after `ttlMs` so a stale reservation
+   *     never PERMANENTLY wedges the cell at N=1-usable; on expiry the slot frees.
+   *   - operator-authenticated CALLER — created only by an operator-only recovery
+   *     path (composes with C2; this primitive does not itself check the role).
+   * Idempotent for the same `sub` (re-reserving refreshes the TTL). Returns true
+   * when the reservation is held (admissible), false when refused (a DIFFERENT
+   * sub already holds a reservation / the cell is full of other subs).
+   */
+  reserve(sessionId: string, sub: string, ttlMs: number): boolean;
 }
 
 /**
@@ -110,18 +128,37 @@ export interface OperatorSetTracker {
 export function createOperatorSetTracker(limit: number = OPERATOR_CELL_LIMIT): OperatorSetTracker {
   // sessionId → Set<sub>. A cell exists only while it has ≥1 member.
   const cells = new Map<string, Set<string>>();
+  // M-F: sessionId → (sub → eviction timer). A reservation HOLDS a slot across a
+  // reload gap independent of the committed `cells` membership — it counts
+  // against N=2 in `canAdmit` and self-evicts on TTL. Distinct from `cells` so
+  // `release` (last-socket-close) does NOT drop it (the whole point).
+  const reservations = new Map<string, Map<string, ReturnType<typeof setTimeout>>>();
+
+  /** The EFFECTIVE occupants of a cell for admission = members ∪ reserved subs. */
+  function effectiveSubs(sessionId: string): Set<string> {
+    const out = new Set<string>(cells.get(sessionId) ?? []);
+    const res = reservations.get(sessionId);
+    if (res) for (const sub of res.keys()) out.add(sub);
+    return out;
+  }
 
   function canAdmit(sessionId: string, sub: string): CanAdmitVerdict {
-    const existing = cells.get(sessionId);
-    if (existing?.has(sub)) {
-      // Already a member — admissible, no new slot needed (commit is a no-op).
+    const members = cells.get(sessionId);
+    if (members?.has(sub)) {
+      // Already a committed member — admissible, no new slot needed.
       return { admissible: true, member: true };
     }
-    const size = existing?.size ?? 0;
-    // A free slot ⇒ admissible; cell full of OTHER distinct subs ⇒ NOT (a 3rd
-    // distinct human). NO mutation here — the caller commits only on the
-    // allowed path (check-then-commit), so a refused action strands nothing.
-    return { admissible: size < limit, member: false };
+    // M-F: a sub RECLAIMING its own live reservation is admissible (it reloads
+    // back into its held slot) — but it is not yet a committed `member`, so the
+    // caller still commits it on the allowed path.
+    const effective = effectiveSubs(sessionId);
+    if (effective.has(sub)) {
+      // sub holds a reservation (guaranteed, since it is not a member) → reclaim.
+      return { admissible: true, member: false };
+    }
+    // A free EFFECTIVE slot ⇒ admissible; cell full of OTHER distinct subs (each
+    // a committed member OR a live reservation) ⇒ NOT (a 3rd distinct human).
+    return { admissible: effective.size < limit, member: false };
   }
 
   function commit(sessionId: string, sub: string): void {
@@ -141,11 +178,56 @@ export function createOperatorSetTracker(limit: number = OPERATOR_CELL_LIMIT): O
     const cell = cells.get(sessionId);
     if (!cell || !cell.delete(sub)) return false;
     if (cell.size === 0) cells.delete(sessionId);
+    // NOTE: a live reservation for `sub` is intentionally LEFT intact — it is the
+    // hold that survives this exact release (the reload gap). It self-evicts on
+    // its own TTL. `clearSession` is the leak guard that clears reservation timers.
+    return true;
+  }
+
+  function clearReservation(sessionId: string, sub: string): void {
+    const res = reservations.get(sessionId);
+    const timer = res?.get(sub);
+    if (timer) clearTimeout(timer);
+    res?.delete(sub);
+    if (res && res.size === 0) reservations.delete(sessionId);
+  }
+
+  function reserve(sessionId: string, sub: string, ttlMs: number): boolean {
+    // Idempotent refresh for a sub that already occupies a slot (member OR live
+    // reservation): refresh/replace the TTL, keep the slot.
+    const alreadyHeld = isMember(sessionId, sub) || !!reservations.get(sessionId)?.has(sub);
+    if (!alreadyHeld) {
+      // A NEW reservation must fit within N=2 against the effective occupancy —
+      // a 3rd distinct sub is refused (owner-bound: only these subs hold slots).
+      if (effectiveSubs(sessionId).size >= limit) return false;
+    }
+    // (Re)arm the eviction timer.
+    clearReservation(sessionId, sub);
+    let res = reservations.get(sessionId);
+    if (!res) {
+      res = new Map<string, ReturnType<typeof setTimeout>>();
+      reservations.set(sessionId, res);
+    }
+    const timer = setTimeout(() => {
+      // Self-evict: drop the reservation so a stale hold never PERMANENTLY wedges
+      // the cell at N=1-usable. The committed membership (if any) is untouched.
+      const r = reservations.get(sessionId);
+      r?.delete(sub);
+      if (r && r.size === 0) reservations.delete(sessionId);
+    }, ttlMs);
+    // Do not keep the event loop alive for a reservation eviction.
+    (timer as { unref?: () => void }).unref?.();
+    res.set(sub, timer);
     return true;
   }
 
   function clearSession(sessionId: string): void {
     cells.delete(sessionId);
+    const res = reservations.get(sessionId);
+    if (res) {
+      for (const timer of res.values()) clearTimeout(timer);
+      reservations.delete(sessionId);
+    }
   }
 
   function count(sessionId: string): number {
@@ -164,5 +246,5 @@ export function createOperatorSetTracker(limit: number = OPERATOR_CELL_LIMIT): O
     return out;
   }
 
-  return { canAdmit, commit, isMember, release, clearSession, count, operatorsOf, sessionsAdmitted };
+  return { canAdmit, commit, isMember, release, clearSession, count, operatorsOf, sessionsAdmitted, reserve };
 }
