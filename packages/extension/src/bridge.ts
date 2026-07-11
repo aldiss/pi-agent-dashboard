@@ -1226,19 +1226,25 @@ function initBridge(pi: ExtensionAPI) {
       images?: any;
     };
     if (ev.source === "extension" || ev.source === "rpc") return;
-    if (!ev.text) return;
     // ── M-E: mechanical local-TUI fence (huddle primary) ─────────────────────
     // A turn typed into pi's OWN TUI arrives here and would be delivered to pi
     // WITHOUT traversing the server (no authz gate, no C1 ledger, no C3 pause
     // consult). While the huddle is active, FENCE it: buffer for the span (so it
-    // is not lost) and RETURN before it reaches pi. Released/dropped on recall.
-    // This keeps the single-gate invariant mechanically TRUE for the local-TUI
-    // ingress (design M-E primary), not merely documented.
+    // is not lost) and RETURN { action: "handled" } so Pi does NOT deliver it to
+    // the agent. A bare `return` resolves `undefined`, which Pi's emitInput
+    // treats as "continue" (the input STILL reaches the agent) — the M-E hole.
+    // This gate runs BEFORE the empty-text check so an IMAGE-ONLY turn (no text)
+    // is fenced too (it would otherwise fall through `if (!ev.text) return` and
+    // reach the agent). Keeps the single-gate invariant mechanically TRUE for the
+    // local-TUI ingress (design M-E primary), not merely documented.
     if (shouldFenceTuiInput(huddleState)) {
-      huddleState.bufferTuiTurn({ text: ev.text, images: ev.images, at: Date.now() });
+      if (ev.text || (Array.isArray(ev.images) && ev.images.length > 0)) {
+        huddleState.bufferTuiTurn({ text: ev.text ?? "", images: ev.images, at: Date.now() });
+      }
       console.log("[dashboard] huddle active — local-TUI input fenced for the span");
-      return;
+      return { action: "handled" };
     }
+    if (!ev.text) return;
     if (ev.streamingBehavior === "steer") {
       // Steers have no dashboard card — track only for dequeue classification.
       queueTracker.recordSteer(ev.text);
