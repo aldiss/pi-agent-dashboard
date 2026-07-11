@@ -39,6 +39,7 @@ import type { BridgeContext } from "./bridge-context.js";
 import { filterHiddenCommands, extractFirstMessage, getCurrentModelString } from "./bridge-context.js";
 import { tryDispatchExtensionCommand } from "./slash-dispatch.js";
 import { wrapForSend } from "./speaker-wrap.js";
+import { createHuddleBridgeState, shouldFenceTuiInput, shouldHoldPromptResponse } from "./huddle-bridge-state.js";
 import { sendStateSync as _sendStateSync, replaySessionEntries as _replaySessionEntries, handleSessionChange as _handleSessionChange } from "./session-sync.js";
 import { sendModelUpdateIfChanged as _sendModelUpdateIfChanged, sendSessionNameIfChanged as _sendSessionNameIfChanged, sendGitInfoIfChanged as _sendGitInfoIfChanged, resetReconnectCaches as _resetReconnectCaches } from "./model-tracker.js";
 import { registerFlowEventListeners, FLOW_EVENT_MAP, SUBAGENT_EVENT_MAP } from "./flow-event-wiring.js";
@@ -228,6 +229,15 @@ function initBridge(pi: ExtensionAPI) {
   // the extension API does NOT expose the AgentSession queue accessors — only
   // `ctx.hasPendingMessages(): boolean`. See queue-tracker.ts + resolution-1.
   const queueTracker = new QueueTracker();
+
+  // C3 (bridge side) — the huddle phase holder. The bridge OWNS the phase
+  // enactment: it fences its own local-TUI `pi.on("input")` ingress (M-E) and
+  // holds `prompt_response` (M-C) for the span, then ACKs each transition to the
+  // server (`huddle_ack`) so the server CAS SM advances only on real confirmation.
+  const huddleState = createHuddleBridgeState();
+  // M-C: `prompt_response`s that arrived while the huddle was active, held for the
+  // span and re-applied to the PromptBus after recall.
+  const heldPromptResponses: Array<{ id: string; answer?: string; cancelled?: boolean; source?: string }> = [];
 
   /** Forward the bridge's reconstructed queue snapshot as a queue_state event. */
   const forwardQueueState = (source: "dashboard" | "tui" | "lifecycle"): void => {
@@ -487,6 +497,34 @@ function initBridge(pi: ExtensionAPI) {
         return;
       }
       // Legacy extension_ui_response removed — now handled by prompt_response → promptBus.respond()
+      // C3 (bridge side) — huddle phase control from the server. The bridge
+      // enacts the transition (fence local-TUI input on `arm`, release on
+      // `recall`) and ACKs the stable phase it reached, so the server SM advances
+      // only on this confirmation. The `arm`→active fence is the M-E primary.
+      if ((msg as any).type === "huddle_control") {
+        const epoch = (msg as any).epoch as number;
+        const transition = (msg as any).transition as "arm" | "recall";
+        if (transition === "arm") {
+          huddleState.arm(epoch);
+          connection.send({ type: "huddle_ack", sessionId, epoch, phase: "active" } as any);
+          console.log(`[dashboard] huddle armed (epoch=${epoch}) — local-TUI input fenced`);
+        } else if (transition === "recall") {
+          const drained = huddleState.recall(epoch);
+          if (drained !== null) {
+            // Release the fence + replay any held `prompt_response`s to the bus
+            // (M-C: the co-driver answers applied after the span, in order).
+            if (promptBus) {
+              for (const held of heldPromptResponses) {
+                promptBus.respond({ id: held.id, answer: held.answer, cancelled: held.cancelled, source: held.source ?? "dashboard-default" });
+              }
+            }
+            heldPromptResponses.length = 0;
+            connection.send({ type: "huddle_ack", sessionId, epoch, phase: "idle" } as any);
+            console.log(`[dashboard] huddle recalled (epoch=${epoch}) — fence released, ${drained.length} buffered TUI turn(s) dropped`);
+          }
+        }
+        return;
+      }
       // Reload auth credentials when dashboard notifies of changes
       if (msg.type === "credentials_updated") {
         try {
@@ -618,6 +656,19 @@ function initBridge(pi: ExtensionAPI) {
       }
       // Route PromptBus responses from dashboard client
       if (msg.type === "prompt_response" && promptBus) {
+        // M-C: while the huddle is active, a co-driver's answer to an outstanding
+        // ask-user must NOT resume the blocked agent mid-huddle. HOLD it for the
+        // span (design M-C default = HOLD) and re-apply it after `huddle-recall`
+        // (in the huddle_control{recall} handler above, in order).
+        if (shouldHoldPromptResponse(huddleState)) {
+          heldPromptResponses.push({
+            id: (msg as any).promptId,
+            answer: (msg as any).answer,
+            cancelled: (msg as any).cancelled,
+            source: (msg as any).source ?? "dashboard-default",
+          });
+          return;
+        }
         promptBus.respond({
           id: (msg as any).promptId,
           answer: (msg as any).answer,
@@ -1163,6 +1214,18 @@ function initBridge(pi: ExtensionAPI) {
     };
     if (ev.source === "extension" || ev.source === "rpc") return;
     if (!ev.text) return;
+    // ── M-E: mechanical local-TUI fence (huddle primary) ─────────────────────
+    // A turn typed into pi's OWN TUI arrives here and would be delivered to pi
+    // WITHOUT traversing the server (no authz gate, no C1 ledger, no C3 pause
+    // consult). While the huddle is active, FENCE it: buffer for the span (so it
+    // is not lost) and RETURN before it reaches pi. Released/dropped on recall.
+    // This keeps the single-gate invariant mechanically TRUE for the local-TUI
+    // ingress (design M-E primary), not merely documented.
+    if (shouldFenceTuiInput(huddleState)) {
+      huddleState.bufferTuiTurn({ text: ev.text, images: ev.images, at: Date.now() });
+      console.log("[dashboard] huddle active — local-TUI input fenced for the span");
+      return;
+    }
     if (ev.streamingBehavior === "steer") {
       // Steers have no dashboard card — track only for dequeue classification.
       queueTracker.recordSteer(ev.text);

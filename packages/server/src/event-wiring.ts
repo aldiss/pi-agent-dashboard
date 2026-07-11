@@ -66,6 +66,15 @@ export interface EventWiringDeps {
   pushPrefsMap?: Map<string, PushPrefs>;
   /** Reads global push defaults from live config. */
   getPushDefaults?: () => PushDefaults | undefined;
+  /**
+   * C3 — the huddle pause state machine. When provided, the wiring drives it on
+   * a `huddle_ack` from the bridge (arming→active / recalling→idle) and gates
+   * the M-B ended-replay delivery on the huddle phase. Absent → no huddle
+   * (single-operator / flag-off), byte-unchanged.
+   */
+  huddleStateMachine?: import("./huddle-state-machine.js").HuddleStateMachine;
+  /** C1 — the huddle ledger (drained into the C4 catch-up on recall). */
+  huddleLedger?: import("./huddle-ledger.js").HuddleLedger;
 }
 
 /**
@@ -89,6 +98,8 @@ export function wireEvents(deps: EventWiringDeps): void {
     pushDispatcher,
     pushPrefsMap,
     getPushDefaults,
+    huddleStateMachine,
+    huddleLedger,
   } = deps;
 
   // Broadcast placeholder session to browsers when auto-created from early events
@@ -670,19 +681,79 @@ export function wireEvents(deps: EventWiringDeps): void {
 
       const pendingResume = browserGateway.pendingResumeRegistry.consume(msg.cwd);
       if (pendingResume) {
-        piGateway.sendToSession(sessionId, {
-          type: "send_prompt",
-          sessionId,
-          text: pendingResume.text,
-          images: pendingResume.images,
-          // Carry the RECORD-TIME author (Surface A). This replay reacts to a
-          // cwd-keyed bridge event with NO ctx.principal, so the author cannot
-          // be re-derived here — it rides the registry entry (server-side-only,
-          // not client-spoofable). Absent single-operator → omitted.
-          ...(pendingResume.author ? { author: pendingResume.author } : {}),
-        });
-        sessionManager.update(sessionId, { resuming: false });
-        browserGateway.broadcastSessionUpdated(sessionId, { resuming: false });
+        // ── M-B: gate the ended-replay DELIVERY on the huddle phase ──────────
+        // The turn was recorded pre-huddle (authz-correct — the author rides the
+        // registry entry), but it is DELIVERED whenever the bridge re-registers,
+        // which can be MID-HUDDLE. If a huddle is active for this session, do NOT
+        // deliver now — HOLD the resume-prompt in the C3 durable outbox (keyed by
+        // the span) and deliver it after `huddle-recall` via the post-recall
+        // drain, preserving the record-time author. Gate the DELIVERY, not just
+        // the record. Absent SM (single-operator) → deliver as before (unchanged).
+        if (huddleStateMachine?.isHuddling(sessionId)) {
+          huddleStateMachine.holdOutbox(sessionId, {
+            text: pendingResume.text,
+            images: pendingResume.images,
+            ...(pendingResume.author ? { author: pendingResume.author } : {}),
+            source: "resume-replay",
+            oldSessionId: pendingResume.oldSessionId,
+            sessionFile: pendingResume.sessionFile,
+          });
+          sessionManager.update(sessionId, { resuming: false });
+          browserGateway.broadcastSessionUpdated(sessionId, { resuming: false });
+        } else {
+          piGateway.sendToSession(sessionId, {
+            type: "send_prompt",
+            sessionId,
+            text: pendingResume.text,
+            images: pendingResume.images,
+            // Carry the RECORD-TIME author (Surface A). This replay reacts to a
+            // cwd-keyed bridge event with NO ctx.principal, so the author cannot
+            // be re-derived here — it rides the registry entry (server-side-only,
+            // not client-spoofable). Absent single-operator → omitted.
+            ...(pendingResume.author ? { author: pendingResume.author } : {}),
+          });
+          sessionManager.update(sessionId, { resuming: false });
+          browserGateway.broadcastSessionUpdated(sessionId, { resuming: false });
+        }
+      }
+    }
+
+    // ── C3 — bridge huddle-phase ACK drives the server CAS state machine ──────
+    // The bridge ACKs the STABLE phase it reached after enacting a
+    // `huddle_control` transition. The server advances the SM ONLY here (never
+    // optimistically), because the bridge owns the load-bearing side effect
+    // (fencing local-TUI input, M-E). A stale ack (wrong epoch) is dropped inside
+    // ackActive/ackIdle. Absent SM (single-operator) → this branch never fires.
+    if (msg.type === "huddle_ack") {
+      if (huddleStateMachine) {
+        if (msg.phase === "active") {
+          // arming → active. The huddle is now live: the C1 ledger captures held
+          // human turns (M-A) + broadcasts them privately (C5); the C3 outbox
+          // holds mid-huddle agent-bound prompts (M-B).
+          huddleStateMachine.ackActive(sessionId, msg.epoch);
+        } else if (msg.phase === "idle") {
+          // recalling → idle. The span is over. Advance the SM, then drain the
+          // durable outbox (M-B resume-prompts held mid-huddle) to the agent as
+          // real executable prompts, preserving each record-time author.
+          const done = huddleStateMachine.ackIdle(sessionId, msg.epoch);
+          if (done.ok) {
+            // C4 SEAM: the held human-turn span (huddleLedger.drainAgentHold)
+            // composes the text-only `huddle_catchup` carrier delivered to the
+            // agent BEFORE the outbox prompts. Wired in the C4 commit — the
+            // ledger drain + fail-loud image gate live there. For now the SM
+            // outbox drains the executable resume-prompts held by M-B.
+            const outbox = huddleStateMachine.drainOutbox(sessionId);
+            for (const held of outbox) {
+              piGateway.sendToSession(sessionId, {
+                type: "send_prompt",
+                sessionId,
+                text: held.text,
+                images: held.images,
+                ...(held.author ? { author: held.author } : {}),
+              });
+            }
+          }
+        }
       }
     }
 
