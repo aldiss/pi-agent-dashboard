@@ -9,6 +9,7 @@ import { RetryBanner } from "./RetryBanner";
 import type { SessionState, ChatImage, InteractiveUiRequest } from "../lib/event-reducer.js";
 import type { ToolContext } from "./tool-renderers/index.js";
 import { MarkdownContent } from "./MarkdownContent.js";
+import { stripSpeakerEnvelopeForDisplay } from "../lib/strip-speaker-envelope.js";
 import { CopyButton } from "./CopyButton.js";
 import { ToolCallStep } from "./ToolCallStep.js";
 import { ThinkingBlock } from "./ThinkingBlock.js";
@@ -736,6 +737,12 @@ export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ se
           // doesn't show walls of expanded skill body. Plain user messages
           // continue to render as the existing blue bubble.
           // See change: render-skill-invocations-collapsibly.
+          // Strip the model-facing <speaker> envelope for DISPLAY so the
+          // per-message auth nonce never renders in the operator's bubble
+          // (display-only; agent-facing content + auth/wrap untouched).
+          const displayContent = msg.content
+            ? stripSpeakerEnvelopeForDisplay(msg.content)
+            : msg.content;
           if (msg.skill) {
             return (
               <div
@@ -757,7 +764,7 @@ export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ se
                   )}
                   <SkillInvocationCard
                     skill={msg.skill}
-                    rawContent={msg.content}
+                    rawContent={displayContent}
                     timestamp={msg.timestamp}
                     entryId={msg.entryId}
                     onFork={onForkFromMessage}
@@ -778,9 +785,9 @@ export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ se
                 {msg.images && msg.images.length > 0 && (
                   <ImageAttachments images={msg.images} />
                 )}
-                {msg.content && (
+                {displayContent && (
                   <MessageBubble
-                    content={msg.content}
+                    content={displayContent}
                     className=""
                     timestamp={msg.timestamp}
                     entryId={msg.entryId}
