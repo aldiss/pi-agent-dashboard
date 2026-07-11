@@ -18,6 +18,7 @@
  * wins. `sub` is always the exact decoded cookie sub (the identity key).
  */
 import type { TokenPayload } from "./auth.js";
+import { isOperator } from "./session-authz.js";
 import type { MessageAuthor } from "@blackbelt-technology/pi-dashboard-shared/types.js";
 
 function firstNonEmpty(...vals: Array<string | undefined>): string | undefined {
@@ -31,11 +32,28 @@ function firstNonEmpty(...vals: Array<string | undefined>): string | undefined {
  * Derive the structured author from a verified principal. Returns undefined
  * when there is no bound principal (single-operator, or a principal-less
  * connection the gate already allowed with the flag off).
+ *
+ * `operatorUsers` (optional) sources the DISPLAY-ONLY `isOperator` bit via
+ * `isOperator(principal, operatorUsers)` — the SAME helper the gate uses for
+ * enforcement, but here it feeds UI color anchoring ONLY (attribution ⊥
+ * authorization, Contract-3). The bit is stamped ONLY when `operatorUsers` is
+ * configured (non-empty); when absent/empty it is OMITTED (undefined) so the
+ * author object stays BYTE-UNCHANGED vs today (inert single-operator path). This
+ * field is stamped + sent to the client only and is NEVER consulted by any
+ * enforcement path.
  */
-export function deriveAuthor(principal: TokenPayload | null | undefined): MessageAuthor | undefined {
+export function deriveAuthor(
+  principal: TokenPayload | null | undefined,
+  operatorUsers?: string[],
+): MessageAuthor | undefined {
   if (!principal) return undefined;
   const sub = principal.sub;
   if (typeof sub !== "string" || sub.trim().length === 0) return undefined;
   const display = firstNonEmpty(principal.name, principal.username, sub) ?? sub;
-  return { sub, display };
+  const operatorConfigured = !!operatorUsers && operatorUsers.length > 0;
+  return {
+    sub,
+    display,
+    ...(operatorConfigured ? { isOperator: isOperator(principal, operatorUsers) } : {}),
+  };
 }

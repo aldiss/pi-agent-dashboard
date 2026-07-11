@@ -296,7 +296,7 @@ export function registerSessionApi(fastify: FastifyInstance, deps: SessionApiDep
       // `promptGate` preHandler (attribution ⊥ authorization, Contract-3).
       // Conditional-spread keeps flag-off byte-unchanged. REUSES the Build-1b
       // REST-identity stash — no second REST-identity path.
-      const restAuthor = deriveAuthor((request as any).restPrincipal ?? null);
+      const restAuthor = deriveAuthor((request as any).restPrincipal ?? null, deps.operatorUsers);
       const sent = piGateway.sendToSession(id, {
         type: "send_prompt",
         sessionId: id,

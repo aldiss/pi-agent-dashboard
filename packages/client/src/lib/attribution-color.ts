@@ -1,14 +1,24 @@
 /**
  * Per-operator attribution color (multi-operator, Surface A).
  *
- * Deterministically maps an operator identity key (`author.sub`) to a stable
- * accent from a curated palette that harmonizes with the dashboard's editorial
- * theme. Stable = the same operator always gets the same color across turns and
- * reloads (hash of `sub`, not call order), so op-1 vs op-2 stay visually
- * distinct without a server-assigned index.
+ * Two schemes live here:
  *
- * Pure + framework-free so it is unit-testable without a DOM.
+ *  1. ROLE-ANCHORED (Option B, the 2-operator path) — `bubbleTintFor(author)`
+ *     keys off the server-derived DISPLAY-ONLY `author.isOperator` bit. Operator
+ *     → AMBER, guest → VIOLET. Guaranteed distinct for the N=2 case (op vs guest),
+ *     so it can NEVER collide the way a hash can. This is the source of the
+ *     Level-3 full-bubble tint.
+ *
+ *  2. HASH-STABLE FALLBACK — `attributionColorFor(sub)` maps an identity key to a
+ *     curated palette accent by hashing `sub`. Retained for any author that lacks
+ *     `isOperator` (older payloads / N>2 co-drivers) so they stay visually
+ *     separated without a server-assigned index. Can collide for two subs that
+ *     hash to the same slot — which is exactly why the 2-operator path is
+ *     role-anchored instead.
+ *
+ * Pure + framework-free so both are unit-testable without a DOM.
  */
+import type { MessageAuthor } from "@blackbelt-technology/pi-dashboard-shared/types.js";
 
 /** One palette slot: dot fill + pill text/background/border, dashboard-themed. */
 export interface AttributionColor {
@@ -16,6 +26,45 @@ export interface AttributionColor {
   dot: string;
   /** Tailwind classes for the pill (text + tinted bg + border). */
   pill: string;
+}
+
+/**
+ * Level-3 full-bubble tint tokens (raw CSS color strings for inline `style`,
+ * NOT Tailwind classes — the tint is applied to the user bubble's
+ * backgroundColor/borderColor/color directly). Role-anchored: operator = amber,
+ * guest = violet.
+ */
+export interface AttributionTint {
+  /** Bubble background fill (rgba, low alpha). */
+  bg: string;
+  /** Bubble border color (rgba, mid alpha). */
+  border: string;
+  /** Bubble text color (near-white, role-warm/cool). */
+  text: string;
+}
+
+/** Operator (host) tint — AMBER. */
+const OPERATOR_TINT: AttributionTint = {
+  bg: "rgba(245,158,11,0.20)",
+  border: "rgba(245,158,11,0.40)",
+  text: "#f5efe6",
+};
+
+/** Guest tint — VIOLET. */
+const GUEST_TINT: AttributionTint = {
+  bg: "rgba(139,92,246,0.20)",
+  border: "rgba(139,92,246,0.40)",
+  text: "#eef0f6",
+};
+
+/**
+ * Role-anchored bubble tint. `author.isOperator === true` → AMBER; anything else
+ * (explicit guest `false`, or absent) → VIOLET. The two are DISTINCT by
+ * construction, so the collision the hash could produce for two operators is
+ * gone. DISPLAY-ONLY: `isOperator` never feeds any enforcement path.
+ */
+export function bubbleTintFor(author: MessageAuthor): AttributionTint {
+  return author.isOperator === true ? OPERATOR_TINT : GUEST_TINT;
 }
 
 /**
