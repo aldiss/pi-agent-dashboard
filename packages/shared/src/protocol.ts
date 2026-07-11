@@ -555,6 +555,23 @@ export interface ShutdownExtensionMessage {
  * - `arm`    — idle→arming: fence local-TUI input, then ACK `phase:"active"`.
  * - `recall` — active→recalling: release the fence, then ACK `phase:"idle"`.
  */
+/**
+ * C4 — server→bridge text-only huddle catch-up. A DISTINCT message type (NOT
+ * send_prompt) carrying the server-composed unforgeable transcript carrier, so
+ * it NEVER reaches `parseSendPrompt` (F3 mechanical closure: parseSendPrompt is
+ * reached only via `case "send_prompt"`). The bridge delivers `carrier` to the
+ * agent as quoted DATA (deliverAs followUp), ahead of any drained outbox prompt.
+ * Text-only by construction (policy B — image-bearing spans fail loud server-side
+ * and never produce this carrier).
+ */
+export interface HuddleCatchupExtensionMessage {
+  type: "huddle_catchup";
+  sessionId: string;
+  epoch: number;
+  /** The server-composed framed transcript (per-turn frames + outer marker). */
+  carrier: string;
+}
+
 export interface HuddleControlExtensionMessage {
   type: "huddle_control";
   sessionId: string;
@@ -723,4 +740,5 @@ export type ServerToExtensionMessage =
   | UiManagementMessage
   | KillProcessMessage
   | HuddleControlExtensionMessage
+  | HuddleCatchupExtensionMessage
   | ServerRestartingExtensionMessage;

@@ -23,6 +23,7 @@ import { detectOpenSpecActivity, isValidOpenSpecChangeSlug } from "@blackbelt-te
 import { extractTurnStats } from "@blackbelt-technology/pi-dashboard-shared/stats-extractor.js";
 import { attachRenameTarget, isNameAutoSetFromAttachment } from "./proposal-attach-naming.js";
 import { detectWorktree, resolveMainRepoRoot } from "./worktree-manager.js";
+import { composeHuddleCatchup } from "./huddle-catchup.js";
 
 export interface EventWiringDeps {
   sessionManager: SessionManager;
@@ -732,25 +733,54 @@ export function wireEvents(deps: EventWiringDeps): void {
           // holds mid-huddle agent-bound prompts (M-B).
           huddleStateMachine.ackActive(sessionId, msg.epoch);
         } else if (msg.phase === "idle") {
-          // recalling → idle. The span is over. Advance the SM, then drain the
-          // durable outbox (M-B resume-prompts held mid-huddle) to the agent as
-          // real executable prompts, preserving each record-time author.
+          // recalling → idle. The span is over. Advance the SM, then compose the
+          // C4 text-only catch-up from the C1 ledger drain and deliver it to the
+          // agent BEFORE the drained outbox prompts.
           const done = huddleStateMachine.ackIdle(sessionId, msg.epoch);
           if (done.ok) {
-            // C4 SEAM: the held human-turn span (huddleLedger.drainAgentHold)
-            // composes the text-only `huddle_catchup` carrier delivered to the
-            // agent BEFORE the outbox prompts. Wired in the C4 commit — the
-            // ledger drain + fail-loud image gate live there. For now the SM
-            // outbox drains the executable resume-prompts held by M-B.
-            const outbox = huddleStateMachine.drainOutbox(sessionId);
-            for (const held of outbox) {
-              piGateway.sendToSession(sessionId, {
-                type: "send_prompt",
-                sessionId,
-                text: held.text,
-                images: held.images,
-                ...(held.author ? { author: held.author } : {}),
+            const epoch = done.epoch;
+            // C4 — drain the held human-turn span + compose the catch-up carrier.
+            const held = huddleLedger ? huddleLedger.drainAgentHold(sessionId, epoch) : [];
+            const composed = held.length > 0 ? composeHuddleCatchup(held) : { ok: true as const, carrier: "", turnCount: 0 };
+            if (!composed.ok) {
+              // POLICY B fail-loud: an image-bearing (or over-bound) span CANNOT
+              // be delivered as a text-only catch-up. Do NOT deliver a partial
+              // carrier, do NOT drain the outbox (the agent stays effectively
+              // paused for this input). Surface an operator-visible notice; recall
+              // remains blocked until an operator records a text conclusion and
+              // re-recalls. Never silent-omit / mis-attribute (v2.1.1).
+              browserGateway.broadcastEvent(sessionId, 0, {
+                eventType: "huddle_catchup_blocked",
+                timestamp: Date.now(),
+                data: { ...composed },
               });
+              console.error(
+                `[huddle] catch-up BLOCKED for ${sessionId} (reason=${composed.reason}) — ` +
+                  `recall held; an operator must record a text conclusion (policy B).`,
+              );
+            } else {
+              // Deliver the framed transcript DATA (if any turns) as a distinct
+              // huddle_catchup carrier (F3: NOT send_prompt → never parsed).
+              if (composed.turnCount > 0) {
+                piGateway.sendToSession(sessionId, {
+                  type: "huddle_catchup",
+                  sessionId,
+                  epoch,
+                  carrier: composed.carrier,
+                });
+              }
+              // Then drain the durable outbox (M-B resume-prompts held mid-huddle)
+              // to the agent as real executable prompts, record-time author intact.
+              const outbox = huddleStateMachine.drainOutbox(sessionId);
+              for (const prompt of outbox) {
+                piGateway.sendToSession(sessionId, {
+                  type: "send_prompt",
+                  sessionId,
+                  text: prompt.text,
+                  images: prompt.images,
+                  ...(prompt.author ? { author: prompt.author } : {}),
+                });
+              }
             }
           }
         }

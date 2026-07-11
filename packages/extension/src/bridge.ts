@@ -496,7 +496,20 @@ function initBridge(pi: ExtensionAPI) {
         }
         return;
       }
-      // Legacy extension_ui_response removed — now handled by prompt_response → promptBus.respond()
+      // C4 (bridge side) — deliver the server-composed text-only huddle catch-up
+      // to the agent as a followUp DATA turn. It is a DISTINCT type (not
+      // send_prompt), so it never traversed parseSendPrompt (F3 mechanical
+      // closure). The carrier is already the framed transcript (server-composed,
+      // unforgeable per-turn frames + outer DATA marker) — delivered verbatim,
+      // NOT re-wrapped (re-wrapping would sanitize the legitimate inner frames).
+      if ((msg as any).type === "huddle_catchup") {
+        const carrier = (msg as any).carrier as string;
+        if (carrier && sessionReady) {
+          (pi.sendUserMessage as any)(carrier, { deliverAs: "followUp" });
+          console.log(`[dashboard] huddle catch-up delivered (epoch=${(msg as any).epoch})`);
+        }
+        return;
+      }
       // C3 (bridge side) — huddle phase control from the server. The bridge
       // enacts the transition (fence local-TUI input on `arm`, release on
       // `recall`) and ACKs the stable phase it reached, so the server SM advances

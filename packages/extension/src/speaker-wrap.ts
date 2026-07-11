@@ -24,32 +24,22 @@
  * pi-core model field) is a FUTURE option, NOT this build.
  */
 import type { MessageAuthor } from "@blackbelt-technology/pi-dashboard-shared/types.js";
-import { randomUUID } from "node:crypto";
-
-/**
- * Escape a string for safe inclusion inside a double-quoted tag attribute.
- * Drops the characters that could break out of the attribute or the tag.
- */
-function escapeAttr(value: string): string {
-  return value.replace(/["<>\r\n]/g, " ").trim();
-}
+import {
+  escapeAttr,
+  sanitizeSpeakerBody as sharedSanitizeSpeakerBody,
+  mintNonce,
+} from "@blackbelt-technology/pi-dashboard-shared/speaker-frame-primitives.js";
 
 /**
  * Strip any literal delimiter tokens from the human text so the wrap envelope
- * is unforgeable: the human cannot open/close a `<speaker>` block nor guess the
- * nonce. Case-insensitive on the tag tokens; exact on the nonce.
+ * is unforgeable. Re-exported from the shared `speaker-frame-primitives` module
+ * (dl-6754 / v2.1.1 §5 convergence) — the SAME sub-primitive the huddle C4
+ * per-turn frame reuses, so the anti-forgery guarantee is proven ONCE, not
+ * per-fork. Kept as a named export here for the existing extension consumers +
+ * the `surface-a-speaker-wrap` red-arms (public API byte-unchanged).
  */
 export function sanitizeSpeakerBody(text: string, nonce: string): string {
-  let out = text;
-  // Remove any literal nonce occurrence first (defense in depth — the nonce is
-  // unpredictable, but never let it appear in the body).
-  if (nonce) out = out.split(nonce).join("");
-  // Neutralize any `<speaker` / `</speaker` token (case-insensitive) by
-  // dropping the leading `<` so it can no longer parse as a tag: `<speaker` →
-  // `speaker`, `</speaker` → `/speaker`. The human thus cannot open a forged
-  // speaker block nor prematurely close this one.
-  out = out.replace(/<(\/?\s*speaker\b)/gi, "$1");
-  return out;
+  return sharedSanitizeSpeakerBody(text, nonce);
 }
 
 /**
@@ -86,5 +76,5 @@ export function wrapSpeaker(
  */
 export function wrapForSend(text: string, author: MessageAuthor | undefined): string {
   if (!author) return text;
-  return wrapSpeaker(text, author, randomUUID());
+  return wrapSpeaker(text, author, mintNonce());
 }
