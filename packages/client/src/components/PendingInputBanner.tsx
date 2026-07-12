@@ -41,7 +41,7 @@ function timeLabel(
     return { label: `pending ${fmtDur(now - it.firstSeenAt)}`, urgent: false, firing: false };
   }
   const remaining = it.deadlineAt - now;
-  if (remaining <= 0) return { label: "default-firing…", urgent: true, firing: true };
+  if (remaining <= 0) return { label: "past deadline", urgent: true, firing: true };
   return { label: `blocks in ${fmtDur(remaining)}`, urgent: remaining <= 60_000, firing: false };
 }
 
