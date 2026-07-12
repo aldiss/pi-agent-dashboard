@@ -41,6 +41,7 @@ import { SettingsPanel } from "./components/SettingsPanel.js";
 import { ZrokInstallGuide } from "./components/ZrokInstallGuide.js";
 import { InstallBanner } from "./components/InstallBanner.js";
 import { BootstrapBanner } from "./components/BootstrapBanner.js";
+import { PendingInputBanner } from "./components/PendingInputBanner.js";
 import { useBootstrapStatus } from "./hooks/useBootstrapStatus.js";
 import { useInstallPrompt } from "./hooks/useInstallPrompt.js";
 import { useSessionsBootstrap } from "./hooks/useSessionsBootstrap.js";
@@ -70,7 +71,7 @@ import { useProvidersReady } from "./hooks/useProvidersReady.js";
 import type { TerminalSession } from "@blackbelt-technology/pi-dashboard-shared/terminal-types.js";
 import type { EditorInstanceStatus } from "@blackbelt-technology/pi-dashboard-shared/editor-types.js";
 import { ErrorBoundary } from "./components/ErrorBoundary.js";
-import type { ServerToBrowserMessage } from "@blackbelt-technology/pi-dashboard-shared/browser-protocol.js";
+import type { ServerToBrowserMessage, PendingOperatorInput } from "@blackbelt-technology/pi-dashboard-shared/browser-protocol.js";
 import type { ToolContext } from "./components/tool-renderers/index.js";
 import type { ContextUsageInfo } from "./components/SessionList.js";
 import { ApiContext, deriveApiBase, VITE_API_URL, setGlobalApiBase } from "./lib/api-context.js";
@@ -241,6 +242,8 @@ export default function App() {
   const pendingSpawnsRef = useRef<Map<string, { cwd: string; kind: "spawn" | "resume" }>>(new Map());
   const [sessionOrderMap, setSessionOrderMap] = useState<Map<string, string[]>>(new Map());
   const [pinnedDirectories, setPinnedDirectories] = useState<string[]>([]);
+  // Cross-session operator-input pointers (NOS cross-session-askuser-surface). Off by default server-side.
+  const [pendingOperatorInputs, setPendingOperatorInputs] = useState<PendingOperatorInput[]>([]);
   const [pinDialogOpen, setPinDialogOpen] = useState(false);
   const [worktreeSpawnCwd, setWorktreeSpawnCwd] = useState<string | null>(null);
   const providersReady = useProvidersReady();
@@ -366,7 +369,7 @@ export default function App() {
   }, []);
 
   const handleMessage = useMessageHandler(
-    { setSessions, setSessionStates, setSessionCommands, setSessionFlows, setFileResults, setOpenspecMap, setOpenspecGroupsMap, setModelsMap, setRolesMap, setSpawnResult, setSessionOrderMap, setPinnedDirectories, setTerminals, setEditorStatuses, setDiscoveredServers, setSpawnErrors, setResumeErrors },
+    { setSessions, setSessionStates, setSessionCommands, setSessionFlows, setFileResults, setOpenspecMap, setOpenspecGroupsMap, setModelsMap, setRolesMap, setSpawnResult, setSessionOrderMap, setPinnedDirectories, setTerminals, setEditorStatuses, setDiscoveredServers, setSpawnErrors, setResumeErrors, setPendingOperatorInputs },
     { send, navigate, clearSpawningCwd, spawningCwdsRef, subscribedRef, pendingTerminalCwdRef, lastCreatedTerminalIdRef, maxSeqMapRef, selectedSessionIdRef, pendingSpawnsRef },
   );
 
@@ -1489,6 +1492,11 @@ export default function App() {
     return apiProvider(
       <div className="bg-[var(--bg-primary)] text-[var(--text-primary)]">
         <BootstrapBanner state={bootstrapStatus.state} onRetry={bootstrapStatus.retry} />
+        <PendingInputBanner
+          items={pendingOperatorInputs}
+          selectedSessionId={selectedId}
+          onJump={(sid) => navigate(`/session/${sid}`)}
+        />
         {sessions.size === 0 && (
           <ConnectionStatusBanner
             status={status}

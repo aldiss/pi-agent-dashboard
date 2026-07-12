@@ -222,6 +222,13 @@ export interface DashboardConfig {
    * If the key is absent from config.json the default of 300 s applies.
    */
   askUserPromptTimeoutSeconds: number;
+  /**
+   * Cross-session operator-input surface (NOS cell cross-session-askuser-surface).
+   * When enabled, pending ask_user / ctx.ui capsules are broadcast cross-session so
+   * the operator sees them regardless of which session is focused. OFF by default;
+   * enabling is a separate operator-named-permission gate.
+   */
+  crossSessionOperatorInput: { enabled: boolean };
   /** Networks trusted for full access without authentication (CIDR, wildcard, exact IP) */
   trustedNetworks: string[];
   /** Merged trustedNetworks + auth.bypassHosts (deduplicated). Computed at load time. */
@@ -301,6 +308,7 @@ const DEFAULTS: DashboardConfig = {
   electronMode: false,
   knownServers: [],
   askUserPromptTimeoutSeconds: DEFAULT_ASK_USER_PROMPT_TIMEOUT_SECONDS,
+  crossSessionOperatorInput: { enabled: false },
   reattachPlacement: DEFAULT_REATTACH_PLACEMENT,
   spawnRegisterTimeoutMs: 30000,
   push: { ...DEFAULT_PUSH_CONFIG },
@@ -619,6 +627,9 @@ export function loadConfig(): DashboardConfig {
       askUserPromptTimeoutSeconds: typeof parsed.askUserPromptTimeoutSeconds === "number"
         ? parsed.askUserPromptTimeoutSeconds
         : defaults.askUserPromptTimeoutSeconds,
+      crossSessionOperatorInput: {
+        enabled: (parsed.crossSessionOperatorInput as { enabled?: unknown } | undefined)?.enabled === true,
+      },
       spawnRegisterTimeoutMs: clampSpawnRegisterTimeoutMs(parsed.spawnRegisterTimeoutMs),
       modelProxy: parseModelProxyConfig(parsed.modelProxy),
       push: parsePushConfig(parsed.push),

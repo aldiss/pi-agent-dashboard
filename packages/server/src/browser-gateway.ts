@@ -6,7 +6,9 @@ import { WebSocketServer, WebSocket } from "ws";
 import type {
   ServerToBrowserMessage,
   BrowserToServerMessage,
+  PendingOperatorInput,
 } from "@blackbelt-technology/pi-dashboard-shared/browser-protocol.js";
+import { loadConfig } from "@blackbelt-technology/pi-dashboard-shared/config.js";
 import type { SessionManager } from "./memory-session-manager.js";
 import type { EventStore } from "./memory-event-store.js";
 import type { PiGateway } from "./pi-gateway.js";
@@ -210,7 +212,12 @@ export function createBrowserGateway(
     }
     const promptId = msg.promptId as string;
     if (promptId) {
+      // Server-stamp arrival once so the cross-session surface can render an
+      // accurate countdown to the server-enforced ask-user timeout.
+      // See NOS cell cross-session-askuser-surface.
+      if (typeof msg._xsFirstSeenAt !== "number") msg._xsFirstSeenAt = Date.now();
       sessionMap.set(promptId, msg);
+      broadcastPendingOperatorInputs();
     }
   }
 
@@ -219,7 +226,53 @@ export function createBrowserGateway(
     if (sessionMap) {
       sessionMap.delete(promptId);
       if (sessionMap.size === 0) pendingPromptRequests.delete(sessionId);
+      // Broadcast-on-clear so the cross-session pointer clears across ALL
+      // browsers immediately (on resolve OR default-fire), not just subscribers.
+      broadcastPendingOperatorInputs();
     }
+  }
+
+  // ── Cross-session operator-input surface (NOS cross-session-askuser-surface) ──
+  // Read-only POINTER set built from the live pendingPromptRequests registry —
+  // covers BOTH the real ask_user tool and every ctx.ui extension capsule (both
+  // travel as prompt_request). Off by default; the actual prompt still resolves
+  // in its origin session (no double-fire).
+  function buildPendingOperatorInputs(timeoutSec: number): PendingOperatorInput[] {
+    const items: PendingOperatorInput[] = [];
+    for (const [sid, prompts] of pendingPromptRequests) {
+      const sessionName = sessionManager.get(sid)?.name || sid;
+      for (const [promptId, msg] of prompts) {
+        const prompt = (msg.prompt ?? {}) as { question?: unknown; options?: unknown };
+        const question = typeof prompt.question === "string" ? prompt.question : "";
+        const firstLine = question.split("\n", 1)[0] ?? "";
+        const questionPreview = firstLine.length > 140 ? firstLine.slice(0, 139) + "\u2026" : firstLine;
+        const options = Array.isArray(prompt.options)
+          ? (prompt.options as unknown[]).filter((o): o is string => typeof o === "string")
+          : [];
+        const defaultLabel = options.find((o) => o.includes("[DEFAULT"));
+        const firstSeenAt = typeof msg._xsFirstSeenAt === "number" ? (msg._xsFirstSeenAt as number) : Date.now();
+        const deadlineAt = timeoutSec > 0 ? firstSeenAt + timeoutSec * 1000 : undefined;
+        items.push({
+          sessionId: sid,
+          sessionName,
+          promptId,
+          questionPreview,
+          ...(defaultLabel ? { defaultLabel } : {}),
+          firstSeenAt,
+          ...(deadlineAt !== undefined ? { deadlineAt } : {}),
+        });
+      }
+    }
+    // Soonest-deadline-first; entries without a deadline sort last.
+    items.sort((a, b) => (a.deadlineAt ?? Infinity) - (b.deadlineAt ?? Infinity));
+    return items;
+  }
+
+  /** Broadcast the pending-operator-input snapshot to all browsers. No-op when the feature flag is off. */
+  function broadcastPendingOperatorInputs(): void {
+    const cfg = loadConfig();
+    if (!cfg.crossSessionOperatorInput?.enabled) return;
+    broadcast({ type: "pending_operator_inputs", items: buildPendingOperatorInputs(cfg.askUserPromptTimeoutSeconds) });
   }
 
   function getSubscribers(sessionId: string): WebSocket[] {
@@ -294,6 +347,15 @@ export function createBrowserGateway(
         }
       }
       sendTo(ws, { type: "sessions_snapshot", sessions: sessionsSnapshot, orders });
+    }
+
+    // Send the current cross-session pending-operator-input snapshot to the
+    // newly-connected browser (off by default). See NOS cross-session-askuser-surface.
+    {
+      const xsCfg = loadConfig();
+      if (xsCfg.crossSessionOperatorInput?.enabled) {
+        sendTo(ws, { type: "pending_operator_inputs", items: buildPendingOperatorInputs(xsCfg.askUserPromptTimeoutSeconds) });
+      }
     }
 
     // Send pinned directories on connect

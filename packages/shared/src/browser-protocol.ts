@@ -347,6 +347,36 @@ export interface BrowserPromptCancelMessage {
   promptId: string;
 }
 
+/**
+ * A single pending operator-input request, surfaced cross-session.
+ * A read-only POINTER — the actual prompt resolves in its origin session.
+ * See NOS cell cross-session-askuser-surface.
+ */
+export interface PendingOperatorInput {
+  sessionId: string;
+  sessionName: string;
+  promptId: string;
+  /** Truncated first line of the question, for the pointer label. */
+  questionPreview: string;
+  /** The option the capsule marks as its default-on-fire (parsed from the `[DEFAULT` marker), if any. */
+  defaultLabel?: string;
+  /** Server-stamped arrival time (ms epoch). */
+  firstSeenAt: number;
+  /** firstSeenAt + the server-enforced askUserPromptTimeoutSeconds, if a finite timeout is enforced. */
+  deadlineAt?: number;
+}
+
+/**
+ * Cross-session snapshot of ALL pending operator-input requests across every
+ * session. Broadcast to all browsers so the operator sees a pending capsule
+ * regardless of which session is focused. Gated behind
+ * config.crossSessionOperatorInput.enabled (default off).
+ */
+export interface PendingOperatorInputsMessage {
+  type: "pending_operator_inputs";
+  items: PendingOperatorInput[];
+}
+
 /** Progress event streamed during a package install/remove/update/move operation.
  *
  * `moveId` is set when this progress event is part of a move operation
@@ -570,6 +600,7 @@ export type ServerToBrowserMessage =
   | BrowserPromptRequestMessage
   | BrowserPromptDismissMessage
   | BrowserPromptCancelMessage
+  | PendingOperatorInputsMessage
   | ModelsRefreshedMessage
   | BootstrapStatusUpdateMessage
   | BootstrapTicketCompleteMessage

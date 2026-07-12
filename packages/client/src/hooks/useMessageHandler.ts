@@ -5,6 +5,7 @@
 import { useCallback } from "react";
 import { createInitialState, reduceEvent, addInteractiveRequest, resolveInteractiveRequest, dismissInteractiveRequest, type SessionState } from "../lib/event-reducer.js";
 import type { DashboardSession, CommandInfo, FlowInfo, FileEntry, OpenSpecData, OpenSpecGroup, ModelInfo, RoleInfo } from "@blackbelt-technology/pi-dashboard-shared/types.js";
+import type { PendingOperatorInput } from "@blackbelt-technology/pi-dashboard-shared/browser-protocol.js";
 import { encodeFolderPath } from "../lib/folder-encoding.js";
 import type { TerminalSession } from "@blackbelt-technology/pi-dashboard-shared/terminal-types.js";
 import type { EditorInstanceStatus } from "@blackbelt-technology/pi-dashboard-shared/editor-types.js";
@@ -52,6 +53,7 @@ export interface MessageHandlerSetters {
   setDiscoveredServers: React.Dispatch<React.SetStateAction<DiscoveredServerInfo[]>>;
   setSpawnErrors: React.Dispatch<React.SetStateAction<Map<string, SpawnErrorDetail>>>;
   setResumeErrors: React.Dispatch<React.SetStateAction<Map<string, string>>>;
+  setPendingOperatorInputs: React.Dispatch<React.SetStateAction<PendingOperatorInput[]>>;
 }
 
 export interface MessageHandlerDeps {
@@ -81,7 +83,7 @@ export function useMessageHandler(
     setSessions, setSessionStates, setSessionCommands, setSessionFlows,
     setFileResults, setOpenspecMap, setOpenspecGroupsMap, setModelsMap, setRolesMap, setSpawnResult,
     setSessionOrderMap, setPinnedDirectories, setTerminals, setEditorStatuses,
-    setDiscoveredServers, setSpawnErrors, setResumeErrors,
+    setDiscoveredServers, setSpawnErrors, setResumeErrors, setPendingOperatorInputs,
   } = setters;
   const { send, navigate, clearSpawningCwd, spawningCwdsRef, subscribedRef, pendingTerminalCwdRef, lastCreatedTerminalIdRef, maxSeqMapRef, selectedSessionIdRef, pendingSpawnsRef } = deps;
 
@@ -468,6 +470,11 @@ export function useMessageHandler(
         setPinnedDirectories(msg.paths);
         break;
 
+      case "pending_operator_inputs":
+        // Cross-session operator-input snapshot (NOS cross-session-askuser-surface).
+        setPendingOperatorInputs(msg.items);
+        break;
+
       case "extension_ui_request":
         setSessionStates((prev) => {
           const next = new Map(prev);
@@ -688,5 +695,5 @@ export function useMessageHandler(
         break;
       }
     }
-  }, [send, clearSpawningCwd, navigate, setSessions, setSessionStates, setSessionCommands, setSessionFlows, setFileResults, setOpenspecMap, setModelsMap, setRolesMap, setSpawnResult, setSessionOrderMap, setPinnedDirectories, setTerminals, setEditorStatuses, setDiscoveredServers, spawningCwdsRef, subscribedRef, pendingTerminalCwdRef, maxSeqMapRef, selectedSessionIdRef]);
+  }, [send, clearSpawningCwd, navigate, setSessions, setSessionStates, setSessionCommands, setSessionFlows, setFileResults, setOpenspecMap, setModelsMap, setRolesMap, setSpawnResult, setSessionOrderMap, setPinnedDirectories, setTerminals, setEditorStatuses, setDiscoveredServers, setPendingOperatorInputs, spawningCwdsRef, subscribedRef, pendingTerminalCwdRef, maxSeqMapRef, selectedSessionIdRef]);
 }
