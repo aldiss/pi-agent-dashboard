@@ -814,6 +814,19 @@ export function wireEvents(deps: EventWiringDeps): void {
     if (msg.type === "prompt_request") {
       browserGateway.trackPromptRequest(sessionId, msg as any);
       browserGateway.sendToSubscribers(sessionId, msg as any);
+      // A pending operator-input request is a first-class attention event.
+      // The event_forward path only stamps unread on currentTool→"ask_user"
+      // (the real ask_user tool); ctx.ui extension capsules (bash-security /
+      // skill-mandate / cell-done-gate) bypass it. Stamp unread here too, gated
+      // on not-viewed, so those capsules leave a cross-session card cue.
+      // See NOS cell cross-session-askuser-surface.
+      if (viewedSessionTracker && !viewedSessionTracker.isViewedByAnyone(sessionId)) {
+        const s = sessionManager.get(sessionId);
+        if (s && !s.unread) {
+          sessionManager.update(sessionId, { unread: true });
+          browserGateway.broadcastSessionUpdated(sessionId, { unread: true });
+        }
+      }
     }
 
     if (msg.type === "prompt_dismiss") {
