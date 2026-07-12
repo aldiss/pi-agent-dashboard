@@ -341,11 +341,30 @@ export function createBrowserGateway(
     return items;
   }
 
-  /** Broadcast the pending-operator-input snapshot to all browsers. No-op when the feature flag is off. */
+  /**
+   * True iff this socket's authenticated principal has the "operator" (admin)
+   * role. When cell-access control is disabled (single-operator dashboard),
+   * every socket is the operator. Multi-op: guests / anonymous are NOT operators.
+   * Consumes the deployed authz (cell-access `roleForPrincipal`); does not modify it.
+   */
+  function isOperatorSocket(ws: WebSocket): boolean {
+    if (!cellAccess?.enabled) return true;
+    return cellAccess.roleForPrincipal(principals.get(ws) ?? null) === "operator";
+  }
+
+  /**
+   * Broadcast the pending-operator-input snapshot ONLY to operator-role (admin)
+   * browsers. In a multi-operator dashboard, guests / anonymous NEVER receive it
+   * (the snapshot carries cross-operator session names + question previews — an
+   * information leak if delivered to a non-admin). No-op when the feature flag is off.
+   */
   function broadcastPendingOperatorInputs(): void {
     const cfg = loadConfig();
     if (!cfg.crossSessionOperatorInput?.enabled) return;
-    broadcast({ type: "pending_operator_inputs", items: buildPendingOperatorInputs(cfg.askUserPromptTimeoutSeconds) });
+    const msg: ServerToBrowserMessage = { type: "pending_operator_inputs", items: buildPendingOperatorInputs(cfg.askUserPromptTimeoutSeconds) };
+    for (const [ws] of subscriptions) {
+      if (isOperatorSocket(ws)) sendTo(ws, msg);
+    }
   }
 
   function getSubscribers(sessionId: string): WebSocket[] {
@@ -465,10 +484,11 @@ export function createBrowserGateway(
     sendSessionsSnapshot(ws);
 
     // Send the current cross-session pending-operator-input snapshot to the
-    // newly-connected browser (off by default). See NOS cross-session-askuser-surface.
+    // newly-connected browser — ONLY if it's an operator-role (admin) socket
+    // (off by default). See NOS cross-session-askuser-surface.
     {
       const xsCfg = loadConfig();
-      if (xsCfg.crossSessionOperatorInput?.enabled) {
+      if (xsCfg.crossSessionOperatorInput?.enabled && isOperatorSocket(ws)) {
         sendTo(ws, { type: "pending_operator_inputs", items: buildPendingOperatorInputs(xsCfg.askUserPromptTimeoutSeconds) });
       }
     }
