@@ -274,6 +274,15 @@ export interface DashboardConfig {
    * See change: add-server-push-notifications.
    */
   push: PushConfig;
+  /**
+   * Master toggle for the deterministic pi-API spawn path (design:
+   * deterministic-spawn-designpass-v0.md). Default **false** — when false the
+   * `/api/spawn/intent*` routes are disabled (404) and the deliver-on-register
+   * + fail-on-timeout hooks are skipped, so the dashboard has ZERO
+   * behavior-change when unused. Additive, off-default. See change:
+   * deterministic-spawn.
+   */
+  deterministicSpawnEnabled: boolean;
 }
 
 export interface CorsConfig {
@@ -318,6 +327,7 @@ const DEFAULTS: DashboardConfig = {
   spawnRegisterTimeoutMs: 30000,
   push: { ...DEFAULT_PUSH_CONFIG },
   resurrectionSweepMs: DEFAULT_RESURRECTION_SWEEP_MS,
+  deterministicSpawnEnabled: false,
 };
 
 /**
@@ -642,6 +652,10 @@ export function loadConfig(): DashboardConfig {
         typeof parsed.resurrectionSweepMs === "number" && Number.isFinite(parsed.resurrectionSweepMs) && parsed.resurrectionSweepMs >= 0
           ? parsed.resurrectionSweepMs
           : DEFAULT_RESURRECTION_SWEEP_MS,
+      // Strict opt-in: ONLY an explicit `true` enables the deterministic-spawn
+      // path. Any other value (absent, non-boolean) → false = zero
+      // behavior-change. See change: deterministic-spawn.
+      deterministicSpawnEnabled: parsed.deterministicSpawnEnabled === true,
     };
 
     // Compute resolvedTrustedNetworks: merge trustedNetworks + auth.bypassHosts

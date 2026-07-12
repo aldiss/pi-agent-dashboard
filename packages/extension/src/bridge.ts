@@ -1482,6 +1482,16 @@ function initBridge(pi: ExtensionAPI) {
       sessionDir,
       firstMessage,
       eventCount,
+      // deterministic-spawn (dl-5363 e2e catch): the FIRST register on a fresh
+      // bridge connect must carry the server-minted spawn correlation token
+      // (PI_DASHBOARD_SPAWN_TOKEN) so a tmux/crew spawn is correlated to its
+      // POST /api/spawn/intent. spawn-correlation-token added the token echo to
+      // session-sync.ts, but that path fires on session-change/fork — NOT on a
+      // fresh bridge connect. THIS is the first-register path, so the token must
+      // ride here. Env-gated: only a spawn-driver-launched pi has the token set,
+      // so a manual/normal pi omits it (a clean no-op). registerReason=spawn.
+      spawnToken: process.env.PI_DASHBOARD_SPAWN_TOKEN || undefined,
+      registerReason: "spawn",
     });
 
     // Allow event forwarding now that session_register is buffered

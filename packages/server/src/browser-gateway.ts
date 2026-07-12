@@ -54,6 +54,7 @@ export function buildOpenSpecConnectSnapshot(
   return out;
 }
 import { createPendingResumeRegistry, type PendingResumeRegistry } from "./pending-resume-registry.js";
+import { createPendingSpawnIntentRegistry, type PendingSpawnIntentRegistry } from "./pending-spawn-intent-registry.js";
 import { createViewedSessionTracker, type ViewedSessionTracker } from "./viewed-session-tracker.js";
 import type { TerminalManager } from "./terminal-manager.js";
 import type { BrowserHandlerContext } from "./browser-handlers/handler-context.js";
@@ -91,6 +92,14 @@ export interface BrowserGateway {
   headlessPidRegistry: HeadlessPidRegistry;
   /** Registry for pending auto-resume prompts */
   pendingResumeRegistry: PendingResumeRegistry;
+  /**
+   * Registry for deterministic-spawn INTENTS — the AMEND-2 token-keyed
+   * additive SIBLING of `pendingResumeRegistry` (which stays byte-identical).
+   * Consulted by the deliver-on-register hook in event-wiring.ts and the
+   * `/api/spawn/intent*` routes, both gated on `deterministicSpawnEnabled`.
+   * See change: deterministic-spawn.
+   */
+  pendingSpawnIntent: PendingSpawnIntentRegistry;
   /**
    * Tracker for which browser is currently viewing which session. Used by
    * the unread-trigger evaluation in event-wiring.ts.
@@ -160,6 +169,12 @@ export function createBrowserGateway(
       broadcast({ type: "session_updated", sessionId: oldSessionId, updates: { resuming: false } });
     },
   });
+
+  // Track pending deterministic-spawn intents (token-keyed sibling; see
+  // AMEND-2). Byte-independent of pendingResumeRegistry — different key space
+  // (spawnToken, not cwd). Only exercised when `deterministicSpawnEnabled`.
+  // See change: deterministic-spawn.
+  const pendingSpawnIntent = createPendingSpawnIntentRegistry();
 
   /** Send any pending interactive UI requests to a specific browser socket */
   function replayPendingUiRequests(ws: WebSocket, sessionId: string) {
@@ -707,6 +722,8 @@ export function createBrowserGateway(
     headlessPidRegistry,
 
     pendingResumeRegistry,
+
+    pendingSpawnIntent,
 
     viewedSessionTracker,
   };

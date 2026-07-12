@@ -31,13 +31,28 @@ export interface WatchdogArmOptions {
   cwd: string;
   mechanism: SpawnMechanism;
   logPath?: string;
-  ws: WebSocket;
+  /**
+   * Originating browser WebSocket. Optional: the deterministic-spawn HTTP
+   * route arms the watchdog with no socket (its result is polled over REST,
+   * not pushed over WS). When absent, the timeout/recovery WS sends are
+   * skipped — the `onTimeout` callback still fires. See change: deterministic-spawn.
+   */
+  ws?: WebSocket;
   /**
    * Server-minted spawn correlation token. When provided, the entry is
    * indexed in `byToken` for strong-identity clearing via `clearByToken`.
    * See change: spawn-correlation-token.
    */
   spawnToken?: string;
+  /**
+   * Optional per-arm timeout callback. Fired (before the WS send, regardless
+   * of socket state) when THIS arm's timer elapses with no clearing register.
+   * The deterministic-spawn route wires this to flip its `pendingSpawnIntent`
+   * to the `failed{register-timeout}` terminal (design §6). Receives the
+   * arm's `spawnToken` (may be undefined for non-token arms).
+   * See change: deterministic-spawn.
+   */
+  onTimeout?: (spawnToken: string | undefined) => void;
 }
 
 interface Entry {
@@ -46,15 +61,16 @@ interface Entry {
   pid?: number;
   mechanism: SpawnMechanism;
   logPath?: string;
-  ws: WebSocket;
+  ws?: WebSocket;
   timeoutMs: number;
   spawnToken?: string;
+  onTimeout?: (spawnToken: string | undefined) => void;
 }
 
 interface RecentlyFiredEntry {
   firedAt: number;
   pid?: number;
-  ws: WebSocket;
+  ws?: WebSocket;
   spawnToken?: string;
 }
 
@@ -77,12 +93,13 @@ export class SpawnRegisterWatchdog {
     // takes effect on the next spawn without a server restart.
     // See change: spawn-failure-diagnostics (fix W1).
     const effectiveTimeout = clampSpawnRegisterTimeoutMs(opts.timeoutMs ?? this.timeoutMs);
-    const { pid, cwd, mechanism, logPath, ws, spawnToken } = opts;
+    const { pid, cwd, mechanism, logPath, ws, spawnToken, onTimeout } = opts;
     const entry: Entry = {
       timer: null as unknown as ReturnType<typeof setTimeout>,
       cwd, pid, mechanism, logPath, ws,
       timeoutMs: effectiveTimeout,
       spawnToken,
+      onTimeout,
     };
     entry.timer = setTimeout(() => this._fireEntry(entry), effectiveTimeout);
     // Always index by cwd so a `session_register` clears the watchdog even
@@ -206,7 +223,22 @@ export class SpawnRegisterWatchdog {
       ...(stderrTail ? { stderrTail } : {}),
     });
 
-    if (ws.readyState !== WebSocket.OPEN) return;
+    // Deterministic-spawn fail-terminal hook: flip the pendingSpawnIntent to
+    // `failed{register-timeout}` (design §6, `registering → dead`). Fired
+    // regardless of WS state (the REST poll reads the outcome). Isolated so a
+    // throwing callback can never break the legacy WS-timeout path below.
+    // See change: deterministic-spawn.
+    if (entry.onTimeout) {
+      try {
+        entry.onTimeout(entry.spawnToken);
+      } catch (err) {
+        console.error(
+          `[spawn-register-watchdog] onTimeout callback threw (isolated): ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
 
     const msg: SpawnRegisterTimeoutMessage = {
       type: "spawn_register_timeout",
@@ -243,7 +275,7 @@ export class SpawnRegisterWatchdog {
 
     this.recentlyFired.delete(cwd);
 
-    if (fired.ws.readyState !== WebSocket.OPEN) return;
+    if (!fired.ws || fired.ws.readyState !== WebSocket.OPEN) return;
 
     const msg: SpawnRegisterRecoveredMessage = {
       type: "spawn_register_recovered",

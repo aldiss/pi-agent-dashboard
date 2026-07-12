@@ -66,6 +66,13 @@ export interface EventWiringDeps {
   pushPrefsMap?: Map<string, PushPrefs>;
   /** Reads global push defaults from live config. */
   getPushDefaults?: () => PushDefaults | undefined;
+  /**
+   * Reads the live `deterministicSpawnEnabled` config flag. When absent or
+   * returning false, the deterministic-spawn deliver-on-register hook is
+   * SKIPPED — zero behavior-change. Injected (not read inline) so tests can
+   * flip it without touching the on-disk config. See change: deterministic-spawn.
+   */
+  getDeterministicSpawnEnabled?: () => boolean;
 }
 
 /**
@@ -89,6 +96,7 @@ export function wireEvents(deps: EventWiringDeps): void {
     pushDispatcher,
     pushPrefsMap,
     getPushDefaults,
+    getDeterministicSpawnEnabled,
   } = deps;
 
   // Broadcast placeholder session to browsers when auto-created from early events
@@ -678,6 +686,30 @@ export function wireEvents(deps: EventWiringDeps): void {
         });
         sessionManager.update(sessionId, { resuming: false });
         browserGateway.broadcastSessionUpdated(sessionId, { resuming: false });
+      }
+
+      // ── Deterministic-spawn deliver-on-register (ADDITIVE; AMEND-2) ──────
+      // The token-keyed SIBLING of the cwd-keyed auto-resume above. Fires ONLY
+      // when the flag is on AND this register carries a spawnToken minted by
+      // POST /api/spawn/intent — so a normal register (no token) or a
+      // flag-off dashboard is a clean no-op = zero behavior-change. Readiness
+      // = the register event itself (a protocol fact, no screen-scrape);
+      // delivery = exactly one send_prompt (design §3 Layer-3). resolveOnRegister
+      // returns the directive once and flips the intent to `ok`; a second /
+      // non-spawn register returns null. See change: deterministic-spawn.
+      if (getDeterministicSpawnEnabled?.() && msg.spawnToken) {
+        const directive = browserGateway.pendingSpawnIntent.resolveOnRegister(
+          msg.spawnToken,
+          sessionId,
+        );
+        if (directive) {
+          piGateway.sendToSession(sessionId, {
+            type: "send_prompt",
+            sessionId,
+            text: directive.text,
+            ...(directive.images ? { images: directive.images } : {}),
+          });
+        }
       }
     }
 

@@ -56,6 +56,8 @@ import { loadOrGenerateVapidKeys } from "./push/push-vapid.js";
 import type { PushPrefs } from "./push/push-types.js";
 import { registerSessionApi } from "./session-api.js";
 import { registerSessionRoutes } from "./routes/session-routes.js";
+import { registerSpawnIntentRoutes } from "./routes/spawn-intent-routes.js";
+import { getSpawnRegisterWatchdog } from "./spawn-register-watchdog.js";
 import { registerGitRoutes } from "./routes/git-routes.js";
 import { registerFileRoutes } from "./routes/file-routes.js";
 import { registerOpenSpecRoutes } from "./routes/openspec-routes.js";
@@ -757,6 +759,7 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
     pushDispatcher,
     pushPrefsMap,
     getPushDefaults: () => config.push?.defaults,
+    getDeterministicSpawnEnabled: () => loadConfig().deterministicSpawnEnabled,
   });
 
   // Auto-shutdown idle timer
@@ -941,6 +944,28 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
     networkGuard,
     hygieneProbes,
     broadcastSessionUpdated: (id, updates) => browserGateway.broadcastSessionUpdated(id, updates),
+  });
+  // Deterministic pi-API spawn intent routes (design §8 P0). Registered
+  // unconditionally but INTERNALLY gated on the live `deterministicSpawnEnabled`
+  // flag (getEnabled) — OFF → every route 404s, zero behavior-change. The
+  // watchdog-arm callback flips the token's pendingSpawnIntent to
+  // `failed{register-timeout}` on a no-register (Step 4 / design §6).
+  // See change: deterministic-spawn.
+  registerSpawnIntentRoutes(fastify, {
+    pendingSpawnIntent: browserGateway.pendingSpawnIntent,
+    networkGuard,
+    getEnabled: () => loadConfig().deterministicSpawnEnabled,
+    armWatchdogOnToken: (token, cwd) => {
+      getSpawnRegisterWatchdog().arm({
+        cwd,
+        mechanism: "tmux",
+        timeoutMs: loadConfig().spawnRegisterTimeoutMs,
+        spawnToken: token,
+        onTimeout: (tok) => {
+          if (tok) browserGateway.pendingSpawnIntent.fail(tok, "register-timeout");
+        },
+      });
+    },
   });
   registerGitRoutes(fastify, { networkGuard });
   registerFileRoutes(fastify, { sessionManager, preferencesStore, networkGuard });
