@@ -55,6 +55,7 @@ function makeHarness(initialState: Map<string, SessionState>) {
     setSpawnErrors: noop,
     setResumeErrors: noop,
     setPresenceMap: noop,
+    setPendingOperatorInputs: noop,
   };
 
   const deps: MessageHandlerDeps = {
