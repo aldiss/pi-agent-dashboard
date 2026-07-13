@@ -32,9 +32,9 @@
     "postinstall": "node scripts/fix-pty-permissions.cjs"
   },
   "dependencies": {
-    "@blackbelt-technology/dashboard-plugin-runtime": "^0.5.1",
-    "@blackbelt-technology/pi-dashboard-extension": "^0.5.1",
-    "@blackbelt-technology/pi-dashboard-shared": "^0.5.1",
+    "@blackbelt-technology/dashboard-plugin-runtime": "workspace:*",
+    "@blackbelt-technology/pi-dashboard-extension": "workspace:*",
+    "@blackbelt-technology/pi-dashboard-shared": "workspace:*",
     "@fastify/compress": "^8.3.1",
     "@fastify/cookie": "^11.0.2",
     "@fastify/cors": "^11.0.0",
@@ -55,6 +55,8 @@
     "@types/diff": "^7.0.0",
     "@types/jsonwebtoken": "^9.0.9",
     "@types/proper-lockfile": "^4.1.4",
-    "@types/ws": "^8.18.1"
+    "@types/ws": "^8.18.1",
+    "vitest": "^4.0.0",
+    "typescript": "^5.7.0"
   }
 }

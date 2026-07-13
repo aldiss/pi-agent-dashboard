@@ -40,7 +40,8 @@
     "react": ">=18.0.0"
   },
   "dependencies": {
-    "@blackbelt-technology/pi-dashboard-shared": "^0.5.1"
+    "@blackbelt-technology/pi-dashboard-shared": "workspace:*",
+    "fastify": "^5.0.0"
   },
   "devDependencies": {
     "react": "^19.0.0",
@@ -49,6 +50,7 @@
     "@testing-library/react": "^16.1.0",
     "@testing-library/jest-dom": "^6.6.3",
     "@vitejs/plugin-react": "^4.3.4",
-    "ajv": "^8.17.1"
+    "ajv": "^8.17.1",
+    "vitest": "^4.0.0"
   }
 }
