@@ -341,6 +341,10 @@ export function reconcileSessionHygiene(
       if (s.status === "ended") {
         updates.status = "idle";
         updates.hidden = false;
+        // ATOMIC: clear the endedAt tombstone too, or the projection layer
+        // (session-projection endedAt->ended) re-kills this proven-live row.
+        // `null` (not undefined) so the clear survives JSON.stringify to the client.
+        updates.endedAt = null;
       }
       // Capture the verified pid (esp. CC pane pid) so a later retire can
       // verify-dead against a real pid.

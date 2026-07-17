@@ -64,7 +64,13 @@ export interface DashboardSession {
   model?: string;
   thinkingLevel?: string;
   startedAt: number;
-  endedAt?: number;
+  /**
+   * Epoch ms the session ended. `null` = an EXPLICIT tombstone-clear on the wire
+   * (a live-rescue cleared a stale end): JSON.stringify keeps `null` but drops
+   * `undefined`, so a rescue must send `null` for the client to clear its stale
+   * tombstone. All consumers treat `!= null` / `== null` as "no end".
+   */
+  endedAt?: number | null;
   /**
    * Epoch ms timestamp of the most recent activity event observed for this
    * session. Server-managed: stamped in `event-wiring.ts` whenever an

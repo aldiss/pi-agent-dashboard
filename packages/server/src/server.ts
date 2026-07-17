@@ -402,6 +402,9 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
       if (liveness.alive) {
         restored.status = "idle";
         restored.hidden = false;
+        // ATOMIC endedAt-clear (sister to the hygiene live-rescue): a rescued-live
+        // row must not keep endedAt, else projectSession re-kills it. null = wire-safe.
+        restored.endedAt = null;
         if (liveness.name) restored.name = liveness.name;
       }
     }

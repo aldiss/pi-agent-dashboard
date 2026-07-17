@@ -81,7 +81,9 @@ export function resurrectSession(
 
   const updates: Partial<DashboardSession> = {
     status: "idle",
-    endedAt: undefined,
+    // null (not undefined): the tombstone-clear must survive JSON.stringify to the
+    // client, else the client keeps the stale endedAt and re-renders the row ended.
+    endedAt: null,
     hidden: false,
   };
   if (typeof liveness.pid === "number") updates.pid = liveness.pid;
