@@ -262,5 +262,38 @@ describe("config-api", () => {
       expect(result.success).toBe(true);
       expect(result.restartRequired).toBe(false);
     });
+
+    // ── M8-generic: fail closed on a present-but-unreadable config ──────
+    // A read/parse failure of an EXISTING config must NOT be treated as an
+    // empty {} baseline — a partial write over {} persists as the complete
+    // config and ERASES auth/unknown fields. The writer refuses and preserves
+    // the on-disk bytes. "File absent" (legitimately start fresh) stays allowed.
+
+    it("refuses a partial write when the existing config is malformed, preserving on-disk bytes", () => {
+      const malformed = '{ "auth": { "secret": "keep-me", "operatorUsers": ["op"] }, TRUNCATED';
+      fs.writeFileSync(configFile, malformed);
+      const result = writeConfigPartial({ autoShutdown: false });
+      expect(result.success).toBe(false);
+      expect(result.error).toBeTruthy();
+      // The original bytes survive untouched — auth/unknown fields not clobbered.
+      expect(fs.readFileSync(configFile, "utf-8")).toBe(malformed);
+    });
+
+    it("refuses a partial write when the existing config parses to a non-object", () => {
+      const notObject = '"a bare string"';
+      fs.writeFileSync(configFile, notObject);
+      const result = writeConfigPartial({ port: 9000 });
+      expect(result.success).toBe(false);
+      expect(fs.readFileSync(configFile, "utf-8")).toBe(notObject);
+    });
+
+    it("still starts fresh when the config file is absent", () => {
+      // No file on disk — a partial write legitimately creates it.
+      expect(fs.existsSync(configFile)).toBe(false);
+      const result = writeConfigPartial({ port: 8000 });
+      expect(result.success).toBe(true);
+      const written = JSON.parse(fs.readFileSync(configFile, "utf-8"));
+      expect(written.port).toBe(8000);
+    });
   });
 });
