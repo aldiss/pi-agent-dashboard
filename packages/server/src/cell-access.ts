@@ -135,9 +135,11 @@ function matchingDriverCells(
   for (const [key, driver] of Object.entries(snapshot.drivers)) {
     if (!driver.cell) continue;
     if (key !== name && driver.real_name !== name) continue;
-    // The exact messenger sessionId is primary. PID is a corroborator when both
-    // registries carry one; a disagreement means this is a stale name entry.
-    if (pid !== undefined && driver.pid !== undefined && pid !== driver.pid) continue;
+    // The exact messenger sessionId is primary. A name match is corroborated ONLY
+    // by a POSITIVE pid agreement present on BOTH sides — a reused driver name
+    // must not inherit a granted cell on the strength of the name alone. A missing
+    // pid on either side (or a disagreement) is not corroboration, so reject it.
+    if (typeof pid !== "number" || typeof driver.pid !== "number" || pid !== driver.pid) continue;
     out.add(driver.cell);
   }
   return out;
