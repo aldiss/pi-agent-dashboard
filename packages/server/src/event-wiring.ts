@@ -170,6 +170,10 @@ export function wireEvents(deps: EventWiringDeps): void {
 
   // Track sessions replaying history — suppress status broadcasts to avoid card flicker
   const replayingSessions = new Set<string>();
+  // Per-session registration generation: bumped on every session_register so a
+  // stale 5s empty-replay safety-timer (gen N) cannot false-complete a newer
+  // registration's replay (gen N+1) after a fast re-register (fix-cycle MAJOR).
+  const registrationGen = new Map<string, number>();
   // Sessions whose replay should be discarded (canSkipWipe was true — events already in store)
   const skipReplayInsert = new Set<string>();
   // Debounce flows refresh to prevent infinite loop between sessions in same cwd
@@ -504,9 +508,14 @@ export function wireEvents(deps: EventWiringDeps): void {
     }
 
     if (msg.type === "session_register") {
+      // Bump the registration generation; the 5s safety-timer captures it and
+      // no-ops if a newer register supersedes this one (stale-timer race guard).
+      const regGen = (registrationGen.get(sessionId) ?? 0) + 1;
+      registrationGen.set(sessionId, regGen);
       replayingSessions.add(sessionId);
       // Safety timeout: clear replay flag after 5s if replay_complete never arrives
       setTimeout(() => {
+        if (registrationGen.get(sessionId) !== regGen) return; // superseded by a newer register
         if (replayingSessions.delete(sessionId)) {
           const wasSkipped = skipReplayInsert.delete(sessionId);
           const session = sessionManager.get(sessionId);
