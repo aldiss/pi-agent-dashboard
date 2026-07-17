@@ -388,7 +388,7 @@ describe("D · Test 8 — N=2 admission on the send_prompt co-drive path (handle
       // A LIVE session (status:"streaming") so the ended→resume branch is not taken.
       sessionManager: { get: vi.fn(() => ({ sessionId: SID, status: "streaming", cwd: "/tmp", sessionFile: "/tmp/s.jsonl" })), update: vi.fn() } as any,
       eventStore: {} as any,
-      piGateway: { sendToSession: vi.fn((_s: string, o: any) => { forwarded.push(o); return true; }) } as any,
+      piGateway: { sendToSession: vi.fn((_s: string, o: any) => { forwarded.push(o); return true; }), isSessionConnected: vi.fn(() => false) } as any,
       headlessPidRegistry: { getPid: vi.fn(() => undefined) } as any,
       pendingResumeRegistry: { record: vi.fn(), consume: vi.fn() } as any,
       principal,
@@ -693,6 +693,7 @@ describe("D · Test 12 — REAL gateway ws.close → operatorSet.release (MAJOR-
       start: vi.fn(),
       stop: vi.fn(),
       sendToSession: vi.fn(() => true), // forward "succeeds" (commit at :236 precedes this anyway)
+      isSessionConnected: vi.fn(() => false),
       getConnectedSessionIds: vi.fn(() => []),
       hasSession: vi.fn(() => false),
       onEvent: vi.fn(),

@@ -44,7 +44,7 @@ function makeFakeWs() {
 }
 function makeStubPiGateway(): PiGateway {
   return {
-    start: vi.fn(), stop: vi.fn(), sendToSession: vi.fn(),
+    start: vi.fn(), stop: vi.fn(), sendToSession: vi.fn(), isSessionConnected: vi.fn(() => false),
     getConnectedSessionIds: vi.fn(() => []), hasSession: vi.fn(() => false), onEvent: vi.fn(),
   } as unknown as PiGateway;
 }

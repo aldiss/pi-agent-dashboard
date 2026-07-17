@@ -33,6 +33,7 @@ function makeStubPiGateway(): PiGateway {
     start: vi.fn(),
     stop: vi.fn(),
     sendToSession: vi.fn(),
+    isSessionConnected: vi.fn(() => false),
     getConnectedSessionIds: vi.fn(() => []),
     hasSession: vi.fn(() => false),
     onEvent: vi.fn(),
