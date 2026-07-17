@@ -83,6 +83,47 @@ describe("session-scanner", () => {
     expect(result.cacheUpdates).toBe(0); // no re-extraction needed
   });
 
+  it("normalizes a restored session with endedAt set to status:ended (FIX-C3, Pete row-019f6e9b)", () => {
+    // A cleanly-ended session persisted with a stale `status:"idle"` (the clean-
+    // shutdown that stamped endedAt did not rewrite status) must restore as "ended"
+    // so the UI never renders it active. endedAt is cleared on reactivation, so
+    // endedAt-present is an unambiguous end.
+    const dir = createSessionDir("--stale-cwd--");
+    const sf = createJsonl(dir, "2026-03-30T21-39-43-034Z_stale-ended.jsonl", { id: "stale-ended", cwd: "/stale/cwd" });
+    writeSessionMeta(sf, {
+      cwd: "/stale/cwd",
+      source: "tui",
+      status: "idle", // stale — left behind by a clean-shutdown that stamped endedAt
+      endedAt: 1784279971285, // a genuine end
+      startedAt: 1000,
+      cachedAt: Date.now() + 10000, // fresh cache → meta path (not fallback-parse)
+    });
+
+    const result = scanAllSessions(tmpDir);
+    expect(result.sessions).toHaveLength(1);
+    expect(result.sessions[0].status).toBe("ended");
+    expect(result.sessions[0].endedAt).toBe(1784279971285);
+  });
+
+  it("does NOT normalize a live session with no endedAt (FIX-C3 control)", () => {
+    // Control: an idle/active session with NO endedAt is untouched — the
+    // normalization keys strictly on endedAt-present, never on age or status alone.
+    const dir = createSessionDir("--live-cwd--");
+    const sf = createJsonl(dir, "2026-03-30T21-39-43-034Z_live-idle.jsonl", { id: "live-idle", cwd: "/live/cwd" });
+    writeSessionMeta(sf, {
+      cwd: "/live/cwd",
+      source: "tui",
+      status: "idle",
+      startedAt: 1000,
+      cachedAt: Date.now() + 10000,
+    });
+
+    const result = scanAllSessions(tmpDir);
+    expect(result.sessions).toHaveLength(1);
+    expect(result.sessions[0].status).toBe("idle");
+    expect(result.sessions[0].endedAt).toBeUndefined();
+  });
+
   it("should fall back to .jsonl parsing when no .meta.json exists", () => {
     const dir = createSessionDir("--test-cwd--");
     createJsonl(dir, "2026-03-30T21-39-43-034Z_def-456.jsonl", { id: "def-456", cwd: "/fallback/cwd" });
