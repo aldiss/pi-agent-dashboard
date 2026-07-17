@@ -13,7 +13,9 @@
 // (dev mode / unsubstituted), the SW falls back to no-cache pass-through.
 const CACHE_VERSION = "__CACHE_VERSION__";
 const PRECACHE_NAME = `pi-dashboard-precache-${CACHE_VERSION}`;
-const RUNTIME_API_CACHE = `pi-dashboard-api-${CACHE_VERSION}`;
+// No runtime /api/ cache name: authenticated /api/ GETs are network-only (see
+// the fetch handler). The activate handler still purges any legacy
+// `pi-dashboard-api-*` caches written by an earlier SW build, by prefix.
 
 // ── Precache manifest (substituted at build time) ──────────────────
 // Replaced by packages/client/scripts/inject-sw-precache-manifest.mjs
@@ -57,14 +59,22 @@ self.addEventListener("message", (event) => {
   }
 });
 
-// ── Activate: drop stale caches from prior CACHE_VERSION ───────────
+// ── Activate: drop stale caches + purge ALL runtime /api/ caches ───
 self.addEventListener("activate", (event) => {
   event.waitUntil(
     (async () => {
       const keys = await caches.keys();
       await Promise.all(
         keys
-          .filter((k) => k.startsWith("pi-dashboard-") && !k.endsWith(CACHE_VERSION))
+          .filter((k) => {
+            // Purge EVERY runtime /api/ cache unconditionally — even the
+            // current version — so any body written by a prior SW build (before
+            // /api/ went network-only) can never be replayed cross-principal.
+            if (k.startsWith("pi-dashboard-api-")) return true;
+            // Drop other pi-dashboard-* caches only when from a prior version;
+            // the current app-shell precache (cold-load fix) must survive.
+            return k.startsWith("pi-dashboard-") && !k.endsWith(CACHE_VERSION);
+          })
           .map((k) => caches.delete(k))
       );
       // Take control of in-flight clients without requiring a reload.
@@ -90,9 +100,14 @@ self.addEventListener("fetch", (event) => {
   // /ws/* per WebSocket protocol-tier canonical (browser-internal lifecycle).
   if (url.pathname.startsWith("/ws")) return;
 
-  // API routes — network-first with cache fallback.
+  // API routes — NETWORK-ONLY. Authenticated / authorization-dependent /api/
+  // GETs must never be written to or served from a runtime cache: the cache is
+  // keyed by URL only (no principal partition), so a cached 2xx body would be
+  // replayed to a DIFFERENT principal after a cookie/login change (cross-
+  // principal cache replay). Offline degrades to a 503 JSON body, never a stale
+  // cross-principal body.
   if (url.pathname.startsWith("/api/")) {
-    event.respondWith(networkFirstWithCache(request, RUNTIME_API_CACHE));
+    event.respondWith(networkOnlyApi(request));
     return;
   }
 
@@ -130,22 +145,12 @@ async function cacheFirstWithNetworkFallback(request, cacheName, fallbackKey) {
   }
 }
 
-async function networkFirstWithCache(request, cacheName) {
-  const cache = await caches.open(cacheName);
+async function networkOnlyApi(request) {
+  // Never read from or write to any cache. On network failure return the
+  // canonical offline JSON — never a stale (possibly cross-principal) body.
   try {
-    // 3s network timeout — long enough for healthy LAN, short enough
-    // that cold-load on flaky mobile gets cached fallback fast.
-    const networkResponse = await Promise.race([
-      fetch(request),
-      new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), 3000)),
-    ]);
-    if (networkResponse.ok && networkResponse.status < 300) {
-      cache.put(request, networkResponse.clone()).catch(() => { /* cache quota */ });
-    }
-    return networkResponse;
+    return await fetch(request);
   } catch {
-    const cached = await cache.match(request);
-    if (cached) return cached;
     return new Response(JSON.stringify({ success: false, error: "offline" }), {
       status: 503,
       headers: { "Content-Type": "application/json" },
