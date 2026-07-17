@@ -49,12 +49,12 @@ describe("resurrectSession (Component A shared helper)", () => {
     expect(res.resurrected).toBe(true);
     const s = mgr.get("s-alive")!;
     expect(s.status).toBe("idle");
-    expect(s.endedAt).toBeUndefined();
+    expect(s.endedAt).toBeNull(); // null = wire-safe tombstone-clear (survives JSON; undefined would be dropped)
     expect(s.hidden).toBe(false);
     expect(s.pid).toBe(4242);
     expect(s.name).toBe("Don");
     expect(gw.calls).toHaveLength(1);
-    expect(gw.calls[0]).toMatchObject({ id: "s-alive", updates: { status: "idle", endedAt: undefined, hidden: false, pid: 4242, name: "Don" } });
+    expect(gw.calls[0]).toMatchObject({ id: "s-alive", updates: { status: "idle", endedAt: null, hidden: false, pid: 4242, name: "Don" } });
   });
 
   it("DEAD pid: stays ended, no broadcast (false-resurrection guard)", () => {

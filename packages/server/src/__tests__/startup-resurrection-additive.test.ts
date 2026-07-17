@@ -106,7 +106,7 @@ describe("startup-resurrection (Fix L) + sweep are additive", () => {
     expect(count).toBe(1);
     const s = sessionManager.get("uuid-postboot")!;
     expect(s.status).toBe("idle");
-    expect(s.endedAt).toBeUndefined();
+    expect(s.endedAt).toBeNull(); // null = wire-safe tombstone-clear (survives JSON)
     expect(s.pid).toBe(ALIVE_PID); // pid rebound from the registry
     expect(broadcasts).toContain("uuid-postboot");
   });
