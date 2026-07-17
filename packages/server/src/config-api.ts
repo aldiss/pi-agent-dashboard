@@ -70,12 +70,53 @@ export interface WriteConfigResult {
 export function writeConfigPartial(partial: Record<string, any>): WriteConfigResult {
   const { dir, file } = getConfigPaths();
   try {
-    // Read raw file to preserve unknown fields
+    // Read raw file to preserve unknown fields. FAIL CLOSED on a present-but-
+    // unreadable config: a parse failure of an EXISTING file must NOT collapse
+    // to an empty {} baseline, because the partial below would then persist as
+    // the COMPLETE config and erase auth/unknown fields. Only a genuinely
+    // ABSENT file (ENOENT) legitimately starts fresh.
     let existing: Record<string, any> = {};
+    let raw: string | undefined;
     try {
-      const raw = fs.readFileSync(file, "utf-8");
-      existing = JSON.parse(raw);
-    } catch { /* start fresh */ }
+      raw = fs.readFileSync(file, "utf-8");
+    } catch (readErr: any) {
+      if (readErr?.code !== "ENOENT") {
+        return {
+          success: false,
+          restartRequired: false,
+          error:
+            `existing config at ${file} is present but unreadable ` +
+            `(${readErr?.code ?? readErr?.message ?? "read error"}) — refusing to ` +
+            `overwrite it with a partial write; on-disk config preserved.`,
+        };
+      }
+      // ENOENT — no config yet, start fresh with {}.
+    }
+    if (raw !== undefined) {
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(raw);
+      } catch (parseErr: any) {
+        return {
+          success: false,
+          restartRequired: false,
+          error:
+            `existing config at ${file} is present but not valid JSON ` +
+            `(${parseErr?.message ?? "parse error"}) — refusing to overwrite it ` +
+            `with a partial write; on-disk config preserved.`,
+        };
+      }
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        return {
+          success: false,
+          restartRequired: false,
+          error:
+            `existing config at ${file} did not parse to a JSON object — ` +
+            `refusing to overwrite it with a partial write; on-disk config preserved.`,
+        };
+      }
+      existing = parsed as Record<string, any>;
+    }
 
     // Check if restart-requiring fields changed
     let restartRequired = false;
