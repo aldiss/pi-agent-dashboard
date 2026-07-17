@@ -1049,9 +1049,17 @@ export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ se
             <p className="text-[var(--text-secondary)]">Couldn't load this session's messages</p>
             <p className="text-xs">Its transcript is unavailable right now. Reconnecting may recover it.</p>
           </div>
-        ) : (
+        ) : state.replayComplete ? (
+          // Replay finished with zero messages → a TRUTHFUL calm empty.
           <div className="flex items-center justify-center h-full text-[var(--text-tertiary)]" data-testid="chat-empty">
             <p>No messages yet</p>
+          </div>
+        ) : (
+          // Replay still in flight (build-2 fix-cycle MAJOR 2): loading ≠ empty.
+          // We have NOT received the terminal `event_replay{isLast:true}` yet, so
+          // a zero-message state is LOADING — never flash "No messages yet".
+          <div className="flex items-center justify-center h-full text-[var(--text-tertiary)]" data-testid="chat-loading">
+            <p>Loading messages…</p>
           </div>
         )
       )}

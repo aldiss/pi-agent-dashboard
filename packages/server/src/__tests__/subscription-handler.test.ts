@@ -199,6 +199,40 @@ describe("handleSubscribe — stale lastSeq detection", () => {
     expect(loadSessionEvents).toHaveBeenCalledWith("s-ctx", "/sessions/s-ctx.jsonl", 1_000_000);
   });
 
+  it("emits a terminal event_replay{isLast:true} on a successful-but-EMPTY disk replay (build-2 fix-cycle MAJOR 2)", async () => {
+    // A header-only JSONL loads successfully with ZERO events. Without a
+    // terminal batch the client sits in loading forever / flashes empty. The
+    // handler must emit event_replay{events:[], isLast:true} so the client can
+    // settle to a TRUTHFUL calm-empty — distinct from the dataUnavailable path.
+    const loadSessionEvents = vi.fn(async () => ({ success: true, events: [] }));
+    const directoryService = { loadSessionEvents } as any;
+    const ctx = createMockContext({ directoryService });
+    // getSubscribers must return the subscriber ws so the terminal-batch loop runs.
+    (ctx as any).getSubscribers = () => [ctx.ws];
+
+    ctx.sessionManager.restore({
+      id: "s-empty", cwd: "/test", source: "tui", status: "ended",
+      startedAt: 1000, endedAt: 2000, tokensIn: 0, tokensOut: 0, cost: 0,
+      sessionFile: "/sessions/s-empty.jsonl", sessionDir: "/sessions", hidden: false,
+    } as any);
+
+    const subs = new Set<string>();
+    handleSubscribe({ type: "subscribe", sessionId: "s-empty" }, subs, ctx);
+    await new Promise((r) => setTimeout(r, 30));
+
+    const calls = (ctx.sendTo as any).mock.calls as Array<[any, ServerToBrowserMessage]>;
+    const replays = calls.filter(([, msg]) => msg.type === "event_replay") as Array<[any, any]>;
+    // A terminal isLast:true batch was emitted (and it carries zero events).
+    const terminal = replays.find(([, msg]) => msg.isLast === true);
+    expect(terminal).toBeDefined();
+    expect(terminal![1].events).toEqual([]);
+    // It is NOT marked dataUnavailable (this is a healthy empty, not a failure).
+    const updates = (ctx.broadcast as any).mock.calls
+      .map(([msg]: [any]) => msg)
+      .filter((m: any) => m.type === "session_updated" && m.sessionId === "s-empty");
+    expect(updates.every((u: any) => u.updates?.dataUnavailable !== true)).toBe(true);
+  });
+
   it("does full replay when lastSeq is 0", async () => {
     const ctx = createMockContext();
     for (let i = 0; i < 3; i++) ctx.eventStore.insertEvent("s1", makeEvent());

@@ -51,6 +51,7 @@ import { useInstallPrompt } from "./hooks/useInstallPrompt.js";
 import { useSessionsBootstrap } from "./hooks/useSessionsBootstrap.js";
 import { useFleetBrief } from "./hooks/useFleetBrief.js";
 import { deriveHasLoadedOnce } from "./lib/has-loaded-once.js";
+import { countAlive } from "./lib/card-state.js";
 import { TerminalsView } from "./components/TerminalsView.js";
 import { EditorView } from "./components/EditorView.js";
 import { decodeFolderPath, encodeFolderPath } from "./lib/folder-encoding.js";
@@ -381,7 +382,7 @@ export default function App() {
   }, []);
 
   const handleMessage = useMessageHandler(
-    { setSessions, setSessionStates, setSessionCommands, setSessionFlows, setFileResults, setOpenspecMap, setOpenspecGroupsMap, setModelsMap, setRolesMap, setSpawnResult, setSessionOrderMap, setPinnedDirectories, setTerminals, setEditorStatuses, setDiscoveredServers, setSpawnErrors, setResumeErrors },
+    { setSessions, setSessionStates, setSessionCommands, setSessionFlows, setFileResults, setOpenspecMap, setOpenspecGroupsMap, setModelsMap, setRolesMap, setSpawnResult, setSessionOrderMap, setPinnedDirectories, setTerminals, setEditorStatuses, setDiscoveredServers, setSpawnErrors, setResumeErrors, onSnapshotReceived: () => setSnapshotReceived(true) },
     { send, navigate, clearSpawningCwd, spawningCwdsRef, subscribedRef, pendingTerminalCwdRef, lastCreatedTerminalIdRef, maxSeqMapRef, selectedSessionIdRef, pendingSpawnsRef },
   );
 
@@ -401,10 +402,11 @@ export default function App() {
   const prevStatusRef = useRef(status);
   useEffect(() => {
     if (status === "connected" && prevStatusRef.current !== "connected") {
-      // On (re)connect the server pushes an authoritative `sessions_snapshot`;
-      // mark the snapshot source settled for the `hasLoadedOnce` oracle
-      // (build-2 P0 fix #7). This is the WS arm — independent of the REST arm.
-      setSnapshotReceived(true);
+      // NOTE (build-2 fix-cycle MAJOR 1): `snapshotReceived` is NOT set here.
+      // Socket-OPEN is not proof the authoritative `sessions_snapshot` FRAME
+      // arrived — a connected socket that drops the snapshot would otherwise
+      // authorize a false calm-zero. The flag is set in the `sessions_snapshot`
+      // message handler (useMessageHandler) on the real frame.
       subscribedRef.current.clear();
       // sessionOrderMap is replaced atomically by the on-connect
       // `sessions_snapshot` message — no pre-reset needed.
@@ -449,6 +451,18 @@ export default function App() {
     // clears subscribedRef, and adding `status` here re-triggers the effect).
     if (selectedId && !subscribedRef.current.has(selectedId) && status === "connected") {
       subscribedRef.current.add(selectedId);
+      // Reset replay readiness on subscribe (build-2 fix-cycle MAJOR 2): the
+      // session re-enters LOADING until the terminal `event_replay{isLast:true}`
+      // arrives, so ChatView never flashes "No messages yet" before replay
+      // completes. A brand-new state is already loading (replayComplete
+      // undefined); this covers a re-subscribe of an already-viewed session.
+      setSessionStates((prev) => {
+        const existing = prev.get(selectedId);
+        if (!existing || existing.replayComplete === undefined || existing.replayComplete === false) return prev;
+        const next = new Map(prev);
+        next.set(selectedId, { ...existing, replayComplete: false });
+        return next;
+      });
       send({ type: "subscribe", sessionId: selectedId, lastSeq: maxSeqMapRef.current.get(selectedId) ?? 0 });
       // Request model list for this session if we don't have it yet (e.g. after page refresh)
       if (!modelsMap.has(selectedId)) {
@@ -671,7 +685,7 @@ export default function App() {
   });
   const {
     handleAbort, handleForceKill, handleCancelPending, handleRespondToUi, handleFlowAction, handleSend,
-    handleSelect, handleRenameSession, handleShutdownSession, handleKillProcess,
+    handleSelect, handleRenameSession, handleKillProcess,
     handleSendPromptToSession, handleResumeSession, handleResumeSessionKeepPosition, handleSpawnSession,
     handleHideSession, handleUnhideSession,
     handleCreateTerminal, handleKillTerminal, handleRenameTerminal, handleTerminalTitle,
@@ -894,6 +908,10 @@ export default function App() {
   // SessionCard list. See change: fix-session-list-rerender-storm.
   const sessionsArr = useMemo(() => Array.from(sessions.values()), [sessions]);
   const terminalsArr = useMemo(() => Array.from(terminals.values()), [terminals]);
+  // Alive-only fleet count (build-2 fix-cycle MAJOR 3): the LandingPage "N
+  // active" line + Start-session CTA must count only non-ended sessions —
+  // `sessions.size` includes ended/hidden corpses ("2 active" while 1 alive).
+  const aliveCount = useMemo(() => countAlive(sessionsArr), [sessionsArr]);
 
   // Fleet-brief (build-2 P0 fix #5/#6/#9/#12): the depth-0 "what needs me"
   // banner. `briefNow` is a coarse 30s ticker so the finished-unseen window
@@ -1068,7 +1086,7 @@ export default function App() {
           onHide: () => handleHideSession(selectedId),
           onUnhide: () => handleUnhideSession(selectedId),
           onResume: (mode) => handleResumeSession(selectedId, mode),
-          onShutdown: () => handleShutdownSession(selectedId),
+          onCheckLiveness: () => handleCheckLiveness(selectedId),
           onOpenEditor: selectedCwd ? (editorId) => {
             import("./lib/editor-api.js").then(({ openEditor }) => openEditor(selectedCwd!, editorId));
           } : undefined,
@@ -1763,7 +1781,7 @@ export default function App() {
               <LandingPage
                 providersReady={providersReady.ready}
                 pinnedCount={pinnedDirectories.length}
-                sessionsCount={sessions.size} hasLoadedOnce={hasLoadedOnce}
+                sessionsCount={aliveCount} hasLoadedOnce={hasLoadedOnce}
                 firstPinnedCwd={pinnedDirectories[0] ?? null}
                 onOpenPinDialog={() => setPinDialogOpen(true)}
                 onSpawnSession={handleSpawnSession}
@@ -1878,7 +1896,7 @@ export default function App() {
               <LandingPage
                 providersReady={providersReady.ready}
                 pinnedCount={pinnedDirectories.length}
-                sessionsCount={sessions.size} hasLoadedOnce={hasLoadedOnce}
+                sessionsCount={aliveCount} hasLoadedOnce={hasLoadedOnce}
                 firstPinnedCwd={pinnedDirectories[0] ?? null}
                 onOpenPinDialog={() => setPinDialogOpen(true)}
                 onSpawnSession={handleSpawnSession}

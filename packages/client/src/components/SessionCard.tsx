@@ -5,6 +5,8 @@ import type { DashboardSession, ImageContent } from "@blackbelt-technology/pi-da
 import { getSessionDisplayName } from "../lib/session-display-name.js";
 import { formatRelativeTime } from "../lib/format.js";
 import { selectBadgeTimestamp } from "../lib/session-card-time.js";
+import { deriveCardState } from "../lib/card-state.js";
+import { getStaleHoursThreshold } from "../lib/session-filter-storage.js";
 import { ContextUsageBar } from "./ContextUsageBar.js";
 import { DriverProgressBar } from "./DriverProgressBar.js";
 import { EngagementBadge } from "./EngagementBadge.js";
@@ -337,12 +339,24 @@ export const SessionCard = React.memo(function SessionCard({
 
   const hasMetaChips = !!(session.gitBranch || session.worktree || session.attachedProposal);
 
+  // Wire the ONE pure card-state derivation into the production card render
+  // (build-2 fix-cycle NIT 2). Emitted as `data-age-band` / `data-band-reason`
+  // so the derivation has a real production caller + an operator-visible DOM
+  // surface (assertable), WITHOUT disturbing the existing editorial
+  // `data-activity` hue CSS. error/ask are retained through age-decay by
+  // `deriveCardState` itself (needs band never decays). `now` is the card's
+  // interval clock; staleHours reuses the persisted `dashboard:staleHours`.
+  const cardStaleHours = getStaleHoursThreshold();
+  const cardState = deriveCardState(session, now, cardStaleHours);
+
   return (
     <Pressable
       as="li"
       pressScale={0.985}
       data-session-id={session.id}
       data-activity={getActivityKind(session, hasError)}
+      data-age-band={cardState.ageBand}
+      data-band-reason={cardState.reason}
       onClick={() => onSelect(session.id)}
       className={`editorial-card group relative px-3 py-2.5 md:px-3.5 md:py-2.5 cursor-pointer rounded-xl border shadow-sm shadow-[var(--shadow-card)] hover:shadow-md transition-shadow duration-200 flex flex-col gap-1 md:gap-2 ${
         selectedRing
@@ -417,22 +431,36 @@ export const SessionCard = React.memo(function SessionCard({
             ${session.cost!.toFixed(2)}
           </span>
         )}
-        {/* Mobile-only Check-liveness affordance (build-2 P0 fix #4 + #12):
-            desktop uses the hover cluster above; at 393px there is no hover, so
-            the read-only liveness re-check needs an always-visible control on
-            the card. Open is the card tap itself. NO destructive Exit. */}
-        {isAlive && onCheckLiveness && (
-          <button
-            onClick={(e) => { e.stopPropagation(); onCheckLiveness(session.id); }}
-            className="md:hidden shrink-0 text-[var(--text-tertiary)] hover:text-blue-400 transition-colors p-0.5"
-            title="Check liveness — re-verify this session is still running (read-only)"
-            data-testid="session-check-liveness-btn-mobile"
-            aria-label="Check liveness"
-          >
-            <Icon path={mdiHeartPulse} size={0.6} />
-          </button>
-        )}
       </div>
+
+      {/* Mobile-only dark-card control row (build-2 fix-cycle FATAL 3): LITERAL
+          visible text `Open` + read-only `Check liveness` at 393px (not just
+          title/aria-label). Desktop uses the hover icon cluster above. There is
+          NO destructive Exit here — the removed Exit path was the kill-0 hole.
+          Only alive cards (a dark/unknown/kill-0-live session looks alive). */}
+      {isAlive && (
+        <div className="md:hidden flex items-center gap-2 pt-0.5">
+          <button
+            onClick={(e) => { e.stopPropagation(); onSelect(session.id); }}
+            className="inline-flex items-center gap-1 text-[11px] font-medium text-[var(--text-secondary)] hover:text-green-400 transition-colors px-1.5 py-1 rounded"
+            data-testid="session-open-btn-mobile"
+          >
+            <Icon path={mdiOpenInNew} size={0.55} />
+            <span>Open</span>
+          </button>
+          {onCheckLiveness && (
+            <button
+              onClick={(e) => { e.stopPropagation(); onCheckLiveness(session.id); }}
+              className="inline-flex items-center gap-1 text-[11px] font-medium text-[var(--text-secondary)] hover:text-blue-400 transition-colors px-1.5 py-1 rounded"
+              data-testid="session-check-liveness-btn-mobile"
+              title="Re-verify this session is still running (read-only)"
+            >
+              <Icon path={mdiHeartPulse} size={0.55} />
+              <span>Check liveness</span>
+            </button>
+          )}
+        </div>
+      )}
 
       {/* Row 2: model + thinking level (left) | resume/fork (desktop right) */}
       <div className="flex items-center text-[11px] md:text-xs text-[var(--text-secondary)]">

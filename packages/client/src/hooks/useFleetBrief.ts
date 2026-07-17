@@ -62,13 +62,17 @@ export function useFleetBrief(
         if (!res.ok) { if (mountedRef.current) setSurfacesOutcome("failure"); return; }
         const body = await res.json();
         if (!mountedRef.current) return;
-        if (body?.success && body.data?.surfaces) {
-          setSurfaces(body.data.surfaces as FleetBriefSurface[]);
+        // Cold-load oracle (build-2 fix-cycle MAJOR 1): success requires the
+        // `{success:true}` SHAPE, NOT merely HTTP-200. A 200 carrying
+        // `{success:false, error:...}` is a FAILURE — treating it as success
+        // would authorize a false calm-zero. A well-formed `{success:true}`
+        // with an empty/absent surfaces array is still success (healthy empty).
+        if (body?.success === true) {
+          const surfaces = Array.isArray(body.data?.surfaces) ? body.data.surfaces : [];
+          setSurfaces(surfaces as FleetBriefSurface[]);
           setSurfacesOutcome("success");
         } else {
-          // A well-formed response with no surfaces is still a SUCCESS — an
-          // empty operator-surfaces index is a healthy state, not a failure.
-          setSurfacesOutcome("success");
+          setSurfacesOutcome("failure");
         }
       } catch {
         // best-effort — brief degrades to sessions-only on fetch failure

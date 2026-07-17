@@ -63,15 +63,34 @@ const TMUX_FORMAT = "#{session_name}\t#{pane_current_command}\t#{pane_current_pa
  * miss NEVER resurrects a CC session. 1s timeout caps read-path latency.
  */
 export function listClaudePanesUncached(): ClaudePane[] {
+  return probeClaudePanesUncached().panes;
+}
+
+/**
+ * Tri-state CC-pane probe (build-2 fix-cycle FATAL 1). Distinguishes a
+ * SUCCESSFUL-EMPTY probe (`{ panes: [], ok: true }` — tmux answered, no claude
+ * panes → a CC session with no pane is PROVEN dead) from a FAILED probe
+ * (`{ panes: [], ok: false }` — tmux missing / no server / non-zero exit /
+ * timeout → liveness UNKNOWN, must not be treated as proof of death).
+ *
+ * The legacy {@link listClaudePanesUncached} collapsed both to `[]`, so a
+ * transient tmux failure looked identical to "no live panes" and let
+ * `verifySessionLive` return a false `dead` verdict that `evaluateRetire`
+ * honoured (removing a genuinely-unverified session). Callers that need the
+ * distinction use THIS; the old signature stays for the pane list itself.
+ */
+export function probeClaudePanesUncached(): { panes: ClaudePane[]; ok: boolean } {
   try {
     const out = execFileSync("tmux", ["list-panes", "-a", "-F", TMUX_FORMAT], {
       encoding: "utf8",
       timeout: 1000,
       stdio: ["ignore", "pipe", "ignore"],
     });
-    return parseClaudePanes(out);
+    return { panes: parseClaudePanes(out), ok: true };
   } catch {
-    return []; // no tmux server / not installed / timeout → no live CC panes
+    // no tmux server / not installed / timeout / non-zero exit → UNKNOWN, not
+    // proven-empty. ok:false so the liveness predicate returns `cc-unknown`.
+    return { panes: [], ok: false };
   }
 }
 
@@ -120,23 +139,35 @@ export function listDriverTmuxSessionsUncached(): string[] {
  * read-path can fire several times in quick succession (multi-tab, reconnect
  * storms); a short cache collapses the burst into one `tmux` spawn. `nowMs` is
  * injectable for deterministic tests.
+ *
+ * Also exposes `claudePanesOk()` — the tri-state probe outcome of the SAME
+ * cached snapshot (build-2 fix-cycle FATAL 1). `true` when the last probe
+ * answered (even success-empty); `false` when it FAILED (tmux missing / non-zero
+ * exit / timeout) → liveness UNKNOWN. Both read the one cached probe so the
+ * pane list and its ok-ness never disagree.
  */export function createClaudePaneProbe(opts?: {
   ttlMs?: number;
   list?: () => ClaudePane[];
+  probe?: () => { panes: ClaudePane[]; ok: boolean };
   now?: () => number;
-}): { listClaudePanes: () => ClaudePane[] } {
+}): { listClaudePanes: () => ClaudePane[]; claudePanesOk: () => boolean } {
   const ttlMs = opts?.ttlMs ?? 2000;
-  const list = opts?.list ?? listClaudePanesUncached;
+  // Prefer a tri-state `probe`; else adapt a legacy `list` (always ok:true);
+  // else the real tri-state probe.
+  const probe = opts?.probe
+    ?? (opts?.list ? () => ({ panes: opts.list!(), ok: true }) : probeClaudePanesUncached);
   const now = opts?.now ?? Date.now;
-  let cache: ClaudePane[] | null = null;
+  let cache: { panes: ClaudePane[]; ok: boolean } | null = null;
   let cachedAt = 0;
+  function snapshot(): { panes: ClaudePane[]; ok: boolean } {
+    const t = now();
+    if (cache && t - cachedAt < ttlMs) return cache;
+    cache = probe();
+    cachedAt = t;
+    return cache;
+  }
   return {
-    listClaudePanes(): ClaudePane[] {
-      const t = now();
-      if (cache && t - cachedAt < ttlMs) return cache;
-      cache = list();
-      cachedAt = t;
-      return cache;
-    },
+    listClaudePanes: () => snapshot().panes,
+    claudePanesOk: () => snapshot().ok,
   };
 }

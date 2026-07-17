@@ -231,6 +231,17 @@ export interface SessionState {
    * See change: fix-streaming-text-vs-interactive-ui-order.
    */
   streamingTextFlushed?: boolean;
+  /**
+   * Loading ≠ empty (build-2 fix-cycle MAJOR 2). `true` once a terminal
+   * `event_replay { isLast: true }` has arrived for this session (replay is
+   * DONE). `false`/undefined means replay is still in flight (or hasn't
+   * started). ChatView shows "No messages yet" ONLY when this is true — before
+   * that a zero-message state is LOADING, not empty. Reset to false on
+   * subscribe / `session_state_reset` so a re-subscribe re-enters loading.
+   * Managed by `useMessageHandler` (not `reduceEvent`), so it is set OUTSIDE
+   * the per-event reducer on the `isLast` frame.
+   */
+  replayComplete?: boolean;
 }
 
 /**

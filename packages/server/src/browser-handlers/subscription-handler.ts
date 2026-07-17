@@ -242,6 +242,16 @@ export function handleSubscribe(
             // Asset registry first — see change: chat-markdown-local-images-and-math.
             replaySessionAssets(sub, msg.sessionId, ctx);
             await sendEventBatches(sub, msg.sessionId, stored, sendTo);
+            // Loading ≠ empty (build-2 fix-cycle MAJOR 2): a successful-but-EMPTY
+            // disk replay (header-only JSONL → `stored.length === 0`) sends NO
+            // batch, so `sendEventBatches` emits no terminal `isLast:true` and the
+            // client would sit in loading forever OR (worse) show "No messages
+            // yet" prematurely. Emit an explicit terminal empty batch so the
+            // client can settle to a TRUTHFUL calm-empty — distinct from the
+            // failure/`dataUnavailable` path below (which already passes).
+            if (stored.length === 0) {
+              sendTo(sub, { type: "event_replay", sessionId: msg.sessionId, events: [], isLast: true });
+            }
             replayPendingUiRequests(sub, msg.sessionId);
             replayUiState(sub, msg.sessionId, ctx);
           }

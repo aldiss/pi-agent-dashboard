@@ -13,7 +13,7 @@
  *
  * See change: build-2-dashboard-v3.
  */
-import React, { useEffect } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { Icon } from "@mdi/react";
 import { mdiAlertCircleOutline, mdiCommentQuestion, mdiClipboardCheckOutline, mdiChevronRight } from "@mdi/js";
 import type { DashboardSession } from "@blackbelt-technology/pi-dashboard-shared/types.js";
@@ -29,6 +29,21 @@ interface Props {
   onSelect: (sessionId: string) => void;
   /** Persist "seen now" — the hook advances the finished-unseen window. */
   acknowledge: () => void;
+}
+
+/**
+ * True if `el` or any ancestor is `aria-hidden="true"` (build-2 fix-cycle
+ * FATAL 2). MobileShell marks the inactive depth-0 panel `aria-hidden` while it
+ * slides off-screen, so an IntersectionObserver hit during the spring can still
+ * be over a screen-reader-hidden node — this rejects it.
+ */
+function isAriaHidden(el: HTMLElement | null): boolean {
+  let node: HTMLElement | null = el;
+  while (node) {
+    if (node.getAttribute("aria-hidden") === "true") return true;
+    node = node.parentElement;
+  }
+  return false;
 }
 
 function reasonIcon(reason: FleetBriefItem["reason"]): string {
@@ -62,18 +77,51 @@ export function FleetBriefBanner({
   onSelect,
   acknowledge,
 }: Props): React.ReactElement | null {
-  // Acknowledge on ACTUAL visibility only (fix #6). Fires when the banner
-  // becomes visible (mount-while-visible, or a hidden→visible transition), and
-  // whenever the unseen set changes while visible. NEVER on mount-while-hidden.
-  useEffect(() => {
-    if (isVisible) acknowledge();
-  }, [isVisible, acknowledge, items.length, finishedUnseen.length]);
-
   const total = items.length + finishedUnseen.length;
+
+  // Geometric/ARIA visibility gate (build-2 fix-cycle FATAL 2). The route-depth
+  // `isVisible` prop is NOT enough — on mobile the depth-0 panel stays MOUNTED
+  // but `aria-hidden` (and slid off-screen with a spring transition) at depth
+  // ≥ 1, so acknowledging on route-depth acks work the operator never saw. We
+  // observe the banner's OWN rendered node with IntersectionObserver and also
+  // reject any ancestor `aria-hidden` / zero-area, so acknowledgement fires ONLY
+  // when the brief is truly on-screen. And NEVER while it renders zero rows.
+  const bannerRef = useRef<HTMLDivElement | null>(null);
+  const [geometricallyVisible, setGeometricallyVisible] = useState(false);
+
+  useEffect(() => {
+    const el = bannerRef.current;
+    if (!el || typeof IntersectionObserver === "undefined") {
+      // Environments without IO (jsdom): fall back to the route-depth prop, but
+      // STILL reject an aria-hidden ancestor so the spring-transition guard
+      // holds even without geometry. The live E2E exercises the real IO path.
+      setGeometricallyVisible(isVisible && !isAriaHidden(el));
+      return;
+    }
+    const io = new IntersectionObserver(
+      (entries) => {
+        const e = entries[0];
+        const onScreen = !!e && e.isIntersecting && e.intersectionRatio > 0;
+        setGeometricallyVisible(onScreen && !isAriaHidden(el));
+      },
+      { threshold: 0.01 },
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, [isVisible, total]);
+
+  // Acknowledge ONLY when the brief is nonempty AND geometrically/ARIA visible
+  // AND the route says visible. No cursor write while zero rows render or while
+  // the panel is aria-hidden mid-transition.
+  useEffect(() => {
+    if (total > 0 && isVisible && geometricallyVisible) acknowledge();
+  }, [total, isVisible, geometricallyVisible, acknowledge, items.length, finishedUnseen.length]);
+
   if (total === 0) return null;
 
   return (
     <div
+      ref={bannerRef}
       className="border-b border-[var(--border-color)] bg-[var(--bg-secondary)] flex-shrink-0"
       data-testid="fleet-brief-banner"
     >

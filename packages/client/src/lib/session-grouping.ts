@@ -6,6 +6,7 @@ import type { DashboardSession } from "@blackbelt-technology/pi-dashboard-shared
 import type { TerminalSession } from "@blackbelt-technology/pi-dashboard-shared/terminal-types.js";
 import { normalizePath } from "@blackbelt-technology/pi-dashboard-shared/platform/paths.js";
 import { isNeedsYou } from "./card-state.js";
+import { activityTimestamp } from "./session-card-time.js";
 
 /**
  * Infer the server's platform from any path we've seen. Client doesn't
@@ -245,8 +246,11 @@ export function filterStaleSessions(
   return sessions.filter((s) => {
     if (s.id === selectedId) return true;
     if (s.status === "ended") return true;
-    const lastActivity = Math.max(s.lastActivityAt ?? 0, s.startedAt);
-    return lastActivity >= cutoff;
+    // Use the canonical activityTimestamp (build-2 fix-cycle NIT 2 wiring): same
+    // semantics as the prior inline `Math.max(lastActivityAt ?? 0, startedAt)`
+    // for a live row, but with the shared stale/NaN guard so misbanding can't
+    // slip in via a partially-populated row.
+    return activityTimestamp(s) >= cutoff;
   });
 }
 

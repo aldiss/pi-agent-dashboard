@@ -108,16 +108,22 @@ describe("SessionCard", () => {
     expect(screen.queryByTestId("session-close-btn")).toBeNull();
   });
 
-  it("renders a mobile-only Check-liveness affordance on alive cards (build-2 fix #12, 393px)", () => {
+  it("renders LITERAL visible text Open + Check liveness on the mobile card (build-2 fix-cycle FATAL 3, 393px)", () => {
     const onCheckLiveness = vi.fn();
+    const onSelect = vi.fn();
     const session = makeSession({ status: "active" });
-    render(<SessionCard session={session} {...defaultProps} onCheckLiveness={onCheckLiveness} />);
-    // The mobile affordance exists so the 393px card has a reachable liveness
-    // re-check (desktop uses the hover cluster). jsdom renders both; the md:
-    // breakpoint hides the desktop cluster / this pill by viewport at runtime.
-    const mobileBtn = screen.getByTestId("session-check-liveness-btn-mobile");
-    fireEvent.click(mobileBtn);
+    render(<SessionCard session={session} {...defaultProps} onSelect={onSelect} onCheckLiveness={onCheckLiveness} />);
+    const mobileOpen = screen.getByTestId("session-open-btn-mobile");
+    const mobileCheck = screen.getByTestId("session-check-liveness-btn-mobile");
+    // Literal visible text nodes — NOT just title/aria-label (the E2E finding).
+    expect(mobileOpen.textContent).toContain("Open");
+    expect(mobileCheck.textContent).toContain("Check liveness");
+    fireEvent.click(mobileCheck);
     expect(onCheckLiveness).toHaveBeenCalledWith("test-session");
+    fireEvent.click(mobileOpen);
+    expect(onSelect).toHaveBeenCalledWith("test-session");
+    // No destructive control anywhere.
+    expect(screen.queryByTestId("session-close-btn")).toBeNull();
   });
 
   it("shows an Open control on alive cards and never a destructive Exit (kill-0 hole closed)", () => {
@@ -129,6 +135,29 @@ describe("SessionCard", () => {
     expect(onSelect).toHaveBeenCalledWith("test-session");
     // The removed destructive control must not exist on any card.
     expect(screen.queryByTestId("session-close-btn")).toBeNull();
+  });
+
+  it("wires deriveCardState into the card DOM as data-age-band/data-band-reason (build-2 fix-cycle NIT 2)", () => {
+    // needs-you (unseenServerError) → band 'needs', reason 'server-error',
+    // retained regardless of age.
+    const errored = makeSession({ status: "idle", unseenServerError: true, startedAt: 1 });
+    const { container: c1 } = render(<SessionCard session={errored} {...defaultProps} now={9_999_999_999} />);
+    const errCard = c1.querySelector("[data-session-id]") as HTMLElement;
+    expect(errCard.getAttribute("data-age-band")).toBe("needs");
+    expect(errCard.getAttribute("data-band-reason")).toBe("server-error");
+
+    // ask_user → band 'needs', reason 'ask-user'.
+    const asking = makeSession({ id: "ask-1", status: "streaming", currentTool: "ask_user" });
+    const { container: c2 } = render(<SessionCard session={asking} {...defaultProps} now={9_999_999_999} />);
+    const askCard = c2.querySelector("[data-session-id]") as HTMLElement;
+    expect(askCard.getAttribute("data-age-band")).toBe("needs");
+    expect(askCard.getAttribute("data-band-reason")).toBe("ask-user");
+
+    // ended + calm → dormant.
+    const ended = makeSession({ id: "end-1", status: "ended", endedAt: 5 });
+    const { container: c3 } = render(<SessionCard session={ended} {...defaultProps} now={9_999_999_999} />);
+    const endCard = c3.querySelector("[data-session-id]") as HTMLElement;
+    expect(endCard.getAttribute("data-age-band")).toBe("dormant");
   });
 
   it("should apply streaming pulse background when streaming", () => {

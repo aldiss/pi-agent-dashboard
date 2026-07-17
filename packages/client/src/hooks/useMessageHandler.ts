@@ -52,6 +52,13 @@ export interface MessageHandlerSetters {
   setDiscoveredServers: React.Dispatch<React.SetStateAction<DiscoveredServerInfo[]>>;
   setSpawnErrors: React.Dispatch<React.SetStateAction<Map<string, SpawnErrorDetail>>>;
   setResumeErrors: React.Dispatch<React.SetStateAction<Map<string, string>>>;
+  /**
+   * Called when an authoritative `sessions_snapshot` FRAME arrives (build-2
+   * fix-cycle MAJOR 1). Distinct from socket-open: the cold-load oracle must
+   * only count the snapshot source settled on the real frame, never on mere
+   * connection. Optional for back-compat with call sites that don't gate on it.
+   */
+  onSnapshotReceived?: () => void;
 }
 
 export interface MessageHandlerDeps {
@@ -82,6 +89,7 @@ export function useMessageHandler(
     setFileResults, setOpenspecMap, setOpenspecGroupsMap, setModelsMap, setRolesMap, setSpawnResult,
     setSessionOrderMap, setPinnedDirectories, setTerminals, setEditorStatuses,
     setDiscoveredServers, setSpawnErrors, setResumeErrors,
+    onSnapshotReceived,
   } = setters;
   const { send, navigate, clearSpawningCwd, spawningCwdsRef, subscribedRef, pendingTerminalCwdRef, lastCreatedTerminalIdRef, maxSeqMapRef, selectedSessionIdRef, pendingSpawnsRef } = deps;
 
@@ -349,6 +357,15 @@ export function useMessageHandler(
           for (const { event } of msg.events) {
             current = reduceEvent(current, event);
           }
+          // Loading ≠ empty (build-2 fix-cycle MAJOR 2): a terminal batch
+          // (`isLast:true`) marks replay DONE — ChatView may now show a truthful
+          // calm "No messages yet". A non-terminal batch keeps it loading. On a
+          // reset (new replay sweep) an isLast:false batch re-enters loading.
+          if ((msg as { isLast?: boolean }).isLast === true) {
+            current = { ...current, replayComplete: true };
+          } else if (shouldReset) {
+            current = { ...current, replayComplete: false };
+          }
           next.set(msg.sessionId, current);
           return next;
         });
@@ -502,6 +519,9 @@ export function useMessageHandler(
         // See change: fix-stale-sessions-on-reconnect.
         setSessions(new Map(msg.sessions.map((s) => [s.id, s])));
         setSessionOrderMap(new Map(Object.entries(msg.orders)));
+        // Cold-load oracle (build-2 fix-cycle MAJOR 1): the AUTHORITATIVE frame
+        // arrived — mark the snapshot source settled. NOT on socket-open.
+        onSnapshotReceived?.();
         break;
 
       case "pinned_dirs_updated":
@@ -728,5 +748,5 @@ export function useMessageHandler(
         break;
       }
     }
-  }, [send, clearSpawningCwd, navigate, setSessions, setSessionStates, setSessionCommands, setSessionFlows, setFileResults, setOpenspecMap, setModelsMap, setRolesMap, setSpawnResult, setSessionOrderMap, setPinnedDirectories, setTerminals, setEditorStatuses, setDiscoveredServers, spawningCwdsRef, subscribedRef, pendingTerminalCwdRef, maxSeqMapRef, selectedSessionIdRef]);
+  }, [send, clearSpawningCwd, navigate, setSessions, setSessionStates, setSessionCommands, setSessionFlows, setFileResults, setOpenspecMap, setModelsMap, setRolesMap, setSpawnResult, setSessionOrderMap, setPinnedDirectories, setTerminals, setEditorStatuses, setDiscoveredServers, onSnapshotReceived, spawningCwdsRef, subscribedRef, pendingTerminalCwdRef, maxSeqMapRef, selectedSessionIdRef]);
 }

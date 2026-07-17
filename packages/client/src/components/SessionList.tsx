@@ -720,9 +720,10 @@ export function SessionList({ sessions, selectedId, onSelect, contextUsageMap, o
             // incoming relative order (ended stays at the tail — a corpse never
             // rises into the needs band). This refines order WITHIN the folder;
             // pins/folder/tier boundaries above are untouched. No second lane.
-            // Skipped in flat-merge (session-search) mode, where the user opted
-            // into natural interleaved result order.
-            const allIds = flatMergeMode ? baseIds : stablePartitionByBand(baseIds, sessionMap);
+            // Applied in SEARCH/flat-merge mode too (build-2 fix-cycle NIT 1):
+            // the frozen rank rule is UNQUALIFIED — a filtered list must still
+            // surface needs-you first, not revert to persisted order.
+            const allIds = stablePartitionByBand(baseIds, sessionMap);
             // Index of the first ended card in the rendered order — used
             // to inject a top "Hide ended" button when ended sessions are
             // currently expanded. Only meaningful in the non-flat layout

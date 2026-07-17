@@ -430,3 +430,32 @@ describe("SessionList folder grouping toggle", () => {
     expect(container.querySelector('[data-session-id="s2"]')).toBeTruthy();
   });
 });
+
+describe("SessionList — needs-you partition applies in SEARCH mode (build-2 fix-cycle NIT 1)", () => {
+  function cardOrder(container: HTMLElement): string[] {
+    return Array.from(container.querySelectorAll("[data-session-id]")).map(
+      (el) => el.getAttribute("data-session-id") || "",
+    );
+  }
+
+  it("a needs-you session rises to the top even when a search query is active", () => {
+    const sessions = [
+      makeSession({ id: "calm-first", name: "Rank Calm First", cwd: "/w" }),
+      makeSession({ id: "needs-mid", name: "Rank Needs Middle", cwd: "/w", unseenServerError: true }),
+      makeSession({ id: "calm-last", name: "Rank Calm Last", cwd: "/w" }),
+    ];
+    const { container } = render(
+      <TestRouter><ThemeProvider>
+        <SessionList sessions={sessions} onSelect={() => {}} />
+      </ThemeProvider></TestRouter>,
+    );
+    // Normal mode: needs rises above the calm cards.
+    expect(cardOrder(container)).toEqual(["needs-mid", "calm-first", "calm-last"]);
+
+    // Type a search query matching all three — needs-you must STILL be first
+    // (previously flat-merge search skipped the partition and reverted order).
+    fireEvent.change(screen.getByTestId("session-search-input"), { target: { value: "Rank" } });
+    const searched = cardOrder(container).filter((id) => id.startsWith("calm") || id.startsWith("needs"));
+    expect(searched[0]).toBe("needs-mid");
+  });
+});

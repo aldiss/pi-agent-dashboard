@@ -58,4 +58,28 @@ describe("createClaudePaneProbe — TTL cache", () => {
     probe.listClaudePanes(); // expired → calls=2
     expect(calls).toBe(2);
   });
+
+  it("exposes tri-state claudePanesOk from the same cached probe (build-2 fix-cycle FATAL 1)", () => {
+    let t = 0;
+    // A FAILED probe: ok:false with an empty pane list (tmux missing / timeout).
+    const failing = createClaudePaneProbe({
+      ttlMs: 2000, now: () => t,
+      probe: () => ({ panes: [], ok: false }),
+    });
+    expect(failing.listClaudePanes()).toEqual([]);
+    expect(failing.claudePanesOk()).toBe(false); // UNKNOWN, not proven-empty
+
+    // A SUCCESS-empty probe: ok:true with an empty pane list.
+    const successEmpty = createClaudePaneProbe({
+      ttlMs: 2000, now: () => t,
+      probe: () => ({ panes: [], ok: true }),
+    });
+    expect(successEmpty.listClaudePanes()).toEqual([]);
+    expect(successEmpty.claudePanesOk()).toBe(true); // proven-empty → dead-eligible
+  });
+
+  it("legacy list() adapter reports ok:true (back-compat)", () => {
+    const probe = createClaudePaneProbe({ list: () => [] });
+    expect(probe.claudePanesOk()).toBe(true);
+  });
 });

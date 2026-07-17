@@ -36,11 +36,14 @@ function makeProbes(opts: {
   panes?: ClaudePane[];
   /** live tmux SESSION names (the pi-driver 3rd liveness axis). */
   tmuxSessions?: string[];
+  /** Tri-state CC probe ok-ness (build-2 fix-cycle FATAL 1). Default true. */
+  claudePanesOk?: boolean;
 }): HygieneProbes {
   const registryLive = opts.registryLive ?? {};
   const alivePids = new Set(opts.alivePids ?? []);
   const panes = opts.panes ?? [];
   const tmuxSessions = opts.tmuxSessions ?? [];
+  const claudePanesOk = opts.claudePanesOk ?? true;
   return {
     resolveDriverLiveness: (sessionId: string) =>
       registryLive[sessionId]
@@ -48,6 +51,7 @@ function makeProbes(opts: {
         : { alive: false },
     pidAlive: (pid: number) => alivePids.has(pid),
     listClaudePanes: () => panes,
+    claudePanesOk: () => claudePanesOk,
     listDriverTmuxSessions: () => tmuxSessions,
   };
 }
@@ -131,6 +135,67 @@ describe("verifySessionLive — the explicit liveness predicate (invariant #4)",
     expect(decision.retired).toEqual([]);
     expect(decision.anomaly).toBe(true);
     expect(decision.refusedLive[0]).toMatchObject({ sessionId: "cc-live", reason: "pid-kill0" });
+  });
+
+  // ── Tri-state (build-2 fix-cycle FATAL 1): FAILED probe ≠ proof of death ──
+  it("CC: FAILED probe (claudePanesOk=false) + no PID → cc-unknown, NOT proven-dead", () => {
+    const probes = makeProbes({ claudePanesOk: false });
+    expect(
+      verifySessionLive(s({ id: "cc-x", source: "claude-code", cwd: "/work/cc" }), probes),
+    ).toEqual({ live: false, unknown: true, reason: "cc-unknown" });
+  });
+
+  it("CC: SUCCESS-empty probe (ok=true) + no PID → cc-no-pane (proven dead, NOT unknown)", () => {
+    const probes = makeProbes({ claudePanesOk: true });
+    const r = verifySessionLive(s({ id: "cc-y", source: "claude-code", cwd: "/work/cc" }), probes);
+    expect(r).toEqual({ live: false, reason: "cc-no-pane" });
+    expect(r.unknown).toBeUndefined();
+  });
+
+  it("CC: FAILED probe but kill-0-live PID still wins → live pid-kill0 (backstop precedence)", () => {
+    const probes = makeProbes({ claudePanesOk: false, alivePids: [ALIVE] });
+    expect(
+      verifySessionLive(s({ id: "cc-z", source: "claude-code", cwd: "/work/cc", pid: ALIVE }), probes),
+    ).toMatchObject({ live: true, reason: "pid-kill0" });
+  });
+
+  it("retire: a cc-unknown target (failed probe, no PID) is REFUSED, never retired — FATAL 1", () => {
+    const probes = makeProbes({ claudePanesOk: false });
+    const sessions = [s({ id: "cc-unk", source: "claude-code", cwd: "/work/cc" })];
+    const decision = evaluateRetire(sessions, { sessionId: "cc-unk" }, probes);
+    expect(decision.retired).toEqual([]);
+    expect(decision.anomaly).toBe(true);
+    expect(decision.refusedLive[0]).toMatchObject({ sessionId: "cc-unk", reason: "cc-unknown" });
+  });
+
+  it("retire: SUCCESS-empty probe + dead PID still retires (negative control preserved)", () => {
+    const probes = makeProbes({ claudePanesOk: true });
+    const sessions = [s({ id: "cc-dead", source: "claude-code", cwd: "/work/cc", pid: DEAD })];
+    const decision = evaluateRetire(sessions, { sessionId: "cc-dead" }, probes);
+    expect(decision.retired).toEqual(["cc-dead"]);
+    expect(decision.anomaly).toBe(false);
+  });
+
+  it("reconcile: a cc-unknown row is NEVER demoted/hidden (stays visible) — FATAL 1", () => {
+    const probes = makeProbes({ claudePanesOk: false });
+    // A non-ended CC row that a failed probe cannot verify must not be demoted.
+    const actions = reconcileSessionHygiene(
+      [s({ id: "cc-live-unk", source: "claude-code", cwd: "/work/cc", status: "idle" })],
+      probes,
+      { nowMs: 9_999_999, graceMs: 0 },
+    );
+    expect(actions).toEqual([]);
+  });
+
+  it("reconcile: SUCCESS-empty probe + dead CC row is still demoted (negative control)", () => {
+    const probes = makeProbes({ claudePanesOk: true });
+    const actions = reconcileSessionHygiene(
+      [s({ id: "cc-ghost", source: "claude-code", cwd: "/work/cc", status: "idle" })],
+      probes,
+      { nowMs: 9_999_999, graceMs: 0 },
+    );
+    expect(actions.length).toBe(1);
+    expect(actions[0].reason).toContain("demote");
   });
 });
 
