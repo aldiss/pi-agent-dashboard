@@ -65,6 +65,14 @@ interface Props {
   sessions: DashboardSession[];
   selectedId?: string;
   onSelect: (sessionId: string) => void;
+  /**
+   * Cold-load success oracle (build-2 fix-cycle-2 MAJOR 1). When `false`, the
+   * fleet has NOT settled-loaded (a REST/snapshot or surfaces source is still
+   * pending or failed), so the sidebar must NOT show the calm "No active
+   * sessions" copy — an unsettled/failed source renders a loading line instead.
+   * `undefined` = back-compat (treated as loaded, preserving existing callers).
+   */
+  hasLoadedOnce?: boolean;
   contextUsageMap?: Map<string, ContextUsageInfo>;
   openspecMap?: Map<string, OpenSpecData>;
   sessionOrderMap?: Map<string, string[]>;
@@ -208,7 +216,7 @@ function ToggleButton({
   );
 }
 
-export function SessionList({ sessions, selectedId, onSelect, contextUsageMap, openspecMap, sessionOrderMap, onReorderSessions, onSendPrompt, onFlowAction, onOpenSpecRefresh, onAttachProposal, onDetachProposal, onBulkArchive, onReadArtifact, onOpenPiResources, onRename, onCheckLiveness, onResume, onResumeKeepPosition, onHideSession, onUnhideSession, onSpawnSession, onSpawnWorktree, spawningCwds, spawnResult, onSpawnResultSeen, pinnedDirectories, onPinDirectory, onOpenPinDialog, onUnpinDirectory, onReorderPinnedDirs, terminals, onKillTerminal, onRenameTerminal, onCollapseSidebar, commandsMap, flowsMap, onKillProcess, onOpenSpecs, onOpenArchive, onOpenTerminals, onOpenEditor, editorStatuses, editorAvailable, headerExtra, errorSessionIds, spawnErrors, onDismissSpawnError, resumeErrors, onDismissResumeError }: Props) {
+export function SessionList({ sessions, selectedId, onSelect, hasLoadedOnce, contextUsageMap, openspecMap, sessionOrderMap, onReorderSessions, onSendPrompt, onFlowAction, onOpenSpecRefresh, onAttachProposal, onDetachProposal, onBulkArchive, onReadArtifact, onOpenPiResources, onRename, onCheckLiveness, onResume, onResumeKeepPosition, onHideSession, onUnhideSession, onSpawnSession, onSpawnWorktree, spawningCwds, spawnResult, onSpawnResultSeen, pinnedDirectories, onPinDirectory, onOpenPinDialog, onUnpinDirectory, onReorderPinnedDirs, terminals, onKillTerminal, onRenameTerminal, onCollapseSidebar, commandsMap, flowsMap, onKillProcess, onOpenSpecs, onOpenArchive, onOpenTerminals, onOpenEditor, editorStatuses, editorAvailable, headerExtra, errorSessionIds, spawnErrors, onDismissSpawnError, resumeErrors, onDismissResumeError }: Props) {
   // Coarse, interval-updated wall clock. Used only by the relative-time badge
   // (`now - selectBadgeTimestamp(session)`, class `hidden md:inline`) and the
   // stale-active filter (≤30s staleness is irrelevant to either). Computing
@@ -927,7 +935,17 @@ export function SessionList({ sessions, selectedId, onSelect, contextUsageMap, o
       </div>
       <div ref={listRef} className="flex-1 overflow-y-auto">
       {filteredSessions.length === 0 && pinnedGroups.length === 0 ? (
-        <div className="p-4 text-sm text-[var(--text-tertiary)]">No active sessions</div>
+        // Loading ≠ empty (build-2 fix-cycle-2 MAJOR 1): the calm "No active
+        // sessions" copy is a factual claim that the fleet IS empty — it must
+        // NOT show while a load source is unsettled/failed (`hasLoadedOnce ===
+        // false`), otherwise a 503 dropped-snapshot or a `{success:false}`
+        // surfaces response leaks a false calm-zero. Show a loading line until
+        // the oracle settles; `undefined` (back-compat) treats as loaded.
+        hasLoadedOnce === false ? (
+          <div className="p-4 text-sm text-[var(--text-tertiary)]" data-testid="session-list-loading">Loading sessions…</div>
+        ) : (
+          <div className="p-4 text-sm text-[var(--text-tertiary)]" data-testid="session-list-empty">No active sessions</div>
+        )
       ) : (
         <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
         <ul className="flex flex-col gap-2 p-2">

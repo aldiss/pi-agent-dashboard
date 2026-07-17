@@ -13,7 +13,7 @@
  *
  * See change: build-2-dashboard-v3.
  */
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef } from "react";
 import { Icon } from "@mdi/react";
 import { mdiAlertCircleOutline, mdiCommentQuestion, mdiClipboardCheckOutline, mdiChevronRight } from "@mdi/js";
 import type { DashboardSession } from "@blackbelt-technology/pi-dashboard-shared/types.js";
@@ -44,6 +44,62 @@ function isAriaHidden(el: HTMLElement | null): boolean {
     node = node.parentElement;
   }
   return false;
+}
+
+/**
+ * Parse the translate x/y (px) out of a computed `transform` value. Returns
+ * `{tx:0,ty:0}` for `none`/identity/empty. Handles `matrix(a,b,c,d,tx,ty)` and
+ * `matrix3d(...)` (tx = index 12, ty = index 13). Build-2 fix-cycle-2 F2.
+ */
+function parseTranslate(transform: string): { tx: number; ty: number } {
+  if (!transform || transform === "none") return { tx: 0, ty: 0 };
+  const m2 = transform.match(/^matrix\(([^)]+)\)$/);
+  if (m2) {
+    const p = m2[1].split(",").map((n) => parseFloat(n.trim()));
+    return { tx: p[4] || 0, ty: p[5] || 0 };
+  }
+  const m3 = transform.match(/^matrix3d\(([^)]+)\)$/);
+  if (m3) {
+    const p = m3[1].split(",").map((n) => parseFloat(n.trim()));
+    return { tx: p[12] || 0, ty: p[13] || 0 };
+  }
+  return { tx: 0, ty: 0 };
+}
+
+/**
+ * True iff the banner is geometrically SETTLED at rest AND on-screen (build-2
+ * fix-cycle-2 F2). "Settled" means the spring animation has finished: NO
+ * ancestor carries a non-trivial translate transform (mid-spring the panel is
+ * at e.g. `matrix(1,0,0,1,-117.564,0)`), the banner's own rect sits within the
+ * viewport with `left` at rest (≈0, not translated off-screen), and no ancestor
+ * is `aria-hidden`. Gating the acknowledge cursor on THIS — not merely
+ * IntersectionObserver-visible — stops the mid-spring false-ack.
+ *
+ * Exported for unit testing against injected geometry.
+ */
+export function isBannerSettled(
+  el: HTMLElement | null,
+  getStyle: (n: Element) => Pick<CSSStyleDeclaration, "transform"> = window.getComputedStyle,
+  viewportWidth = window.innerWidth,
+  viewportHeight = window.innerHeight,
+): boolean {
+  if (!el) return false;
+  if (isAriaHidden(el)) return false;
+  // Walk ancestors for an unsettled (translated) transform.
+  let node: HTMLElement | null = el;
+  const TRANSLATE_EPS = 1; // px — sub-pixel rest jitter tolerated
+  while (node) {
+    const { tx, ty } = parseTranslate(getStyle(node).transform);
+    if (Math.abs(tx) > TRANSLATE_EPS || Math.abs(ty) > TRANSLATE_EPS) return false;
+    node = node.parentElement;
+  }
+  // On-screen at rest: left settled near the viewport's left edge and the rect
+  // overlaps the viewport with a positive area.
+  const r = el.getBoundingClientRect();
+  const REST_LEFT_EPS = 8; // px — the sidebar/panel rests at x≈0
+  if (Math.abs(r.left) > REST_LEFT_EPS) return false;
+  const onScreen = r.width > 0 && r.height > 0 && r.right > 0 && r.left < viewportWidth && r.bottom > 0 && r.top < viewportHeight;
+  return onScreen;
 }
 
 function reasonIcon(reason: FleetBriefItem["reason"]): string {
@@ -79,43 +135,36 @@ export function FleetBriefBanner({
 }: Props): React.ReactElement | null {
   const total = items.length + finishedUnseen.length;
 
-  // Geometric/ARIA visibility gate (build-2 fix-cycle FATAL 2). The route-depth
-  // `isVisible` prop is NOT enough — on mobile the depth-0 panel stays MOUNTED
-  // but `aria-hidden` (and slid off-screen with a spring transition) at depth
-  // ≥ 1, so acknowledging on route-depth acks work the operator never saw. We
-  // observe the banner's OWN rendered node with IntersectionObserver and also
-  // reject any ancestor `aria-hidden` / zero-area, so acknowledgement fires ONLY
-  // when the brief is truly on-screen. And NEVER while it renders zero rows.
+  // Settled-geometry acknowledge gate (build-2 fix-cycle-2 F2). The route-depth
+  // `isVisible` prop and an IntersectionObserver hit are BOTH insufficient — on
+  // mobile the depth-0 panel is IO-visible and NOT aria-hidden WHILE it springs
+  // back on-screen (e.g. `transform: matrix(1,0,0,1,-117.564,0)`), so acking on
+  // those wrote the cursor mid-spring. Instead we poll `requestAnimationFrame`
+  // (Framer springs are JS-driven — no `transitionend`) until the banner is
+  // geometrically SETTLED at rest (`isBannerSettled`: identity transforms +
+  // on-screen + not aria-hidden), then acknowledge EXACTLY ONCE. Never while
+  // zero rows render, never mid-spring.
   const bannerRef = useRef<HTMLDivElement | null>(null);
-  const [geometricallyVisible, setGeometricallyVisible] = useState(false);
 
   useEffect(() => {
-    const el = bannerRef.current;
-    if (!el || typeof IntersectionObserver === "undefined") {
-      // Environments without IO (jsdom): fall back to the route-depth prop, but
-      // STILL reject an aria-hidden ancestor so the spring-transition guard
-      // holds even without geometry. The live E2E exercises the real IO path.
-      setGeometricallyVisible(isVisible && !isAriaHidden(el));
-      return;
-    }
-    const io = new IntersectionObserver(
-      (entries) => {
-        const e = entries[0];
-        const onScreen = !!e && e.isIntersecting && e.intersectionRatio > 0;
-        setGeometricallyVisible(onScreen && !isAriaHidden(el));
-      },
-      { threshold: 0.01 },
-    );
-    io.observe(el);
-    return () => io.disconnect();
-  }, [isVisible, total]);
-
-  // Acknowledge ONLY when the brief is nonempty AND geometrically/ARIA visible
-  // AND the route says visible. No cursor write while zero rows render or while
-  // the panel is aria-hidden mid-transition.
-  useEffect(() => {
-    if (total > 0 && isVisible && geometricallyVisible) acknowledge();
-  }, [total, isVisible, geometricallyVisible, acknowledge, items.length, finishedUnseen.length]);
+    // Only arm when there is something to acknowledge and the route says visible.
+    if (total <= 0 || !isVisible) return;
+    let raf = 0;
+    let done = false;
+    const tick = () => {
+      if (done) return;
+      if (isBannerSettled(bannerRef.current)) {
+        done = true;
+        acknowledge();
+        return;
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => { done = true; cancelAnimationFrame(raf); };
+    // Re-arm when the unseen set changes while visible (a new item after a prior
+    // ack must be acknowledged too, once its render is settled).
+  }, [total, isVisible, acknowledge, items.length, finishedUnseen.length]);
 
   if (total === 0) return null;
 

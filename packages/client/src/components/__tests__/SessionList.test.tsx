@@ -51,6 +51,35 @@ function makeSession(overrides: Partial<DashboardSession> = {}): DashboardSessio
   };
 }
 
+describe("SessionList — calm-zero suppressed on unsettled load (build-2 fix-cycle-2 MAJOR 1)", () => {
+  function renderList(props: Partial<React.ComponentProps<typeof SessionList>>) {
+    return render(
+      <TestRouter><ThemeProvider>
+        <SessionList sessions={[]} onSelect={() => {}} {...props} />
+      </ThemeProvider></TestRouter>,
+    );
+  }
+
+  it("empty + hasLoadedOnce=false → shows loading, NOT 'No active sessions'", () => {
+    const { container } = renderList({ hasLoadedOnce: false });
+    expect(container.querySelector('[data-testid="session-list-loading"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="session-list-empty"]')).toBeNull();
+    expect(container.textContent).not.toContain("No active sessions");
+  });
+
+  it("empty + hasLoadedOnce=true → shows the truthful 'No active sessions' empty-state", () => {
+    const { container } = renderList({ hasLoadedOnce: true });
+    expect(container.querySelector('[data-testid="session-list-empty"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="session-list-loading"]')).toBeNull();
+    expect(container.textContent).toContain("No active sessions");
+  });
+
+  it("empty + hasLoadedOnce undefined (back-compat) → shows the empty-state", () => {
+    const { container } = renderList({});
+    expect(container.querySelector('[data-testid="session-list-empty"]')).toBeTruthy();
+  });
+});
+
 describe("SessionList spawn button", () => {
   it("should render spawn button on folder card when onSpawnSession is provided", () => {
     const onSpawn = vi.fn();

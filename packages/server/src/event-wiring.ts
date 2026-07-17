@@ -488,14 +488,18 @@ export function wireEvents(deps: EventWiringDeps): void {
       // Skip when canSkipWipe was true — browser already has the events.
       if (!wasSkipped) {
         const storedEvents = eventStore.getEvents(sessionId, 1);
-        if (storedEvents.length > 0) {
-          browserGateway.sendToSubscribers(sessionId, {
-            type: "event_replay",
-            sessionId,
-            events: storedEvents.map((e) => ({ seq: e.seq, event: e.event })),
-            isLast: true,
-          } as any);
-        }
+        // Loading ≠ empty (build-2 fix-cycle-2 MAJOR 2): a non-skipped replay
+        // sent `session_state_reset`, putting subscribers into LOADING. We MUST
+        // terminate that with an `isLast:true` batch even when the bridge replay
+        // is EMPTY (a fresh/compacted session with zero stored events) — else
+        // the client sits on "Loading messages…" forever. Mirrors the empty-disk
+        // fix in subscription-handler. An empty batch carries events:[].
+        browserGateway.sendToSubscribers(sessionId, {
+          type: "event_replay",
+          sessionId,
+          events: storedEvents.map((e) => ({ seq: e.seq, event: e.event })),
+          isLast: true,
+        } as any);
       }
     }
 
@@ -515,14 +519,16 @@ export function wireEvents(deps: EventWiringDeps): void {
           // Send any accumulated events to browser subscribers
           if (!wasSkipped) {
             const fallbackEvents = eventStore.getEvents(sessionId, 1);
-            if (fallbackEvents.length > 0) {
-              browserGateway.sendToSubscribers(sessionId, {
-                type: "event_replay",
-                sessionId,
-                events: fallbackEvents.map((e) => ({ seq: e.seq, event: e.event })),
-                isLast: true,
-              } as any);
-            }
+            // Same loading≠empty terminal as replay_complete (build-2 fix-cycle-2
+            // MAJOR 2): the 5s safety-timeout fallback also followed a
+            // session_state_reset, so it must emit a terminal `isLast:true` even
+            // when empty, or the client stays stuck loading.
+            browserGateway.sendToSubscribers(sessionId, {
+              type: "event_replay",
+              sessionId,
+              events: fallbackEvents.map((e) => ({ seq: e.seq, event: e.event })),
+              isLast: true,
+            } as any);
           }
         }
       }, 5_000);

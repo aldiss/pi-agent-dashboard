@@ -966,6 +966,7 @@ export default function App() {
       sessions={sessionsArr}
       terminals={terminalsArr}
       selectedId={selectedId}
+      hasLoadedOnce={hasLoadedOnce}
       onSelect={handleSelect}
       contextUsageMap={contextUsageMap}
       openspecMap={openspecMap}
