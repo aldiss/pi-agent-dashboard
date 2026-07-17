@@ -35,6 +35,15 @@ import type { ClaudePane } from "./cc-pane-liveness.js";
 
 /** Injected I/O — real impls wire registry kill-0 + tmux-pane probe; tests inject fakes. */
 export interface HygieneProbes {
+  /**
+   * Is the :9999 bridge socket connected for this session
+   * (PiGateway.isSessionConnected)? The SINGLE liveness truth-source. Checked
+   * FIRST in verifySessionLive so a bridge-connected session can never get a
+   * dead verdict — the isSessionConnected↔hygiene agreement, provable-by-
+   * construction (Auditor-5 one-liveness bar). Fixtures default to () => false
+   * (fail-safe: absent bridge info falls through to the process/registry/tmux axes).
+   */
+  isSessionConnected: (sessionId: string) => boolean;
   /** Registry sessionId-bind + kill-0 (driver-liveness.ts). The non-CC ground-truth. */
   resolveDriverLiveness: (sessionId: string) => DriverLiveness;
   /** kill(pid, 0) liveness (driver-liveness.ts). The record-pid backstop. */
@@ -72,6 +81,7 @@ export interface LivenessResult {
   live: boolean;
   /** Which discriminator decided — surfaced in retire anomalies + logs. */
   reason:
+    | "bridge-connected"
     | "cc-pane-alive"
     | "cc-no-pane"
     | "cc-unknown"
@@ -108,6 +118,13 @@ export function verifySessionLive(
   session: HygieneSession,
   probes: HygieneProbes,
 ): LivenessResult {
+  // Bridge-connected ⟹ provably live (the :9999 socket is open for this session).
+  // FIRST axis so a bridge-connected session can NEVER get a dead verdict — closes
+  // the isSessionConnected↔hygiene agreement gap (Auditor-5 one-liveness bar). By
+  // construction, not empirical: a live bridge socket is proof the pi process runs.
+  if (probes.isSessionConnected(session.id)) {
+    return { live: true, reason: "bridge-connected", pid: session.pid };
+  }
   // ── CC (source==="claude-code"): tmux-PANE discriminator (F4, dl-2732) ──
   // CC panes run `claude`, have no pi-bridge and no registry entry, so the
   // registry path can't see them. A live `claude` pane whose cwd matches the

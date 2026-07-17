@@ -45,6 +45,7 @@ function makeProbes(opts: {
   const tmuxSessions = opts.tmuxSessions ?? [];
   const claudePanesOk = opts.claudePanesOk ?? true;
   return {
+    isSessionConnected: () => false, // fail-safe default: fall through to process/registry/tmux axes
     resolveDriverLiveness: (sessionId: string) =>
       registryLive[sessionId]
         ? { alive: true, name: registryLive[sessionId] }
@@ -73,6 +74,25 @@ describe("verifySessionLive — the explicit liveness predicate (invariant #4)",
       live: true,
       reason: "registry-kill0",
       cleanName: "Don",
+    });
+  });
+
+  it("bridge-connected → provably live regardless of registry/pid/tmux (FIX-A / C9 agreement axis)", () => {
+    // The isSessionConnected↔hygiene agreement, provable-by-construction: a
+    // session whose :9999 bridge socket is connected can NEVER get a dead verdict,
+    // even with zero registry bind, a dead pid, and no matching tmux — the bridge
+    // axis is checked FIRST. Auditor-5 one-liveness gate criterion (C9).
+    const base = makeProbes({}); // every other axis dead
+    const probes: HygieneProbes = { ...base, isSessionConnected: (id) => id === "bridged" };
+    // Control: not bridge-connected + all axes dead → dead.
+    expect(verifySessionLive(s({ id: "notbridged", pid: DEAD }), probes)).toEqual({
+      live: false,
+      reason: "no-live-bind",
+    });
+    // Bridge-connected → live via the first axis, regardless of the dead pid.
+    expect(verifySessionLive(s({ id: "bridged", pid: DEAD }), probes)).toMatchObject({
+      live: true,
+      reason: "bridge-connected",
     });
   });
 

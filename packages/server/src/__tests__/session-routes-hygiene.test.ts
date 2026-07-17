@@ -38,6 +38,7 @@ function makeProbes(opts: { alivePids?: number[]; registryLive?: Record<string, 
   const reg = opts.registryLive ?? {};
   const panes = opts.panes ?? [];
   return {
+    isSessionConnected: () => false,
     resolveDriverLiveness: (id) => (reg[id] ? { alive: true, name: reg[id] } : { alive: false }),
     pidAlive: (pid) => alive.has(pid),
     listClaudePanes: () => panes,

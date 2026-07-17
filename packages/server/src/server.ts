@@ -754,7 +754,7 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
         const ccProbe = probeClaudePanesUncached();
         const actions = reconcileSessionHygiene(
           sessionManager.listAll(),
-          { resolveDriverLiveness, pidAlive, listClaudePanes: () => ccProbe.panes, claudePanesOk: () => ccProbe.ok, listDriverTmuxSessions: listDriverTmuxSessionsUncached },
+          { isSessionConnected: (id) => piGateway.isSessionConnected(id), resolveDriverLiveness, pidAlive, listClaudePanes: () => ccProbe.panes, claudePanesOk: () => ccProbe.ok, listDriverTmuxSessions: listDriverTmuxSessionsUncached },
           { nowMs, graceMs: 0, withinPostRestartGrace: nowMs - hygieneSweepStartMs < HYGIENE_POST_RESTART_GRACE_MS },
         );
         for (const a of actions) {
@@ -1081,6 +1081,9 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
   // live-but-unregistered pi-driver visible (proven live at the 52b648d cutover).
   const claudePaneProbe = createClaudePaneProbe();
   const hygieneProbes: HygieneProbes = {
+    // FIX-A: bridge-socket liveness = the single truth-source, checked first in
+    // verifySessionLive so a bridge-connected session is never hygiene-demoted.
+    isSessionConnected: (id) => piGateway.isSessionConnected(id),
     resolveDriverLiveness,
     pidAlive,
     listClaudePanes: claudePaneProbe.listClaudePanes,

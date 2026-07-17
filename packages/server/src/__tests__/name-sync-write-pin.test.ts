@@ -104,6 +104,7 @@ describe("W4 name-canon fold-in — pin > derived", () => {
     // driver-liveness reads PI_MESSENGER_REGISTRY_DIR — point it at the fixture.
     process.env.PI_MESSENGER_REGISTRY_DIR = dir;
     return {
+      isSessionConnected: () => false,
       // Use the real resolver so operatorPinnedName plumbing is exercised.
       resolveDriverLiveness: (sid: string) => resolveDriverLiveness(sid),
       pidAlive: () => true,
