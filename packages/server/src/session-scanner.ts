@@ -66,8 +66,9 @@ function sessionFromMeta(
     name: meta.name,
     source: (meta.source as SessionSource) ?? "tui",
     // FIX-C3 (Pete row-019f6e9b, dl-8874): a persisted session with `endedAt` set is a
-    // GENUINE end — reactivation clears it (memory-session-manager / resurrection-sweep
-    // both set `endedAt: undefined`), so `endedAt` present ⟹ ended. Normalize on restore
+    // GENUINE end — reactivation clears it (register → `endedAt: undefined`; live-
+    // rescue + resurrection-sweep → `endedAt: null`, the wire-safe clear), so `endedAt`
+    // present (`!= null`) ⟹ ended. Normalize on restore
     // so a stale `meta.status` ("idle"/"active" left behind by a clean-shutdown that did
     // not rewrite status) never renders a cleanly-ended session as active. The cold path
     // keys on `endedAt` because `.meta.json` does not persist `bridgeDisconnectReason`;

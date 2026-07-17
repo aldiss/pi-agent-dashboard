@@ -32,6 +32,23 @@ describe("session-meta", () => {
       expect(meta).toEqual({ source: "dashboard" });
     });
 
+    it("round-trips endedAt:null (the tombstone-clear) on disk; endedAt:undefined is dropped", () => {
+      // A live-rescue clears endedAt to `null`; it MUST survive the .meta.json disk
+      // round-trip so a restored session reads a cleared tombstone. `undefined` would
+      // be dropped by JSON.stringify (the exact reason the fix uses null, not undefined).
+      const sf = path.join(tmpDir, "endedat-null.jsonl");
+      writeSessionMeta(sf, { source: "tui", status: "idle", endedAt: null });
+      const back = readSessionMeta(sf);
+      expect(back?.endedAt).toBeNull(); // null survived the JSON round-trip
+      expect(back?.status).toBe("idle");
+
+      // Control: undefined is omitted by JSON.stringify — proves why null is required.
+      const sf2 = path.join(tmpDir, "endedat-undef.jsonl");
+      writeSessionMeta(sf2, { source: "tui", status: "idle", endedAt: undefined });
+      const raw = fs.readFileSync(metaPath(sf2), "utf-8");
+      expect(raw).not.toContain("endedAt"); // dropped from the serialized meta
+    });
+
     it("should return undefined for missing meta file", () => {
       const sessionFile = path.join(tmpDir, "nonexistent.jsonl");
       expect(readSessionMeta(sessionFile)).toBeUndefined();

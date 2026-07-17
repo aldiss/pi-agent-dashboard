@@ -48,7 +48,7 @@ export interface ResurrectResult {
  * (Component B, case 1).
  *
  * Resolves liveness; when the driver is alive, clears the tombstone
- * (`status:"idle"`, `endedAt:undefined`), unhides, rebinds the registry pid, and
+ * (`status:"idle"`, `endedAt:null`), unhides, rebinds the registry pid, and
  * refreshes the themed name, then broadcasts the update. When NOT alive, it is a
  * no-op and the session STAYS ended (false-resurrection guard).
  *

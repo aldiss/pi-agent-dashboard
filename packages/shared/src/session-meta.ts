@@ -33,7 +33,13 @@ export interface SessionMeta {
    */
   unseenServerError?: boolean;
   startedAt?: number;
-  endedAt?: number;
+  /**
+   * Epoch ms the session ended, OR `null` = an explicit tombstone-clear (a live-
+   * rescue cleared a stale end). `null` survives JSON.stringify to the .meta.json
+   * on disk (and the wire) where `undefined` is dropped; the scanner treats
+   * `!= null` as no-end. See change: build-2-dashboard-v3 endedAt-live-rescue.
+   */
+  endedAt?: number | null;
   firstMessage?: string;
   /** Server-derived orchestration cell binding. Never client-authored. */
   accessCellId?: string;
