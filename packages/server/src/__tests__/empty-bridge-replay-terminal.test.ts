@@ -63,6 +63,30 @@ function emptyTerminalIndexAfter(frames: Frame[], afterIdx: number): number {
   return -1;
 }
 
+/**
+ * Poll until `predicate(frames)` is true or `timeoutMs` elapses (build-2
+ * fix-cycle-3 flake fix). WS frame delivery is async — a fixed `wait()` then an
+ * immediate `findIndex` RACES the frame's arrival and goes -1 under load. This
+ * polls the shared `frames` array (mutated by the ws `message` listener) at a
+ * short interval so the test WAITS for the frame instead of racing it. Returns
+ * the last predicate result (true = arrived, false = timed out); the caller
+ * still asserts, so a genuine drop (regression) times out → false → RED.
+ */
+async function waitForFrames(frames: Frame[], predicate: (f: Frame[]) => boolean, timeoutMs = 4000): Promise<boolean> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    if (predicate(frames)) return true;
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  return predicate(frames);
+}
+
+const hasReset = (frames: Frame[]): boolean => frames.some((f) => f.type === "session_state_reset");
+const hasTerminalAfterReset = (frames: Frame[]): boolean => {
+  const r = frames.findIndex((f) => f.type === "session_state_reset");
+  return r >= 0 && emptyTerminalIndexAfter(frames, r) > r;
+};
+
 describe("loading ≠ empty — empty-bridge terminal-after-reset transition (MAJOR 2, pinned)", () => {
   let server: DashboardServer;
   let piPort: number;
@@ -108,15 +132,20 @@ describe("loading ≠ empty — empty-bridge terminal-after-reset transition (MA
 
     // 3) Bridge signals replay done with ZERO events forwarded.
     piWs.send(JSON.stringify({ type: "replay_complete", sessionId: "m2" }));
-    await wait(150);
 
-    // The reset MUST have arrived...
+    // POLL for the reset frame to ARRIVE (never race it — WS delivery is async
+    // and under load the frame lags a fixed wait). Then poll for the post-reset
+    // terminal. A regression that DROPS the post-reset terminal makes
+    // `hasTerminalAfterReset` never become true → times out → the assertions
+    // below go RED (the whole point of the pin).
+    await waitForFrames(frames, hasReset);
     const resetIdx = frames.findIndex((f) => f.type === "session_state_reset");
     expect(resetIdx, `expected a session_state_reset frame; got ${JSON.stringify(frames)}`).toBeGreaterThanOrEqual(0);
 
     // ...and a terminal empty event_replay MUST arrive AFTER it (the post-reset
     // terminal produced by the M2 fix). A regression that drops this terminal
     // leaves only the pre-register subscribe-terminal (before the reset) → RED.
+    await waitForFrames(frames, hasTerminalAfterReset);
     const terminalIdx = emptyTerminalIndexAfter(frames, resetIdx);
     expect(terminalIdx, `expected terminal isLast:true AFTER reset@${resetIdx}; frames=${JSON.stringify(frames)}`).toBeGreaterThan(resetIdx);
 
@@ -140,18 +169,26 @@ describe("loading ≠ empty — empty-bridge terminal-after-reset transition (MA
       });
     });
 
-    // Deliberately DO NOT send replay_complete. Wait past the 5s safety timer.
+    // Deliberately DO NOT send replay_complete. The reset frame still fires on
+    // register — POLL for it (never race it: the r3 flake was this exact check
+    // reading resetIdx=-1 ~80ms after register, before the frame propagated
+    // under load).
+    await waitForFrames(frames, hasReset);
     const resetIdx = frames.findIndex((f) => f.type === "session_state_reset");
-    expect(resetIdx).toBeGreaterThanOrEqual(0);
-    // No terminal yet (before the fallback fires).
+    expect(resetIdx, `expected a session_state_reset frame; got ${JSON.stringify(frames)}`).toBeGreaterThanOrEqual(0);
+    // No terminal yet — the 5s fallback has NOT fired. (Deterministic: the
+    // production timer is 5000ms; we are well before it.)
     expect(emptyTerminalIndexAfter(frames, resetIdx)).toBe(-1);
 
-    await wait(5400); // let the real 5s register-fallback timer fire
-
+    // Wait past the real 5s register-fallback timer, then POLL for the terminal
+    // (don't assume it landed at exactly 5400ms — poll up to a margin). A
+    // regression breaking the fallback arm never delivers it → times out → RED.
+    await wait(5200); // clear the 5s production timer
+    await waitForFrames(frames, hasTerminalAfterReset, 3000);
     const terminalIdx = emptyTerminalIndexAfter(frames, resetIdx);
     expect(terminalIdx, `expected 5s-fallback terminal AFTER reset@${resetIdx}; frames=${JSON.stringify(frames)}`).toBeGreaterThan(resetIdx);
 
     piWs.close();
     browser.close();
-  }, 12_000);
+  }, 15_000);
 });
