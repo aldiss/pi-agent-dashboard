@@ -144,6 +144,36 @@ describe("PushDispatcher", () => {
       expect(results[0].ok).toBe(true);
       expect(slowTransport.send).toHaveBeenCalled();
     }, 15000);
+
+    // ── M7: sendNow must honor the same eligibility predicate as fanout ──
+    // The operator manual/test route (/api/push/send, /api/push/test) calls
+    // sendNow. Without a canDeliver gate a manual payload reaches revoked-owned
+    // and legacy-unowned tokens — bypassing the recipient eligibility that
+    // fanout enforces. sendNow must filter by canDeliver(token, payload.sessionId).
+    it("does not deliver to a token that fails canDeliver", async () => {
+      const d = createPushDispatcher({
+        transports: new Map([["web-push", transport]]),
+        registry,
+        coalesceWindowMs: 30_000,
+        canDeliver: (token) => token.id !== "t2", // t2 is revoked/ineligible
+      });
+      const results = await d.sendNow(makePayload());
+      // Only the eligible token is contacted; t2 is never sent.
+      expect(transport.send).toHaveBeenCalledTimes(1);
+      expect(results.map((r) => r.tokenId)).toEqual(["t1"]);
+    });
+
+    it("honors canDeliver even when an explicit tokenIds filter names the ineligible token", async () => {
+      const d = createPushDispatcher({
+        transports: new Map([["web-push", transport]]),
+        registry,
+        coalesceWindowMs: 30_000,
+        canDeliver: (token) => token.id !== "t2",
+      });
+      const results = await d.sendNow(makePayload(), { tokenIds: ["t1", "t2"] });
+      expect(transport.send).toHaveBeenCalledTimes(1);
+      expect(results.map((r) => r.tokenId)).toEqual(["t1"]);
+    });
   });
 
   describe("fanout", () => {
