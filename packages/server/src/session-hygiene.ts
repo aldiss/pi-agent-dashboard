@@ -104,6 +104,16 @@ export function verifySessionLive(
         pid: pane.pid || undefined,
       };
     }
+    // Claude-PID backstop (build-2 P0 fix #4). A CC session carrying its own
+    // kill-0-alive pid is LIVE even without a matching `claude` pane — the pane
+    // list can be stale, the pane may run in a cwd we can't resolve, or the
+    // process may be SIGSTOP'd (kill-0 still succeeds on a stopped process).
+    // Without this, retire/hygiene would mark a kill-0-alive CC target dead (the
+    // kill-0 hole). Never mark an unverified-live CC target dead: only a CC
+    // session with NO pane AND no kill-0-alive pid is a proven-dead `cc-no-pane`.
+    if (typeof session.pid === "number" && probes.pidAlive(session.pid)) {
+      return { live: true, reason: "pid-kill0", pid: session.pid };
+    }
     return { live: false, reason: "cc-no-pane" };
   }
 

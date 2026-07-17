@@ -1,6 +1,6 @@
 import React, { useState, useEffect, type ReactNode } from "react";
 import { Icon } from "@mdi/react";
-import { mdiFlash, mdiOpenInNew, mdiPencil, mdiPencilOutline, mdiSourceBranch, mdiClose, mdiEyeOffOutline, mdiEyeOutline, mdiConsoleLine, mdiRobotOutline, mdiCodeTags, mdiApplicationOutline, mdiCommentQuestion, mdiPlayCircleOutline, mdiSourceFork, mdiPaperclip, mdiFileTree } from "@mdi/js";
+import { mdiFlash, mdiOpenInNew, mdiPencil, mdiPencilOutline, mdiSourceBranch, mdiHeartPulse, mdiEyeOffOutline, mdiEyeOutline, mdiConsoleLine, mdiRobotOutline, mdiCodeTags, mdiApplicationOutline, mdiCommentQuestion, mdiPlayCircleOutline, mdiSourceFork, mdiPaperclip, mdiFileTree } from "@mdi/js";
 import type { DashboardSession, ImageContent } from "@blackbelt-technology/pi-dashboard-shared/types.js";
 import { getSessionDisplayName } from "../lib/session-display-name.js";
 import { formatRelativeTime } from "../lib/format.js";
@@ -294,7 +294,7 @@ export const SessionCard = React.memo(function SessionCard({
   contextUsage,
   openspecChanges,
   onRename,
-  onShutdown,
+  onCheckLiveness,
   onResume,
   hasError,
 }: {
@@ -308,7 +308,17 @@ export const SessionCard = React.memo(function SessionCard({
   contextUsage?: ContextUsageInfo;
   openspecChanges?: OpenSpecChange[];
   onRename?: (id: string, name: string) => void;
-  onShutdown?: (id: string) => void;
+  /**
+   * Read-only liveness re-check for a dark card (build-2 P0 fix #4). Replaces
+   * the removed destructive "Exit pi session" control, which unregistered a
+   * session WITHOUT death verification (the kill-0 hole — a SIGSTOP'd
+   * interactive/tmux process can't service the shutdown command yet its row was
+   * marked ended). This re-runs server-side hygiene (GET /api/sessions →
+   * reconcileSessionHygiene) which re-probes kill-0 liveness and rescues a
+   * false-ended row — it NEVER retires a target. Confirmed
+   * terminate→verify-dead→retire stays P1.
+   */
+  onCheckLiveness?: (id: string) => void;
   onResume?: (id: string, mode: "continue" | "fork") => void;
   hasError?: boolean;
 }) {
@@ -373,20 +383,24 @@ export const SessionCard = React.memo(function SessionCard({
               <Icon path={mdiEyeOffOutline} size={0.45} />
             </button>
           )}
-          {isAlive && onShutdown && (
+          {isAlive && onCheckLiveness && (
             <button
-              onClick={(e) => {
-                e.stopPropagation();
-                if (session.status === "streaming") {
-                  if (!window.confirm("Session is currently running. Exit anyway?")) return;
-                }
-                onShutdown(session.id);
-              }}
-              className="hover:text-red-400 transition-colors"
-              title="Exit pi session"
-              data-testid="session-close-btn"
+              onClick={(e) => { e.stopPropagation(); onCheckLiveness(session.id); }}
+              className="hover:text-blue-400 transition-colors"
+              title="Check liveness — re-verify this session is still running (read-only)"
+              data-testid="session-check-liveness-btn"
             >
-              <Icon path={mdiClose} size={0.5} />
+              <Icon path={mdiHeartPulse} size={0.5} />
+            </button>
+          )}
+          {isAlive && (
+            <button
+              onClick={(e) => { e.stopPropagation(); onSelect(session.id); }}
+              className="hover:text-green-400 transition-colors"
+              title="Open session"
+              data-testid="session-open-btn"
+            >
+              <Icon path={mdiOpenInNew} size={0.5} />
             </button>
           )}
         </span>
@@ -402,6 +416,21 @@ export const SessionCard = React.memo(function SessionCard({
           <span className="md:hidden text-[11px] text-[var(--text-secondary)] shrink-0 tabular-nums">
             ${session.cost!.toFixed(2)}
           </span>
+        )}
+        {/* Mobile-only Check-liveness affordance (build-2 P0 fix #4 + #12):
+            desktop uses the hover cluster above; at 393px there is no hover, so
+            the read-only liveness re-check needs an always-visible control on
+            the card. Open is the card tap itself. NO destructive Exit. */}
+        {isAlive && onCheckLiveness && (
+          <button
+            onClick={(e) => { e.stopPropagation(); onCheckLiveness(session.id); }}
+            className="md:hidden shrink-0 text-[var(--text-tertiary)] hover:text-blue-400 transition-colors p-0.5"
+            title="Check liveness — re-verify this session is still running (read-only)"
+            data-testid="session-check-liveness-btn-mobile"
+            aria-label="Check liveness"
+          >
+            <Icon path={mdiHeartPulse} size={0.6} />
+          </button>
         )}
       </div>
 

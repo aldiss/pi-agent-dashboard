@@ -33,11 +33,20 @@ export interface UseSessionsBootstrapOptions {
    *  via current.size > 0 size-check inside the setSessions callback).
    *  See cell `dashboard-pwa-cold-load-fix/v1` W8 Bert d22 Q-d22-bonus-2. */
   wsStatus: "connected" | "connecting" | "offline" | "auth_required";
+  /**
+   * Reports the REST `/api/sessions` cold-load outcome for the `hasLoadedOnce`
+   * dual-source oracle (build-2 P0 fix #7). Called EXACTLY once per mount with
+   * `"success"` (HTTP ok + a valid array body, INCLUDING `[]`) or `"failure"`
+   * (non-ok / malformed / network error). A `"success"` on a valid empty array
+   * is still success — loading ≠ empty. Optional (back-compat).
+   */
+  onRestSettled?: (outcome: "success" | "failure") => void;
 }
 
 export function useSessionsBootstrap({
   setSessions,
   wsStatus,
+  onRestSettled,
 }: UseSessionsBootstrapOptions): void {
   // Fire once per mount — even if WS later disconnects + reconnects, the
   // reconnect path triggers a fresh `sessions_snapshot` so we don't need
@@ -54,10 +63,12 @@ export function useSessionsBootstrap({
         const res = await fetch(`${getApiBase()}/api/sessions`, {
           signal: abort.signal,
         });
-        if (!res.ok) return; // WebSocket will populate on its own.
+        if (!res.ok) { onRestSettled?.("failure"); return; } // WebSocket will populate on its own.
         const body = (await res.json()) as ApiResponse<DashboardSession[]>;
-        if (!body.success || !Array.isArray(body.data)) return;
+        if (!body.success || !Array.isArray(body.data)) { onRestSettled?.("failure"); return; }
 
+        // A valid array (including `[]`) is a SUCCESS — loading ≠ empty.
+        onRestSettled?.("success");
         setSessions((current) => {
           // Guard: if WebSocket sessions_snapshot already populated the
           // map (because WS handshake beat HTTP), do NOT overwrite — WS
@@ -65,9 +76,10 @@ export function useSessionsBootstrap({
           if (current.size > 0) return current;
           return new Map(body.data!.map((s) => [s.id, s]));
         });
-      } catch {
-        // AbortError on unmount, network error on offline — silently
-        // fall through; WS-on-reconnect path handles recovery.
+      } catch (e) {
+        // AbortError on unmount is not a real failure — don't report it.
+        if ((e as { name?: string })?.name !== "AbortError") onRestSettled?.("failure");
+        // network error on offline — WS-on-reconnect path handles recovery.
       }
     })();
 

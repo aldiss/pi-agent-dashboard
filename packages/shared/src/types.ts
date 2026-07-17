@@ -78,6 +78,20 @@ export interface DashboardSession {
    * See change: session-card-unread-stripes.
    */
   unread?: boolean;
+  /**
+   * Server-managed per-session "an unattended turn ended in a server error"
+   * bit. `true` when an `agent_end` whose terminal message has
+   * `stopReason === "error"` fired while no browser was viewing the session
+   * (canonical detection via `extractAgentEndError`). Contributes to band-1
+   * (`currentTool === "ask_user" ∨ unseenServerError`) so a needy session
+   * ranks fleet-wide regardless of tier/pin/collapse. Cleared on a live
+   * recovery event (`agent_start`) or when any browser sends `session_view`
+   * — NOT `hasError`, because the transcript may still show the error after
+   * the fleet bit is acknowledged. Persisted to `.meta.json` (survives server
+   * restart + bridge re-registration). Bridges SHALL NOT send this field.
+   * See change: build-2-dashboard-v3.
+   */
+  unseenServerError?: boolean;
   tokensIn?: number;
   tokensOut?: number;
   cacheRead?: number;

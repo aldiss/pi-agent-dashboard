@@ -383,6 +383,10 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
       // Persist unread bit so it survives server restart.
       // See change: session-card-unread-stripes.
       unread: session.unread,
+      // Persist unseen-server-error bit so a session that errored while
+      // unattended survives server restart + bridge re-registration.
+      // See change: build-2-dashboard-v3.
+      unseenServerError: session.unseenServerError,
       cachedAt: Date.now(),
     });
     // When a session ends, drop its id from the persisted drag-reorder list

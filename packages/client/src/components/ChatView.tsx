@@ -76,6 +76,14 @@ interface Props {
    */
   showFilterControls?: boolean;
   onCloseFilterControls?: () => void;
+  /**
+   * Loading ≠ empty (build-2 P0 fix #8). When the server could NOT load this
+   * session's transcript (`session_state` failure — `dataUnavailable:true`),
+   * ChatView renders a DISTINCT "couldn't load" state, NOT the calm
+   * "No messages yet" (which means a healthy, genuinely-empty session).
+   * Sourced from `selectedSession.dataUnavailable` in App.
+   */
+  dataUnavailable?: boolean;
 }
 
 const ImageAttachments = React.memo(function ImageAttachments({ images }: { images: ChatImage[] }) {
@@ -274,7 +282,7 @@ export interface ChatViewHandle {
   toggleSearch: () => void;
 }
 
-export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ sessionId, state, toolContext, onCancelPending, onRespondToUi, onAbort, onForceKill, onForkFromMessage, onDismissError, onRetryAfterError, onRetryQueued, onDismissQueued, showFilterControls, onCloseFilterControls }, ref) {
+export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ sessionId, state, toolContext, onCancelPending, onRespondToUi, onAbort, onForceKill, onForkFromMessage, onDismissError, onRetryAfterError, onRetryQueued, onDismissQueued, showFilterControls, onCloseFilterControls, dataUnavailable }, ref) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const isNearBottom = useRef(true);
   const reducedMotion = useReducedMotion() ?? false;
@@ -1034,9 +1042,18 @@ export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ se
       ))}
 
       {state.messages.length === 0 && !state.streamingText && !state.pendingPrompt && state.queue.length === 0 && (
-        <div className="flex items-center justify-center h-full text-[var(--text-tertiary)]">
-          <p>No messages yet</p>
-        </div>
+        dataUnavailable ? (
+          // Loading ≠ empty (build-2 P0 fix #8): the transcript could NOT be
+          // loaded — say so, distinctly from a healthy empty session.
+          <div className="flex flex-col items-center justify-center h-full text-[var(--text-tertiary)] gap-1" data-testid="chat-data-unavailable">
+            <p className="text-[var(--text-secondary)]">Couldn't load this session's messages</p>
+            <p className="text-xs">Its transcript is unavailable right now. Reconnecting may recover it.</p>
+          </div>
+        ) : (
+          <div className="flex items-center justify-center h-full text-[var(--text-tertiary)]" data-testid="chat-empty">
+            <p>No messages yet</p>
+          </div>
+        )
       )}
       </div>
     </div>

@@ -203,10 +203,16 @@ export function handleSubscribe(
           replayUiState(ws, msg.sessionId, ctx);
         });
       } else {
-        sendEventBatches(ws, msg.sessionId, events, sendTo).then(() => {
-          replayPendingUiRequests(ws, msg.sessionId);
-          replayUiState(ws, msg.sessionId, ctx);
-        });
+        // Successful-but-EMPTY delta replay (build-2 P0 fix #8): the client
+        // is up to date (no events at/after lastSeq+1). `sendEventBatches`
+        // with an empty array sends NOTHING — no terminal `isLast:true` — so a
+        // subscriber that reset for replay would sit in "loading" forever,
+        // indistinguishable from a slow replay. Emit an explicit terminal empty
+        // batch so the client can settle to loaded-empty (NOT dataUnavailable —
+        // this is a healthy up-to-date session, not a load failure).
+        sendTo(ws, { type: "event_replay", sessionId: msg.sessionId, events: [], isLast: true });
+        replayPendingUiRequests(ws, msg.sessionId);
+        replayUiState(ws, msg.sessionId, ctx);
       }
     }
   } else if (directoryService) {

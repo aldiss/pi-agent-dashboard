@@ -87,27 +87,48 @@ describe("SessionCard", () => {
     expect(statusDot).toBeTruthy();
   });
 
-  it("should show shutdown button when session is alive and onShutdown provided", () => {
-    const onShutdown = vi.fn();
+  it("should show Check-liveness button when session is alive and onCheckLiveness provided (build-2 fix #4)", () => {
+    const onCheckLiveness = vi.fn();
     const session = makeSession({ status: "active" });
     render(
-      <SessionCard session={session} {...defaultProps} onShutdown={onShutdown} />
+      <SessionCard session={session} {...defaultProps} onCheckLiveness={onCheckLiveness} />
     );
-    const shutdownBtn = screen.queryByTestId("session-close-btn");
-    expect(shutdownBtn).toBeTruthy();
+    expect(screen.queryByTestId("session-check-liveness-btn")).toBeTruthy();
   });
 
-  it("should show shutdown button for streaming session with confirmation", () => {
-    const onShutdown = vi.fn();
-    window.confirm = vi.fn(() => true);
+  it("Check-liveness is read-only: clicking calls onCheckLiveness, never a shutdown/exit", () => {
+    const onCheckLiveness = vi.fn();
     const session = makeSession({ status: "streaming" });
     render(
-      <SessionCard session={session} {...defaultProps} onShutdown={onShutdown} />
+      <SessionCard session={session} {...defaultProps} onCheckLiveness={onCheckLiveness} />
     );
-    const shutdownBtn = screen.getByTestId("session-close-btn");
-    fireEvent.click(shutdownBtn);
-    expect(window.confirm).toHaveBeenCalled();
-    expect(onShutdown).toHaveBeenCalledWith("test-session");
+    // No confirm prompt, no destructive control.
+    fireEvent.click(screen.getByTestId("session-check-liveness-btn"));
+    expect(onCheckLiveness).toHaveBeenCalledWith("test-session");
+    expect(screen.queryByTestId("session-close-btn")).toBeNull();
+  });
+
+  it("renders a mobile-only Check-liveness affordance on alive cards (build-2 fix #12, 393px)", () => {
+    const onCheckLiveness = vi.fn();
+    const session = makeSession({ status: "active" });
+    render(<SessionCard session={session} {...defaultProps} onCheckLiveness={onCheckLiveness} />);
+    // The mobile affordance exists so the 393px card has a reachable liveness
+    // re-check (desktop uses the hover cluster). jsdom renders both; the md:
+    // breakpoint hides the desktop cluster / this pill by viewport at runtime.
+    const mobileBtn = screen.getByTestId("session-check-liveness-btn-mobile");
+    fireEvent.click(mobileBtn);
+    expect(onCheckLiveness).toHaveBeenCalledWith("test-session");
+  });
+
+  it("shows an Open control on alive cards and never a destructive Exit (kill-0 hole closed)", () => {
+    const onSelect = vi.fn();
+    const session = makeSession({ status: "active" });
+    render(<SessionCard session={session} {...defaultProps} onSelect={onSelect} />);
+    const openBtn = screen.getByTestId("session-open-btn");
+    fireEvent.click(openBtn);
+    expect(onSelect).toHaveBeenCalledWith("test-session");
+    // The removed destructive control must not exist on any card.
+    expect(screen.queryByTestId("session-close-btn")).toBeNull();
   });
 
   it("should apply streaming pulse background when streaming", () => {
@@ -205,9 +226,12 @@ describe("SessionCard", () => {
     expect(screen.getByTestId("session-hide-btn")).toBeTruthy();
   });
 
-  it("should NOT show shutdown button when session is ended", () => {
+  it("should NOT show Open/Check-liveness controls when session is ended", () => {
     const session = makeSession({ status: "ended" });
-    render(<SessionCard session={session} {...defaultProps} />);
+    render(<SessionCard session={session} {...defaultProps} onCheckLiveness={() => {}} />);
+    expect(screen.queryByTestId("session-check-liveness-btn")).toBeNull();
+    expect(screen.queryByTestId("session-open-btn")).toBeNull();
+    // The removed destructive control never exists either.
     expect(screen.queryByTestId("session-close-btn")).toBeNull();
   });
 

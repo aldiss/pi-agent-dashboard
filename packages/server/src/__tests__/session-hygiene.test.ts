@@ -106,6 +106,32 @@ describe("verifySessionLive — the explicit liveness predicate (invariant #4)",
       reason: "cc-no-pane",
     });
   });
+
+  it("CC: no matching pane BUT record pid kill-0 alive → live (Claude-PID backstop, build-2 fix #4)", () => {
+    // The kill-0 hole: a CC target with no cwd-matching pane (stale pane list /
+    // unresolvable cwd / SIGSTOP'd process) but a kill-0-alive pid must NEVER be
+    // marked dead. The backstop rescues it to live via pid-kill0.
+    const probes = makeProbes({ alivePids: [ALIVE] });
+    expect(
+      verifySessionLive(s({ id: "cc-stopped", source: "claude-code", cwd: "/work/cc", pid: ALIVE }), probes),
+    ).toMatchObject({ live: true, reason: "pid-kill0", pid: ALIVE });
+  });
+
+  it("CC: no matching pane AND dead pid → proven-dead cc-no-pane (backstop does not over-keep)", () => {
+    const probes = makeProbes({});
+    expect(
+      verifySessionLive(s({ id: "cc-dead", source: "claude-code", cwd: "/work/cc", pid: DEAD }), probes),
+    ).toEqual({ live: false, reason: "cc-no-pane" });
+  });
+
+  it("retire guard: a CC target with a kill-0-alive pid is REFUSED (never marked dead) — build-2 fix #4", () => {
+    const probes = makeProbes({ alivePids: [ALIVE] });
+    const sessions = [s({ id: "cc-live", source: "claude-code", cwd: "/work/cc", pid: ALIVE })];
+    const decision = evaluateRetire(sessions, { sessionId: "cc-live" }, probes);
+    expect(decision.retired).toEqual([]);
+    expect(decision.anomaly).toBe(true);
+    expect(decision.refusedLive[0]).toMatchObject({ sessionId: "cc-live", reason: "pid-kill0" });
+  });
 });
 
 describe("F1 ghost-reap on the read-path", () => {

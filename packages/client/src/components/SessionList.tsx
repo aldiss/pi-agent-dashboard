@@ -21,6 +21,7 @@ import {
   filterByQuery,
   sortSessionsByOrder,
   groupTierByFolder,
+  stablePartitionByBand,
   SESSION_TIER_ORDER,
   type DirectoryGroup,
   type SessionTier,
@@ -77,7 +78,9 @@ interface Props {
   onOpenPiResources?: (cwd: string) => void;
   onDetachProposal?: (sessionId: string) => void;
   onRename?: (sessionId: string, name: string) => void;
-  onShutdown?: (sessionId: string) => void;
+  /** Read-only dark-card liveness re-check (build-2 P0 fix #4). Replaces the
+   *  removed destructive Exit control; re-runs server hygiene, never retires. */
+  onCheckLiveness?: (sessionId: string) => void;
   onResume?: (sessionId: string, mode: "continue" | "fork") => void;
   /**
    * Drag-to-resume entry point. Distinct from `onResume` so the WS
@@ -205,7 +208,7 @@ function ToggleButton({
   );
 }
 
-export function SessionList({ sessions, selectedId, onSelect, contextUsageMap, openspecMap, sessionOrderMap, onReorderSessions, onSendPrompt, onFlowAction, onOpenSpecRefresh, onAttachProposal, onDetachProposal, onBulkArchive, onReadArtifact, onOpenPiResources, onRename, onShutdown, onResume, onResumeKeepPosition, onHideSession, onUnhideSession, onSpawnSession, onSpawnWorktree, spawningCwds, spawnResult, onSpawnResultSeen, pinnedDirectories, onPinDirectory, onOpenPinDialog, onUnpinDirectory, onReorderPinnedDirs, terminals, onKillTerminal, onRenameTerminal, onCollapseSidebar, commandsMap, flowsMap, onKillProcess, onOpenSpecs, onOpenArchive, onOpenTerminals, onOpenEditor, editorStatuses, editorAvailable, headerExtra, errorSessionIds, spawnErrors, onDismissSpawnError, resumeErrors, onDismissResumeError }: Props) {
+export function SessionList({ sessions, selectedId, onSelect, contextUsageMap, openspecMap, sessionOrderMap, onReorderSessions, onSendPrompt, onFlowAction, onOpenSpecRefresh, onAttachProposal, onDetachProposal, onBulkArchive, onReadArtifact, onOpenPiResources, onRename, onCheckLiveness, onResume, onResumeKeepPosition, onHideSession, onUnhideSession, onSpawnSession, onSpawnWorktree, spawningCwds, spawnResult, onSpawnResultSeen, pinnedDirectories, onPinDirectory, onOpenPinDialog, onUnpinDirectory, onReorderPinnedDirs, terminals, onKillTerminal, onRenameTerminal, onCollapseSidebar, commandsMap, flowsMap, onKillProcess, onOpenSpecs, onOpenArchive, onOpenTerminals, onOpenEditor, editorStatuses, editorAvailable, headerExtra, errorSessionIds, spawnErrors, onDismissSpawnError, resumeErrors, onDismissResumeError }: Props) {
   // Coarse, interval-updated wall clock. Used only by the relative-time badge
   // (`now - selectBadgeTimestamp(session)`, class `hidden md:inline`) and the
   // stale-active filter (≤30s staleness is irrelevant to either). Computing
@@ -710,7 +713,16 @@ export function SessionList({ sessions, selectedId, onSelect, contextUsageMap, o
             // Tail: ids not in the persisted order. Preserves
             // visibleSessions order, which already has ended at the end.
             const orderedSet = new Set(orderedIds);
-            const allIds = [...orderedIds, ...sessionIds.filter((id) => !orderedSet.has(id))];
+            const baseIds = [...orderedIds, ...sessionIds.filter((id) => !orderedSet.has(id))];
+            // Stable-partition AFTER the persisted-order base (build-2 P0
+            // fix #10 + #3): needs-you (ask_user ∨ unseenServerError) rises to
+            // the top of the ALIVE zone; calm-alive and ended keep their
+            // incoming relative order (ended stays at the tail — a corpse never
+            // rises into the needs band). This refines order WITHIN the folder;
+            // pins/folder/tier boundaries above are untouched. No second lane.
+            // Skipped in flat-merge (session-search) mode, where the user opted
+            // into natural interleaved result order.
+            const allIds = flatMergeMode ? baseIds : stablePartitionByBand(baseIds, sessionMap);
             // Index of the first ended card in the rendered order — used
             // to inject a top "Hide ended" button when ended sessions are
             // currently expanded. Only meaningful in the non-flat layout
@@ -761,7 +773,7 @@ export function SessionList({ sessions, selectedId, onSelect, contextUsageMap, o
                         contextUsage={contextUsageMap?.get(session.id)}
                         openspecChanges={openspecMap?.get(session.cwd)?.changes}
                         onRename={onRename}
-                        onShutdown={onShutdown}
+                        onCheckLiveness={onCheckLiveness}
                         onResume={onResume}
                         hasError={errorSessionIds?.has(session.id)}
                       />

@@ -24,6 +24,14 @@ export interface SessionMeta {
    * See change: session-card-unread-stripes.
    */
   unread?: boolean;
+  /**
+   * Per-session unseen-server-error bit; mirrors
+   * `DashboardSession.unseenServerError`. Persists across server restarts so a
+   * session that errored while unattended stays flagged (band-1) until a live
+   * recovery event or a browser view clears it.
+   * See change: build-2-dashboard-v3.
+   */
+  unseenServerError?: boolean;
   startedAt?: number;
   endedAt?: number;
   firstMessage?: string;

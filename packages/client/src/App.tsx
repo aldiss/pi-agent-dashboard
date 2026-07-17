@@ -3,6 +3,7 @@ import { useRoute, useLocation, Redirect, Switch, Route } from "wouter";
 import { useWebSocket } from "./hooks/useWebSocket.js";
 import { useSidebarState } from "./hooks/useSidebarState.js";
 import { SessionList } from "./components/SessionList.js";
+import { FleetBriefBanner } from "./components/FleetBriefBanner.js";
 import { ResizableSidebar } from "./components/ResizableSidebar.js";
 import { DashboardPage } from "./components/DashboardPage.js";
 import { HamburgerButton, MobileOverlay } from "./components/MobileOverlay.js";
@@ -48,6 +49,8 @@ import { BootstrapBanner } from "./components/BootstrapBanner.js";
 import { useBootstrapStatus } from "./hooks/useBootstrapStatus.js";
 import { useInstallPrompt } from "./hooks/useInstallPrompt.js";
 import { useSessionsBootstrap } from "./hooks/useSessionsBootstrap.js";
+import { useFleetBrief } from "./hooks/useFleetBrief.js";
+import { deriveHasLoadedOnce } from "./lib/has-loaded-once.js";
 import { TerminalsView } from "./components/TerminalsView.js";
 import { EditorView } from "./components/EditorView.js";
 import { decodeFolderPath, encodeFolderPath } from "./lib/folder-encoding.js";
@@ -63,7 +66,7 @@ import { useSessionActions } from "./hooks/useSessionActions.js";
 import { usePendingPromptTimeout } from "./hooks/usePendingPromptTimeout.js";
 import { useQueueStuckTimeout } from "./hooks/useQueueStuckTimeout.js";
 import { useOpenSpecActions } from "./hooks/useOpenSpecActions.js";
-import type { DashboardSession, CommandInfo, FlowInfo, FileEntry, OpenSpecData, OpenSpecGroup, ModelInfo, RoleInfo, ImageContent } from "@blackbelt-technology/pi-dashboard-shared/types.js";
+import type { DashboardSession, CommandInfo, FlowInfo, FileEntry, OpenSpecData, OpenSpecGroup, ModelInfo, RoleInfo, ImageContent, ApiResponse } from "@blackbelt-technology/pi-dashboard-shared/types.js";
 import { SearchableSelectDialog, type SelectOption } from "./components/SearchableSelectDialog.js";
 import { FlowLaunchDialog } from "@blackbelt-technology/pi-dashboard-flows-plugin/client";
 import { GenericExtensionDialog } from "./components/extension-ui/GenericExtensionDialog.js";
@@ -78,7 +81,7 @@ import { ErrorBoundary } from "./components/ErrorBoundary.js";
 import type { ServerToBrowserMessage } from "@blackbelt-technology/pi-dashboard-shared/browser-protocol.js";
 import type { ToolContext } from "./components/tool-renderers/index.js";
 import type { ContextUsageInfo } from "./components/SessionList.js";
-import { ApiContext, deriveApiBase, VITE_API_URL, setGlobalApiBase } from "./lib/api-context.js";
+import { ApiContext, deriveApiBase, VITE_API_URL, setGlobalApiBase, getApiBase } from "./lib/api-context.js";
 import { SessionAssetsProvider } from "./lib/SessionAssetsContext.js";
 import { PluginContextProvider, applyPluginConfigUpdate } from "@blackbelt-technology/dashboard-plugin-runtime/context";
 import {
@@ -206,10 +209,17 @@ export default function App() {
    * toggle wiring — both are W4.x discoverability features. */
   const [showMessageFilterControls, setShowMessageFilterControls] = useState(false);
   const [sessions, setSessions] = useState<Map<string, DashboardSession>>(new Map());
+  // Cold-load success oracle sources (build-2 P0 fix #7). `hasLoadedOnce` is
+  // ONE derived boolean (no FSM): the calm-zero empty state must never show
+  // until BOTH the session source (REST-success-incl-[] OR snapshot) AND the
+  // surfaces source have settled successfully. A failure of either keeps the
+  // failure/last-known surface up instead of a lying "no sessions".
+  const [restSessionsOutcome, setRestSessionsOutcome] = useState<"pending" | "success" | "failure">("pending");
+  const [snapshotReceived, setSnapshotReceived] = useState(false);
   // Cold-load HTTP bootstrap — populates sessions immediately, before
   // WebSocket sessions_snapshot arrives. Closes Cluster A n=6 cold-load
   // empirical cluster (cell dashboard-pwa-cold-load-fix/v1 deliverable c).
-  useSessionsBootstrap({ setSessions, wsStatus: status });
+  useSessionsBootstrap({ setSessions, wsStatus: status, onRestSettled: setRestSessionsOutcome });
   const [sessionStates, setSessionStates] = useState<Map<string, SessionState>>(new Map());
   // Per-session chat-input drafts. Hydrated once from localStorage on mount,
   // then persisted (debounced) whenever the map changes.
@@ -391,6 +401,10 @@ export default function App() {
   const prevStatusRef = useRef(status);
   useEffect(() => {
     if (status === "connected" && prevStatusRef.current !== "connected") {
+      // On (re)connect the server pushes an authoritative `sessions_snapshot`;
+      // mark the snapshot source settled for the `hasLoadedOnce` oracle
+      // (build-2 P0 fix #7). This is the WS arm — independent of the REST arm.
+      setSnapshotReceived(true);
       subscribedRef.current.clear();
       // sessionOrderMap is replaced atomically by the on-connect
       // `sessions_snapshot` message — no pre-reset needed.
@@ -665,6 +679,30 @@ export default function App() {
     handleRetryQueued, handleDismissQueued,
   } = sessionActions;
 
+  // Read-only dark-card liveness re-check (build-2 P0 fix #4). Replaces the
+  // removed destructive Exit control. GET /api/sessions re-runs the server-side
+  // `reconcileSessionHygiene` read-path (kill-0 re-probe + false-ended rescue +
+  // name-canonicalization) and returns the reconciled rows; we merge them into
+  // the sessions Map. This NEVER retires a target — the verify-dead retire flow
+  // stays P1. A SIGSTOP'd/kill-0-alive target is rescued to live-visible, not
+  // marked ended (closes the kill-0 hole from the operator's side).
+  const handleCheckLiveness = useCallback(async (_sessionId: string) => {
+    try {
+      const res = await fetch(`${getApiBase()}/api/sessions`);
+      if (!res.ok) return;
+      const body = (await res.json()) as ApiResponse<DashboardSession[]>;
+      if (!body.success || !Array.isArray(body.data)) return;
+      const reconciled = body.data;
+      setSessions((prev) => {
+        const next = new Map(prev);
+        for (const s of reconciled) next.set(s.id, { ...next.get(s.id), ...s });
+        return next;
+      });
+    } catch {
+      /* network error — read-only re-check is best-effort */
+    }
+  }, [setSessions]);
+
   // Flow picker state (for /flows command intercept)
   const [flowPickerOpen, setFlowPickerOpen] = useState(false);
   const [flowNewOpen, setFlowNewOpen] = useState(false);
@@ -857,8 +895,48 @@ export default function App() {
   const sessionsArr = useMemo(() => Array.from(sessions.values()), [sessions]);
   const terminalsArr = useMemo(() => Array.from(terminals.values()), [terminals]);
 
+  // Fleet-brief (build-2 P0 fix #5/#6/#9/#12): the depth-0 "what needs me"
+  // banner. `briefNow` is a coarse 30s ticker so the finished-unseen window
+  // advances without re-rendering on every frame. `briefVisible` gates
+  // acknowledgement on ACTUAL visibility — on mobile the depth-0 list panel
+  // stays mounted (aria-hidden) at depth ≥ 1, so a hidden brief must NOT clear
+  // unseen work (fix #6). Desktop: always visible.
+  const [briefNow, setBriefNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setBriefNow(Date.now()), 30_000);
+    return () => clearInterval(id);
+  }, []);
+  const fleetBrief = useFleetBrief(sessionsArr, briefNow);
+  // The ONE cold-load success oracle (build-2 P0 fix #7). Both sources must
+  // settle successfully before we ever show a calm "no sessions" empty state.
+  const hasLoadedOnce = deriveHasLoadedOnce({
+    restSessions: restSessionsOutcome,
+    snapshotReceived,
+    surfaces: fleetBrief.surfacesOutcome,
+  });
+  const briefVisible = !isMobile || getMobileDepth({
+    selectedId,
+    folderTermCwd,
+    folderEditorCwd,
+    settingsMatch: !!settingsMatch,
+    tunnelSetupMatch: !!tunnelSetupMatch,
+    dashboardMatch: !!dashboardMatch,
+    hasPreview: !!previewState || !!piResourcesState || !!piResourceFilePreview || !!readmePreview || !!specsBrowserCwd || !!archiveBrowserCwd || !!diffViewSessionId || !!flowYamlPreview,
+  }) === 0;
+
   const sessionList = (
     <div className="flex flex-col h-full min-h-0">
+      {/* Fleet-brief banner (build-2 P0 fix #12): depth-0 "what needs me"
+          escalation — needs-you sessions + non-none operator surfaces, plus the
+          finished-unseen freshness window. THIS is the global escalation lane;
+          there is no second one. */}
+      <FleetBriefBanner
+        items={fleetBrief.items}
+        finishedUnseen={fleetBrief.finishedUnseen}
+        isVisible={briefVisible}
+        onSelect={handleSelect}
+        acknowledge={fleetBrief.acknowledge}
+      />
       {/* Active operator surfaces was previously mounted here at the top
           of the sidebar (cell pi-agent-dashboard-ux-message-discoverability/v1
           W4.4 + W6). Split out 2026-05-26 to a dedicated `/dashboard` page
@@ -894,7 +972,7 @@ export default function App() {
       onAttachProposal={handleAttachProposal}
       onDetachProposal={handleDetachProposal}
       onRename={handleRenameSession}
-      onShutdown={handleShutdownSession}
+      onCheckLiveness={handleCheckLiveness}
       onResume={handleResumeSession}
       onResumeKeepPosition={handleResumeSessionKeepPosition}
       onHideSession={handleHideSession}
@@ -1241,7 +1319,7 @@ export default function App() {
                 }
                 return next;
               });
-            } : undefined} onRetryQueued={handleRetryQueued} onDismissQueued={handleDismissQueued} showFilterControls={showMessageFilterControls} onCloseFilterControls={() => setShowMessageFilterControls(false)} />
+            } : undefined} onRetryQueued={handleRetryQueued} onDismissQueued={handleDismissQueued} showFilterControls={showMessageFilterControls} onCloseFilterControls={() => setShowMessageFilterControls(false)} dataUnavailable={selectedSession?.dataUnavailable} />
             </SessionAssetsProvider>
           </ErrorBoundary>
           {/* StatusBar: desktop-only per-session footer (Bert tenure-2 Q1 W3
@@ -1685,7 +1763,7 @@ export default function App() {
               <LandingPage
                 providersReady={providersReady.ready}
                 pinnedCount={pinnedDirectories.length}
-                sessionsCount={sessions.size}
+                sessionsCount={sessions.size} hasLoadedOnce={hasLoadedOnce}
                 firstPinnedCwd={pinnedDirectories[0] ?? null}
                 onOpenPinDialog={() => setPinDialogOpen(true)}
                 onSpawnSession={handleSpawnSession}
@@ -1800,7 +1878,7 @@ export default function App() {
               <LandingPage
                 providersReady={providersReady.ready}
                 pinnedCount={pinnedDirectories.length}
-                sessionsCount={sessions.size}
+                sessionsCount={sessions.size} hasLoadedOnce={hasLoadedOnce}
                 firstPinnedCwd={pinnedDirectories[0] ?? null}
                 onOpenPinDialog={() => setPinDialogOpen(true)}
                 onSpawnSession={handleSpawnSession}

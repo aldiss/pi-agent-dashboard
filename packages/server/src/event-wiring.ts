@@ -9,7 +9,7 @@ import type { BrowserGateway } from "./browser-gateway.js";
 import type { SessionOrderManager } from "./session-order-manager.js";
 import type { PendingForkRegistry } from "./pending-fork-registry.js";
 import type { DirectoryService } from "./directory-service.js";
-import { extractSessionUpdates, isActivityEvent, isUnreadTrigger, isPushTrigger, type PushTriggerOptions } from "./event-status-extraction.js";
+import { extractSessionUpdates, extractAgentEndError, isActivityEvent, isUnreadTrigger, isPushTrigger, type PushTriggerOptions } from "./event-status-extraction.js";
 import type { ViewedSessionTracker } from "./viewed-session-tracker.js";
 import { setCatalogueForSession } from "./provider-catalogue-cache.js";
 import { setModelsForSession } from "./session-models-cache.js";
@@ -255,6 +255,42 @@ export function wireEvents(deps: EventWiringDeps): void {
             sessionManager.update(sessionId, { unread: true });
             browserGateway.broadcastSessionUpdated(sessionId, { unread: true });
           }
+        }
+      }
+
+      // Unseen-server-error stamping arm (build-2 P0 fix #1 + #3). DEDICATED
+      // and independent of the unread arm: the streaming→idle unread trigger
+      // already fires on ANY finished turn (incl. errored ones), so it would
+      // MASK a broken error path — this arm stamps `unseenServerError` from the
+      // canonical terminal-message shape (`extractAgentEndError`) so band-1 can
+      // rank the session fleet-wide. Live (non-replay) only, and only when no
+      // browser is watching — a viewer sees the error in the transcript live.
+      // Cleared on live recovery (below) or `session_view`.
+      // See change: build-2-dashboard-v3.
+      if (!replayingSessions.has(sessionId)) {
+        const serverError = extractAgentEndError(msg.event);
+        if (serverError) {
+          const notViewed = !viewedSessionTracker || !viewedSessionTracker.isViewedByAnyone(sessionId);
+          const sessionAfter = sessionManager.get(sessionId);
+          if (notViewed && sessionAfter && !sessionAfter.unseenServerError) {
+            sessionManager.update(sessionId, { unseenServerError: true });
+            browserGateway.broadcastSessionUpdated(sessionId, { unseenServerError: true });
+          }
+        }
+      }
+
+      // Clear `unseenServerError` on a LIVE recovery event (build-2 P0 fix #2).
+      // A fresh `agent_start` means the operator/agent re-engaged the session
+      // AFTER the error — a genuine recovery. Gated on `!replayingSessions` so
+      // a bridge re-register/replay of historical `agent_start` events NEVER
+      // erases persisted error history (that path replays with attention
+      // stamping disabled). Never routed through `extractSessionUpdates`.
+      // See change: build-2-dashboard-v3.
+      if (!replayingSessions.has(sessionId) && msg.event.eventType === "agent_start") {
+        const sessionAfter = sessionManager.get(sessionId);
+        if (sessionAfter?.unseenServerError) {
+          sessionManager.update(sessionId, { unseenServerError: false });
+          browserGateway.broadcastSessionUpdated(sessionId, { unseenServerError: false });
         }
       }
 

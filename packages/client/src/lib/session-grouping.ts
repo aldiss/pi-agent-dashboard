@@ -5,6 +5,7 @@
 import type { DashboardSession } from "@blackbelt-technology/pi-dashboard-shared/types.js";
 import type { TerminalSession } from "@blackbelt-technology/pi-dashboard-shared/terminal-types.js";
 import { normalizePath } from "@blackbelt-technology/pi-dashboard-shared/platform/paths.js";
+import { isNeedsYou } from "./card-state.js";
 
 /**
  * Infer the server's platform from any path we've seen. Client doesn't
@@ -426,4 +427,44 @@ export function rankActiveFirst<T extends { status?: string }>(sessions: T[]): T
     const bEnded = b.status === "ended" ? 1 : 0;
     return aEnded - bEnded;
   });
+}
+
+/**
+ * Stable-partition a list of already-ordered session ids so that band-1
+ * (needs-you: `ask_user` ∨ `unseenServerError`) rises to the TOP of the ALIVE
+ * zone, while everything else keeps its incoming relative order (build-2 P0
+ * fix #10 + #3).
+ *
+ * Applied AFTER the persisted-order `allIds` base is built — the persisted
+ * drag-order / recency is the base, and this only lifts genuine needs within
+ * the alive partition. Pins / folder / tier boundaries live ABOVE this seam
+ * (they wrap whole groups), and ended cards are NEVER lifted — a corpse does
+ * not rise into the needs band (an ended row that still carries
+ * `unseenServerError` is surfaced by the fleet-brief, not by re-sorting the
+ * dead-tail). No second lane: this is a stable in-place partition of ONE list.
+ *
+ * Three stable partitions, in order:
+ *   1. alive + needs-you   (order preserved)
+ *   2. alive + calm        (order preserved)
+ *   3. ended               (order preserved — stays at the tail)
+ *
+ * Pure. Returns a new id array; ids with no session in `sessionMap` are kept
+ * in their incoming position within the calm/alive band (defensive).
+ * See change: build-2-dashboard-v3.
+ */
+export function stablePartitionByBand(
+  ids: string[],
+  sessionMap: Map<string, DashboardSession>,
+): string[] {
+  const needs: string[] = [];
+  const calm: string[] = [];
+  const ended: string[] = [];
+  for (const id of ids) {
+    const s = sessionMap.get(id);
+    if (!s) { calm.push(id); continue; }
+    if (s.status === "ended") { ended.push(id); continue; }
+    if (isNeedsYou(s)) { needs.push(id); continue; }
+    calm.push(id);
+  }
+  return [...needs, ...calm, ...ended];
 }
