@@ -32,6 +32,37 @@ function openMenu() {
   fireEvent.click(screen.getByTestId("mobile-kebab-btn"));
 }
 
+describe("MobileActionMenu — dark-card destructive path removed (build-2 fix-cycle FATAL 3)", () => {
+  it("renders NO 'Exit session' for an alive/dark session and offers read-only Check liveness", () => {
+    const onCheckLiveness = vi.fn();
+    render(
+      <MobileActionMenu
+        session={makeSession({ status: "idle", source: "claude-code" })}
+        onCheckLiveness={onCheckLiveness}
+      />
+    );
+    openMenu();
+    const menu = screen.getByTestId("mobile-action-menu");
+    // The destructive Exit path (the kill-0 hole) must be GONE.
+    expect(menu.textContent).not.toContain("Exit session");
+    // Read-only Check liveness is offered instead (literal visible text).
+    expect(menu.textContent).toContain("Check liveness");
+    fireEvent.click(screen.getByText("Check liveness"));
+    expect(onCheckLiveness).toHaveBeenCalledTimes(1);
+  });
+
+  it("streaming session also shows no Exit (no window.confirm shutdown path)", () => {
+    render(
+      <MobileActionMenu
+        session={makeSession({ status: "streaming" })}
+        onCheckLiveness={vi.fn()}
+      />
+    );
+    openMenu();
+    expect(screen.getByTestId("mobile-action-menu").textContent).not.toContain("Exit session");
+  });
+});
+
 describe("MobileActionMenu unattached OpenSpec section", () => {
   it("shows Explore and + New Change when alive with no attached proposal", () => {
     const onSendPrompt = vi.fn();

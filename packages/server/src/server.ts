@@ -40,7 +40,7 @@ import { createResurrectionSweep } from "./resurrection-sweep.js";
 import { createClaudePaneProbe } from "./cc-pane-liveness.js";
 import type { HygieneProbes } from "./session-hygiene.js";
 import { startDriverSelfReportPolling } from "./driver-self-report.js";
-import { listClaudePanesUncached, listDriverTmuxSessionsUncached } from "./cc-pane-liveness.js";
+import { listClaudePanesUncached, listDriverTmuxSessionsUncached, probeClaudePanesUncached } from "./cc-pane-liveness.js";
 import { reconcileSessionHygiene } from "./session-hygiene.js";
 import { needsMigration, runMigration } from "./migrate-persistence.js";
 import { detectZrokBinary, cleanupStaleZrok, createTunnel, deleteTunnel, scavengeOrphanZrokProcesses, getTunnelUrl } from "./tunnel.js";
@@ -441,6 +441,10 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
       // Persist unread bit so it survives server restart.
       // See change: session-card-unread-stripes.
       unread: session.unread,
+      // Persist unseen-server-error bit so a session that errored while
+      // unattended survives server restart + bridge re-registration.
+      // See change: build-2-dashboard-v3.
+      unseenServerError: session.unseenServerError,
       cachedAt: Date.now(),
     });
     // When a session ends, drop its id from the persisted drag-reorder list
@@ -744,9 +748,13 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
     const hygieneTimer = setInterval(() => {
       try {
         const nowMs = Date.now();
+        // Tri-state CC-pane snapshot (build-2 fix-cycle FATAL 1): one probe per
+        // sweep, shared by the pane list AND its ok-ness, so a FAILED probe
+        // yields `cc-unknown` (row stays visible) instead of a false dead.
+        const ccProbe = probeClaudePanesUncached();
         const actions = reconcileSessionHygiene(
           sessionManager.listAll(),
-          { resolveDriverLiveness, pidAlive, listClaudePanes: listClaudePanesUncached, listDriverTmuxSessions: listDriverTmuxSessionsUncached },
+          { resolveDriverLiveness, pidAlive, listClaudePanes: () => ccProbe.panes, claudePanesOk: () => ccProbe.ok, listDriverTmuxSessions: listDriverTmuxSessionsUncached },
           { nowMs, graceMs: 0, withinPostRestartGrace: nowMs - hygieneSweepStartMs < HYGIENE_POST_RESTART_GRACE_MS },
         );
         for (const a of actions) {
@@ -1076,6 +1084,9 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
     resolveDriverLiveness,
     pidAlive,
     listClaudePanes: claudePaneProbe.listClaudePanes,
+    // Tri-state ok-ness (build-2 fix-cycle FATAL 1): a FAILED probe → cc-unknown
+    // (row stays visible, retire refuses) instead of a false proof-of-death.
+    claudePanesOk: claudePaneProbe.claudePanesOk,
     listDriverTmuxSessions: listDriverTmuxSessionsUncached,
   };
 

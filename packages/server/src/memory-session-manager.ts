@@ -85,6 +85,13 @@ export function createMemorySessionManager(): SessionManager {
           // Preserve context usage until bridge sends fresh data
           contextTokens: existing.contextTokens,
           contextWindow: existing.contextWindow,
+          // Carry forward the unseen-server-error bit across mere bridge
+          // re-registration. The gateway calls register() on every bridge
+          // registration; without this, a reconnect/replay would silently
+          // erase a persisted error flag before the operator ever saw it
+          // (FATAL 1B). Cleared only by a live recovery event or session_view.
+          // See change: build-2-dashboard-v3.
+          unseenServerError: existing.unseenServerError,
         } : {
           tokensIn: 0,
           tokensOut: 0,

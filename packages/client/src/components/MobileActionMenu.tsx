@@ -8,7 +8,7 @@ import {
   mdiPlay,
   mdiSourceFork,
   mdiOpenInNew,
-  mdiClose,
+  mdiHeartPulse,
   mdiSourceBranch,
   mdiLinkVariant,
   mdiCompassOutline,
@@ -35,7 +35,9 @@ interface Props {
   onHide?: () => void;
   onUnhide?: () => void;
   onResume?: (mode: "continue" | "fork") => void;
-  onShutdown?: () => void;
+  /** Read-only liveness re-check (build-2 fix-cycle FATAL 3). Replaces the
+   *  removed destructive `onShutdown`/Exit for dark/unknown sessions. */
+  onCheckLiveness?: () => void;
   onOpenEditor?: (editorId: string) => void;
   onAttachProposal?: (changeName: string) => void;
   onDetachProposal?: () => void;
@@ -85,7 +87,7 @@ function MenuRow({ icon, label, onClick, danger, disabled }: {
   );
 }
 
-export function MobileActionMenu({ session, editors, openspecChanges, onRename, onHide, onUnhide, onResume, onShutdown, onOpenEditor, onAttachProposal, onDetachProposal, onSendPrompt, onReadArtifact, onRefresh, contextUsage, cost }: Props) {
+export function MobileActionMenu({ session, editors, openspecChanges, onRename, onHide, onUnhide, onResume, onCheckLiveness, onOpenEditor, onAttachProposal, onDetachProposal, onSendPrompt, onReadArtifact, onRefresh, contextUsage, cost }: Props) {
   const [open, setOpen] = useState(false);
   const [exploreOpen, setExploreOpen] = useState(false);
   const [newChangeOpen, setNewChangeOpen] = useState(false);
@@ -284,14 +286,14 @@ export function MobileActionMenu({ session, editors, openspecChanges, onRename, 
             <MenuRow icon={mdiRefresh} label="Refresh Chat" onClick={() => act(onRefresh)} />
           )}
 
-          {/* Exit */}
-          {isAlive && onShutdown && (
-            <MenuRow icon={mdiClose} label="Exit session" onClick={() => {
-              if (session.status === "streaming") {
-                if (!window.confirm("Session is currently running. Exit anyway?")) return;
-              }
-              act(onShutdown);
-            }} danger />
+          {/* Check liveness (build-2 fix-cycle FATAL 3): read-only re-verify.
+              REPLACES the removed destructive "Exit session" — that path called
+              `shutdown` which unregisters without death verification (the kill-0
+              hole) and would falsely claim a dark / kill-0-live / unknown CC
+              target dead. Check-liveness re-runs server hygiene and never
+              retires. Confirmed terminate→verify-dead→retire stays P1. */}
+          {isAlive && onCheckLiveness && (
+            <MenuRow icon={mdiHeartPulse} label="Check liveness" onClick={() => act(onCheckLiveness)} />
           )}
         </div>
       )}

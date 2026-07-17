@@ -190,6 +190,31 @@ export function isActivityEvent(eventType: string): boolean {
 }
 
 /**
+ * Server-side canonical error DETECTION over the terminal message.
+ *
+ * Mirrors the client reference `extractAgentEndError` in
+ * `packages/client/src/lib/event-reducer.ts`: the real errored-turn shape is
+ * the terminal `messages[]` item with `stopReason === "error"` + `errorMessage`
+ * — the pi event forwarded UNCHANGED as `event.data` by the bridge
+ * (`event-forwarder.ts` → `bridge.ts`). This is NOT the invented
+ * `{ error: "..." }` payload the legacy unread/push branches check.
+ *
+ * Returns the error message (or a generic fallback) when `event` is an
+ * `agent_end` whose terminal message errored; `undefined` otherwise. Callers
+ * treat a defined return as "this turn ended in a server error".
+ *
+ * See change: build-2-dashboard-v3 (P0 fix #1, closes r2 FATAL 1A).
+ */
+export function extractAgentEndError(event: DashboardEvent): string | undefined {
+  if (event.eventType !== "agent_end") return undefined;
+  const messages = event.data?.messages;
+  if (!Array.isArray(messages) || messages.length === 0) return undefined;
+  const last = messages[messages.length - 1] as Record<string, unknown> | undefined;
+  if (!last || last.stopReason !== "error") return undefined;
+  return (typeof last.errorMessage === "string" && last.errorMessage) || "An unknown error occurred";
+}
+
+/**
  * Snapshot of the session fields the unread classifier needs.
  * Pulled out of `DashboardSession` to keep the helper testable without
  * constructing a full session object.

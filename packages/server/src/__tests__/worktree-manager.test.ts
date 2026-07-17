@@ -19,6 +19,14 @@ import {
 
 let testDir: string;
 let repoRoot: string;
+/**
+ * The repo's ACTUAL default branch (build-2 fix-cycle-3 test-hygiene). `git
+ * init` names the initial branch per `init.defaultBranch` — `main`, `master`,
+ * or any configured value — so a test that hardcodes `"main"` as a base branch
+ * is env-dependent and fails wherever the default isn't `main`. Captured from
+ * the fixture so base-branch references are default-branch-neutral.
+ */
+let defaultBranch: string;
 
 function exec(cmd: string, cwd: string): string {
   return rawExecSync(cmd, { cwd, encoding: "utf-8", stdio: "pipe", timeout: 15_000 }).trim();
@@ -36,6 +44,9 @@ function setupGitRepo(): void {
   exec("git add README.md", rawRepoRoot);
   exec("git commit -m \"initial\"", rawRepoRoot);
   exec("git branch feature-x", rawRepoRoot);
+  // Capture the repo's real default branch AFTER the first commit exists (an
+  // empty repo has an unborn HEAD). Default-branch-neutral: never assume "main".
+  defaultBranch = exec("git rev-parse --abbrev-ref HEAD", rawRepoRoot);
   // Canonicalize repoRoot to match git's internal path (handles macOS /var→/private/var symlinks)
   repoRoot = resolveRepoRoot(rawRepoRoot);
 }
@@ -149,8 +160,11 @@ describe("worktree-manager", () => {
 
     it("throws when new branch name already exists", () => {
       // git worktree add -b <existing> fails: "a branch named 'X' already exists"
+      // Base off the repo's REAL default branch (not a hardcoded "main") so the
+      // test exercises the already-exists path regardless of init.defaultBranch —
+      // otherwise a missing "main" throws branch_not_found first (env-flake).
       try {
-        addWorktree(repoRoot, "feature-x", { baseBranch: "main" });
+        addWorktree(repoRoot, "feature-x", { baseBranch: defaultBranch });
         expect.fail("Should have thrown");
       } catch (err: any) {
         expect(err.code).toBe("branch_already_checked_out");

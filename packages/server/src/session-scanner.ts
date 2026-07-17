@@ -89,6 +89,9 @@ function sessionFromMeta(
     // Restore unread bit from .meta.json so it survives server restart.
     // See change: session-card-unread-stripes.
     unread: meta.unread,
+    // Restore unseen-server-error bit so a session that errored while
+    // unattended survives server restart. See change: build-2-dashboard-v3.
+    unseenServerError: meta.unseenServerError,
     dataUnavailable: false,
   };
 }

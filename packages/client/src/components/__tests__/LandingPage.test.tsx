@@ -47,6 +47,39 @@ function renderPage(props: Partial<React.ComponentProps<typeof LandingPage>> = {
 }
 
 describe("LandingPage onboarding", () => {
+  describe("calm-zero suppressed on unsettled load (build-2 fix-cycle-2 MAJOR 1)", () => {
+    it("hasLoadedOnce=false + zero sessions → shows loading, NOT the Welcome checklist", () => {
+      renderPage({ providersReady: true, sessionsCount: 0, hasLoadedOnce: false });
+      expect(screen.getByTestId("landing-loading")).toBeTruthy();
+      expect(screen.queryByText("Welcome to pi-dashboard")).toBeNull();
+    });
+
+    it("hasLoadedOnce=true + zero sessions → onboarding checklist shown (truthful empty)", () => {
+      renderPage({ providersReady: true, sessionsCount: 0, hasLoadedOnce: true });
+      expect(screen.queryByTestId("landing-loading")).toBeNull();
+    });
+  });
+
+  describe("alive-only active count (build-2 fix-cycle MAJOR 3)", () => {
+    it("renders the passed alive count as '1 active session' (singular)", () => {
+      renderPage({ providersReady: true, pinnedCount: 1, sessionsCount: 1 });
+      expect(screen.getByText("1 active session")).toBeTruthy();
+    });
+
+    it("renders '2 active sessions' when two are alive (plural)", () => {
+      renderPage({ providersReady: true, pinnedCount: 1, sessionsCount: 2 });
+      expect(screen.getByText("2 active sessions")).toBeTruthy();
+    });
+
+    it("zero alive → step 3 is the Start-session CTA, not a done row", () => {
+      renderPage({ providersReady: true, pinnedCount: 1, sessionsCount: 0, hasLoadedOnce: true });
+      // No "0 active sessions" done row; the spawn CTA is present instead.
+      expect(screen.queryByText(/active session/)).toBeNull();
+      expect(screen.getByTestId("onboarding-step-3-cta")).toBeTruthy();
+    });
+  });
+
+
   describe("Step 1: credentials", () => {
     it("pending state shows CTA that navigates to /settings?tab=providers", () => {
       const { navigate } = renderPage({ providersReady: false });

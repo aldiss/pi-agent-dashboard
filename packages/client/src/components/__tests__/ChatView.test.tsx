@@ -49,6 +49,29 @@ function stateWithToolMessage(overrides: Partial<ChatMessage> = {}) {
 }
 
 describe("ChatView", () => {
+  it("loading ≠ empty: zero messages + replay NOT complete → 'Loading messages…' (build-2 fix-cycle MAJOR 2)", () => {
+    const state = createInitialState(); // replayComplete undefined = still loading
+    const { container } = render(<ThemeProvider><ChatView state={state} toolContext={defaultToolContext} /></ThemeProvider>);
+    expect(container.querySelector('[data-testid="chat-loading"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="chat-empty"]')).toBeNull();
+    expect(container.querySelector('[data-testid="chat-data-unavailable"]')).toBeNull();
+  });
+
+  it("truthful empty: zero messages + replay COMPLETE → 'No messages yet'", () => {
+    const state = { ...createInitialState(), replayComplete: true };
+    const { container } = render(<ThemeProvider><ChatView state={state} toolContext={defaultToolContext} /></ThemeProvider>);
+    expect(container.querySelector('[data-testid="chat-empty"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="chat-loading"]')).toBeNull();
+  });
+
+  it("data-unavailable wins over loading/empty when the transcript failed to load", () => {
+    const state = { ...createInitialState(), replayComplete: true };
+    const { container } = render(<ThemeProvider><ChatView state={state} toolContext={defaultToolContext} dataUnavailable /></ThemeProvider>);
+    expect(container.querySelector('[data-testid="chat-data-unavailable"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="chat-empty"]')).toBeNull();
+    expect(container.querySelector('[data-testid="chat-loading"]')).toBeNull();
+  });
+
   it("renders user message with copy buttons", () => {
     const state = stateWithMessages([
       { id: "1", role: "user", content: "Hello **world**" },

@@ -70,7 +70,9 @@ interface Props {
     onHide?: () => void;
     onUnhide?: () => void;
     onResume?: (mode: "continue" | "fork") => void;
-    onShutdown?: () => void;
+    /** Read-only liveness re-check (build-2 fix-cycle FATAL 3). Replaces the
+     *  removed destructive mobile Exit for dark/unknown sessions. */
+    onCheckLiveness?: () => void;
     onOpenEditor?: (editorId: string) => void;
     onAttachProposal?: (changeName: string) => void;
     onDetachProposal?: () => void;
@@ -273,7 +275,7 @@ function MobileHeader({ session, state, showBack, onBack, isRenaming, onConfirmR
           onHide={mobileActions.onHide}
           onUnhide={mobileActions.onUnhide}
           onResume={mobileActions.onResume}
-          onShutdown={mobileActions.onShutdown}
+          onCheckLiveness={mobileActions.onCheckLiveness}
           onOpenEditor={mobileActions.onOpenEditor}
           onAttachProposal={mobileActions.onAttachProposal}
           onDetachProposal={mobileActions.onDetachProposal}

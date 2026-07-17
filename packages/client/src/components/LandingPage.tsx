@@ -15,6 +15,13 @@ export interface LandingPageProps {
   onSpawnSession?: (cwd: string) => void;
   /** Router navigation function (e.g. wouter's navigate). */
   navigate?: (to: string) => void;
+  /**
+   * Cold-load success oracle (build-2 P0 fix #7). When `false`, the fleet has
+   * NOT confirmed-loaded (REST/snapshot + surfaces not both settled OK), so we
+   * must NOT show the onboarding checklist as if the fleet is genuinely empty
+   * (a calm-zero lie). `undefined` = back-compat (treat as loaded).
+   */
+  hasLoadedOnce?: boolean;
 }
 
 type StepState = "pending" | "done" | "locked";
@@ -93,6 +100,7 @@ export function LandingPage({
   onOpenPinDialog,
   onSpawnSession,
   navigate,
+  hasLoadedOnce,
 }: LandingPageProps = {}) {
   // Legacy behaviour: if no onboarding props are supplied at all, fall back to the
   // original minimal placeholder (keeps existing tests and stories intact).
@@ -100,6 +108,22 @@ export function LandingPage({
     onOpenPinDialog !== undefined ||
     onSpawnSession !== undefined ||
     navigate !== undefined;
+
+  // Cold-load honesty (build-2 P0 fix #7): with onboarding context but no
+  // confirmed load AND zero sessions, show a neutral loading state rather than
+  // the "Welcome / get started" checklist — which would falsely imply the fleet
+  // is empty when we simply haven't heard back (or a source failed). `hasLoadedOnce`
+  // undefined = back-compat (skip this guard).
+  if (hasOnboardingContext && hasLoadedOnce === false && sessionsCount === 0) {
+    return (
+      <div className="flex-1 flex items-center justify-center text-[var(--text-tertiary)]" data-testid="landing-loading">
+        <div className="text-center">
+          <div className="editorial-accent-ink text-6xl mb-4 text-blue-500 opacity-50 animate-pulse">π</div>
+          <p className="text-sm">Loading your sessions…</p>
+        </div>
+      </div>
+    );
+  }
 
   if (!hasOnboardingContext) {
     return (

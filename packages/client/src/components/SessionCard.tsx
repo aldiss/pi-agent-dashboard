@@ -1,10 +1,12 @@
 import React, { useState, useEffect, type ReactNode } from "react";
 import { Icon } from "@mdi/react";
-import { mdiFlash, mdiOpenInNew, mdiPencil, mdiPencilOutline, mdiSourceBranch, mdiClose, mdiEyeOffOutline, mdiEyeOutline, mdiConsoleLine, mdiRobotOutline, mdiCodeTags, mdiApplicationOutline, mdiCommentQuestion, mdiPlayCircleOutline, mdiSourceFork, mdiPaperclip, mdiFileTree } from "@mdi/js";
+import { mdiFlash, mdiOpenInNew, mdiPencil, mdiPencilOutline, mdiSourceBranch, mdiHeartPulse, mdiEyeOffOutline, mdiEyeOutline, mdiConsoleLine, mdiRobotOutline, mdiCodeTags, mdiApplicationOutline, mdiCommentQuestion, mdiPlayCircleOutline, mdiSourceFork, mdiPaperclip, mdiFileTree } from "@mdi/js";
 import type { DashboardSession, ImageContent } from "@blackbelt-technology/pi-dashboard-shared/types.js";
 import { getSessionDisplayName } from "../lib/session-display-name.js";
 import { formatRelativeTime } from "../lib/format.js";
 import { selectBadgeTimestamp } from "../lib/session-card-time.js";
+import { deriveCardState } from "../lib/card-state.js";
+import { getStaleHoursThreshold } from "../lib/session-filter-storage.js";
 import { ContextUsageBar } from "./ContextUsageBar.js";
 import { DriverProgressBar } from "./DriverProgressBar.js";
 import { EngagementBadge } from "./EngagementBadge.js";
@@ -294,7 +296,7 @@ export const SessionCard = React.memo(function SessionCard({
   contextUsage,
   openspecChanges,
   onRename,
-  onShutdown,
+  onCheckLiveness,
   onResume,
   hasError,
 }: {
@@ -308,7 +310,17 @@ export const SessionCard = React.memo(function SessionCard({
   contextUsage?: ContextUsageInfo;
   openspecChanges?: OpenSpecChange[];
   onRename?: (id: string, name: string) => void;
-  onShutdown?: (id: string) => void;
+  /**
+   * Read-only liveness re-check for a dark card (build-2 P0 fix #4). Replaces
+   * the removed destructive "Exit pi session" control, which unregistered a
+   * session WITHOUT death verification (the kill-0 hole — a SIGSTOP'd
+   * interactive/tmux process can't service the shutdown command yet its row was
+   * marked ended). This re-runs server-side hygiene (GET /api/sessions →
+   * reconcileSessionHygiene) which re-probes kill-0 liveness and rescues a
+   * false-ended row — it NEVER retires a target. Confirmed
+   * terminate→verify-dead→retire stays P1.
+   */
+  onCheckLiveness?: (id: string) => void;
   onResume?: (id: string, mode: "continue" | "fork") => void;
   hasError?: boolean;
 }) {
@@ -327,12 +339,24 @@ export const SessionCard = React.memo(function SessionCard({
 
   const hasMetaChips = !!(session.gitBranch || session.worktree || session.attachedProposal);
 
+  // Wire the ONE pure card-state derivation into the production card render
+  // (build-2 fix-cycle NIT 2). Emitted as `data-age-band` / `data-band-reason`
+  // so the derivation has a real production caller + an operator-visible DOM
+  // surface (assertable), WITHOUT disturbing the existing editorial
+  // `data-activity` hue CSS. error/ask are retained through age-decay by
+  // `deriveCardState` itself (needs band never decays). `now` is the card's
+  // interval clock; staleHours reuses the persisted `dashboard:staleHours`.
+  const cardStaleHours = getStaleHoursThreshold();
+  const cardState = deriveCardState(session, now, cardStaleHours);
+
   return (
     <Pressable
       as="li"
       pressScale={0.985}
       data-session-id={session.id}
       data-activity={getActivityKind(session, hasError)}
+      data-age-band={cardState.ageBand}
+      data-band-reason={cardState.reason}
       onClick={() => onSelect(session.id)}
       className={`editorial-card group relative px-3 py-2.5 md:px-3.5 md:py-2.5 cursor-pointer rounded-xl border shadow-sm shadow-[var(--shadow-card)] hover:shadow-md transition-shadow duration-200 flex flex-col gap-1 md:gap-2 ${
         selectedRing
@@ -373,20 +397,24 @@ export const SessionCard = React.memo(function SessionCard({
               <Icon path={mdiEyeOffOutline} size={0.45} />
             </button>
           )}
-          {isAlive && onShutdown && (
+          {isAlive && onCheckLiveness && (
             <button
-              onClick={(e) => {
-                e.stopPropagation();
-                if (session.status === "streaming") {
-                  if (!window.confirm("Session is currently running. Exit anyway?")) return;
-                }
-                onShutdown(session.id);
-              }}
-              className="hover:text-red-400 transition-colors"
-              title="Exit pi session"
-              data-testid="session-close-btn"
+              onClick={(e) => { e.stopPropagation(); onCheckLiveness(session.id); }}
+              className="hover:text-blue-400 transition-colors"
+              title="Check liveness — re-verify this session is still running (read-only)"
+              data-testid="session-check-liveness-btn"
             >
-              <Icon path={mdiClose} size={0.5} />
+              <Icon path={mdiHeartPulse} size={0.5} />
+            </button>
+          )}
+          {isAlive && (
+            <button
+              onClick={(e) => { e.stopPropagation(); onSelect(session.id); }}
+              className="hover:text-green-400 transition-colors"
+              title="Open session"
+              data-testid="session-open-btn"
+            >
+              <Icon path={mdiOpenInNew} size={0.5} />
             </button>
           )}
         </span>
@@ -404,6 +432,35 @@ export const SessionCard = React.memo(function SessionCard({
           </span>
         )}
       </div>
+
+      {/* Mobile-only dark-card control row (build-2 fix-cycle FATAL 3): LITERAL
+          visible text `Open` + read-only `Check liveness` at 393px (not just
+          title/aria-label). Desktop uses the hover icon cluster above. There is
+          NO destructive Exit here — the removed Exit path was the kill-0 hole.
+          Only alive cards (a dark/unknown/kill-0-live session looks alive). */}
+      {isAlive && (
+        <div className="md:hidden flex items-center gap-2 pt-0.5">
+          <button
+            onClick={(e) => { e.stopPropagation(); onSelect(session.id); }}
+            className="inline-flex items-center gap-1 text-[11px] font-medium text-[var(--text-secondary)] hover:text-green-400 transition-colors px-1.5 py-1 rounded"
+            data-testid="session-open-btn-mobile"
+          >
+            <Icon path={mdiOpenInNew} size={0.55} />
+            <span>Open</span>
+          </button>
+          {onCheckLiveness && (
+            <button
+              onClick={(e) => { e.stopPropagation(); onCheckLiveness(session.id); }}
+              className="inline-flex items-center gap-1 text-[11px] font-medium text-[var(--text-secondary)] hover:text-blue-400 transition-colors px-1.5 py-1 rounded"
+              data-testid="session-check-liveness-btn-mobile"
+              title="Re-verify this session is still running (read-only)"
+            >
+              <Icon path={mdiHeartPulse} size={0.55} />
+              <span>Check liveness</span>
+            </button>
+          )}
+        </div>
+      )}
 
       {/* Row 2: model + thinking level (left) | resume/fork (desktop right) */}
       <div className="flex items-center text-[11px] md:text-xs text-[var(--text-secondary)]">

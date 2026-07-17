@@ -51,6 +51,35 @@ function makeSession(overrides: Partial<DashboardSession> = {}): DashboardSessio
   };
 }
 
+describe("SessionList — calm-zero suppressed on unsettled load (build-2 fix-cycle-2 MAJOR 1)", () => {
+  function renderList(props: Partial<React.ComponentProps<typeof SessionList>>) {
+    return render(
+      <TestRouter><ThemeProvider>
+        <SessionList sessions={[]} onSelect={() => {}} {...props} />
+      </ThemeProvider></TestRouter>,
+    );
+  }
+
+  it("empty + hasLoadedOnce=false → shows loading, NOT 'No active sessions'", () => {
+    const { container } = renderList({ hasLoadedOnce: false });
+    expect(container.querySelector('[data-testid="session-list-loading"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="session-list-empty"]')).toBeNull();
+    expect(container.textContent).not.toContain("No active sessions");
+  });
+
+  it("empty + hasLoadedOnce=true → shows the truthful 'No active sessions' empty-state", () => {
+    const { container } = renderList({ hasLoadedOnce: true });
+    expect(container.querySelector('[data-testid="session-list-empty"]')).toBeTruthy();
+    expect(container.querySelector('[data-testid="session-list-loading"]')).toBeNull();
+    expect(container.textContent).toContain("No active sessions");
+  });
+
+  it("empty + hasLoadedOnce undefined (back-compat) → shows the empty-state", () => {
+    const { container } = renderList({});
+    expect(container.querySelector('[data-testid="session-list-empty"]')).toBeTruthy();
+  });
+});
+
 describe("SessionList spawn button", () => {
   it("should render spawn button on folder card when onSpawnSession is provided", () => {
     const onSpawn = vi.fn();
@@ -428,5 +457,34 @@ describe("SessionList folder grouping toggle", () => {
     // Both sessions still render as flat cards directly under the tier.
     expect(container.querySelector('[data-session-id="s1"]')).toBeTruthy();
     expect(container.querySelector('[data-session-id="s2"]')).toBeTruthy();
+  });
+});
+
+describe("SessionList — needs-you partition applies in SEARCH mode (build-2 fix-cycle NIT 1)", () => {
+  function cardOrder(container: HTMLElement): string[] {
+    return Array.from(container.querySelectorAll("[data-session-id]")).map(
+      (el) => el.getAttribute("data-session-id") || "",
+    );
+  }
+
+  it("a needs-you session rises to the top even when a search query is active", () => {
+    const sessions = [
+      makeSession({ id: "calm-first", name: "Rank Calm First", cwd: "/w" }),
+      makeSession({ id: "needs-mid", name: "Rank Needs Middle", cwd: "/w", unseenServerError: true }),
+      makeSession({ id: "calm-last", name: "Rank Calm Last", cwd: "/w" }),
+    ];
+    const { container } = render(
+      <TestRouter><ThemeProvider>
+        <SessionList sessions={sessions} onSelect={() => {}} />
+      </ThemeProvider></TestRouter>,
+    );
+    // Normal mode: needs rises above the calm cards.
+    expect(cardOrder(container)).toEqual(["needs-mid", "calm-first", "calm-last"]);
+
+    // Type a search query matching all three — needs-you must STILL be first
+    // (previously flat-merge search skipped the partition and reverted order).
+    fireEvent.change(screen.getByTestId("session-search-input"), { target: { value: "Rank" } });
+    const searched = cardOrder(container).filter((id) => id.startsWith("calm") || id.startsWith("needs"));
+    expect(searched[0]).toBe("needs-mid");
   });
 });

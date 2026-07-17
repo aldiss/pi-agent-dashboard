@@ -876,6 +876,19 @@ export function createBrowserGateway(
                 updates: { unread: false },
               });
             }
+            // Clear the unseen-server-error fleet bit on view: the operator is
+            // now looking at the session (the transcript still shows the error,
+            // but the fleet no longer needs to escalate it). Independent of
+            // `unread` — an error can outlive an acknowledged unread and vice
+            // versa. See change: build-2-dashboard-v3.
+            if (session?.unseenServerError) {
+              sessionManager.update(msg.sessionId, { unseenServerError: false });
+              broadcast({
+                type: "session_updated",
+                sessionId: msg.sessionId,
+                updates: { unseenServerError: false },
+              });
+            }
             break;
           }
           case "session_unview": {

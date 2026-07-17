@@ -4,6 +4,10 @@ const COLLAPSED_GROUPS_KEY = "dashboard:collapsedGroups";
 const STALE_HOURS_KEY = "dashboard:staleHours";
 const HIDE_STALE_KEY = "dashboard:hideStale";
 const GROUP_BY_FOLDER_KEY = "dashboard:groupByFolder";
+/** Last time the operator saw the fleet-brief (visible view). Sister to the
+ *  other `dashboard:*` keys. Drives the finished-unseen window cutoff.
+ *  See change: build-2-dashboard-v3 (P0 fix #5 + #6). */
+const LAST_BRIEF_VIEW_KEY = "dashboard:lastBriefViewAt";
 
 /** Default stale-active threshold (hours of no activity before a non-ended session is treated as stale). */
 const DEFAULT_STALE_HOURS = 24;
@@ -92,6 +96,33 @@ export function getGroupByFolder(): boolean {
 
 export function setGroupByFolder(value: boolean): void {
   getStorage().setItem(GROUP_BY_FOLDER_KEY, String(value));
+}
+
+/**
+ * Read the last time the operator saw the fleet-brief (epoch ms). Returns
+ * `null` when the key is missing / cleared / non-positive — the first-run
+ * baseline case. `finishedUnseenCutoff` maps that `null` to `now - maxAge`
+ * (never `now`, never `0`). See change: build-2-dashboard-v3 (P0 fix #5).
+ */
+export function getLastBriefViewAt(): number | null {
+  try {
+    const raw = getStorage().getItem(LAST_BRIEF_VIEW_KEY);
+    if (raw === null) return null;
+    const n = Number(raw);
+    if (!Number.isFinite(n) || n <= 0) return null;
+    return n;
+  } catch {
+    return null;
+  }
+}
+
+/** Persist the last time the operator saw the fleet-brief (epoch ms). */
+export function setLastBriefViewAt(epochMs: number): void {
+  try {
+    getStorage().setItem(LAST_BRIEF_VIEW_KEY, String(epochMs));
+  } catch {
+    /* ignore */
+  }
 }
 
 export function getCollapsedGroups(): Set<string> {

@@ -42,6 +42,15 @@ export interface HygieneProbes {
   /** Live `claude` tmux panes (cc-pane-liveness.ts). The CC discriminator (F4). */
   listClaudePanes: () => ClaudePane[];
   /**
+   * Whether the last CC-pane probe SUCCEEDED (build-2 fix-cycle FATAL 1).
+   * `true` — tmux answered (even success-empty): a CC session with no matching
+   * pane and no live PID is PROVEN dead. `false` — the probe FAILED (tmux
+   * missing / non-zero exit / timeout): liveness is UNKNOWN, not death.
+   * Optional for back-compat: absent → treated as `true` (probe-ok), preserving
+   * every existing fixture/test and the two passing negative controls.
+   */
+  claudePanesOk?: () => boolean;
+  /**
    * Live tmux SESSION names (cc-pane-liveness.ts listDriverTmuxSessions). The
    * pi-driver liveness axis: a REG-absent driver with a null row-pid still runs
    * in a tmux session named after its mesh name. Optional — absent in older
@@ -65,11 +74,20 @@ export interface LivenessResult {
   reason:
     | "cc-pane-alive"
     | "cc-no-pane"
+    | "cc-unknown"
     | "registry-kill0"
     | "pid-kill0"
     | "tmux-session-alive"
     | "tmux-name-superseded"
     | "no-live-bind";
+  /**
+   * True when liveness could NOT be determined (build-2 fix-cycle FATAL 1) —
+   * a CC probe FAILURE with no live PID. Distinct from `live:false` proof-of-
+   * death: an `unknown` row stays VISIBLE (never demoted by reconcile) and is
+   * REFUSED by retire. `live` is false for an unknown (it is not proven live),
+   * but callers MUST check `unknown` before treating false as dead.
+   */
+  unknown?: boolean;
   /** Clean canonical name from the live source (registry name / tmux session-name). */
   cleanName?: string;
   /** Verified-live pid (registry pid or tmux pane pid). */
@@ -103,6 +121,25 @@ export function verifySessionLive(
         cleanName: pane.sessionName || undefined,
         pid: pane.pid || undefined,
       };
+    }
+    // Claude-PID backstop (build-2 P0 fix #4). A CC session carrying its own
+    // kill-0-alive pid is LIVE even without a matching `claude` pane — the pane
+    // list can be stale, the pane may run in a cwd we can't resolve, or the
+    // process may be SIGSTOP'd (kill-0 still succeeds on a stopped process).
+    // Without this, retire/hygiene would mark a kill-0-alive CC target dead (the
+    // kill-0 hole). Never mark an unverified-live CC target dead: only a CC
+    // session with NO pane AND no kill-0-alive pid is a proven-dead `cc-no-pane`.
+    if (typeof session.pid === "number" && probes.pidAlive(session.pid)) {
+      return { live: true, reason: "pid-kill0", pid: session.pid };
+    }
+    // Tri-state (build-2 fix-cycle FATAL 1). No pane + no live PID is only
+    // PROOF-OF-DEATH when the probe actually ANSWERED. If the probe FAILED
+    // (tmux missing / non-zero exit / timeout) liveness is UNKNOWN — the target
+    // stays visible and retire refuses it. `claudePanesOk` absent (older
+    // fixtures) defaults to ok:true → preserves the success-empty→dead control.
+    const probeOk = probes.claudePanesOk ? probes.claudePanesOk() : true;
+    if (!probeOk) {
+      return { live: false, unknown: true, reason: "cc-unknown" };
     }
     return { live: false, reason: "cc-no-pane" };
   }
@@ -231,10 +268,14 @@ export function reconcileSessionHygiene(
   // readers. Registry/pid probes stay per-record (they are sessionId/pid-specific).
   const tmuxSnapshot = probes.listDriverTmuxSessions?.() ?? [];
   const paneSnapshot = probes.listClaudePanes();
+  // Snapshot ok-ness ONCE too (build-2 fix-cycle FATAL 1), so every CC record in
+  // this pass sees the same probe verdict as the pane list it was read from.
+  const paneOkSnapshot = probes.claudePanesOk ? probes.claudePanesOk() : true;
   const memoProbes: HygieneProbes = {
     ...probes,
     listDriverTmuxSessions: () => tmuxSnapshot,
     listClaudePanes: () => paneSnapshot,
+    claudePanesOk: () => paneOkSnapshot,
   };
 
   // ── Liveness (one pass) + tmux name-token disambiguation ────────────────
@@ -292,6 +333,12 @@ export function reconcileSessionHygiene(
       }
       continue;
     }
+
+    // UNKNOWN (build-2 fix-cycle FATAL 1): a FAILED CC probe is NOT proof of
+    // death. Leave the row exactly as-is — never demote/hide it — so a
+    // transient tmux failure can't remove a genuinely-unverified session from
+    // the operator's live UI. It reverts to a real verdict once a probe answers.
+    if (live.unknown) continue;
 
     // DEAD — verifySessionLive false = POSITIVE-proof-of-dead (registry-miss ∧
     // record-pid-kill-0-dead/absent). Alice-safety is already inside
@@ -426,6 +473,12 @@ export function evaluateRetire(
         name: t.name,
         reason: live.live ? live.reason : "cc-pane-name-alive",
       });
+    } else if (live.unknown) {
+      // UNKNOWN liveness (build-2 fix-cycle FATAL 1): a FAILED CC probe is NOT
+      // proof of death. Refuse to retire — the row stays visible until a probe
+      // actually answers. Surfaced as an anomaly so the operator sees the
+      // unverified state rather than a silent (false) "retired: dead".
+      refusedLive.push({ sessionId: t.id, name: t.name, reason: live.reason });
     } else {
       retired.push(t.id);
     }
