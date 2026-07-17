@@ -147,9 +147,15 @@ export function createPushDispatcher(opts: PushDispatcherOptions): PushDispatche
 
     async sendNow(payload: PushPayload, opts?: { tokenIds?: string[] }): Promise<SendResult[]> {
       const tokens = registry.list();
-      const filtered = opts?.tokenIds
+      const filtered = (opts?.tokenIds
         ? tokens.filter((t) => opts.tokenIds!.includes(t.id))
-        : tokens;
+        : tokens
+      // M7: manual/test delivery must honor the SAME recipient-eligibility
+      // predicate as automatic fanout. Without this, a manual payload reaches
+      // revoked-owned and legacy-unowned tokens. `payload.sessionId` is the
+      // eligibility context ("__manual__"/"test" resolve to no session → guests
+      // fail canViewSession, revoked owners fail isPrincipalAdmitted).
+      ).filter((t) => canDeliver(t, payload.sessionId));
 
       if (filtered.length === 0) return [];
 
