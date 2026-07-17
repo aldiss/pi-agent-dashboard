@@ -142,3 +142,66 @@ describe("browser-gateway on-connect sessions_snapshot", () => {
     expect(pinnedIdx).toBeGreaterThan(snapshotIdx);
   });
 });
+
+describe("browser-gateway bridgeConnected projection — C3 flip regression-guard (FIX-C2/C3)", () => {
+  function makeMutableGateway(connectedRef: { on: boolean }) {
+    const sessionManager = createMemorySessionManager();
+    sessionManager.restore({
+      id: "s1", cwd: "/repo/a", source: "tui", status: "active", startedAt: 1, hidden: false,
+    } as never);
+    const piGateway = {
+      start: vi.fn(), stop: vi.fn(), sendToSession: vi.fn(),
+      isSessionConnected: vi.fn((id: string) => id === "s1" && connectedRef.on),
+      getConnectedSessionIds: vi.fn(() => []), hasSession: vi.fn(() => false), onEvent: vi.fn(),
+    } as unknown as PiGateway;
+    const gateway = createBrowserGateway(
+      sessionManager, createMemoryEventStore(() => false), piGateway,
+      undefined, undefined, makeStubOrderManager({}),
+    );
+    return { gateway };
+  }
+
+  function lastUpdate(ws: ReturnType<typeof makeFakeWs>): Record<string, unknown> | undefined {
+    const ups = sentMessages(ws)
+      .filter((m) => m.type === "session_updated")
+      .map((m) => m.updates as Record<string, unknown>);
+    return ups.at(-1);
+  }
+
+  it("broadcastSessionUpdated carries a fresh bridgeConnected that flips connected<->disconnected", () => {
+    const connectedRef = { on: true };
+    const { gateway } = makeMutableGateway(connectedRef);
+    const ws = makeFakeWs();
+    gateway.wss.emit("connection", ws, {});
+
+    // connected -> the update carries bridgeConnected: true.
+    ws.send.mockClear();
+    gateway.broadcastSessionUpdated("s1", { status: "active" });
+    expect(lastUpdate(ws)?.bridgeConnected).toBe(true);
+
+    // close clears the connection map -> next broadcast flips to false. isSessionConnected
+    // is read at broadcast time (G5 ordering), so post-map-clear it reads false.
+    connectedRef.on = false;
+    ws.send.mockClear();
+    gateway.broadcastSessionUpdated("s1", { status: "idle" });
+    expect(lastUpdate(ws)?.bridgeConnected).toBe(false);
+
+    // re-register -> connected again -> flips back to true.
+    connectedRef.on = true;
+    ws.send.mockClear();
+    gateway.broadcastSessionUpdated("s1", { status: "active" });
+    expect(lastUpdate(ws)?.bridgeConnected).toBe(true);
+  });
+
+  it("broadcastSessionUpdated normalizes status to ended when endedAt is set (FIX-C3 live-update path)", () => {
+    const connectedRef = { on: false };
+    const { gateway } = makeMutableGateway(connectedRef);
+    const ws = makeFakeWs();
+    gateway.wss.emit("connection", ws, {});
+    ws.send.mockClear();
+    gateway.broadcastSessionUpdated("s1", { endedAt: 1784279971285 });
+    const upd = lastUpdate(ws);
+    expect(upd?.status).toBe("ended");
+    expect(upd?.endedAt).toBe(1784279971285);
+  });
+});
