@@ -11,6 +11,7 @@ import type { NetworkGuard } from "./route-deps.js";
 import { extractFileChanges, enrichWithGitDiff } from "../session-diff.js";
 import { makeRestSessionGate } from "../rest-session-gate.js";
 import { classifyCellHttpActor } from "../cell-access-http.js";
+import { projectSession } from "../session-projection.js";
 import {
   reconcileSessionHygiene,
   evaluateRetire,
@@ -87,9 +88,12 @@ export function registerSessionRoutes(
       }
     }
     const all = sessionManager.listAll();
-    const data = actor === "guest" && cellAccess
+    const visible = actor === "guest" && cellAccess
       ? cellAccess.filterSessions((request as any).restPrincipal ?? null, all)
       : all;
+    // FIX-C2/C3: annotate the ALREADY-visible set (bridgeConnected + endedAt-norm)
+    // AFTER the guest-visibility filter, so it can never widen what a guest sees.
+    const data = visible.map((s) => projectSession(s, hygieneProbes.isSessionConnected));
     return { success: true, data } satisfies ApiResponse;
   });
 

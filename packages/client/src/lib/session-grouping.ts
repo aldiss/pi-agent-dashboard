@@ -214,7 +214,7 @@ export function filterSessions(
   showHidden: boolean,
 ): DashboardSession[] {
   return sessions.filter((s) => {
-    if (activeOnly && s.status === "ended") return false;
+    if (activeOnly && (s.status === "ended" || s.endedAt != null)) return false;
     if (s.hidden && !showHidden) return false;
     return true;
   });
@@ -245,7 +245,13 @@ export function filterStaleSessions(
   const cutoff = now - staleHoursThreshold * 3600 * 1000;
   return sessions.filter((s) => {
     if (s.id === selectedId) return true;
-    if (s.status === "ended") return true;
+    // FIX-C3 client defense: endedAt-set ⟹ ended (projectSession already normalizes
+    // status, but a legacy/unprojected row is caught here) → never rendered stale-active.
+    if (s.status === "ended" || s.endedAt != null) return true;
+    // FIX-C2: a live bridge socket (bridgeConnected === true, projected from
+    // isSessionConnected) is never stale-hidden. STRICT === true; absent/legacy
+    // falls through to the cutoff test (fail-closed).
+    if (s.bridgeConnected === true) return true;
     // Use the canonical activityTimestamp (build-2 fix-cycle NIT 2 wiring): same
     // semantics as the prior inline `Math.max(lastActivityAt ?? 0, startedAt)`
     // for a live row, but with the shared stale/NaN guard so misbanding can't
@@ -466,7 +472,7 @@ export function stablePartitionByBand(
   for (const id of ids) {
     const s = sessionMap.get(id);
     if (!s) { calm.push(id); continue; }
-    if (s.status === "ended") { ended.push(id); continue; }
+    if (s.status === "ended" || s.endedAt != null) { ended.push(id); continue; }
     if (isNeedsYou(s)) { needs.push(id); continue; }
     calm.push(id);
   }

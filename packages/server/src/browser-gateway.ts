@@ -15,6 +15,7 @@ import type { PiGateway } from "./pi-gateway.js";
 import type { TokenPayload } from "./auth.js";
 // PendingLoadManager removed — server loads sessions directly via DirectoryService
 import { createHeadlessPidRegistry, type HeadlessPidRegistry } from "./headless-pid-registry.js";
+import { projectSession } from "./session-projection.js";
 import type { PendingForkRegistry } from "./pending-fork-registry.js";
 import type { SessionOrderManager } from "./session-order-manager.js";
 import type { PreferencesStore } from "./preferences-store.js";
@@ -435,7 +436,9 @@ export function createBrowserGateway(
   }
 
   function sendSessionsSnapshot(ws: WebSocket): void {
-    const sessionsSnapshot = sessionManager.listAll();
+    const sessionsSnapshot = sessionManager
+      .listAll()
+      .map((s) => projectSession(s, (id) => piGateway.isSessionConnected(id)));
     const orders: Record<string, string[]> = {};
     if (sessionOrderManager) {
       for (const [cwd, sessionIds] of Object.entries(sessionOrderManager.getAllOrders())) {
@@ -1012,13 +1015,23 @@ export function createBrowserGateway(
       // correlation. See change: spawn-correlation-token.
       broadcast({
         type: "session_added",
-        session,
+        session: projectSession(session, (id) => piGateway.isSessionConnected(id)),
         ...(opts?.spawnRequestId ? { spawnRequestId: opts.spawnRequestId } : {}),
       });
     },
 
     broadcastSessionUpdated(sessionId: string, updates: any) {
-      broadcast({ type: "session_updated", sessionId, updates });
+      // FIX-C2/C3 on the live-update path: carry the current bridgeConnected
+      // oracle (ordered — isSessionConnected reflects the post-mutation connection
+      // map) + normalize endedAt ⟹ ended so a close that stamps endedAt can never
+      // leave the client rendering the row active.
+      const endedAt = updates.endedAt !== undefined ? updates.endedAt : sessionManager.get(sessionId)?.endedAt;
+      const projected = {
+        ...updates,
+        bridgeConnected: piGateway.isSessionConnected(sessionId),
+        ...(endedAt != null ? { status: "ended" } : {}),
+      };
+      broadcast({ type: "session_updated", sessionId, updates: projected });
     },
 
     broadcastSessionRemoved(sessionId: string) {

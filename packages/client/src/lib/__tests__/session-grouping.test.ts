@@ -110,6 +110,32 @@ describe("filterStaleSessions", () => {
     const result = filterStaleSessions([stale], 24, true, NOW);
     expect(result.map((s) => s.id)).toEqual(["ended"]);
   });
+
+  it("C4: keeps a bridge-connected session with old timestamps; hides the disconnected control", () => {
+    const connected = mkStale("connected", { lastActivityAt: NOW - 48 * HOUR, bridgeConnected: true });
+    const control = mkStale("control", { lastActivityAt: NOW - 48 * HOUR, bridgeConnected: false });
+    const result = filterStaleSessions([connected, control], 24, true, NOW);
+    expect(result.map((s) => s.id)).toEqual(["connected"]);
+  });
+
+  it("C6: an old-but-connected standing seat (Faye-class) stays visible", () => {
+    // Old lastActivityAt + old startedAt, but the bridge socket is live -> never hidden.
+    const faye = mkStale("faye", { startedAt: NOW - 500 * HOUR, lastActivityAt: NOW - 500 * HOUR, bridgeConnected: true });
+    const result = filterStaleSessions([faye], 24, true, NOW);
+    expect(result.map((s) => s.id)).toEqual(["faye"]);
+  });
+
+  it("FIX-C3 client: an endedAt-set row is treated as ended (exempt from the stale cull)", () => {
+    const endedStale = mkStale("endedAt-set", { status: "idle", endedAt: NOW - 50 * HOUR, lastActivityAt: NOW - 50 * HOUR });
+    const result = filterStaleSessions([endedStale], 24, true, NOW);
+    expect(result.map((s) => s.id)).toEqual(["endedAt-set"]);
+  });
+
+  it("FIX-C2 STRICT: bridgeConnected only exempts on === true (absent/false falls through to cutoff)", () => {
+    const undef = mkStale("undef", { lastActivityAt: NOW - 48 * HOUR }); // no bridgeConnected -> stale-hidden
+    const result = filterStaleSessions([undef], 24, true, NOW);
+    expect(result.map((s) => s.id)).toEqual([]);
+  });
 });
 
 describe("classifyTier", () => {

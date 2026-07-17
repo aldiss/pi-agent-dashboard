@@ -168,6 +168,14 @@ export interface DashboardSession {
   bridgeDisconnectReason?: BridgeDisconnectReason;
   /** Epoch ms when the bridge last disconnected (paired with bridgeDisconnectReason). */
   bridgeDisconnectAt?: number;
+  /**
+   * Derived, NON-PERSISTED (FIX-C2): is the :9999 bridge socket currently
+   * connected for this session (PiGateway.isSessionConnected)? Computed at
+   * projection time (projectSession) for REST + WS surfaces, never stored on the
+   * persisted core. The client stale-filter exempts `=== true` from cutoff-hide;
+   * absent/legacy → falls through to normal stale logic (fail-closed).
+   */
+  bridgeConnected?: boolean;
   /** Active child processes detected by bridge process scanner */
   processes?: Array<{ pid: number; pgid: number; command: string; elapsedMs: number }>;
   /** Latest process metrics from the pi agent */
