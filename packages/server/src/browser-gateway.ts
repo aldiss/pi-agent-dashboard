@@ -16,6 +16,7 @@ import type { TokenPayload } from "./auth.js";
 // PendingLoadManager removed — server loads sessions directly via DirectoryService
 import { createHeadlessPidRegistry, type HeadlessPidRegistry } from "./headless-pid-registry.js";
 import { projectSession } from "./session-projection.js";
+import type { DashboardSession } from "@blackbelt-technology/pi-dashboard-shared/types.js";
 import type { PendingForkRegistry } from "./pending-fork-registry.js";
 import type { SessionOrderManager } from "./session-order-manager.js";
 import type { PreferencesStore } from "./preferences-store.js";
@@ -381,6 +382,16 @@ export function createBrowserGateway(
   /** Max buffered bytes per browser WebSocket before dropping messages (0 = no limit) */
   const MAX_WS_BUFFER = maxWsBufferBytes ?? 4 * 1024 * 1024; // 4MB default
 
+  // FIX-C2 #2 (preserve-projection-after-authz): the principal filter re-fetches
+  // canonical rows via getSession for security (never trusting the raw candidate).
+  // Project that canonical row so bridgeConnected + endedAt-norm survive the guest/
+  // cellAccess snapshot too. Annotate-only: the filter still decides visibility, so
+  // this never widens a principal's visible set (the cell-access filter is untouched).
+  const projectedGetSession = (id: string): DashboardSession | undefined => {
+    const s = sessionManager.get(id);
+    return s ? projectSession(s, (sid) => piGateway.isSessionConnected(sid)) : undefined;
+  };
+
   function sendTo(ws: WebSocket, msg: ServerToBrowserMessage, origin: "core" | "plugin" = "core") {
     if (ws.readyState !== WebSocket.OPEN) return;
     let outgoing = msg;
@@ -394,7 +405,7 @@ export function createBrowserGateway(
         msg,
         principals.get(ws) ?? null,
         cellAccess,
-        (id) => sessionManager.get(id),
+        projectedGetSession,
         visible,
         origin,
       );
@@ -589,7 +600,7 @@ export function createBrowserGateway(
             msg,
             ctx.principal,
             cellAccess,
-            (id) => sessionManager.get(id),
+            projectedGetSession,
           );
           if (!boundary.allowed) {
             console.error(
