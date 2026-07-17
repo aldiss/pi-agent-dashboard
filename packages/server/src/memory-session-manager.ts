@@ -92,6 +92,13 @@ export function createMemorySessionManager(): SessionManager {
           // (FATAL 1B). Cleared only by a live recovery event or session_view.
           // See change: build-2-dashboard-v3.
           unseenServerError: existing.unseenServerError,
+          // FIX-C1 (Bug-C): preserve lastActivityAt across a bare bridge
+          // re-registration. register() runs on every bridge registration and
+          // never sets lastActivityAt itself, so without this a reconnect/restart
+          // drops it to undefined — the client stale-filter then reads
+          // max(0, startedAt) and false-hides a live-but-just-reconnected
+          // session. The next real activity event still updates it.
+          lastActivityAt: existing.lastActivityAt,
         } : {
           tokensIn: 0,
           tokensOut: 0,

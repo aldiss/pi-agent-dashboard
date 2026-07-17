@@ -39,6 +39,22 @@ describe("memory-session-manager", () => {
     expect(sm.get("s1")?.model).toBe("test/model");
   });
 
+  it("preserves lastActivityAt across a bare re-register (FIX-C1)", () => {
+    // A bridge reconnect / server-restart re-registers the same id with no
+    // activity param. Without the carry-over, lastActivityAt drops to undefined
+    // and the client stale-filter reads max(0, startedAt) -> false-hides a
+    // live-but-just-reconnected session. Assert it survives + no carry regression.
+    const sm = createMemorySessionManager();
+    sm.register({ id: "s1", cwd: "/tmp", source: "tui" });
+    sm.update("s1", { lastActivityAt: 12345, tokensIn: 100, cost: 5 });
+    // Re-register (reattach) with no activity param.
+    sm.register({ id: "s1", cwd: "/tmp", source: "tui" });
+    const s = sm.get("s1");
+    expect(s?.lastActivityAt).toBe(12345); // NOT dropped to undefined
+    expect(s?.tokensIn).toBe(100); // existing carry-over unregressed
+    expect(s?.cost).toBe(5);
+  });
+
   it("updates hidden state on session object", () => {
     const sm = createMemorySessionManager();
     sm.register({ id: "s1", cwd: "/tmp", source: "tui" });
