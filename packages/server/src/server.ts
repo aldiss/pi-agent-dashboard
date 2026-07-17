@@ -60,7 +60,9 @@ import type { PushPrefs } from "./push/push-types.js";
 import { registerSessionApi } from "./session-api.js";
 import { createOperatorSetTracker } from "./operator-set-tracker.js";
 import { createCellAccessController } from "./cell-access.js";
-import { cellHttpRouteKey, createCellAccessHttpGate } from "./cell-access-http.js";
+import { createCellAccessHttpGate } from "./cell-access-http.js";
+import { createCoreRouteRegistry } from "./core-route-registry.js";
+import { hostWsUpgradeAllowed, createHostWsRegistry } from "./host-ws-guard.js";
 import { configureAgentPresence, resetAgentPresence } from "./agent-presence.js";
 import { registerSessionRoutes } from "./routes/session-routes.js";
 import { registerGitRoutes } from "./routes/git-routes.js";
@@ -707,6 +709,10 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
   });
 
   const terminalGateway = createTerminalGateway(terminalManager);
+  // B5: registry of open terminal/editor sockets keyed by bound principal, so an
+  // allowedUsers revocation can actively close sockets whose principal is no
+  // longer admitted.
+  const hostWsRegistry = createHostWsRegistry();
 
   // Create editor manager for code-server instances
   const editorDetection = detectCodeServerBinary(config.editor);
@@ -969,14 +975,14 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
   });
 
   // Record routes owned by core registration. Plugin routes load later in
-  // start(); reserved public names are safe only when this set proves core owns
-  // the exact method+path.
-  const coreCellRoutes = new Set<string>();
-  let recordCoreCellRoutes = true;
+  // start(); reserved public names are safe only when this ledger proves core
+  // owns the exact method+path AND no later plugin collided on it (a collision
+  // revokes the core claim — a plugin cannot inherit core ownership by
+  // registering the same forgeable method+path key).
+  const coreRouteRegistry = createCoreRouteRegistry();
   fastify.addHook("onRoute", (route) => {
-    if (!recordCoreCellRoutes) return;
     const methods = Array.isArray(route.method) ? route.method : [route.method];
-    for (const method of methods) coreCellRoutes.add(cellHttpRouteKey(String(method), route.url));
+    for (const method of methods) coreRouteRegistry.observe(String(method), route.url);
   });
 
   // Root-scoped fail-closed HTTP boundary. `onRequest` runs before any plugin
@@ -986,7 +992,7 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
     cellAccess,
     getSession: (id) => sessionManager.get(id),
     getAuthSecret: () => config.authConfig?.secret,
-    isCoreRoute: (method, route) => coreCellRoutes.has(cellHttpRouteKey(method, route)),
+    isCoreRoute: (method, route) => coreRouteRegistry.isCoreRoute(method, route),
   }));
 
   // Compression: gzip/deflate for HTTP responses. Critical for large client
@@ -1205,7 +1211,13 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
     networkGuard,
     store: openspecGroupStore,
   });
-  registerSystemRoutes(fastify, { sessionManager, preferencesStore, metaPersistence, config, networkGuard, version: pkgVersion, commit: deployCommit, directoryService, piGateway, bootstrapState, eventStore, cellAccess, onCellAccessChanged: () => browserGateway.refreshAccessSnapshots() });
+  registerSystemRoutes(fastify, { sessionManager, preferencesStore, metaPersistence, config, networkGuard, version: pkgVersion, commit: deployCommit, directoryService, piGateway, bootstrapState, eventStore, cellAccess, onCellAccessChanged: () => {
+    browserGateway.refreshAccessSnapshots();
+    // B5: after an allowedUsers change, close any open terminal/editor socket
+    // whose bound principal is no longer admitted (isPrincipalAdmitted now
+    // reflects the updated roster).
+    hostWsRegistry.closeRevoked((principal) => cellAccess.isPrincipalAdmitted(principal));
+  } });
   // Path B sister-coupling primitive — operator-active-surfaces canonical index.
   // See packages/server/src/routes/surfaces-routes.ts + cell:
   // pi-agent-dashboard-ux-message-discoverability/v1 (W4.4 + W6 Feature 4).
@@ -1690,8 +1702,10 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
       // register routes. Fastify rejects route registration after listen().
       // Failure-isolated per-plugin via loader; awaited so all routes are
       // mounted before requests can arrive. From this point on, onRoute entries
-      // are plugin-owned and cannot claim reserved core public route names.
-      recordCoreCellRoutes = false;
+      // are plugin-owned and cannot claim reserved core public route names — the
+      // onRoute hook keeps firing so a plugin colliding on a core method+path is
+      // observed and its inherited core claim is revoked.
+      coreRouteRegistry.freezeCore();
       try {
         await loadServerEntries({
           isEnabled: (pluginId) => {
@@ -1777,12 +1791,27 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
           if (cellAccess.enabled && isHostWs) {
             const forwarded = request.headers["x-forwarded-for"] !== undefined;
             const directLocal = !decision.principal && isLoopback(remoteAddress) && !forwarded;
-            const operator = !!decision.principal
-              && cellAccess.roleForPrincipal(decision.principal) === "operator";
-            if (!operator && !directLocal) {
+            // B5: authorize on CURRENT admission, not only the startup-frozen
+            // operator role — a principal revoked from allowedUsers must be
+            // denied even with a still-valid cookie.
+            const allowed = hostWsUpgradeAllowed({
+              principal: decision.principal,
+              isOperatorRole: !!decision.principal
+                && cellAccess.roleForPrincipal(decision.principal) === "operator",
+              isAdmitted: cellAccess.isPrincipalAdmitted(decision.principal),
+              directLocal,
+            });
+            if (!allowed) {
               socket.write("HTTP/1.1 403 Forbidden\r\n\r\n");
               socket.destroy();
               return;
+            }
+            // B5: track the principal-bound host socket so a later allowedUsers
+            // revocation can actively CLOSE it (host sockets don't self-close on
+            // a cookie roster change). Direct-local cookie-less sockets are
+            // admitted by locality, not principal, so they aren't tracked.
+            if (decision.principal) {
+              hostWsRegistry.register(socket, decision.principal);
             }
           }
           // Bind the verified principal (may be null in single-operator mode)
