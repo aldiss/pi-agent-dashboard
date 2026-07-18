@@ -224,6 +224,12 @@ export function verifyState(state: unknown, secret: string): VerifiedState {
  * ourselves); throws on any deviation.
  */
 export function validateNativeRedirect(uri: unknown): string {
+  // WIRE-EXACT primary gate: the ONLY accepted value is the byte-exact canonical string.
+  // URL-component checks ALONE are parsing-variance-vulnerable — Node accepts empty-but-
+  // present aliases (pidashboard://auth-done with a trailing ? / # / : / @) whose NORMALIZED
+  // components look exact. So accept only the raw exact string; the component checks below
+  // now ONLY ever throw (specific reject-reasons) — they never accept. (Pete MAJOR-1 dl-9108.)
+  if (uri === "pidashboard://auth-done") return "pidashboard://auth-done";
   if (typeof uri !== "string" || uri.length === 0) throw new Error("invalid_native_redirect");
   let u: URL;
   try {
@@ -235,10 +241,12 @@ export function validateNativeRedirect(uri: unknown): string {
   if (u.hostname !== "auth-done") throw new Error("invalid_native_redirect");
   if (u.username || u.password) throw new Error("invalid_native_redirect");
   if (u.port) throw new Error("invalid_native_redirect");
-  if (u.pathname !== "") throw new Error("invalid_native_redirect"); // reject ANY path incl trailing "/"
+  if (u.pathname !== "") throw new Error("invalid_native_redirect");
   if (u.search) throw new Error("invalid_native_redirect");
   if (u.hash) throw new Error("invalid_native_redirect");
-  return "pidashboard://auth-done";
+  // Passed every component check but is NOT the byte-exact canonical (an empty-alias
+  // wire-variant like a trailing ? / # / : / @) → reject.
+  throw new Error("invalid_native_redirect");
 }
 
 /**
@@ -278,15 +286,36 @@ export function safeOrigin(baseUrl: string): string | null {
  * returned twice, and an expired code is never returned). 256-bit codes + a 60s TTL make
  * brute-force/replay infeasible.
  */
-export function createAuthCodeStore(): {
-  put: (code: string, token: string, opts: { ttlMs: number }) => void;
+export function createAuthCodeStore(opts?: { maxEntries?: number }): {
+  put: (code: string, token: string, o: { ttlMs: number }) => void;
   take: (code: unknown) => string | null;
+  sweepExpired: () => number;
   size: () => number;
 } {
   const store = new Map<string, { token: string; expiresAt: number }>();
+  const MAX = opts?.maxEntries ?? 10_000;
+  function sweepExpired(): number {
+    const now = Date.now();
+    let removed = 0;
+    for (const [c, e] of store) {
+      if (now > e.expiresAt) {
+        store.delete(c);
+        removed++;
+      }
+    }
+    return removed;
+  }
   return {
-    put(code, token, opts) {
-      store.set(code, { token, expiresAt: Date.now() + opts.ttlMs });
+    put(code, token, o) {
+      // Bound memory (Pete MAJOR-3 dl-9108): sweep expired when at the cap, then hard-cap by
+      // evicting the oldest insertion, so unredeemed codes can never grow without bound.
+      if (store.size >= MAX) sweepExpired();
+      while (store.size >= MAX) {
+        const oldest = store.keys().next().value;
+        if (oldest === undefined) break;
+        store.delete(oldest);
+      }
+      store.set(code, { token, expiresAt: Date.now() + o.ttlMs });
     },
     take(code) {
       if (typeof code !== "string" || code.length === 0) return null;
@@ -296,7 +325,37 @@ export function createAuthCodeStore(): {
       if (Date.now() > entry.expiresAt) return null; // expiry-at-take
       return entry.token;
     },
+    sweepExpired,
     size: () => store.size,
+  };
+}
+
+/**
+ * Fixed-window per-key rate limiter (Pete MAJOR-3 dl-9108 / design lines 54,73). `check(key)`
+ * returns false when the key exceeds `max` hits in the current `windowMs` window (in-memory,
+ * self-pruning on window roll). Keyed by caller IP for the exchange endpoint so a single
+ * caller cannot brute-force/replay codes unbounded.
+ */
+export function createRateLimiter(opts: { max: number; windowMs: number }): {
+  check: (key: string) => boolean;
+  reset: () => void;
+} {
+  const hits = new Map<string, { count: number; resetAt: number }>();
+  return {
+    check(key) {
+      const now = Date.now();
+      const e = hits.get(key);
+      if (!e || now >= e.resetAt) {
+        hits.set(key, { count: 1, resetAt: now + opts.windowMs });
+        return true;
+      }
+      if (e.count >= opts.max) return false;
+      e.count++;
+      return true;
+    },
+    reset() {
+      hits.clear();
+    },
   };
 }
 
@@ -354,8 +413,12 @@ export async function registerAuthPlugin(
     bypassHosts: resolvedTrustedNetworks ?? authConfig.bypassHosts ?? [],
   };
 
-  // Single-use code store for the native code-exchange flow (per-plugin instance).
-  const authCodeStore = createAuthCodeStore();
+  // Single-use code store + per-IP rate limiter for the native code-exchange flow (per-plugin
+  // instances). A periodic unref'd sweep bounds expired-code retention (Pete MAJOR-3 dl-9108).
+  const authCodeStore = createAuthCodeStore({ maxEntries: 10_000 });
+  const exchangeRateLimiter = createRateLimiter({ max: 30, windowMs: 60_000 });
+  const authCodeSweep = setInterval(() => authCodeStore.sweepExpired(), 60_000);
+  if (typeof (authCodeSweep as any).unref === "function") (authCodeSweep as any).unref();
 
   // Tag requests with authentication status (read by createNetworkGuard) and
   // the Build 1b REST-captured identity. Registered here — BEFORE the
@@ -569,9 +632,14 @@ export async function registerAuthPlugin(
   };
 
   fastify.options("/api/auth/exchange", async (request, reply) => {
-    applyExchangeCors(request, reply);
     const trustedOrigin = safeOrigin(getPublicBaseUrl(port));
-    if (request.headers.origin && trustedOrigin !== null && request.headers.origin === trustedOrigin) {
+    const origin = request.headers.origin;
+    // Reject a present non-exact Origin (consistent with the POST); native/no-Origin + exact pass.
+    if (typeof origin === "string" && origin.length > 0 && origin !== trustedOrigin) {
+      return reply.code(403).send();
+    }
+    applyExchangeCors(request, reply);
+    if (typeof origin === "string" && origin === trustedOrigin) {
       reply.header("Access-Control-Allow-Methods", "POST, OPTIONS");
       reply.header("Access-Control-Allow-Headers", "content-type");
     }
@@ -579,10 +647,22 @@ export async function registerAuthPlugin(
   });
 
   fastify.post("/api/auth/exchange", async (request, reply) => {
-    applyExchangeCors(request, reply);
-    // The JWT must never be cached by any intermediary.
+    // The JWT must never be cached by any intermediary (build-note dl-8927 #1).
     reply.header("Cache-Control", "no-store");
     reply.header("Pragma", "no-cache");
+    // Reject a PRESENT non-exact Origin BEFORE consuming the code (Pete MAJOR-2 dl-9108): a
+    // cross-origin browser must not be able to BURN a single-use code (CORS only blocks the
+    // response read, not the server-side execution). Native URLSession sends no Origin → allowed.
+    const trustedOrigin = safeOrigin(getPublicBaseUrl(port));
+    const origin = request.headers.origin;
+    if (typeof origin === "string" && origin.length > 0 && origin !== trustedOrigin) {
+      return reply.code(403).send({ error: "forbidden_origin" });
+    }
+    // Per-IP rate bound BEFORE take (Pete MAJOR-3): a rate-limited caller must not burn codes.
+    if (!exchangeRateLimiter.check(request.ip)) {
+      return reply.code(429).send({ error: "rate_limited" });
+    }
+    applyExchangeCors(request, reply); // reflect ACAO only on the exact-origin match
     const token = authCodeStore.take((request.body as any)?.code);
     if (!token) {
       // NEVER log the code or the JWT (build-note dl-8927 #3).
