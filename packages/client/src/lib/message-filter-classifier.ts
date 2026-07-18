@@ -14,6 +14,7 @@ import type { ChatMessage } from "./event-reducer.js";
 import type { ChatItem, ToolCallGroup } from "./group-tool-calls.js";
 import type { MessageFilter } from "./message-filter-storage.js";
 import { DEFAULT_MESSAGE_FILTER } from "./message-filter-storage.js";
+import type { SessionTier } from "./session-grouping.js";
 
 export type MessageCategory =
   | "tierA"
@@ -42,12 +43,55 @@ const TOOL_CALL_ROLES: ReadonlySet<ChatMessage["role"]> = new Set<ChatMessage["r
 ]);
 
 /**
+ * Session context for the operator-addressed classification (coverage-contract
+ * #1 — the shared operator-addressed classifier). Carries the session TIER
+ * derived from `classifyTier` (session-grouping.ts) — spawn-source (`source`)
+ * + role-registry canonical name — so a pre-stamp `user`/`assistant` row can be
+ * classified operator-addressed vs mesh WITHOUT a stamp. `role` alone can't
+ * decide it (a `user` row in a driver session is a mesh-injected dispatch brief;
+ * a driver's `assistant` reply is addressed to its dispatcher, not the operator).
+ */
+export interface AudienceSessionCtx {
+  /** The owning session's tier from classifyTier (spawn-source + canonical name). */
+  tier?: SessionTier;
+}
+
+/**
+ * Retrospective audience for a pre-stamp `user`/`assistant` row, derived from
+ * the session tier. FAIL-OPEN to "operator" when the tier is absent/unknown
+ * (`other` / undefined) — an unclassifiable row is SHOWN + linted, never
+ * hidden-and-unlinted (§1.9 classifier-SPOF mitigation).
+ */
+function retrospectiveAudience(ctx?: AudienceSessionCtx): "operator" | "agent" {
+  switch (ctx?.tier) {
+    case "cell-executor":
+    case "worker":
+      // Mesh-dispatched work: the reply is addressed to the dispatcher.
+      return "agent";
+    case "operator-chat-pane":
+    case "standing-crew":
+    case "other":
+    case undefined:
+    default:
+      // operator-chat-pane / standing-crew = operator-facing; unknown = FAIL-OPEN.
+      return "operator";
+  }
+}
+
+/**
  * Classify a single ChatMessage or a grouped ToolCallGroup into one of the
  * six categories. Grouped tool-calls always classify as `toolCalls` since
  * groupConsecutiveToolCalls only forms groups from same-tool toolResult
  * rows (see group-tool-calls.ts).
+ *
+ * `sessionCtx` (optional) supplies the owning session's tier for the
+ * operator-addressed vs mesh-chatter decision on plain user/assistant rows.
+ * Omitted → the retrospective heuristic fails open to operator-addressed.
  */
-export function classifyMessage(msg: ChatMessage | ToolCallGroup): MessageCategory {
+export function classifyMessage(
+  msg: ChatMessage | ToolCallGroup,
+  sessionCtx?: AudienceSessionCtx,
+): MessageCategory {
   // Grouped tool calls: always tool-calls category.
   if ((msg as ToolCallGroup).type === "group") return "toolCalls";
 
@@ -77,10 +121,21 @@ export function classifyMessage(msg: ChatMessage | ToolCallGroup): MessageCatego
   // narrative content.
   if (m.role === "user" && m.skill) return "tierB";
 
-  // Plain user / assistant text rows are mesh-chatter (narrative chat the
-  // operator can dim away when scanning for asks). Per W4.2 brief: user
-  // text without skill envelope + assistant text classify as mesh-chatter.
-  if (m.role === "user" || m.role === "assistant") return "meshChatter";
+  // Plain user / assistant text rows: operator-addressed vs mesh-chatter.
+  // THE :83 FIX (coverage-contract #1). Previously this returned `meshChatter`
+  // for EVERY plain user/assistant row — mislabeling an agent's reply *to the
+  // operator* AND the operator's own typed prompts as chatter, so the "Mesh
+  // chatter" toggle hid both. Now:
+  //   - stamp-at-emit wins (source of truth): `m.audience` when present;
+  //   - else the retrospective heuristic derives audience from the session tier;
+  //   - operator-addressed → `tierB` (visible-by-default + the operator-voice
+  //     lint sees it); agent-addressed → `meshChatter` (internal mesh, §16
+  //     left alone). One definition, two projections: the lint consumes the
+  //     DIRECTION; the toggle keeps the operator CONVERSATION.
+  if (m.role === "user" || m.role === "assistant") {
+    const audience = m.audience ?? retrospectiveAudience(sessionCtx);
+    return audience === "operator" ? "tierB" : "meshChatter";
+  }
 
   // Defensive default: anything not enumerated above falls into Tier-B
   // (visible by default) rather than disappearing. New role values added
@@ -102,9 +157,10 @@ export function classifyMessage(msg: ChatMessage | ToolCallGroup): MessageCatego
 export function filterMessages(
   items: ChatItem[],
   filter: MessageFilter,
-  options?: { alwaysVisibleEntryIds?: Set<string> }
+  options?: { alwaysVisibleEntryIds?: Set<string>; sessionCtx?: AudienceSessionCtx }
 ): ChatItem[] {
   const alwaysVisible = options?.alwaysVisibleEntryIds;
+  const sessionCtx = options?.sessionCtx;
   return items.filter((item) => {
     // Pinned items (by entryId) are always visible, regardless of category.
     if (alwaysVisible && alwaysVisible.size > 0) {
@@ -119,7 +175,7 @@ export function filterMessages(
       }
     }
 
-    const category = classifyMessage(item);
+    const category = classifyMessage(item, sessionCtx);
     return filter[category];
   });
 }
@@ -129,7 +185,10 @@ export function filterMessages(
  * shown in MessageFilterControls. Counts pre-filter so the operator can
  * see "how many messages would this toggle reveal/hide" before flipping it.
  */
-export function countMessagesByCategory(items: ChatItem[]): Record<MessageCategory, number> {
+export function countMessagesByCategory(
+  items: ChatItem[],
+  sessionCtx?: AudienceSessionCtx,
+): Record<MessageCategory, number> {
   const counts: Record<MessageCategory, number> = {
     tierA: 0,
     tierB: 0,
@@ -139,7 +198,7 @@ export function countMessagesByCategory(items: ChatItem[]): Record<MessageCatego
     systemNotifications: 0,
   };
   for (const item of items) {
-    counts[classifyMessage(item)]++;
+    counts[classifyMessage(item, sessionCtx)]++;
   }
   return counts;
 }

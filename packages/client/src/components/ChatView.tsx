@@ -35,6 +35,7 @@ import {
   filterMessages as applyMessageFilter,
   countMessagesByCategory,
   isAllOn as isAllCategoriesOn,
+  type AudienceSessionCtx,
 } from "../lib/message-filter-classifier.js";
 import { MessageFilterControls } from "./MessageFilterControls.js";
 import { PinnedMessagesSection } from "./PinnedMessagesSection.js";
@@ -51,6 +52,15 @@ interface Props {
   sessionId?: string;
   state: SessionState;
   toolContext: ToolContext;
+  /**
+   * The owning session's audience context (tier from classifyTier) for the
+   * operator-addressed vs mesh-chatter classification (coverage-contract #1).
+   * Resolved in App.tsx from the DashboardSession (which carries source/name/
+   * sessionFile/cwd) — ChatView only has per-session SessionState, so the tier
+   * is computed by the parent and threaded in. Omitted → classifier fails open
+   * to operator-addressed.
+   */
+  sessionCtx?: AudienceSessionCtx;
   onCancelPending?: () => void;
   onRespondToUi?: (requestId: string, result?: unknown, cancelled?: boolean) => void;
   onAbort?: () => void;
@@ -177,7 +187,7 @@ export interface ChatViewHandle {
   toggleSearch: () => void;
 }
 
-export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ sessionId, state, toolContext, onCancelPending, onRespondToUi, onAbort, onForceKill, onForkFromMessage, onDismissError, onRetryAfterError, showFilterControls, onCloseFilterControls }, ref) {
+export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ sessionId, state, toolContext, sessionCtx, onCancelPending, onRespondToUi, onAbort, onForceKill, onForkFromMessage, onDismissError, onRetryAfterError, showFilterControls, onCloseFilterControls }, ref) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const isNearBottom = useRef(true);
   const programmaticScroll = useRef(false);
@@ -401,7 +411,7 @@ export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ se
     setMessageFilterState(next);
     if (sessionId) setMessageFilter(sessionId, next);
   }, [sessionId]);
-  const categoryCounts = useMemo(() => countMessagesByCategory(groupedMessages), [groupedMessages]);
+  const categoryCounts = useMemo(() => countMessagesByCategory(groupedMessages, sessionCtx), [groupedMessages, sessionCtx]);
 
   // Feature 3 (W4.3) — pinned messages state. ChatView owns the canonical
   // Set<entryId>; storage is per-session localStorage. State + storage are
@@ -466,8 +476,8 @@ export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ se
 
   const visibleMessages = useMemo(() => {
     if (isAllCategoriesOn(messageFilter)) return groupedMessages;
-    return applyMessageFilter(groupedMessages, messageFilter, { alwaysVisibleEntryIds: pinnedEntryIds });
-  }, [groupedMessages, messageFilter, pinnedEntryIds]);
+    return applyMessageFilter(groupedMessages, messageFilter, { alwaysVisibleEntryIds: pinnedEntryIds, sessionCtx });
+  }, [groupedMessages, messageFilter, pinnedEntryIds, sessionCtx]);
   const isFilterActive = !isDefaultMessageFilter(messageFilter);
   const hiddenCount = groupedMessages.length - visibleMessages.length;
 
