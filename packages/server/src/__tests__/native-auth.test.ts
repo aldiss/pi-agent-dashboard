@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import crypto from "node:crypto";
 import {
   signState,
@@ -261,5 +261,48 @@ describe("createRateLimiter — Pete MAJOR-3 dl-9108: per-key fixed-window bound
     expect(rl.check("ipB")).toBe(true); // independent key
     rl.reset();
     expect(rl.check("ipA")).toBe(true); // reset clears the window
+  });
+  it("sweeps expired distinct keys so the key Map stays bounded (fake clock) — Pete/Alice lifecycle", () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(0);
+      const rl = createRateLimiter({ max: 5, windowMs: 1000 });
+      for (let i = 0; i < 500; i++) rl.check(`ip-${i}`); // 500 distinct keys, windows resetAt=1000
+      expect(rl.size()).toBe(500);
+      vi.setSystemTime(2000); // all windows elapsed
+      expect(rl.sweepExpired()).toBe(500);
+      expect(rl.size()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it("distinct-key cap FAIL-CLOSED: denies new keys when full of LIVE distinct keys (never grows unbounded)", () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(0);
+      const rl = createRateLimiter({ max: 5, windowMs: 60_000, maxKeys: 100 });
+      for (let i = 0; i < 100; i++) expect(rl.check(`ip-${i}`)).toBe(true); // fill to cap, all live
+      expect(rl.size()).toBe(100);
+      expect(rl.check("ip-overflow")).toBe(false); // FAIL-CLOSED — deny a new key, don't grow the Map
+      expect(rl.size()).toBe(100);
+      expect(rl.check("ip-0")).toBe(true); // an existing live key still counts (not evicted)
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it("cap sweeps expired keys to make room before failing closed (fake clock)", () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(0);
+      const rl = createRateLimiter({ max: 5, windowMs: 1000, maxKeys: 3 });
+      expect(rl.check("a")).toBe(true);
+      expect(rl.check("b")).toBe(true);
+      expect(rl.check("c")).toBe(true); // at cap (3), all live
+      vi.setSystemTime(2000); // a,b,c windows elapsed
+      expect(rl.check("d")).toBe(true); // new key: sweep expired (a,b,c) -> room -> allowed
+      expect(rl.size()).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
