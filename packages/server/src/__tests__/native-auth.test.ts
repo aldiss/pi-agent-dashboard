@@ -8,6 +8,7 @@ import {
   isBase64Url,
   safeOrigin,
   createAuthCodeStore,
+  createRateLimiter,
 } from "../auth-plugin.js";
 
 const SECRET = "test-secret-native-auth-v4";
@@ -62,7 +63,9 @@ describe("verifyState — A14 HMAC integrity / reject-not-downgrade", () => {
   });
   it("rejects a tampered mac", () => {
     const [body, mac] = good.split(".");
-    const tampered = `${body}.${mac.slice(0, -1)}${mac.slice(-1) === "A" ? "B" : "A"}`;
+    // Flip the FIRST mac char (its bits all matter) — flipping the LAST is unreliable because
+    // base64url tail bits are don't-care, so a last-char flip can decode to the same valid HMAC.
+    const tampered = `${body}.${mac[0] === "A" ? "B" : "A"}${mac.slice(1)}`;
     expect(verifyState(tampered, SECRET).kind).toBe("reject");
   });
   it("rejects a state signed with a different secret (no downgrade to native)", () => {
@@ -136,6 +139,11 @@ describe("validateNativeRedirect — A6 EXACT (only pidashboard://auth-done)", (
       "pidashboard://auth-done?attacker=1",
       "pidashboard://auth-done#frag",
       "pidashboard://auth-done:8080",
+      // Pete MAJOR-1 dl-9108: empty-marker wire-variants whose NORMALIZED components look exact
+      "pidashboard://auth-done?", // empty query marker (search === "")
+      "pidashboard://auth-done#", // empty fragment marker (hash === "")
+      "pidashboard://auth-done:", // empty port marker (port === "")
+      "pidashboard://@auth-done", // empty userinfo marker (username === "") — Pete/Bert @-case
       "pidashboard://auth-done@evil.example",
       "pidashboard://user:pass@auth-done",
       "pidashboard://AUTH-DONE", // non-special scheme host NOT lowercased -> != auth-done
@@ -210,5 +218,35 @@ describe("safeOrigin", () => {
     expect(safeOrigin("http://localhost:8000/auth/callback/github")).toBe("http://localhost:8000");
     expect(safeOrigin("https://dash.example.com")).toBe("https://dash.example.com");
     expect(safeOrigin("not a url")).toBeNull();
+  });
+});
+
+describe("createAuthCodeStore — Pete MAJOR-3 dl-9108: retention bounds (sweep + hard cap)", () => {
+  it("sweepExpired removes expired entries so unredeemed codes do not accumulate", () => {
+    const s = createAuthCodeStore();
+    for (let i = 0; i < 1000; i++) s.put(`exp-${i}`, "t", { ttlMs: -1 }); // all already expired
+    expect(s.size()).toBe(1000);
+    expect(s.sweepExpired()).toBe(1000);
+    expect(s.size()).toBe(0);
+  });
+  it("hard-caps total entries by evicting the oldest (bounded memory even without a sweep)", () => {
+    const s = createAuthCodeStore({ maxEntries: 100 });
+    for (let i = 0; i < 250; i++) s.put(`c-${i}`, "t", { ttlMs: 60_000 }); // all live
+    expect(s.size()).toBeLessThanOrEqual(100);
+    expect(s.take("c-249")).toBe("t"); // newest still redeemable
+    expect(s.take("c-0")).toBeNull(); // oldest evicted
+  });
+});
+
+describe("createRateLimiter — Pete MAJOR-3 dl-9108: per-key fixed-window bound", () => {
+  it("allows up to max hits then blocks within the window; keys are independent; reset clears", () => {
+    const rl = createRateLimiter({ max: 3, windowMs: 60_000 });
+    expect(rl.check("ipA")).toBe(true);
+    expect(rl.check("ipA")).toBe(true);
+    expect(rl.check("ipA")).toBe(true);
+    expect(rl.check("ipA")).toBe(false); // 4th blocked
+    expect(rl.check("ipB")).toBe(true); // independent key
+    rl.reset();
+    expect(rl.check("ipA")).toBe(true); // reset clears the window
   });
 });
