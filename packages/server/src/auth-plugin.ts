@@ -16,6 +16,7 @@ import {
   parseAuthCookie,
   isUserAllowed,
   buildRedirectUri,
+  getPublicBaseUrl,
   setPublicUrlOverride,
   buildAuthorizeUrl,
   exchangeCode,
@@ -97,13 +98,206 @@ function encodeState(returnUrl: string): string {
   return Buffer.from(JSON.stringify({ returnUrl, nonce })).toString("base64url");
 }
 
-function decodeState(state: string): { returnUrl: string } {
-  try {
-    const parsed = JSON.parse(Buffer.from(state, "base64url").toString());
-    return { returnUrl: parsed.returnUrl || "/" };
-  } catch {
-    return { returnUrl: "/" };
+// ─── Native-flow state: versioned HMAC-signed envelope ──────────────────────
+//
+// The native iOS flow returns the JWT via a single-use code in the callback URL
+// (`pidashboard://auth-done?code=...`) instead of a Set-Cookie, because the
+// ASWebAuthenticationSession cookie does not reach the app's URLSession store on a
+// real device. The native decision keys ONLY on a valid HMAC-signed `v:1` state —
+// an unsigned browser state can never carry a valid signature, so the code-issuing
+// branch is unreachable without a genuine signature (downgrade-resistant).
+//
+// SECURITY FRAMING (accurate — do NOT overclaim): the `nonce` + HMAC provide state
+// INTEGRITY + tamper/downgrade-resistance. They do NOT by themselves provide full
+// initiator/session CSRF binding (that would need session/PKCE binding, out of scope
+// for v1). Frame honestly: this is state-signing, not full CSRF binding.
+
+interface NativeStatePayload {
+  v: 1;
+  native: true;
+  redirectUri: string;
+  returnUrl: string;
+  nonce: string;
+}
+
+/** Result of classifying + verifying a callback `state` (envelope grammar). */
+export type VerifiedState =
+  | { kind: "native"; redirectUri: string; returnUrl: string; nonce: string }
+  | { kind: "browser"; returnUrl: string; nonce: string }
+  | { kind: "reject" };
+
+/** True for a NON-EMPTY base64url token (alphabet [A-Za-z0-9_-], no dots/padding). */
+export function isBase64Url(s: unknown): boolean {
+  return typeof s === "string" && s.length > 0 && /^[A-Za-z0-9_-]+$/.test(s);
+}
+
+/**
+ * Sign a native-flow state: `base64url(JSON(payload)) + "." + base64url(HMAC-SHA256(body))`.
+ * Versioned (`v:1`). base64url has no `.`, so the single dot is an unambiguous envelope
+ * discriminator (1 dot = signed-native, 0 dots = unsigned-browser).
+ */
+export function signState(payload: NativeStatePayload, secret: string): string {
+  const body = Buffer.from(JSON.stringify(payload)).toString("base64url");
+  const mac = crypto.createHmac("sha256", secret).update(body).digest("base64url");
+  return `${body}.${mac}`;
+}
+
+/**
+ * Classify + verify a callback `state` per the envelope grammar (Alice dl-8969/8976),
+ * BEFORE any provider exchange or side-effect. Reject-not-downgrade throughout:
+ *   (a) exactly ONE dot  → signed-native v:1 → constant-time HMAC verify + STRICT schema, else reject
+ *   (b) NO dot           → unsigned-browser {returnUrl, nonce}; `native`/`redirectUri` FORBIDDEN
+ *   (c) any other shape  → reject (>=2 dots / non-base64url / malformed)
+ */
+export function verifyState(state: unknown, secret: string): VerifiedState {
+  if (typeof state !== "string" || state.length === 0) return { kind: "reject" };
+  const dotCount = (state.match(/\./g) || []).length;
+
+  // (a) SIGNED-NATIVE — exactly one dot, two non-empty base64url segments
+  if (dotCount === 1) {
+    const parts = state.split(".");
+    const body = parts[0];
+    const mac = parts[1];
+    if (!isBase64Url(body) || !isBase64Url(mac)) return { kind: "reject" };
+    // constant-time HMAC verify — length-check FIRST (timingSafeEqual throws on length mismatch)
+    const expected = crypto.createHmac("sha256", secret).update(body).digest();
+    let provided: Buffer;
+    try {
+      provided = Buffer.from(mac, "base64url");
+    } catch {
+      return { kind: "reject" };
+    }
+    if (provided.length !== expected.length) return { kind: "reject" };
+    if (!crypto.timingSafeEqual(provided, expected)) return { kind: "reject" };
+    // STRICT field schema (Alice dl-8976): v===1, native===true (not truthy), strict string types
+    let parsed: any;
+    try {
+      parsed = JSON.parse(Buffer.from(body, "base64url").toString());
+    } catch {
+      return { kind: "reject" };
+    }
+    if (
+      !parsed ||
+      typeof parsed !== "object" ||
+      parsed.v !== 1 ||
+      parsed.native !== true ||
+      typeof parsed.redirectUri !== "string" ||
+      parsed.redirectUri.length === 0 ||
+      typeof parsed.returnUrl !== "string" ||
+      typeof parsed.nonce !== "string" ||
+      parsed.nonce.length === 0
+    ) {
+      return { kind: "reject" };
+    }
+    return {
+      kind: "native",
+      redirectUri: parsed.redirectUri,
+      returnUrl: parsed.returnUrl,
+      nonce: parsed.nonce,
+    };
   }
+
+  // (b) UNSIGNED-BROWSER — no dot; native/redirectUri are FORBIDDEN (cannot smuggle native)
+  if (dotCount === 0) {
+    if (!isBase64Url(state)) return { kind: "reject" };
+    let parsed: any;
+    try {
+      parsed = JSON.parse(Buffer.from(state, "base64url").toString());
+    } catch {
+      return { kind: "reject" };
+    }
+    if (!parsed || typeof parsed !== "object") return { kind: "reject" };
+    if ("native" in parsed || "redirectUri" in parsed) return { kind: "reject" };
+    const returnUrl = typeof parsed.returnUrl === "string" ? parsed.returnUrl : "/";
+    const nonce = typeof parsed.nonce === "string" ? parsed.nonce : "";
+    return { kind: "browser", returnUrl, nonce };
+  }
+
+  // (c) any other shape → reject
+  return { kind: "reject" };
+}
+
+/**
+ * EXACT native-redirect validation (Alice A6): accept ONLY the exact canonical
+ * `pidashboard://auth-done`. Rejects any path (incl a trailing slash), query, fragment,
+ * userinfo, port, or scheme/host variant. Returns the canonical URI (we append `?code=`
+ * ourselves); throws on any deviation.
+ */
+export function validateNativeRedirect(uri: unknown): string {
+  if (typeof uri !== "string" || uri.length === 0) throw new Error("invalid_native_redirect");
+  let u: URL;
+  try {
+    u = new URL(uri);
+  } catch {
+    throw new Error("invalid_native_redirect");
+  }
+  if (u.protocol !== "pidashboard:") throw new Error("invalid_native_redirect");
+  if (u.hostname !== "auth-done") throw new Error("invalid_native_redirect");
+  if (u.username || u.password) throw new Error("invalid_native_redirect");
+  if (u.port) throw new Error("invalid_native_redirect");
+  if (u.pathname !== "") throw new Error("invalid_native_redirect"); // reject ANY path incl trailing "/"
+  if (u.search) throw new Error("invalid_native_redirect");
+  if (u.hash) throw new Error("invalid_native_redirect");
+  return "pidashboard://auth-done";
+}
+
+/**
+ * Parser-canonical open-redirect guard (Alice A12), fail-closed. Resolve `returnUrl`
+ * against a TRUSTED configured base (deployment identity, never a request header).
+ * Same-origin → canonical relative (`pathname+search+hash`); anything else (cross-origin,
+ * `//evil`, `/\evil`, external-absolute, `javascript:`/`data:`, embedded credentials,
+ * malformed/non-string) → `/`.
+ */
+export function validateReturnUrl(returnUrl: unknown, trustedBase: string): string {
+  if (typeof returnUrl !== "string") return "/";
+  let base: URL;
+  let u: URL;
+  try {
+    base = new URL(trustedBase);
+    u = new URL(returnUrl, base);
+  } catch {
+    return "/";
+  }
+  if (u.origin !== base.origin) return "/";
+  if (u.username || u.password) return "/";
+  return u.pathname + u.search + u.hash;
+}
+
+/** The exact origin of a base URL, or null if unparseable (for exact-origin CORS). */
+export function safeOrigin(baseUrl: string): string | null {
+  try {
+    return new URL(baseUrl).origin;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * In-memory single-use code store for the native code-exchange flow. `put` stamps a TTL;
+ * `take` is a SYNC get-and-delete with expiry-checked-AT-take (single-use — a code is never
+ * returned twice, and an expired code is never returned). 256-bit codes + a 60s TTL make
+ * brute-force/replay infeasible.
+ */
+export function createAuthCodeStore(): {
+  put: (code: string, token: string, opts: { ttlMs: number }) => void;
+  take: (code: unknown) => string | null;
+  size: () => number;
+} {
+  const store = new Map<string, { token: string; expiresAt: number }>();
+  return {
+    put(code, token, opts) {
+      store.set(code, { token, expiresAt: Date.now() + opts.ttlMs });
+    },
+    take(code) {
+      if (typeof code !== "string" || code.length === 0) return null;
+      const entry = store.get(code);
+      if (!entry) return null;
+      store.delete(code); // single-use: delete on take, regardless of expiry
+      if (Date.now() > entry.expiresAt) return null; // expiry-at-take
+      return entry.token;
+    },
+    size: () => store.size,
+  };
 }
 
 /**
@@ -159,6 +353,9 @@ export async function registerAuthPlugin(
     bypassUrls: authConfig.bypassUrls ?? [],
     bypassHosts: resolvedTrustedNetworks ?? authConfig.bypassHosts ?? [],
   };
+
+  // Single-use code store for the native code-exchange flow (per-plugin instance).
+  const authCodeStore = createAuthCodeStore();
 
   // Tag requests with authentication status (read by createNetworkGuard) and
   // the Build 1b REST-captured identity. Registered here — BEFORE the
@@ -219,8 +416,34 @@ export async function registerAuthPlugin(
       // Auto-redirect to single provider
       const p = providers[0];
       const redirectUri = buildRedirectUri(p.key, port);
-      const returnUrl = (request.query as any)?.return || "/";
-      const state = encodeState(returnUrl);
+      const q = request.query as any;
+      const returnUrl = typeof q?.return === "string" ? q.return : "/";
+      // Native-app flow: /auth/login?native=1&redirect_uri=pidashboard://auth-done
+      // → validate the native redirect FIRST, then sign a versioned (v:1) native state.
+      // The HMAC signature is the ONLY thing that unlocks the callback's code-issuing
+      // branch (downgrade-resistant). A browser (no native=1) gets the unsigned state.
+      const isNative = q?.native === "1" || q?.native === "true";
+      let state: string;
+      if (isNative) {
+        let nativeRedirect: string;
+        try {
+          nativeRedirect = validateNativeRedirect(q?.redirect_uri);
+        } catch {
+          return reply.redirect("/auth/login?error=Invalid+native+redirect");
+        }
+        state = signState(
+          {
+            v: 1,
+            native: true,
+            redirectUri: nativeRedirect,
+            returnUrl,
+            nonce: crypto.randomBytes(8).toString("hex"),
+          },
+          authState.secret,
+        );
+      } else {
+        state = encodeState(returnUrl);
+      }
       const url = buildAuthorizeUrl(p, redirectUri, state);
       return reply.redirect(url);
     }
@@ -258,6 +481,22 @@ export async function registerAuthPlugin(
       return reply.redirect("/auth/login?error=Missing+authorization+code");
     }
 
+    // Verify state BEFORE any side-effect (no provider exchange / token / code / cookie
+    // until the state is classified + a native state's HMAC verified). A signed-looking
+    // state that fails verification is REJECTED, never downgraded to native/browser.
+    const verified = verifyState(stateParam, authState.secret);
+    if (verified.kind === "reject") {
+      return reply.redirect("/auth/login?error=Invalid+authentication+state");
+    }
+    if (verified.kind === "native") {
+      // Re-validate the native redirect target BEFORE the provider exchange.
+      try {
+        validateNativeRedirect(verified.redirectUri);
+      } catch {
+        return reply.redirect("/auth/login?error=Invalid+native+redirect");
+      }
+    }
+
     const redirectUri = buildRedirectUri(providerKey, port);
     const accessToken = await exchangeCode(provider, code, redirectUri);
     if (!accessToken) {
@@ -278,8 +517,23 @@ export async function registerAuthPlugin(
       authState.secret,
     );
 
-    const { returnUrl } = decodeState(stateParam);
+    // Native flow: issue a single-use code (the JWT is fetched via POST /api/auth/exchange,
+    // NOT set as a cookie — the ASWebAuthenticationSession cookie does not reach the app on
+    // device). Validate the redirect target AGAIN before storing the code (validate-before-put).
+    if (verified.kind === "native") {
+      let target: string;
+      try {
+        target = validateNativeRedirect(verified.redirectUri);
+      } catch {
+        return reply.redirect("/auth/login?error=Invalid+native+redirect");
+      }
+      const authCode = crypto.randomBytes(32).toString("base64url"); // 256-bit, single-use
+      authCodeStore.put(authCode, token, { ttlMs: 60_000 }); // 60s TTL, AFTER target validated
+      return reply.redirect(`${target}?code=${encodeURIComponent(authCode)}`);
+    }
 
+    // Browser flow: set the cookie, redirect to the parser-canonical same-origin returnUrl
+    // (open-redirect closed — validated against the trusted deployment base, never a header).
     reply.setCookie(COOKIE_NAME, token, {
       path: "/",
       httpOnly: true,
@@ -288,13 +542,53 @@ export async function registerAuthPlugin(
       maxAge: 7 * 24 * 60 * 60, // 7 days in seconds
     });
 
-    return reply.redirect(returnUrl);
+    return reply.redirect(validateReturnUrl(verified.returnUrl, getPublicBaseUrl(port)));
   });
 
   // POST /auth/logout
   fastify.post("/auth/logout", async (_request, reply) => {
     reply.clearCookie(COOKIE_NAME, { path: "/" });
     return reply.redirect("/auth/login");
+  });
+
+  // ─── Native code exchange ───────────────────────────────────────────────
+  // The native app cannot read the Set-Cookie from ASWebAuthenticationSession, so the
+  // callback issues a single-use `code` and the app exchanges it here for the JWT (in the
+  // body). The code IS the credential (256-bit, single-use, 60s TTL) → unauthenticated by
+  // design (op-2 exempt-set in the onRequest hook), CORS-locked to the exact deployment
+  // origin, JWT never cached (no-store). Build-notes dl-8927 #1/#2/#3.
+  const applyExchangeCors = (request: FastifyRequest, reply: FastifyReply): void => {
+    const trustedOrigin = safeOrigin(getPublicBaseUrl(port));
+    const origin = request.headers.origin;
+    // EXACT origin match only (never substring/prefix). Native URLSession sends no Origin
+    // → no CORS header needed (CORS is browser-enforced); a browser gets it only on exact match.
+    if (typeof origin === "string" && trustedOrigin !== null && origin === trustedOrigin) {
+      reply.header("Access-Control-Allow-Origin", origin);
+      reply.header("Vary", "Origin");
+    }
+  };
+
+  fastify.options("/api/auth/exchange", async (request, reply) => {
+    applyExchangeCors(request, reply);
+    const trustedOrigin = safeOrigin(getPublicBaseUrl(port));
+    if (request.headers.origin && trustedOrigin !== null && request.headers.origin === trustedOrigin) {
+      reply.header("Access-Control-Allow-Methods", "POST, OPTIONS");
+      reply.header("Access-Control-Allow-Headers", "content-type");
+    }
+    return reply.code(204).send();
+  });
+
+  fastify.post("/api/auth/exchange", async (request, reply) => {
+    applyExchangeCors(request, reply);
+    // The JWT must never be cached by any intermediary.
+    reply.header("Cache-Control", "no-store");
+    reply.header("Pragma", "no-cache");
+    const token = authCodeStore.take((request.body as any)?.code);
+    if (!token) {
+      // NEVER log the code or the JWT (build-note dl-8927 #3).
+      return reply.code(400).send({ error: "invalid_or_expired_code" });
+    }
+    return reply.send({ token });
   });
 
   // GET /auth/status — no auth required
@@ -332,6 +626,10 @@ export async function registerAuthPlugin(
 
     // Skip health endpoint
     if (request.url === "/api/health") return;
+
+    // Skip the native code-exchange endpoint — the single-use code IS the credential
+    // (unauthenticated by design; CORS-locked + no-store in the handler). op-2 exempt-set.
+    if (request.url.split("?")[0] === "/api/auth/exchange") return;
 
     // Skip /v1/* — proxy auth gate handles those
     if (request.url.startsWith("/v1/")) return;
