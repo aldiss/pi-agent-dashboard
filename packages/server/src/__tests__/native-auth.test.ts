@@ -251,6 +251,66 @@ describe("createAuthCodeStore — Pete MAJOR-3 dl-9108: retention bounds (sweep 
   });
 });
 
+describe("createAuthCodeStore — exact-TTL-boundary (Pete dl-9265 T5: expiry-at-take AT exactly issuedAt+ttl)", () => {
+  it("VALID at expiry-1ms: a code still redeems at issuedAt+ttl-1", () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(0);
+      const s = createAuthCodeStore();
+      s.put("c", "jwt", { ttlMs: 60_000 }); // expiresAt = 60000
+      vi.setSystemTime(59_999);
+      expect(s.take("c")).toBe("jwt"); // still valid at 59999 (< expiry)
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it("INVALID at EXACT expiry: a code does NOT redeem at issuedAt+ttl, and is consumed", () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(0);
+      const s = createAuthCodeStore();
+      s.put("c", "jwt", { ttlMs: 60_000 }); // expiresAt = 60000
+      vi.setSystemTime(60_000);
+      expect(s.take("c")).toBeNull(); // expired AT exactly 60000 (>=) — would WRONGLY redeem under strict >
+      expect(s.take("c")).toBeNull(); // consumed (single-use delete-on-take even when expired)
+      expect(s.size()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it("sweepExpired REMOVES at EXACT expiry (0 before, 1 at)", () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(0);
+      const s = createAuthCodeStore();
+      s.put("c", "jwt", { ttlMs: 60_000 });
+      vi.setSystemTime(59_999);
+      expect(s.sweepExpired()).toBe(0); // not yet expired at 59999
+      vi.setSystemTime(60_000);
+      expect(s.sweepExpired()).toBe(1); // removed AT exact expiry — would WRONGLY keep under strict >
+      expect(s.size()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it("cap slot REUSABLE at EXACT expiry: an exactly-expired entry is swept so a replacement is admitted (maxEntries=1)", () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(0);
+      const s = createAuthCodeStore({ maxEntries: 1 });
+      expect(s.put("old", "jwt-old", { ttlMs: 60_000 })).toBe(true); // fills the single slot, expiresAt=60000
+      vi.setSystemTime(59_999);
+      expect(s.put("new1", "jwt-new1", { ttlMs: 60_000 })).toBe(false); // old still LIVE at 59999 → REFUSED (cap)
+      vi.setSystemTime(60_000);
+      expect(s.put("new2", "jwt-new2", { ttlMs: 60_000 })).toBe(true); // old exactly-expired → swept → slot freed → admitted (blocked under strict >)
+      expect(s.take("new2")).toBe("jwt-new2");
+      expect(s.take("old")).toBeNull(); // old was swept, not redeemable
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe("createRateLimiter — Pete MAJOR-3 dl-9108: per-key fixed-window bound", () => {
   it("allows up to max hits then blocks within the window; keys are independent; reset clears", () => {
     const rl = createRateLimiter({ max: 3, windowMs: 60_000 });
