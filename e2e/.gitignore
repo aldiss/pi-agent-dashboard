@@ -4,6 +4,10 @@ playwright-report-sandbox/
 test-results/
 playwright/.cache/
 
+# "Needs you" band E2E synthetic feed fixtures — written at runtime by the
+# harness globalSetup + specs; never committed.
+.needs-you-fixtures/
+
 # Visual-regression BASELINES are committed (they're the gallery + the
 # guardrail). They live in specs/__screenshots__/ and specs-sandbox/
 # __screenshots__/ and are intentionally NOT ignored.

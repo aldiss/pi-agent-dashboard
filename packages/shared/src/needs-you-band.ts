@@ -81,6 +81,21 @@ export const NEEDS_YOU_KINDS: readonly NeedsYouKind[] = Object.freeze([
 ]);
 
 /**
+ * Render LANE (§3 operator-action gate — Auditor-8 dl-9218 ASYMMETRIC ruling).
+ * Composes with the band's 3-tier render:
+ *   - `operator-band` + `uncertain=false` → the MAIN must-act band.
+ *   - `operator-band` + `uncertain=true`  → the lower-tier "possibly-needs-you /
+ *     UNKNOWN-LOUD" band (surfaced, flagged — NEVER dropped).
+ *   - `crew-lane`                          → the crew self-heal lane (routed OFF
+ *     the operator band). The ONLY thing that lands here is PROVABLY
+ *     crew-self-healable (no operator-action AND provable crew-self-heal).
+ *
+ * COVERAGE-CONTRACT: `crew-lane` is a RENDER-ROUTING decision, NOT a detection
+ * removal — every worth-trigger is still DETECTED + tested + emitted.
+ */
+export type Lane = "operator-band" | "crew-lane";
+
+/**
  * `source` = provenance, SEPARATE from `kind`. A kind can come from a ledger
  * event-type OR a derived driver-state. The type-filter (A2) gates on
  * `ledger_type`; the worth-detectors gate on `derived_state`.
@@ -124,6 +139,13 @@ export interface NeedsYouItem {
   halt_tier: boolean;
   /** true ⇒ state could not be PROVEN current ⇒ render LOUD-uncertain, never drop. */
   uncertain: boolean;
+  /**
+   * Render lane (§3). `operator-band` (default) surfaces on the operator band
+   * (main if `!uncertain`, lower-tier if `uncertain`); `crew-lane` routes OFF
+   * the operator band (provably crew-self-healable only). Optional for
+   * backward-compat; absent ⇒ treat as `operator-band`.
+   */
+  lane?: Lane;
   /** ISO — when the watcher last computed/pushed this item. */
   pushed_at: string;
   /** The jargon lives HERE, never in `label`. */

@@ -237,9 +237,25 @@ describe("generateLabelTier — tiers are strictly non-increasing in length", ()
     // Four distinct content-framings ⇒ four distinct strings.
     expect(new Set(framed).size).toBe(4);
     expect(stalled).toContain("blocked");
-    expect(phantom).toContain("never fired");
-    expect(commitment).toContain("commitment");
-    expect(runaway).toContain("burning tokens");
+    // Peggy §1 re-voices (de-jargoned):
+    expect(phantom).toContain("marked active but never actually blocks");
+    expect(commitment).toContain("was promised");
+    expect(runaway).toContain("burned");
+  });
+
+  it("Peggy §1 re-voices render VERBATIM (tier-0, no stakes = the default render)", () => {
+    // commitment-drop: kill "last tenure" + double "never finished".
+    expect(
+      generateLabelTier({ kind: "commitment-drop", subject: "the migration driver", what: "the data-migration cleanup", ageDays: 12 }, 0),
+    ).toBe("The data-migration cleanup was promised ~12 days ago and never finished.");
+    // phantom-hold: de-jargon the mechanical framing.
+    expect(
+      generateLabelTier({ kind: "phantom-hold", subject: "the release driver", what: "a release-gate safety check" }, 0),
+    ).toBe("A release-gate safety check is marked active but never actually blocks anything.");
+    // runaway-cost: de-dup (verbless what + template "burned").
+    expect(
+      generateLabelTier({ kind: "runaway-cost", subject: "a research agent", what: "$40 of tokens in an hour with no output" }, 0),
+    ).toBe("A research agent burned $40 of tokens in an hour with no output.");
   });
 
   it("parked-decision + production-held share bare-WHAT prose by design (HALT distinction is item-level)", () => {
@@ -251,6 +267,27 @@ describe("generateLabelTier — tiers are strictly non-increasing in length", ()
     const held = generateLabelTier({ kind: "production-held", ...base }, 1);
     expect(parked).toBe(held);
     expect(parked).toBe("Which plan to ship");
+  });
+
+  it("§2 production-held renders the live-instance EXPOSURE (accurate-to-instance, not a baked framing)", () => {
+    const base = { kind: "production-held", subject: "the postprod driver", what: "a live GitHub token" } as const;
+    // committed-but-private and leaked-public read DIFFERENTLY — the exposure
+    // clause carries the accurate-to-instance context, not a fixed framing.
+    const priv = generateLabelTier({ ...base, exposure: "committed to a private repo (not public)" }, 0);
+    const pub = generateLabelTier({ ...base, exposure: "pushed to a public repo anyone can read" }, 0);
+    expect(priv).toBe("A live GitHub token — committed to a private repo (not public)");
+    expect(pub).toBe("A live GitHub token — pushed to a public repo anyone can read");
+    expect(priv).not.toBe(pub); // accurate-to-instance, not one baked string
+  });
+
+  it("§2 exposure takes precedence over generic stakes; absent exposure falls back to stakes", () => {
+    const withBoth = generateLabelTier(
+      { kind: "production-held", subject: "s", what: "a held deploy", stakes: "generic stakes", exposure: "the real exposure" },
+      0,
+    );
+    expect(withBoth).toBe("A held deploy — the real exposure"); // exposure wins
+    const stakesOnly = generateLabelTier({ kind: "production-held", subject: "s", what: "a held deploy", stakes: "generic stakes" }, 0);
+    expect(stakesOnly).toBe("A held deploy — generic stakes"); // falls back to stakes
   });
 });
 

@@ -205,10 +205,16 @@ export interface LabelInput {
   /** The role-language subject ("the postprod driver", "the grocery-app build"). */
   subject: string;
   /**
-   * The core WHAT — the plain-language heart of the label. For a
-   * parked-decision this is the decision phrased as an operator-facing stake
-   * ("a live GitHub token with full access to all your repos"); for a
-   * stalled-deliverable, where/why it is blocked.
+   * The core WHAT — the plain-language heart of the label. Per-kind semantics
+   * (the watcher fills these; themed-names already resolved to role-language):
+   *   - parked-decision / production-held: the decision as an operator-facing
+   *     stake ("a live GitHub token with full access to all your repos").
+   *   - stalled-deliverable: where/why it is blocked.
+   *   - phantom-hold: the operator-language hold description
+   *     ("a release-gate safety check").
+   *   - commitment-drop: the promised deliverable ("the data-migration cleanup").
+   *   - runaway-cost: the burn WITHOUT a leading verb (the template supplies
+   *     "burned"): "$40 of tokens in an hour with no output".
    */
   what: string;
   /**
@@ -218,6 +224,15 @@ export interface LabelInput {
   stakes?: string;
   /** Optional age-in-days context for commitment-drop / stalled framing. */
   ageDays?: number;
+  /**
+   * Optional production-held live-instance EXPOSURE/context (§2). The watcher
+   * passes this from the REAL event payload so the label is accurate-to-instance
+   * — committed-but-private reads very differently from leaked-public. Rendered
+   * as the production-held context clause (PREFERRED over `stakes`). NEVER bake
+   * a fixed "exposed to the internet" framing into the template: the cds repo
+   * was 404-not-public. Freshness/context, not template.
+   */
+  exposure?: string;
 }
 
 // ── §3a: the per-kind generators (tiered for the regenerate loop) ──────────
@@ -248,8 +263,10 @@ export function generateLabelTier(input: LabelInput, tier: 0 | 1 | 2): string {
       // decision (production-gate). Shares parked-decision's substance-first
       // prose SHAPE by design — the HALT distinction lives at the item level
       // (`halt_tier=true` + the KILL-step action), not in the label prose.
-      // Peggy owns any per-kind voice divergence.
-      if (tier === 0) return stakes ? `${cap(what)} — ${stakes}` : cap(what);
+      // §2: the live-instance `exposure` context (accurate-to-instance) is the
+      // PREFERRED context clause over generic `stakes` — never a baked framing.
+      const ctx = input.exposure?.trim() || stakes;
+      if (tier === 0) return ctx ? `${cap(what)} — ${ctx}` : cap(what);
       return cap(what);
     }
     case "stalled-deliverable": {
@@ -260,23 +277,34 @@ export function generateLabelTier(input: LabelInput, tier: 0 | 1 | 2): string {
       return tight;
     }
     case "phantom-hold": {
-      const base = `A hold on ${subject} never fired: ${what}`;
-      const tight = `Hold on ${subject} never fired`;
+      // Peggy voice-pass: de-jargon the mechanical/build framing. `what` is the
+      // operator-language description of the hold (e.g. "a release-gate safety
+      // check"). Default render: "A release-gate safety check is marked active
+      // but never actually blocks anything."
+      const base = `${cap(what)} is marked active but never actually blocks anything.`;
+      const tight = `${cap(what)} is marked active but never blocks.`;
       if (tier === 0) return stakes ? `${base} — ${stakes}` : base;
       if (tier === 1) return base;
       return tight;
     }
     case "commitment-drop": {
-      const aged = input.ageDays ? ` (${input.ageDays}d open)` : "";
-      const base = `An earlier commitment on ${subject} was never finished: ${what}${aged}`;
-      const tight = `Unfinished commitment on ${subject}`;
+      // Peggy voice-pass: kill the "last tenure" crew-jargon + the double
+      // "never finished". `what` is the promised deliverable. Default render:
+      // "The data-migration cleanup was promised ~12 days ago and never finished."
+      const when = input.ageDays ? `~${input.ageDays} days ago` : "earlier";
+      const base = `${cap(what)} was promised ${when} and never finished.`;
+      const tight = `${cap(what)} was promised ${when}, never finished.`;
       if (tier === 0) return stakes ? `${base} — ${stakes}` : base;
       if (tier === 1) return base;
       return tight;
     }
     case "runaway-cost": {
-      const base = `${cap(subject)} is burning tokens fast: ${what}`;
-      const tight = `${cap(subject)} runaway spend`;
+      // Peggy voice-pass: de-dup ("burning fast" + "$40 in an hour" said the
+      // same). `subject` = the agent, `what` = the burn (NO leading verb — the
+      // template supplies "burned"). Default render:
+      // "A research agent burned $40 of tokens in an hour with no output."
+      const base = `${cap(subject)} burned ${what}.`;
+      const tight = `${cap(subject)} runaway spend.`;
       if (tier === 0) return stakes ? `${base} — ${stakes}` : base;
       if (tier === 1) return base;
       return tight;

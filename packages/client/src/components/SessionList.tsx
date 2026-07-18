@@ -40,6 +40,7 @@ import {
 } from "../lib/session-filter-storage.js";
 import { SessionCard, GroupGitInfo, EditorButtons, branchCache } from "./SessionCard.js";
 import { PlaceholderSessionCard } from "./PlaceholderSessionCard.js";
+import { NeedsYouBand } from "./NeedsYouBand.js";
 import { FolderOpenSpecSection } from "./FolderOpenSpecSection.js";
 import { SidebarFolderSectionSlot } from "@blackbelt-technology/dashboard-plugin-runtime";
 import { ThemeToggle } from "./ThemeToggle.js";
@@ -934,6 +935,11 @@ export function SessionList({ sessions, selectedId, onSelect, hasLoadedOnce, con
         </div>
       </div>
       <div ref={listRef} className="flex-1 overflow-y-auto">
+      {/* "Needs you" band — additive, above the tier list. Different data
+          source from the per-session stablePartitionByBand below. */}
+      <div className="px-2 pt-2">
+        <NeedsYouBand />
+      </div>
       {filteredSessions.length === 0 && pinnedGroups.length === 0 ? (
         // Loading ≠ empty (build-2 fix-cycle-2 MAJOR 1): the calm "No active
         // sessions" copy is a factual claim that the fleet IS empty — it must
