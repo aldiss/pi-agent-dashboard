@@ -34,6 +34,7 @@
 import {
   MAX_LABEL_CHARS,
   stableItemId,
+  type Lane,
   type NeedsYouItem,
   type NeedsYouKind,
   type NeedsYouSource,
@@ -86,10 +87,34 @@ export interface DriverRow {
   claimed_task?: string | null;
   /** Token/cost burn rate (I/O layer computes from session-stats). */
   cost_rate_per_min?: number | null;
+  /**
+   * The operator-decision a runaway NAMES, if any ("kill it or let it run?").
+   * Presence ⇒ the runaway-cost item surfaces on the operator band (§3).
+   */
+  runaway_operator_decision?: string | null;
   /** An open cross-tenure commitment not yet discharged (commitment-drop). */
-  open_commitment?: { what: string; since: string; thread_id?: string } | null;
+  open_commitment?: {
+    what: string;
+    since: string;
+    thread_id?: string;
+    /** The operator-decision it NAMES ("reassign or drop it?") ⇒ operator band. */
+    operator_decision?: string;
+  } | null;
   /** A hold this driver claimed but that never fired (phantom-hold). */
-  claimed_hold?: { what: string; since: string; thread_id?: string } | null;
+  claimed_hold?: {
+    what: string;
+    since: string;
+    thread_id?: string;
+    /** The operator-decision it NAMES, if any ⇒ operator band. */
+    operator_decision?: string;
+  } | null;
+  /**
+   * PROVABLE crew-self-heal signal (§3 — the ONLY crew-lane gate). Set by the
+   * I/O layer ONLY on a PROVEN self-heal (e.g. a live reaper owns the leak, a
+   * self-heal event fired on-thread). Absent/false ⇒ NOT provably self-healable
+   * ⇒ the item stays on the operator band (DROP-safe). NEVER a default-true.
+   */
+  provably_self_healable?: boolean | null;
 }
 
 /** A tmux pane row, projected onto what the idle/stalled detectors read. */
@@ -126,7 +151,7 @@ export interface MustActDeps {
    * use the raw structured extraction (which the predicate then gates — an
    * un-curated jargon field fails LOUD to a placeholder, never ships illegible).
    */
-  labelInputOverride?(eventId: string): { what?: string; stakes?: string } | undefined;
+  labelInputOverride?(eventId: string): { what?: string; stakes?: string; exposure?: string } | undefined;
   /**
    * Optional per-kind live-gate verifier (own-hand-verify claimed-live gates,
    * §4a.2). Returns `true`=proven-resolved (exclude), `false`=proven-open
@@ -142,6 +167,14 @@ export interface MustActDeps {
    * operator-decision / operator-ratify ONLY (the pipeline enforces the scope).
    */
   directiveDiscriminator?(candidate: LedgerEvent, index: (k: string) => LedgerEvent[] | undefined): DirectiveVerdict;
+  /**
+   * PLUGGABLE (§3) operator-action lane gate (interim, PENDING-JOAN-RATIFY on
+   * final per-kind membership). Overrides the default `operatorActionGate`.
+   * Routes each item to the operator band vs the crew self-heal lane (Auditor-8
+   * dl-9218 asymmetric ruling). Joan owns the FINAL inherently-must-act-vs-
+   * need-the-test membership; this hook swaps her ruling in cleanly.
+   */
+  operatorActionGate?(input: LaneGateInput): LaneDecision;
 }
 
 export interface MustActInputs {
@@ -339,14 +372,19 @@ const OPERATOR_ENGAGEMENT_TYPES = new Set(["operator-decision", "operator-ratify
  * Rule-2 freshness for an operator-decision / operator-ratify candidate.
  *
  *   fresh           — within the age window ⇒ surface normally.
- *   stale-exclude   — PROVABLY stale: aged past the window AND the cell
- *                     provably moved on (a strictly-later event on the thread)
- *                     AND no operator engagement since. All three provable ⇒
- *                     safe to exclude (the decision was overtaken by events).
- *   stale-uncertain — aged past the window but staleness is NOT provable
- *                     (thread unreadable, OR no later event to prove the cell
- *                     moved on, OR a later operator-engagement that we cannot
- *                     prove closed it) ⇒ SURFACE flagged `uncertain`, never drop.
+ *   stale-exclude   — PROVABLY resolved: aged past the window AND a GENUINE
+ *                     resolver exists on the thread (`provablyResolves` — the
+ *                     SAME bar as `resolutionVerdict`: a closes-edge, a landing
+ *                     `to_state` DONE/LANDED, a production-apply, an unblocks
+ *                     ref) AND no later operator-engagement. Only a genuine
+ *                     resolver excludes — NEVER a weak "any-later-event"
+ *                     cell-moved-on signal (that is a DROP-risk, the class Joan
+ *                     rejected in dl-9264). §6 Peggy-ratified.
+ *   stale-uncertain — aged past the window but resolution is NOT provable
+ *                     (thread unreadable, OR no genuine resolver — a bare
+ *                     crew-progress event does NOT count, OR a later operator-
+ *                     engagement we cannot prove closed it) ⇒ SURFACE flagged
+ *                     `uncertain`, never drop.
  *
  * Non-operator-decision types (production-gate / terminal-blocked) are NOT
  * subject to this — they need a positive landing/apply resolver (handled in
@@ -368,22 +406,26 @@ export function operatorDecisionFreshness(
   if (byThread === undefined && byCell === undefined) return "stale-uncertain";
 
   const events = [...(byThread ?? []), ...(byCell ?? [])];
-  const candOrd = ledgerOrdinal(candidate.event_id);
 
-  let cellMovedOn = false;
+  let genuinelyResolved = false;
   let operatorEngagedLater = false;
   for (const e of events) {
-    if (ledgerOrdinal(e.event_id) <= candOrd) continue; // strictly later only
-    cellMovedOn = true;
-    if (OPERATOR_ENGAGEMENT_TYPES.has(e.type)) operatorEngagedLater = true;
+    // PROVABLE-RESOLVER-ONLY (§6): the stale-exclude bar is the SAME genuine
+    // resolver `resolutionVerdict` uses — NOT a weak any-later-event signal.
+    if (provablyResolves(candidate, e)) genuinelyResolved = true;
+    if (ledgerOrdinal(e.event_id) > ledgerOrdinal(candidate.event_id) && OPERATOR_ENGAGEMENT_TYPES.has(e.type)) {
+      operatorEngagedLater = true;
+    }
   }
 
   // A later operator-engagement means the operator may have acted on it but we
   // cannot PROVE this decision closed ⇒ prefer uncertain (never wrong-drop).
   if (operatorEngagedLater) return "stale-uncertain";
-  // Provably overtaken: aged + cell moved on + no operator engagement since.
-  if (cellMovedOn) return "stale-exclude";
-  // Aged but the cell is dormant (no later event) ⇒ can't prove stale ⇒ uncertain.
+  // Provably resolved: aged + a GENUINE resolver on the thread + no operator
+  // engagement since. Only this excludes.
+  if (genuinelyResolved) return "stale-exclude";
+  // Aged but no genuine resolver (dormant, or crew-progress-only) ⇒ can't prove
+  // resolved ⇒ uncertain (the live-87 shape — DROP-safe, surfaced flagged).
   return "stale-uncertain";
 }
 
@@ -410,8 +452,10 @@ export function operatorDecisionFreshness(
  *                           pending pick). CONFIDENT. PROTECTED: never soft-
  *                           superseded by crew-progress (governs step 5).
  *   - "exclude"           — no awaited operator-action named AND a PROVABLE
- *                           directive (given + being executed by crew) AND no
- *                           pending operator-action ⇒ parked-on-crew, not you.
+ *                           directive (a convergence / decision-given event on
+ *                           the thread) ⇒ parked-on-crew, not you.
+ *                           CONVERGENCE-ONLY (dl-9224): ≥2-crew-progress does
+ *                           NOT exclude — it is ambiguous ⇒ surface-uncertain.
  *   - "surface-uncertain" — no action named but NOT provably a directive ⇒
  *                           SURFACE flagged `uncertain` (UNKNOWN-LOUD), never
  *                           drop (a genuine pick that just didn't name its
@@ -439,20 +483,24 @@ function namesAwaitedOperatorAction(payload: Record<string, unknown> | undefined
 
 /** A later event that CONVERGES / GIVES the directive (decision-given signal). */
 const DIRECTIVE_GIVEN_RE = /\b(converg\w*|directive\w*|decid\w*|go-ahead|greenlit|approv\w*|proceed\w*)\b/i;
-/** Event types that count as sustained crew build/progress on-thread. */
-const CREW_PROGRESS_TYPES = new Set([
-  "w-step-status-transition",
-  "deliverable-shipped",
-  "cell-bootstrap",
-  "mesh-bilateral",
-  "spawned-ingested",
-]);
+// NOTE (4a — LIKELY future reconcile, HELD pending explicit Joan↔Auditor-8
+// convergence): a `no-action + ≥2-crew-progress + no-convergence` item is
+// intended to route to a lower-tier "possibly-needs-you/unverified" lane (still
+// surface-uncertain, NOT main-band, NOT dropped). Under CONVERGENCE-ONLY it
+// ALREADY lands on surface-uncertain (crew-progress no longer excludes), so no
+// crew-progress-type set is needed today; if the lower-tier lane needs to key
+// specifically off crew-progress event types, re-introduce the set here.
 
 /**
- * Is there on-thread/cell evidence the directive was GIVEN + is being EXECUTED
- * by crew? PROVABLE = a convergence/decision-given event OR sustained (≥2) crew
- * build/progress events strictly after the candidate. Provable-directive-ONLY:
- * a single ambiguous later event is NOT enough (→ surface-uncertain).
+ * Is there on-thread/cell evidence the directive was GIVEN? PROVABLE =
+ * a convergence / decision-given event strictly after the candidate.
+ *
+ * CONVERGENCE-ONLY (Joan + Auditor-8 converged 2026-07-18, dl-9224): a
+ * `crewProgress >= 2` signal is NOT provable-directive — crew can prep BOTH
+ * options of a LIVE pick while the operator's action is still awaited, so
+ * excluding on it risks DROPPING a live must-act (JOINT DROP>FLOOD). Only a
+ * genuine convergence/decision-given event hard-excludes; ≥2-crew-progress is
+ * AMBIGUOUS and falls through to surface-uncertain (the lower-tier lane).
  */
 function provablyBeingExecuted(
   candidate: LedgerEvent,
@@ -466,13 +514,13 @@ function provablyBeingExecuted(
   const events = [...(byThread ?? []), ...(byCell ?? [])];
   const candOrd = ledgerOrdinal(candidate.event_id);
   let convergence = false;
-  let crewProgress = 0;
   for (const e of events) {
     if (ledgerOrdinal(e.event_id) <= candOrd) continue; // strictly later only
     if (DIRECTIVE_GIVEN_RE.test(e.summary) || DIRECTIVE_GIVEN_RE.test(str(e.payload?.["note"]))) convergence = true;
-    if (CREW_PROGRESS_TYPES.has(e.type)) crewProgress++;
   }
-  return convergence || crewProgress >= 2;
+  // CONVERGENCE-ONLY: ≥2-crew-progress is NOT a provable directive (it is
+  // AMBIGUOUS — could be crew prepping both arms of a still-live pick).
+  return convergence;
 }
 
 /**
@@ -492,6 +540,89 @@ export function directiveVerdict(
   return "surface-uncertain";
 }
 
+// ── 2d. Operator-action lane gate (§3 — Auditor-8 dl-9218 ASYMMETRIC ruling) ─
+//
+// Extends the (d) operator-action test from operator-decision-only to ALSO
+// cover the derived worth-triggers, routing each item to the operator band vs
+// the crew self-heal lane. It is the SAME provable test as (d) (sister shape,
+// same DROP-safety), applied per-kind with an ASYMMETRIC default.
+//
+// THE INVARIANT (Auditor-8): the ONLY thing that routes to `crew-lane` is
+// PROVABLY crew-self-healable (no operator-action AND provable crew-self-heal).
+// Everything else → operator band. UNCERTAIN → SURFACE-UNCERTAIN on the
+// operator band, NEVER silent-route-to-crew (that would be a DROP).
+//
+// PLUGGABLE + INTERIM: Joan owns the FINAL per-kind membership (inherently-must-
+// act vs need-the-test). Swap via `deps.operatorActionGate`.
+
+/** The per-item lane decision: the render lane + whether to flag uncertain. */
+export interface LaneDecision {
+  lane: Lane;
+  uncertain: boolean;
+}
+
+/** The signals the gate reads for a candidate (ledger-derived or worth-derived). */
+export interface LaneGateInput {
+  kind: NeedsYouKind;
+  origin: "ledger" | "derived";
+  /** derived_state when origin=derived (stalled/idle/runaway). */
+  derivedState?: "stalled" | "idle" | "runaway";
+  /** Does this item NAME an awaited operator decision/action? (surface-confident) */
+  namesOperatorAction: boolean;
+  /** Is this PROVABLY crew-self-healable? (the ONLY crew-lane gate) */
+  provablyCrewSelfHealable: boolean;
+}
+
+/**
+ * Kinds that are INHERENTLY must-act — they SKIP the operator-action test and
+ * always land on the operator band (Auditor-8 §3):
+ *   - `parked-decision`, `production-held` (always operator-facing).
+ *   - ledger `terminal-blocked` → `stalled-deliverable` with origin=ledger (a
+ *     driver EXPLICITLY banked a blocker needing operator action — DISTINCT from
+ *     a watcher-INFERRED derived-stalled).
+ */
+export function isInherentlyMustAct(g: LaneGateInput): boolean {
+  if (g.kind === "parked-decision" || g.kind === "production-held") return true;
+  // ledger terminal-blocked (banked blocker) is inherent; derived-stalled is not.
+  if (g.kind === "stalled-deliverable" && g.origin === "ledger") return true;
+  return false;
+}
+
+/**
+ * The DEFAULT operator-action lane gate. Overridable via
+ * `deps.operatorActionGate`. Auditor-8 ASYMMETRIC per-kind default:
+ *   - inherently-must-act ⇒ operator-band (skip the test).
+ *   - PROVABLY crew-self-healable ⇒ crew-lane (the ONLY crew-lane path).
+ *   - names an operator action ⇒ operator-band, CONFIDENT.
+ *   - else, per-kind default:
+ *       · stalled / idle (derived-stalled): DEFAULT operator-facing, CONFIDENT
+ *         (a stall plausibly needs an operator unblock).
+ *       · phantom-hold / commitment-drop / runaway-cost: DEFAULT crew-lane, but
+ *         since it is NOT provably crew-self-healable here, it surfaces
+ *         UNCERTAIN on the operator band (never silent-drop).
+ */
+export function operatorActionGate(g: LaneGateInput): LaneDecision {
+  if (isInherentlyMustAct(g)) return { lane: "operator-band", uncertain: false };
+
+  // The ONLY crew-lane path: PROVABLY crew-self-healable (+ no operator action).
+  if (g.provablyCrewSelfHealable && !g.namesOperatorAction) {
+    return { lane: "crew-lane", uncertain: false };
+  }
+
+  // Names an awaited operator action ⇒ operator band, confident.
+  if (g.namesOperatorAction) return { lane: "operator-band", uncertain: false };
+
+  // Per-kind asymmetric default (not-named, not provably self-healable):
+  const derivedStall = g.kind === "stalled-deliverable"; // derived here (ledger handled above)
+  if (derivedStall) {
+    // stalled/idle default operator-facing, CONFIDENT.
+    return { lane: "operator-band", uncertain: false };
+  }
+  // phantom-hold / commitment-drop / runaway-cost default crew-lane, but not
+  // provably self-healable ⇒ SURFACE-UNCERTAIN on the operator band (DROP-safe).
+  return { lane: "operator-band", uncertain: true };
+}
+
 // ── 3. Worth-trigger detectors (derived — the COVERAGE broadening) ──────────
 
 /** A derived candidate before label/action generation. */
@@ -502,6 +633,10 @@ interface DerivedCandidate {
   actionKey: string;
   defaultAction: string;
   halt_tier: boolean;
+  /** §3 lane-gate signal: does this derived item NAME an awaited operator action? */
+  namesOperatorAction: boolean;
+  /** §3 lane-gate signal: is it PROVABLY crew-self-healable? (ONLY crew-lane gate) */
+  provablyCrewSelfHealable: boolean;
 }
 
 function ageMs(nowMs: number, sinceIso: string | null | undefined): number {
@@ -541,6 +676,9 @@ export function detectWorthTriggers(
         actionKey: `stalled:${d.name}`,
         defaultAction: `Check on ${role} and unblock or stop it.`,
         halt_tier: false,
+        // stalled defaults operator-facing; crew-lane ONLY if provably self-heal.
+        namesOperatorAction: false,
+        provablyCrewSelfHealable: d.provably_self_healable === true,
       });
     }
 
@@ -552,11 +690,17 @@ export function detectWorthTriggers(
         input: {
           kind: "runaway-cost",
           subject: role,
-          what: `burning ~${Math.round(d.cost_rate_per_min / 1000)}k tokens/min with no checkpoint`,
+          // Verbless burn phrase — the template supplies "burned" (Peggy §1).
+          what: `~${Math.round(d.cost_rate_per_min / 1000)}k tokens/min with no checkpoint`,
         },
         actionKey: `runaway:${d.name}`,
-        defaultAction: `Stop ${role} and review its loop before restarting.`,
+        defaultAction: d.runaway_operator_decision
+          ? `Decide: ${d.runaway_operator_decision}`
+          : `Stop ${role} and review its loop before restarting.`,
         halt_tier: false,
+        // runaway defaults crew-lane UNLESS it names an operator decision.
+        namesOperatorAction: typeof d.runaway_operator_decision === "string" && d.runaway_operator_decision.length > 0,
+        provablyCrewSelfHealable: d.provably_self_healable === true,
       });
     }
 
@@ -578,8 +722,14 @@ export function detectWorthTriggers(
           ageDays: days,
         },
         actionKey: `commitment:${d.name}`,
-        defaultAction: `Assign ${d.open_commitment.what} to a driver and confirm it lands.`,
+        defaultAction: d.open_commitment.operator_decision
+          ? `Decide: ${d.open_commitment.operator_decision}`
+          : `Assign ${d.open_commitment.what} to a driver and confirm it lands.`,
         halt_tier: false,
+        // commitment-drop defaults crew-lane UNLESS it names an operator decision.
+        namesOperatorAction:
+          typeof d.open_commitment.operator_decision === "string" && d.open_commitment.operator_decision.length > 0,
+        provablyCrewSelfHealable: d.provably_self_healable === true,
       });
     }
 
@@ -599,8 +749,14 @@ export function detectWorthTriggers(
           what: d.claimed_hold.what,
         },
         actionKey: `phantom:${d.name}`,
-        defaultAction: `Restart the hold on ${role} and confirm it fires.`,
+        defaultAction: d.claimed_hold.operator_decision
+          ? `Decide: ${d.claimed_hold.operator_decision}`
+          : `Restart the hold on ${role} and confirm it fires.`,
         halt_tier: false,
+        // phantom-hold defaults crew-lane UNLESS it names an operator decision.
+        namesOperatorAction:
+          typeof d.claimed_hold.operator_decision === "string" && d.claimed_hold.operator_decision.length > 0,
+        provablyCrewSelfHealable: d.provably_self_healable === true,
       });
     }
   }
@@ -622,6 +778,10 @@ export function detectWorthTriggers(
         actionKey: `idle:${p.cell}`,
         defaultAction: `Check on ${role} — it stopped mid-task at an idle shell.`,
         halt_tier: false,
+        // idle (derived-stalled) defaults operator-facing; crew-lane only if proven.
+        namesOperatorAction: false,
+        provablyCrewSelfHealable:
+          registry.find((d) => d.cell && d.cell === p.cell)?.provably_self_healable === true,
       });
     }
   }
@@ -670,17 +830,25 @@ export function buildLedgerLabelInput(e: LedgerEvent, kind: NeedsYouKind, deps: 
   }
 
   const stakes = str(p["stakes"]) || undefined;
+  // §2: production-held live-instance exposure/context from the REAL payload
+  // (accurate-to-instance — committed-but-private ≠ leaked-public). Only for
+  // production-gate → production-held; other kinds ignore it.
+  const exposure =
+    kind === "production-held"
+      ? str(p["exposure"]) || str(p["exposure_context"]) || undefined
+      : undefined;
 
   // Merge Peggy's curated operator-language OVER the raw structured extraction
-  // (Rule 3). A curated `what`/`stakes` replaces a jargon-laden / themed-name /
-  // over-long raw field; absent a curation, the raw extraction is used and the
-  // legibility predicate gates it (fails LOUD to a placeholder if illegible).
+  // (Rule 3). A curated `what`/`stakes`/`exposure` replaces a jargon-laden /
+  // themed-name / over-long raw field; absent a curation, the raw extraction is
+  // used and the legibility predicate gates it (fails LOUD if illegible).
   const curated = deps.labelInputOverride?.(e.event_id);
   return {
     kind,
     subject: role,
     what: curated?.what ?? what,
     stakes: curated?.stakes ?? stakes,
+    exposure: curated?.exposure ?? exposure,
   };
 }
 
@@ -762,6 +930,17 @@ export function computeMustActSet(inputs: MustActInputs): NeedsYouItem[] {
           : "Make the pending decision so the work can proceed.";
     const action = resolveAction(e.event_id, e.payload, defaultAction, deps);
 
+    // §3 lane gate. Ledger picks are inherently operator-facing (parked-decision
+    // / production-held / ledger terminal-blocked all skip the crew-lane test);
+    // the gate returns operator-band for them. `uncertain` from steps 2–4 wins.
+    const gate = deps.operatorActionGate ?? operatorActionGate;
+    const laneDecision = gate({
+      kind,
+      origin: "ledger",
+      namesOperatorAction: isOperatorPick && protectedPick,
+      provablyCrewSelfHealable: false,
+    });
+
     items.push(
       finishItem({
         kind,
@@ -770,16 +949,25 @@ export function computeMustActSet(inputs: MustActInputs): NeedsYouItem[] {
         action,
         halt_tier,
         // UNKNOWN-LOUD: an unprovable read / unprovable-stale surfaces flagged.
-        uncertain,
+        uncertain: uncertain || laneDecision.uncertain,
+        lane: laneDecision.lane,
         pushedAt,
         drilldown: { event_id: e.event_id, thread_id: e.thread_id, raw_summary: e.summary },
       }),
     );
   }
 
-  // 3. Derived worth-triggers.
+  // 5. Derived worth-triggers — each routed by the §3 operator-action lane gate.
+  const gate = deps.operatorActionGate ?? operatorActionGate;
   for (const c of detectWorthTriggers(driverRegistry, paneState, now, deps)) {
     const action = resolveAction(c.actionKey, undefined, c.defaultAction, deps);
+    const laneDecision = gate({
+      kind: c.kind,
+      origin: "derived",
+      derivedState: c.source.derived_state,
+      namesOperatorAction: c.namesOperatorAction,
+      provablyCrewSelfHealable: c.provablyCrewSelfHealable,
+    });
     items.push(
       finishItem({
         kind: c.kind,
@@ -787,7 +975,8 @@ export function computeMustActSet(inputs: MustActInputs): NeedsYouItem[] {
         input: c.input,
         action,
         halt_tier: c.halt_tier,
-        uncertain: false,
+        uncertain: laneDecision.uncertain,
+        lane: laneDecision.lane,
         pushedAt,
         drilldown: { thread_id: c.source.thread_id },
       }),
@@ -806,6 +995,7 @@ interface FinishArgs {
   action: string;
   halt_tier: boolean;
   uncertain: boolean;
+  lane: Lane;
   pushedAt: string;
   drilldown: NeedsYouItem["drilldown"];
 }
@@ -830,6 +1020,7 @@ function finishItem(a: FinishArgs): NeedsYouItem {
     action: a.action,
     halt_tier: a.halt_tier,
     uncertain: a.uncertain,
+    lane: a.lane,
     pushed_at: a.pushedAt,
     drilldown: a.drilldown,
   };

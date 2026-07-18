@@ -90,7 +90,7 @@ function logCompatibilityWarning(store: BootstrapStateStore): void {
   }
 }
 
-const SUBCOMMANDS = ["start", "stop", "restart", "status", "upgrade-pi", "resurrect"] as const;
+const SUBCOMMANDS = ["start", "stop", "restart", "status", "upgrade-pi", "resurrect", "needs-you-watcher"] as const;
 type Subcommand = (typeof SUBCOMMANDS)[number];
 
 export interface ParsedArgs {
@@ -785,6 +785,24 @@ async function cmdStatus(port: number): Promise<void> {
  * saw a crash and never restarted (the silent-zombie root of Fault B).
  */
 
+/**
+ * `pi-dashboard needs-you-watcher` — the standing "Needs you" band watcher.
+ *
+ * A SEPARATE standing process (own cadence + own liveness heartbeat), NOT baked
+ * into the pull-only server. Loops `runTick` every 30s: reads the ledger +
+ * registry, computes the must-act set (pure core), writes the feed + heartbeat,
+ * herald-pushes newly-detected must-acts, and delivery-proof-escalates. Keeps
+ * running until killed — a dead watcher is the recursive silent-failure this
+ * whole surface exists to kill, so the loop swallows per-tick errors + beats on.
+ */
+async function cmdNeedsYouWatcher(): Promise<void> {
+  const { runWatcherLoop } = await import("./needs-you-watcher.js");
+  const { createRoleResolver } = await import("./needs-you-role-resolver.js");
+  const resolveRole = createRoleResolver();
+  process.stdout.write("[needs-you-watcher] starting standing watcher (30s cadence)\n");
+  await runWatcherLoop({ resolveRole });
+}
+
 async function main() {
   ensureConfig();
 
@@ -818,6 +836,9 @@ async function main() {
       break;
     case "resurrect":
       await cmdResurrect(config, resurrectId);
+      break;
+    case "needs-you-watcher":
+      await cmdNeedsYouWatcher();
       break;
     default:
       // No subcommand — run in foreground (backward compatible)

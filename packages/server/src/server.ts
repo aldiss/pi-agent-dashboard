@@ -68,6 +68,7 @@ import { registerOpenSpecGroupRoutes } from "./routes/openspec-group-routes.js";
 import { createOpenSpecGroupStore, joinGroupIdsToOpenSpecData } from "./openspec-group-store.js";
 import { registerSystemRoutes } from "./routes/system-routes.js";
 import { registerSurfacesRoutes } from "./routes/surfaces-routes.js";
+import { registerNeedsYouBandRoutes } from "./routes/needs-you-band-routes.js";
 import { registerDonNarrationRoutes } from "./routes/don-narration-routes.js";
 import { registerDoctorRoutes } from "./routes/doctor-routes.js";
 import { registerPushRoutes, registerPushMisconfiguredMiddleware } from "./routes/push-routes.js";
@@ -1151,6 +1152,10 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
   // See packages/server/src/routes/surfaces-routes.ts + cell:
   // pi-agent-dashboard-ux-message-discoverability/v1 (W4.4 + W6 Feature 4).
   registerSurfacesRoutes(fastify, { networkGuard });
+  // "Needs you" band — reads the standing watcher's feed + heartbeat.
+  // See packages/server/src/routes/needs-you-band-routes.ts + cell:
+  // pi-agent-dashboard-needs-you-band.
+  registerNeedsYouBandRoutes(fastify, { networkGuard });
   // Path B sister-coupling primitive — Don narration canonical state-file.
   // See packages/server/src/routes/don-narration-routes.ts + cell:
   // operator-driver-experience-don-build/v1 (W6 D6 deliverable).

@@ -31,7 +31,9 @@ import {
   computeMustActSet,
   detectWorthTriggers,
   directiveVerdict,
+  isInherentlyMustAct,
   ledgerTypeToKind,
+  operatorActionGate,
   operatorDecisionFreshness,
   provablyResolves,
   resolutionVerdict,
@@ -330,10 +332,20 @@ describe("operatorDecisionFreshness — the ~79-stale layer", () => {
     expect(operatorDecisionFreshness(d, NOW, indexOver([d]))).toBe("fresh");
   });
 
-  it("aged + cell moved on (later non-operator event) + no engagement ⇒ stale-exclude", () => {
+  it("aged + a GENUINE resolver (landing to_state DONE) + no engagement ⇒ stale-exclude", () => {
     const d = opDecision("dl-3000", staleTs);
-    const laterCellMove: LedgerEvent = { event_id: "dl-9000", ts: freshTs, type: "w-step-status-transition", thread_id: "op-thread", summary: "cell moved on" };
-    expect(operatorDecisionFreshness(d, NOW, indexOver([d, laterCellMove]))).toBe("stale-exclude");
+    // §6: only a GENUINE resolver excludes — a landing with to_state DONE on the
+    // same cell (provablyResolves), NOT a bare any-later-event.
+    const landing: LedgerEvent = { event_id: "dl-9000", ts: freshTs, type: "w-step-status-transition", thread_id: "op-thread", summary: "landed", payload: { cell_id: "op-thread", to_state: "DONE — overtaken" } };
+    expect(operatorDecisionFreshness(d, NOW, indexOver([d, landing]))).toBe("stale-exclude");
+  });
+
+  it("§6 DROP-safe: aged + a bare crew-progress event (NO genuine resolver) ⇒ stale-UNCERTAIN, not exclude", () => {
+    const d = opDecision("dl-3005", staleTs);
+    // A later w-step with NO landing token / closes / unblocks — the weak
+    // "cell-moved-on" signal that used to wrongly exclude (dl-9264 DROP-class).
+    const bareProgress: LedgerEvent = { event_id: "dl-9005", ts: freshTs, type: "w-step-status-transition", thread_id: "op-thread", summary: "still working, prepping the next step", payload: { cell_id: "op-thread" } };
+    expect(operatorDecisionFreshness(d, NOW, indexOver([d, bareProgress]))).toBe("stale-uncertain");
   });
 
   it("aged + a later OPERATOR engagement ⇒ stale-uncertain (can't prove it closed — never wrong-drop)", () => {
@@ -352,10 +364,11 @@ describe("operatorDecisionFreshness — the ~79-stale layer", () => {
     expect(operatorDecisionFreshness(d, NOW, () => undefined)).toBe("stale-uncertain");
   });
 
-  it("computeMustActSet: a provably-stale operator-decision is EXCLUDED", () => {
+  it("computeMustActSet: a provably-RESOLVED operator-decision is EXCLUDED", () => {
     const d = opDecision("dl-3010", staleTs);
-    const laterCellMove: LedgerEvent = { event_id: "dl-9010", ts: freshTs, type: "cell-DONE", thread_id: "op-thread", summary: "moved on" };
-    const items = computeMustActSet(baseInputs([d], [d, laterCellMove]));
+    // Genuine resolver: a landing with to_state DONE on the same cell.
+    const landing: LedgerEvent = { event_id: "dl-9010", ts: freshTs, type: "w-step-status-transition", thread_id: "op-thread", summary: "landed", payload: { cell_id: "op-thread", to_state: "DONE — shipped" } };
+    const items = computeMustActSet(baseInputs([d], [d, landing]));
     expect(items.some((i) => i.source.event_id === "dl-3010")).toBe(false);
   });
 
@@ -366,6 +379,103 @@ describe("operatorDecisionFreshness — the ~79-stale layer", () => {
     expect(surfaced).toBeDefined();
     expect(surfaced?.uncertain).toBe(true);
     expect(surfaced?.kind).toBe("parked-decision");
+  });
+});
+
+// ── §6 Auditor-8 LOAD-BEARING: the freshness heuristic DISCRIMINATES ─────────
+//
+// The proof that the live 87-uncertain are GENUINE un-provability (not a broken
+// filter): the SAME dl-7878→dl-8756 landing shape — an aged item + a strictly-
+// later NON-operator event that PROVES the cell moved on — EXCLUDES when applied
+// to an operator-decision, while a dormant-aged twin (no such proof) only
+// SURFACES-UNCERTAIN. Same age, same type, same thread; the ONLY difference is
+// whether a provable cell-moved-on event exists. That is the discrimination.
+
+describe("§6 freshness heuristic DISCRIMINATES (Auditor-8 load-bearing — live-87 are genuine un-provability)", () => {
+  const staleTs = new Date(NOW - OPERATOR_DECISION_STALE_MS - 24 * 3600 * 1000).toISOString();
+  const laterTs = new Date(NOW - 60 * 1000).toISOString();
+
+  /** An aged operator-decision on its own thread (the ~79-stale shape). */
+  function agedOpDecision(id: string, thread: string): LedgerEvent {
+    return { event_id: id, ts: staleTs, type: "operator-decision", thread_id: thread, status: "open", summary: `aged operator-decision ${id}`, payload: { cell_id: thread } };
+  }
+
+  /**
+   * The landing that PROVES the cell moved on — the dl-8756 shape (a
+   * NON-operator w-step transition, strictly later, same cell) applied to an
+   * operator-decision's thread. NOT an operator-engagement ⇒ provable exclude.
+   */
+  function cellMovedOnLanding(id: string, thread: string): LedgerEvent {
+    return {
+      event_id: id,
+      ts: laterTs,
+      type: "w-step-status-transition",
+      thread_id: thread,
+      status: "open",
+      summary: "SIGNED DEVICE BUILD+INSTALL LANDED — the cell moved on past this decision",
+      payload: { cell_id: thread, to_state: "DONE — shipped; this decision is overtaken" },
+    };
+  }
+
+  it("PROVABLY-stale (aged + cell-moved-on landing + no operator-engagement) ⇒ stale-EXCLUDE", () => {
+    const d = agedOpDecision("dl-4100", "provably-stale-thread");
+    const landing = cellMovedOnLanding("dl-4101", "provably-stale-thread");
+    // Unit: the freshness verdict is a PROVABLE exclude (not uncertain).
+    expect(operatorDecisionFreshness(d, NOW, indexOver([d, landing]))).toBe("stale-exclude");
+    // Integration: computeMustActSet DROPS it from the surfaced set.
+    const items = computeMustActSet(baseInputs([d], [d, landing]));
+    expect(items.some((i) => i.source.event_id === "dl-4100")).toBe(false);
+  });
+
+  it("DORMANT-aged twin (same age/type/thread, NO cell-moved-on proof) ⇒ surface-UNCERTAIN (never dropped)", () => {
+    const d = agedOpDecision("dl-4200", "dormant-thread");
+    // No later event on the thread ⇒ staleness NOT provable.
+    expect(operatorDecisionFreshness(d, NOW, indexOver([d]))).toBe("stale-uncertain");
+    const items = computeMustActSet(baseInputs([d], [d]));
+    const surfaced = items.find((i) => i.source.event_id === "dl-4200");
+    expect(surfaced).toBeDefined(); // NEVER dropped
+    expect(surfaced?.uncertain).toBe(true); // UNKNOWN-LOUD (the live-87 shape)
+  });
+
+  it("SIDE-BY-SIDE: the ONLY difference is the provable landing ⇒ exclude vs uncertain (discrimination proof)", () => {
+    // Two aged operator-decisions, identical but for the cell-moved-on landing
+    // on the first's thread. One EXCLUDES (provable), one SURFACES-uncertain.
+    const provable = agedOpDecision("dl-4300", "provable-thread");
+    const landing = cellMovedOnLanding("dl-4301", "provable-thread");
+    const dormant = agedOpDecision("dl-4302", "dormant-thread-2");
+    const items = computeMustActSet(baseInputs([provable, dormant], [provable, landing, dormant]));
+    const ids = items.map((i) => i.source.event_id);
+    expect(ids).not.toContain("dl-4300"); // provable-stale EXCLUDED
+    expect(ids).toContain("dl-4302"); // dormant-aged SURFACED (uncertain)
+    expect(items.find((i) => i.source.event_id === "dl-4302")?.uncertain).toBe(true);
+    // The heuristic is not "exclude all aged" (DROP-risk) nor "surface all aged"
+    // (flood) — it DISCRIMINATES on a GENUINE resolver. So the live-87 that
+    // surface uncertain are genuinely un-provable, not a broken filter.
+  });
+
+  it("§6 SHARPENED (DROP-safe): a cellMovedOn-ONLY item (aged + crew-progress, NO genuine resolver) ⇒ surface-UNCERTAIN", () => {
+    // The load-bearing DROP-safety proof (dl-9264 class): a bare later
+    // crew-progress event (a w-step with NO landing to_state / closes /
+    // unblocks) is NOT a genuine resolver — under provable-resolver-only it must
+    // SURFACE-UNCERTAIN, never exclude. (Contrast the genuine-resolver case
+    // above which DOES exclude.) This is what keeps the live-87 surfaced.
+    const d = agedOpDecision("dl-4400", "crew-progress-thread");
+    const bareCrewProgress: LedgerEvent = {
+      event_id: "dl-4401",
+      ts: laterTs,
+      type: "w-step-status-transition",
+      thread_id: "crew-progress-thread",
+      status: "open",
+      summary: "worker prepping the next build step (no landing, no resolution)",
+      payload: { cell_id: "crew-progress-thread" }, // NO to_state / closes / unblocks
+    };
+    // Unit: NOT a genuine resolver ⇒ uncertain (the old weak signal would have excluded).
+    expect(operatorDecisionFreshness(d, NOW, indexOver([d, bareCrewProgress]))).toBe("stale-uncertain");
+    // Integration: it SURFACES (never dropped), flagged uncertain.
+    const items = computeMustActSet(baseInputs([d], [d, bareCrewProgress]));
+    const surfaced = items.find((i) => i.source.event_id === "dl-4400");
+    expect(surfaced).toBeDefined();
+    expect(surfaced?.uncertain).toBe(true);
   });
 });
 
@@ -392,11 +502,14 @@ describe("directiveVerdict — the (d) provable-directive-ONLY discriminator", (
     expect(directiveVerdict(d, indexOver([d, converged]))).toBe("exclude");
   });
 
-  it("no-action + PROVABLE directive (≥2 sustained crew-progress events) ⇒ exclude", () => {
+  it("no-action + ≥2 crew-progress but NO convergence ⇒ surface-uncertain (CONVERGENCE-ONLY, dl-9224)", () => {
+    // §4 refinement: ≥2-crew-progress is NOT a provable directive — crew can
+    // prep BOTH arms of a still-live pick. It is AMBIGUOUS ⇒ surface-uncertain
+    // (the DROP-safe + flood-averse lower-tier lane), NOT exclude.
     const d = opDec("dl-9095", "buildthread");
     const p1: LedgerEvent = { event_id: "dl-9096", ts: "", type: "w-step-status-transition", thread_id: "buildthread", summary: "prepping scripts", payload: {} };
     const p2: LedgerEvent = { event_id: "dl-9097", ts: "", type: "w-step-status-transition", thread_id: "buildthread", summary: "scaffolding built", payload: {} };
-    expect(directiveVerdict(d, indexOver([d, p1, p2]))).toBe("exclude");
+    expect(directiveVerdict(d, indexOver([d, p1, p2]))).toBe("surface-uncertain");
   });
 
   it("no-action + only ONE ambiguous later event ⇒ surface-uncertain (provable-ONLY)", () => {
@@ -520,7 +633,9 @@ describe("(d) composed into computeMustActSet — the 5 gate fixtures", () => {
     summary: "an aged, provably-stale operator-decision",
     payload: {},
   };
-  const STALE_CELL_MOVE: LedgerEvent = { event_id: "dl-9020", ts: "2026-07-18T09:00:00Z", type: "w-step-status-transition", thread_id: "stale-thread", summary: "cell advanced to next step", payload: {} };
+  // §6: a GENUINE resolver (landing to_state DONE on the same cell) — NOT a
+  // bare crew-progress event — is what provably resolves STALE_OD.
+  const STALE_CELL_MOVE: LedgerEvent = { event_id: "dl-9020", ts: "2026-07-18T09:00:00Z", type: "w-step-status-transition", thread_id: "stale-thread", summary: "landed", payload: { cell_id: "stale-thread", to_state: "DONE — this decision is overtaken" } };
 
   it("FIXTURE 6 — honest-empty: only a directive + a stale pick ⇒ computeMustActSet returns []", () => {
     const items = computeMustActSet(baseInputs([DL_9094, STALE_OD], [DL_9094, DL_9098, STALE_OD, STALE_CELL_MOVE]));
@@ -541,6 +656,38 @@ describe("label + action — structured extraction, curation, uncapped verb-phra
     expect(input.what).not.toBe(DL_7878.summary);
     expect(input.what).toContain("Apple ID"); // from payload.fix
     expect(input.subject).toBe("the grocery-app build");
+  });
+
+  it("§2 buildLedgerLabelInput composes production-held EXPOSURE from the payload (accurate-to-instance)", () => {
+    const gate: LedgerEvent = {
+      event_id: "dl-gate1",
+      ts: "2026-07-18T11:00:00Z",
+      type: "production-gate",
+      thread_id: "peggy+cds-postprod",
+      status: "open",
+      summary: "raw",
+      payload: { decision: "a live GitHub token", exposure: "committed to a private repo (404, not public)" },
+    };
+    const input = buildLedgerLabelInput(gate, "production-held", stubDeps());
+    expect(input.exposure).toBe("committed to a private repo (404, not public)");
+    // A NON-production-held kind ignores exposure (only production-gate carries it).
+    const asOther = buildLedgerLabelInput(gate, "parked-decision", stubDeps());
+    expect(asOther.exposure).toBeUndefined();
+  });
+
+  it("§2 curation labelInputOverride can supply/override the exposure clause", () => {
+    const gate: LedgerEvent = {
+      event_id: "dl-gate2",
+      ts: "2026-07-18T11:00:00Z",
+      type: "production-gate",
+      thread_id: "peggy+cds-postprod",
+      status: "open",
+      summary: "raw",
+      payload: { decision: "a live GitHub token", exposure: "raw exposure text" },
+    };
+    const deps = stubDeps({ labelInputOverride: () => ({ exposure: "committed but the repo is private (not public)" }) });
+    const input = buildLedgerLabelInput(gate, "production-held", deps);
+    expect(input.exposure).toBe("committed but the repo is private (not public)");
   });
 
   it("a jargon/over-long raw field ⇒ loud placeholder (never ships illegible)", () => {
@@ -660,5 +807,116 @@ describe("detectWorthTriggers — derived rows produce the right DISTINCT kinds"
     expect(runaway).toBeDefined();
     expect(isLegibleLabel(runaway!.label).ok).toBe(true);
     expect(runaway!.source.origin).toBe("derived");
+  });
+});
+
+// ── §3. Operator-action lane gate (Auditor-8 dl-9218 asymmetric ruling) ─────
+
+describe("operatorActionGate — asymmetric per-kind lane routing", () => {
+  it("inherently-must-act (parked-decision / production-held) ⇒ operator-band, confident", () => {
+    expect(operatorActionGate({ kind: "parked-decision", origin: "ledger", namesOperatorAction: false, provablyCrewSelfHealable: false }))
+      .toEqual({ lane: "operator-band", uncertain: false });
+    expect(operatorActionGate({ kind: "production-held", origin: "ledger", namesOperatorAction: false, provablyCrewSelfHealable: false }))
+      .toEqual({ lane: "operator-band", uncertain: false });
+  });
+
+  it("ledger terminal-blocked (banked blocker) is inherently-must-act; derived-stalled is NOT", () => {
+    expect(isInherentlyMustAct({ kind: "stalled-deliverable", origin: "ledger", namesOperatorAction: false, provablyCrewSelfHealable: false })).toBe(true);
+    expect(isInherentlyMustAct({ kind: "stalled-deliverable", origin: "derived", derivedState: "stalled", namesOperatorAction: false, provablyCrewSelfHealable: false })).toBe(false);
+  });
+
+  it("derived-stalled DEFAULT operator-band, confident (a stall plausibly needs an unblock)", () => {
+    expect(operatorActionGate({ kind: "stalled-deliverable", origin: "derived", derivedState: "stalled", namesOperatorAction: false, provablyCrewSelfHealable: false }))
+      .toEqual({ lane: "operator-band", uncertain: false });
+  });
+
+  it("derived-stalled + PROVABLY crew-self-healable ⇒ crew-lane (the ONLY crew-lane path)", () => {
+    expect(operatorActionGate({ kind: "stalled-deliverable", origin: "derived", derivedState: "stalled", namesOperatorAction: false, provablyCrewSelfHealable: true }))
+      .toEqual({ lane: "crew-lane", uncertain: false });
+  });
+
+  it("runaway-cost WITHOUT operator-action, not-self-healable ⇒ operator-band UNCERTAIN (never drop)", () => {
+    expect(operatorActionGate({ kind: "runaway-cost", origin: "derived", derivedState: "runaway", namesOperatorAction: false, provablyCrewSelfHealable: false }))
+      .toEqual({ lane: "operator-band", uncertain: true });
+  });
+
+  it("runaway-cost WITH operator-action ('kill or let run?') ⇒ operator-band, confident", () => {
+    expect(operatorActionGate({ kind: "runaway-cost", origin: "derived", derivedState: "runaway", namesOperatorAction: true, provablyCrewSelfHealable: false }))
+      .toEqual({ lane: "operator-band", uncertain: false });
+  });
+
+  it("runaway-cost PROVABLY crew-self-healable (+ no operator-action) ⇒ crew-lane", () => {
+    expect(operatorActionGate({ kind: "runaway-cost", origin: "derived", derivedState: "runaway", namesOperatorAction: false, provablyCrewSelfHealable: true }))
+      .toEqual({ lane: "crew-lane", uncertain: false });
+  });
+
+  it("phantom-hold + commitment-drop default crew-lane→uncertain unless named/self-healable", () => {
+    // not named, not self-healable ⇒ operator-band uncertain (DROP-safe).
+    expect(operatorActionGate({ kind: "phantom-hold", origin: "derived", namesOperatorAction: false, provablyCrewSelfHealable: false }).uncertain).toBe(true);
+    expect(operatorActionGate({ kind: "commitment-drop", origin: "derived", namesOperatorAction: false, provablyCrewSelfHealable: false }).uncertain).toBe(true);
+    // named ⇒ confident operator-band.
+    expect(operatorActionGate({ kind: "commitment-drop", origin: "derived", namesOperatorAction: true, provablyCrewSelfHealable: false }))
+      .toEqual({ lane: "operator-band", uncertain: false });
+  });
+
+  it("INVARIANT: crew-lane requires provablyCrewSelfHealable — named+self-healable stays operator-band", () => {
+    // A named operator-action is NEVER silently routed to crew even if self-healable.
+    expect(operatorActionGate({ kind: "runaway-cost", origin: "derived", namesOperatorAction: true, provablyCrewSelfHealable: true }).lane)
+      .toBe("operator-band");
+  });
+});
+
+describe("§3 lane gate — the Auditor-8 E2E-shaped fixtures (via computeMustActSet)", () => {
+  const NOW2 = Date.parse("2026-07-18T12:00:00Z");
+  function base(reg: DriverRow[], panes: PaneRow[] = []): MustActInputs {
+    return { openDecisions: [], ledgerThreadIndex: () => undefined, driverRegistry: reg, paneState: panes, now: NOW2, ledgerHead: "dl-1", deps: stubDeps() };
+  }
+
+  it("runaway-cost WITHOUT operator-action → NOT on the main band (operator-band, uncertain)", () => {
+    const reg: DriverRow[] = [{ name: "r", cell: "r", cost_rate_per_min: 60_000 }]; // no runaway_operator_decision
+    const item = computeMustActSet(base(reg)).find((i) => i.kind === "runaway-cost");
+    expect(item).toBeDefined(); // detected + emitted (coverage-contract)
+    expect(item?.lane).toBe("operator-band");
+    expect(item?.uncertain).toBe(true); // lower-tier, not main band
+  });
+
+  it("runaway-cost WITH 'kill it or let it run?' → operator band, confident (main)", () => {
+    const reg: DriverRow[] = [{ name: "r", cell: "r", cost_rate_per_min: 60_000, runaway_operator_decision: "kill it or let it run?" }];
+    const item = computeMustActSet(base(reg)).find((i) => i.kind === "runaway-cost");
+    expect(item?.lane).toBe("operator-band");
+    expect(item?.uncertain).toBe(false);
+    expect(item?.action).toContain("kill it or let it run"); // names the operator decision
+  });
+
+  it("derived-stall → operator band (default)", () => {
+    const reg: DriverRow[] = [{ name: "s", cell: "s", state: "active", last_seen: "2026-07-18T11:00:00Z", claimed_task: "the build" }];
+    const item = computeMustActSet(base(reg)).find((i) => i.kind === "stalled-deliverable");
+    expect(item?.lane).toBe("operator-band");
+    expect(item?.uncertain).toBe(false);
+  });
+
+  it("PROVABLY-self-healable stall → crew-lane", () => {
+    const reg: DriverRow[] = [{ name: "s", cell: "s", state: "active", last_seen: "2026-07-18T11:00:00Z", claimed_task: "the build", provably_self_healable: true }];
+    const item = computeMustActSet(base(reg)).find((i) => i.kind === "stalled-deliverable");
+    expect(item?.lane).toBe("crew-lane");
+  });
+
+  it("COVERAGE-CONTRACT: a crew-lane item is still DETECTED + emitted (routing, not removal)", () => {
+    const reg: DriverRow[] = [{ name: "s", cell: "s", state: "active", last_seen: "2026-07-18T11:00:00Z", claimed_task: "t", provably_self_healable: true }];
+    const items = computeMustActSet(base(reg));
+    expect(items.some((i) => i.lane === "crew-lane")).toBe(true); // present, just off the operator band
+  });
+
+  it("ledger production-held always operator-band (skips the test)", () => {
+    const held: LedgerEvent = { event_id: "dl-p1", ts: "2026-07-18T11:00:00Z", type: "production-gate", thread_id: "peggy+x", status: "open", summary: "s", payload: { decision: "a held deploy" } };
+    const item = computeMustActSet({ ...base([]), openDecisions: [held], ledgerThreadIndex: indexOver([held]) }).find((i) => i.kind === "production-held");
+    expect(item?.lane).toBe("operator-band");
+  });
+
+  it("the gate is PLUGGABLE (deps.operatorActionGate swaps it for Joan's final membership)", () => {
+    const reg: DriverRow[] = [{ name: "r", cell: "r", cost_rate_per_min: 60_000 }];
+    const forceCrew = stubDeps({ operatorActionGate: () => ({ lane: "crew-lane" as const, uncertain: false }) });
+    const item = computeMustActSet({ ...base(reg), deps: forceCrew }).find((i) => i.kind === "runaway-cost");
+    expect(item?.lane).toBe("crew-lane");
   });
 });
