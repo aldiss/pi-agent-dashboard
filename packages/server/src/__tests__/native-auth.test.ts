@@ -144,6 +144,8 @@ describe("validateNativeRedirect — A6 EXACT (only pidashboard://auth-done)", (
       "pidashboard://auth-done#", // empty fragment marker (hash === "")
       "pidashboard://auth-done:", // empty port marker (port === "")
       "pidashboard://@auth-done", // empty userinfo marker (username === "") — Pete/Bert @-case
+      "pidashboard://auth-done.", // trailing-dot host (Alice)
+      "pidashboard://auth-done\\", // backslash (Alice)
       "pidashboard://auth-done@evil.example",
       "pidashboard://user:pass@auth-done",
       "pidashboard://AUTH-DONE", // non-special scheme host NOT lowercased -> != auth-done
@@ -229,12 +231,23 @@ describe("createAuthCodeStore — Pete MAJOR-3 dl-9108: retention bounds (sweep 
     expect(s.sweepExpired()).toBe(1000);
     expect(s.size()).toBe(0);
   });
-  it("hard-caps total entries by evicting the oldest (bounded memory even without a sweep)", () => {
+  it("hard-caps by REFUSING new codes when full of LIVE entries (never evicts a live code); existing stay redeemable (Pete control)", () => {
     const s = createAuthCodeStore({ maxEntries: 100 });
-    for (let i = 0; i < 250; i++) s.put(`c-${i}`, "t", { ttlMs: 60_000 }); // all live
-    expect(s.size()).toBeLessThanOrEqual(100);
-    expect(s.take("c-249")).toBe("t"); // newest still redeemable
-    expect(s.take("c-0")).toBeNull(); // oldest evicted
+    for (let i = 0; i < 100; i++) expect(s.put(`c-${i}`, "t", { ttlMs: 60_000 })).toBe(true); // fill to cap, all live
+    expect(s.size()).toBe(100);
+    expect(s.put("overflow", "t", { ttlMs: 60_000 })).toBe(false); // REFUSED — must NOT evict a live code
+    expect(s.size()).toBe(100);
+    expect(s.take("c-0")).toBe("t"); // an existing code is STILL redeemable (Pete's control)
+    expect(s.put("after-free", "t", { ttlMs: 60_000 })).toBe(true); // freeing a slot re-admits
+  });
+  it("sweeps expired entries to make room before refusing", () => {
+    const s = createAuthCodeStore({ maxEntries: 3 });
+    expect(s.put("a", "t", { ttlMs: -1 })).toBe(true); // expired
+    expect(s.put("b", "t", { ttlMs: -1 })).toBe(true); // expired
+    expect(s.put("c", "t", { ttlMs: 60_000 })).toBe(true); // live
+    expect(s.put("d", "t", { ttlMs: 60_000 })).toBe(true); // at cap but a,b expired → swept → room
+    expect(s.take("c")).toBe("t");
+    expect(s.take("d")).toBe("t");
   });
 });
 
