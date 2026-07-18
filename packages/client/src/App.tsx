@@ -39,6 +39,8 @@ import { readAllDrafts, writeDraft, deleteDraft } from "./lib/draft-storage.js";
 import { resizeImagesForSend } from "./lib/image-resize.js";
 import { getSendFullResolution } from "./hooks/useSendFullResolution.js";
 import { extractUserPromptHistory } from "./lib/message-history.js";
+import { classifyTier } from "./lib/session-grouping.js";
+import type { AudienceSessionCtx } from "./lib/message-filter-classifier.js";
 import { StatusBar } from "./components/StatusBar.js";
 import { LandingPage } from "./components/LandingPage.js";
 import { SettingsPanel } from "./components/SettingsPanel.js";
@@ -480,6 +482,19 @@ export default function App() {
   const selectedState = selectedId
     ? sessionStates.get(selectedId) ?? createInitialState()
     : createInitialState();
+
+  // Operator-addressed audience context for the selected session (coverage-
+  // contract #1 — the shared operator-addressed classifier). Resolve the
+  // DashboardSession from `sessions` (it carries source/name/sessionFile/cwd —
+  // what classifyTier reads) and memoize the tier once per session so
+  // ChatView's per-row classifyMessage doesn't recompute it. Threaded into
+  // ChatView → filterMessages / countMessagesByCategory. No session → undefined
+  // (the classifier fails open to operator-addressed).
+  const selectedSession = selectedId ? sessions.get(selectedId) : undefined;
+  const sessionCtx = useMemo<AudienceSessionCtx | undefined>(
+    () => (selectedSession ? { tier: classifyTier(selectedSession) } : undefined),
+    [selectedSession],
+  );
 
   // Per-session draft text + history recall for CommandInput.
   const selectedDraft = selectedId ? (drafts.get(selectedId) ?? "") : "";
@@ -1328,7 +1343,7 @@ export default function App() {
             </div>
           }>
             <SessionAssetsProvider assets={selectedSession?.assets}>
-            <ChatView ref={chatViewRef} sessionId={selectedId} state={selectedState} toolContext={toolContext} onCancelPending={handleCancelPending} onRespondToUi={handleRespondToUi} onAbort={handleAbort} onForceKill={handleForceKill} onForkFromMessage={selectedId ? (entryId) => handleResumeSession(selectedId, "fork", entryId) : undefined} onRetryAfterError={selectedId ? () => {
+            <ChatView ref={chatViewRef} sessionId={selectedId} state={selectedState} sessionCtx={sessionCtx} toolContext={toolContext} onCancelPending={handleCancelPending} onRespondToUi={handleRespondToUi} onAbort={handleAbort} onForceKill={handleForceKill} onForkFromMessage={selectedId ? (entryId) => handleResumeSession(selectedId, "fork", entryId) : undefined} onRetryAfterError={selectedId ? () => {
               // Retry the last user prompt by re-sending it via send_prompt.
               // The previous behaviour (handleResumeSession with mode="continue")
               // no-ops on alive-but-errored sessions because the server short-

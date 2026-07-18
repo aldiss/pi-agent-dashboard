@@ -58,6 +58,15 @@ export interface ChatMessage {
    * (flag off) → no chrome, byte-unchanged. See MessageAuthor.
    */
   author?: MessageAuthor;
+  /**
+   * Stamp-at-emit audience (operator-addressed vs mesh chatter). Source of
+   * truth for the operator-voice classifier + the "Mesh chatter" toggle: when
+   * present, `classifyMessage` reads it directly; when absent (pre-stamp
+   * history), the retrospective heuristic derives it from the session tier
+   * (spawn-source + canonical name). See message-filter-classifier.ts and
+   * the pi-operator-voice extension (src/audience.ts, the emit-side authority).
+   */
+  audience?: "operator" | "agent";
 }
 
 export interface ToolCallState {
