@@ -1,5 +1,25 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { buildTmuxCommand, buildHeadlessArgs, shellEscape, spawnPiSession, buildSpawnEnv, type SessionOptions } from "../process-manager.js";
+import { execSync } from "@blackbelt-technology/pi-dashboard-shared/platform/exec.js";
+import { spawnDetached } from "@blackbelt-technology/pi-dashboard-shared/platform/detached-spawn.js";
+
+// ── Hermetic spawn seam (change: hermetic-process-manager-tests) ─────────────
+// process-manager.ts spawns real OS processes through two seams: `execSync`
+// (tmux / wsl-tmux) and `spawnDetached` (wt / headless). The success-path
+// preSpawnHook tests below drive spawnPiSession with an existing cwd (/tmp) and
+// a non-throwing hook, so absent a mock they fall through to a REAL
+// `tmux new-session … pi-dashboard`, leaking live windows on any host with
+// pi+tmux (the process-manager suite-leak Pete caught). Mock BOTH seams so no
+// test in this file can touch real tmux/OS spawn; buildSafeArgv + spawnSync
+// (exec.js) and waitForNoCrash (detached-spawn.js) keep real implementations.
+vi.mock("@blackbelt-technology/pi-dashboard-shared/platform/exec.js", async (importActual) => {
+  const actual = await importActual<typeof import("@blackbelt-technology/pi-dashboard-shared/platform/exec.js")>();
+  return { ...actual, execSync: vi.fn(() => Buffer.from("")) as unknown as typeof actual.execSync };
+});
+vi.mock("@blackbelt-technology/pi-dashboard-shared/platform/detached-spawn.js", async (importActual) => {
+  const actual = await importActual<typeof import("@blackbelt-technology/pi-dashboard-shared/platform/detached-spawn.js")>();
+  return { ...actual, spawnDetached: vi.fn(async () => ({ ok: true, pid: 999999 })) as unknown as typeof actual.spawnDetached };
+});
 
 // Note: platform-dispatch tests live in packages/shared/src/__tests__/
 // spawn-mechanism.test.ts. `detectPlatform` was removed in change:
@@ -160,6 +180,13 @@ describe("Process Manager", () => {
 
   // ── Pre-spawn hook tests (worktree-session-spawn) ──────────────────────
   describe("preSpawnHook", () => {
+    // Clear the mocked exec seams before each case so per-test invocation
+    // counts are exact (success-path = invoked; throwing-hook = zero calls).
+    beforeEach(() => {
+      vi.mocked(execSync).mockClear();
+      vi.mocked(spawnDetached).mockClear();
+    });
+
     it("changes cwd when hook returns a string", async () => {
       // Use a tmp dir as target cwd since it exists
       const hookCwd = "/tmp";
@@ -176,6 +203,14 @@ describe("Process Manager", () => {
       // DIR_MISSING is only for non-existent paths; /tmp exists.
       expect(result.code).not.toBe("SPAWN_HOOK_ERR");
       expect(result.code).not.toBe("DIR_MISSING");
+      // Hermetic: success path routed through the MOCKED execSync seam with the
+      // expected tmux spawn command + returned cwd — never real tmux.
+      const spawnCmd = vi.mocked(execSync).mock.calls
+        .map((c) => String(c[0]))
+        .find((c) => /tmux new-(session|window)/.test(c));
+      expect(spawnCmd, "expected fake execSync to receive a tmux spawn command").toBeDefined();
+      expect(spawnCmd).toContain("pi-dashboard");
+      expect(spawnCmd).toContain("/tmp");
     });
 
     it("fails spawn when hook throws", async () => {
@@ -187,6 +222,9 @@ describe("Process Manager", () => {
       expect(result.success).toBe(false);
       expect(result.message).toContain("dirty working tree");
       expect(result.code).toBe("dirty_working_tree");
+      // Throwing hook short-circuits BEFORE any spawn — zero exec-seam calls.
+      expect(vi.mocked(execSync)).not.toHaveBeenCalled();
+      expect(vi.mocked(spawnDetached)).not.toHaveBeenCalled();
     });
 
     it("fails spawn when hook throws a plain Error (no .code)", async () => {
@@ -198,6 +236,9 @@ describe("Process Manager", () => {
       expect(result.success).toBe(false);
       expect(result.message).toContain("something went wrong");
       expect(result.code).toBe("SPAWN_HOOK_ERR");
+      // Throwing hook short-circuits BEFORE any spawn — zero exec-seam calls.
+      expect(vi.mocked(execSync)).not.toHaveBeenCalled();
+      expect(vi.mocked(spawnDetached)).not.toHaveBeenCalled();
     });
 
     it("passes branch and label to hook context", async () => {
@@ -212,14 +253,24 @@ describe("Process Manager", () => {
       expect(hookCtx.cwd).toBe("/tmp");
       expect((hookCtx as any).branch).toBe("feature-x");
       expect((hookCtx as any).label).toBe("review");
+      // Hermetic: success path routed through the MOCKED execSync seam (never real tmux).
+      const spawnCmd = vi.mocked(execSync).mock.calls
+        .map((c) => String(c[0]))
+        .find((c) => /tmux new-(session|window)/.test(c));
+      expect(spawnCmd, "expected fake execSync to receive a tmux spawn command").toBeDefined();
+      expect(spawnCmd).toContain("/tmp");
     });
 
     it("backward compatible: spawn without preSpawnHook unchanged", async () => {
       // Verify that existing callers without preSpawnHook still work
       const result = await spawnPiSession("/tmp");
       expect(result.code).not.toBe("SPAWN_HOOK_ERR");
-      // The spawn will likely fail because pi isn't installed in the test env,
-      // but it shouldn't be a hook error
+      // Hermetic: success path routed through the MOCKED execSync seam (never real tmux).
+      const spawnCmd = vi.mocked(execSync).mock.calls
+        .map((c) => String(c[0]))
+        .find((c) => /tmux new-(session|window)/.test(c));
+      expect(spawnCmd, "expected fake execSync to receive a tmux spawn command").toBeDefined();
+      expect(spawnCmd).toContain("/tmp");
     });
   });
 
@@ -319,6 +370,18 @@ describe("Process Manager", () => {
         mode: "fork",
       });
       expect(cmd).toContain("--fork '/s/with space.jsonl'");
+    });
+  });
+
+  // ── No-live-spawn invariant (change: hermetic-process-manager-tests) ──────
+  // Suite-level guard: both OS-spawn seams are mocked, so NO test in this file
+  // can create a real tmux session / OS process. Empirical zero-side-effect is
+  // proven externally by the before/after `tmux -L pi` + /private/tmp API-row
+  // snapshot around the suite run.
+  describe("no-live-spawn invariant", () => {
+    it("exec + detached spawn seams are mocked (real tmux/OS spawn unreachable)", () => {
+      expect(vi.isMockFunction(execSync)).toBe(true);
+      expect(vi.isMockFunction(spawnDetached)).toBe(true);
     });
   });
 });
