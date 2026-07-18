@@ -335,23 +335,46 @@ export function createAuthCodeStore(opts?: { maxEntries?: number }): {
  * self-pruning on window roll). Keyed by caller IP for the exchange endpoint so a single
  * caller cannot brute-force/replay codes unbounded.
  */
-export function createRateLimiter(opts: { max: number; windowMs: number }): {
+export function createRateLimiter(opts: { max: number; windowMs: number; maxKeys?: number }): {
   check: (key: string) => boolean;
+  sweepExpired: (now?: number) => number;
+  size: () => number;
   reset: () => void;
 } {
   const hits = new Map<string, { count: number; resetAt: number }>();
+  const MAX_KEYS = opts.maxKeys ?? 100_000;
+  // Remove keys whose window has elapsed — bounds distinct-key retention (Pete/Alice dl-9108
+  // lifecycle: without this, one request per NEW key grows the Map forever).
+  function sweepExpired(now = Date.now()): number {
+    let removed = 0;
+    for (const [k, e] of hits) {
+      if (now >= e.resetAt) {
+        hits.delete(k);
+        removed++;
+      }
+    }
+    return removed;
+  }
   return {
     check(key) {
       const now = Date.now();
       const e = hits.get(key);
-      if (!e || now >= e.resetAt) {
-        hits.set(key, { count: 1, resetAt: now + opts.windowMs });
+      if (e && now < e.resetAt) {
+        if (e.count >= opts.max) return false;
+        e.count++;
         return true;
       }
-      if (e.count >= opts.max) return false;
-      e.count++;
+      // New key or elapsed window → (re)start. Bound distinct keys: sweep expired first, then
+      // FAIL-CLOSED if still at the distinct-key cap (deny rather than grow the Map unbounded).
+      if (hits.size >= MAX_KEYS) {
+        sweepExpired(now);
+        if (hits.size >= MAX_KEYS) return false;
+      }
+      hits.set(key, { count: 1, resetAt: now + opts.windowMs });
       return true;
     },
+    sweepExpired,
+    size: () => hits.size,
     reset() {
       hits.clear();
     },
@@ -416,8 +439,16 @@ export async function registerAuthPlugin(
   // instances). A periodic unref'd sweep bounds expired-code retention (Pete MAJOR-3 dl-9108).
   const authCodeStore = createAuthCodeStore({ maxEntries: 10_000 });
   const exchangeRateLimiter = createRateLimiter({ max: 30, windowMs: 60_000 });
+  // Periodic unref'd sweeps bound expired-entry retention for BOTH stores; cleared on server
+  // close (Pete dl-9108 lifecycle) so the timers don't leak past the Fastify instance.
   const authCodeSweep = setInterval(() => authCodeStore.sweepExpired(), 60_000);
+  const rateLimiterSweep = setInterval(() => exchangeRateLimiter.sweepExpired(), 60_000);
   if (typeof (authCodeSweep as any).unref === "function") (authCodeSweep as any).unref();
+  if (typeof (rateLimiterSweep as any).unref === "function") (rateLimiterSweep as any).unref();
+  fastify.addHook("onClose", async () => {
+    clearInterval(authCodeSweep);
+    clearInterval(rateLimiterSweep);
+  });
 
   // Tag requests with authentication status (read by createNetworkGuard) and
   // the Build 1b REST-captured identity. Registered here — BEFORE the
