@@ -287,7 +287,7 @@ export function safeOrigin(baseUrl: string): string | null {
  * brute-force/replay infeasible.
  */
 export function createAuthCodeStore(opts?: { maxEntries?: number }): {
-  put: (code: string, token: string, o: { ttlMs: number }) => void;
+  put: (code: string, token: string, o: { ttlMs: number }) => boolean;
   take: (code: unknown) => string | null;
   sweepExpired: () => number;
   size: () => number;
@@ -306,16 +306,15 @@ export function createAuthCodeStore(opts?: { maxEntries?: number }): {
     return removed;
   }
   return {
-    put(code, token, o) {
-      // Bound memory (Pete MAJOR-3 dl-9108): sweep expired when at the cap, then hard-cap by
-      // evicting the oldest insertion, so unredeemed codes can never grow without bound.
+    put(code, token, o): boolean {
+      // Bound memory (Pete MAJOR-3 dl-9108): sweep expired first; if STILL at cap, every
+      // remaining entry is a LIVE unexpired code → REFUSE the new code (never evict a valid one
+      // — an attacker flood must not push out a legit user's live code). Rate-limiting makes
+      // this exceptional; the caller fails issuance BEFORE any store/redirect side-effect.
       if (store.size >= MAX) sweepExpired();
-      while (store.size >= MAX) {
-        const oldest = store.keys().next().value;
-        if (oldest === undefined) break;
-        store.delete(oldest);
-      }
+      if (store.size >= MAX) return false;
       store.set(code, { token, expiresAt: Date.now() + o.ttlMs });
+      return true;
     },
     take(code) {
       if (typeof code !== "string" || code.length === 0) return null;
@@ -591,7 +590,11 @@ export async function registerAuthPlugin(
         return reply.redirect("/auth/login?error=Invalid+native+redirect");
       }
       const authCode = crypto.randomBytes(32).toString("base64url"); // 256-bit, single-use
-      authCodeStore.put(authCode, token, { ttlMs: 60_000 }); // 60s TTL, AFTER target validated
+      // Store BEFORE the redirect; if the store is at capacity with LIVE codes it REFUSES
+      // (never evicts a valid code, Pete dl-9108) → fail issuance before any redirect side-effect.
+      if (!authCodeStore.put(authCode, token, { ttlMs: 60_000 })) {
+        return reply.redirect("/auth/login?error=Temporarily+unavailable");
+      }
       return reply.redirect(`${target}?code=${encodeURIComponent(authCode)}`);
     }
 
