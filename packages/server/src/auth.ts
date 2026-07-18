@@ -246,6 +246,17 @@ export function buildRedirectUri(provider: string, port: number): string {
   return `${base}/auth/callback/${provider}`;
 }
 
+/**
+ * The dashboard's own public base URL (publicUrl override → tunnel → localhost).
+ * This is the TRUSTED deployment identity used as the base for same-origin returnUrl
+ * validation and for exact-origin CORS on the native code-exchange endpoint. It is a
+ * configured/deployment value — NEVER derived from a request Host / X-Forwarded-* header
+ * (which are attacker-controlled). Same resolution as `buildRedirectUri`.
+ */
+export function getPublicBaseUrl(port: number): string {
+  return publicUrlOverride ?? getTunnelUrl() ?? `http://localhost:${port}`;
+}
+
 // ─── OAuth Flow Helpers ─────────────────────────────────────────────────────
 
 /**
