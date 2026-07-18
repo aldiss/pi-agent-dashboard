@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import Fastify from "fastify";
 import { registerAuthPlugin, verifyState } from "../auth-plugin.js";
 import { verifyToken } from "../auth.js";
@@ -257,6 +257,21 @@ describe("ACCEPTANCE — exchange CORS + rate-limit (Pete MAJOR-2/3 dl-9108)", (
       expect(got429).toBe(true);
     } finally {
       await app.close();
+    }
+  });
+
+  it("lifecycle: registerAuthPlugin adds 2 sweep timers; onClose clears BOTH back to baseline (RED if either clearInterval removed)", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+    try {
+      const app = Fastify();
+      const before = vi.getTimerCount();
+      await registerAuthPlugin(app, { authConfig: makeConfig(), port: 8000 });
+      await app.ready();
+      expect(vi.getTimerCount()).toBe(before + 2); // exactly the authCode + rate-limiter sweep timers
+      await app.close();
+      expect(vi.getTimerCount()).toBe(before); // onClose cleared BOTH -> baseline (RED if either clearInterval removed)
+    } finally {
+      vi.useRealTimers();
     }
   });
 });
