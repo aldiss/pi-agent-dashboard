@@ -298,7 +298,9 @@ export function createAuthCodeStore(opts?: { maxEntries?: number }): {
     const now = Date.now();
     let removed = 0;
     for (const [c, e] of store) {
-      if (now > e.expiresAt) {
+      // expiry-at-take contract: a code expires AT issuedAt+ttl (60s), not +1ms later.
+      // `>=` so an exactly-expired entry is swept (frees the cap slot) — Pete dl-9265 T5.
+      if (now >= e.expiresAt) {
         store.delete(c);
         removed++;
       }
@@ -321,7 +323,9 @@ export function createAuthCodeStore(opts?: { maxEntries?: number }): {
       const entry = store.get(code);
       if (!entry) return null;
       store.delete(code); // single-use: delete on take, regardless of expiry
-      if (Date.now() > entry.expiresAt) return null; // expiry-at-take
+      // expiry-at-take at exactly issuedAt+ttl (60s): `>=` so a code at its expiry instant is
+      // rejected, not redeemable until +1ms — Pete dl-9265 T5 (60s/expiry-at-take contract).
+      if (Date.now() >= entry.expiresAt) return null; // expiry-at-take
       return entry.token;
     },
     sweepExpired,
