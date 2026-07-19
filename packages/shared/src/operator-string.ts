@@ -23,16 +23,9 @@
  */
 
 import { isLegibleLabel } from "./needs-you-label.js";
+import { MAX_LABEL_CHARS } from "./needs-you-band.js";
 
-/**
- * The canonical operator-label char cap (120). Inlined here rather than
- * re-imported from `needs-you-band.ts` because that module is NOT present in
- * this worktree (only `needs-you-label.ts` was cherry-picked onto the dashboard
- * branch; `needs-you-band.ts` lands with the full needs-band merge). 120 is the
- * canonical value across dashboard history. When the needs-band merge lands,
- * this can re-import from the single source if desired.
- */
-export const MAX_LABEL_CHARS = 120;
+export { MAX_LABEL_CHARS };
 
 /**
  * The opaque nominal type. The unique symbol brand makes a bare `string`
@@ -126,23 +119,56 @@ export function composeOperatorString(facts: OperatorFacts): OperatorString {
 }
 
 /**
- * Escape-hatch for text that is ALREADY known operator-safe (e.g. a literal UI
- * label authored in operator-language). Rare; prefer `composeOperatorString`.
- * Still asserts structural legibility (throws on jargon) so the escape-hatch
- * can't reintroduce jargon.
+ * The typed status kinds a StatusBar-style renderer can show. This is the
+ * COMPOSER-ONLY input for operator-facing STATUS strings: the input is a typed
+ * discriminated union, NEVER a raw string, so a status string cannot be built
+ * outside this composer. (The prior `operatorStringFromLiteral` raw-string
+ * escape hatch is REMOVED — composer-only-from-typed-facts, Ruling #3.)
  */
-export function operatorStringFromLiteral(literal: string): OperatorString {
-	const { violations } = isLegibleLabel(literal);
+export type StatusKind =
+	| { kind: "running"; tool: string }
+	| { kind: "generating" }
+	| { kind: "thinking" };
+
+/**
+ * Compose an operator-facing STATUS `OperatorString` from a typed `StatusKind`.
+ * The rendered text is operator-language ("Running the build…", "Generating…",
+ * "Thinking…"); the tool name for `running` is operator-visible by design (it
+ * names what the agent is doing). Still legibility-gated: a tool name that
+ * carries jargon (dl-id / §-cite / themed-name / version-tag) throws LOUD, so a
+ * status string can never leak jargon to the operator.
+ */
+export function composeStatusString(status: StatusKind): OperatorString {
+	let s: string;
+	switch (status.kind) {
+		case "running":
+			s = `Running ${status.tool.trim()}…`;
+			break;
+		case "generating":
+			s = "Generating…";
+			break;
+		case "thinking":
+			s = "Thinking…";
+			break;
+		default:
+			return assertNeverStatus(status);
+	}
+
+	const { violations } = isLegibleLabel(s);
 	const structural = violations.filter((v) => !v.startsWith("length:"));
 	if (structural.length > 0) {
 		throw new OperatorStringError(
-			`operatorStringFromLiteral carries jargon: ${structural.join("; ")}`,
-			{ who: "", outcome: literal, whatNeedsYou: "" },
-			literal,
+			`status string would carry jargon: ${structural.join("; ")}`,
+			{ who: "", outcome: s, whatNeedsYou: "" },
+			s,
 			violations,
 		);
 	}
-	return literal as OperatorString;
+	return s as OperatorString;
+}
+
+function assertNeverStatus(x: never): never {
+	throw new Error(`unreachable StatusKind: ${JSON.stringify(x)}`);
 }
 
 /** Read the underlying string for rendering (identity; the brand is compile-time only). */

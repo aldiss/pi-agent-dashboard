@@ -444,18 +444,6 @@ export default function App() {
     ? sessionStates.get(selectedId) ?? createInitialState()
     : createInitialState();
 
-  // Operator-addressed audience context for the selected session (coverage-
-  // contract #1 — the shared operator-addressed classifier). Resolve the
-  // DashboardSession from `sessions` (it carries source/name/sessionFile/cwd —
-  // what classifyTier reads) and memoize the tier once per session so
-  // ChatView's per-row classifyMessage doesn't recompute it. Threaded into
-  // ChatView → filterMessages / countMessagesByCategory. No session → undefined
-  // (the classifier fails open to operator-addressed).
-  const selectedSession = selectedId ? sessions.get(selectedId) : undefined;
-  const sessionCtx = useMemo<AudienceSessionCtx | undefined>(
-    () => (selectedSession ? { tier: classifyTier(selectedSession) } : undefined),
-    [selectedSession],
-  );
 
   // Per-session draft text + history recall for CommandInput.
   const selectedDraft = selectedId ? (drafts.get(selectedId) ?? "") : "";
@@ -578,6 +566,18 @@ export default function App() {
     : [];
 
   const selectedSession = selectedId ? sessions.get(selectedId) : undefined;
+  // Operator-addressed audience context for the selected session (coverage-
+  // contract #1 — the shared operator-addressed classifier). Memoize the tier
+  // (from classifyTier, which reads source/name/sessionFile/cwd) once per
+  // session so ChatView's per-row classifyMessage doesn't recompute it. This is
+  // the RETROSPECTIVE fallback; the authoritative signal is the emit-stamp on
+  // ChatMessage.audience (see message-filter-classifier.ts). Threaded into
+  // ChatView → filterMessages / countMessagesByCategory. No session → undefined
+  // (the classifier fails open to operator-addressed).
+  const sessionCtx = useMemo<AudienceSessionCtx | undefined>(
+    () => (selectedSession ? { tier: classifyTier(selectedSession) } : undefined),
+    [selectedSession],
+  );
   const selectedCwd = selectedSession?.cwd;
   const editorCwds = useMemo(() => selectedCwd ? [selectedCwd] : [], [selectedCwd]);
   const editorMap = useEditors(editorCwds);

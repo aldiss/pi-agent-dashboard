@@ -13,7 +13,7 @@
 import { describe, expect, it } from "vitest";
 import {
 	composeOperatorString,
-	operatorStringFromLiteral,
+	composeStatusString,
 	OperatorStringError,
 	renderOperatorString,
 	type OperatorString,
@@ -28,7 +28,7 @@ describe("composeOperatorString — typed facts → legible operator string", ()
 			whatNeedsYou: "revoke the token and re-auth",
 		});
 		expect(renderOperatorString(s)).toContain("The postprod driver");
-		expect(renderOperatorString(s)).toContain("revoke the token");
+		expect(renderOperatorString(s)).toContain("Revoke the token");
 	});
 
 	it("keeps the provenance-ref OUT of the rendered string", () => {
@@ -75,13 +75,26 @@ describe("composeOperatorString — typed facts → legible operator string", ()
 	});
 });
 
-describe("operatorStringFromLiteral — escape hatch still guards jargon", () => {
-	it("accepts a clean operator-language literal", () => {
-		const s = operatorStringFromLiteral("Waiting on your review of the deploy");
-		expect(renderOperatorString(s)).toBe("Waiting on your review of the deploy");
+describe("composeStatusString — typed StatusKind → operator-facing status (StatusBar bind)", () => {
+	it("running → 'Running <tool>…'", () => {
+		const s = composeStatusString({ kind: "running", tool: "the build" });
+		expect(renderOperatorString(s)).toBe("Running the build…");
 	});
-	it("rejects a jargon-laden literal", () => {
-		expect(() => operatorStringFromLiteral("resolve dl-6858")).toThrow(OperatorStringError);
+	it("generating → 'Generating…'", () => {
+		expect(renderOperatorString(composeStatusString({ kind: "generating" }))).toBe("Generating…");
+	});
+	it("thinking → 'Thinking…'", () => {
+		expect(renderOperatorString(composeStatusString({ kind: "thinking" }))).toBe("Thinking…");
+	});
+	it("throws LOUD when a tool name carries jargon (never leaks to the operator)", () => {
+		expect(() => composeStatusString({ kind: "running", tool: "dl-42 sync" })).toThrow(
+			OperatorStringError,
+		);
+	});
+	it("a raw string is NOT a valid StatusKind (composer-only, no raw-string hatch)", () => {
+		// @ts-expect-error — composeStatusString takes a typed StatusKind, never a raw string.
+		const bad = () => composeStatusString("Running…");
+		expect(typeof bad).toBe("function");
 	});
 });
 
