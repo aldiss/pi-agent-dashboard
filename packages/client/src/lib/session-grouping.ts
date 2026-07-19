@@ -286,14 +286,20 @@ export const SESSION_TIER_ORDER: ReadonlyArray<SessionTier> = [
 ];
 
 /**
- * Anchored at start-of-name so e.g. `"NotJoan"` does not match. The trailing
- * negative-lookahead `(?![A-Za-z])` accepts ANY non-letter boundary after the
- * canonical name — hyphen (`Joan-tenure-23`), space + em-dash (`Don — Don tenure-4 …`),
- * or end-of-string (`Alice`) — while still rejecting a longer word that merely
- * starts with a crew name (`Donna`, `Petersen`). Broadened from the old `(-|$)`
- * which missed the `" — …"` status-suffix shape (Don/Alice grouping fix 2026-06-26).
+ * Anchored at start-of-name so e.g. `"NotJoan"` does not match. All NINE
+ * standing-crew names (Sol fix-cycle-2 N3: Alice + Harry — the iOS-Dispatcher
+ * Harry is the 9th seat; Alice is L0.4 standing crew). Kept in sync with the
+ * extension's canonical-9 (`audience.ts:STANDING_CREW_NAME_RE`).
+ *
+ * The trailing negative-lookahead `(?![A-Za-z])` accepts ANY non-letter boundary
+ * after the canonical name — hyphen (`Joan-tenure-23`), space + em-dash
+ * (`Don — Don tenure-4 …`), or end-of-string (`Alice`) — while still rejecting a
+ * longer word that merely starts with a crew name (`Donna`, `Petersen`).
+ * Broadened from the old `(-|$)` which missed the `" — …"` status-suffix shape
+ * (Don/Alice grouping fix 2026-06-26). This merge keeps BOTH: the 9th name
+ * (Harry, build-1) AND the stronger boundary (prod).
  */
-const STANDING_CREW_NAME_RE = /^(Bert|Joan|Peggy|Lane|Pete|Faye|Don|Alice)(?![A-Za-z])/i;
+const STANDING_CREW_NAME_RE = /^(Bert|Joan|Peggy|Lane|Pete|Faye|Don|Alice|Harry)(?![A-Za-z])/i;
 
 /** Subagent worker by name (e.g. `subagent-worker-3f4a…`). */
 const SUBAGENT_WORKER_NAME_RE = /^subagent-worker-[0-9a-f]/i;

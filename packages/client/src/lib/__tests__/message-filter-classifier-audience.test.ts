@@ -117,6 +117,21 @@ describe("fail-open — unclassifiable rows are SHOWN, never hidden-and-unlinted
     expect(ctx.tier).toBe("other");
     expect(classifyMessage(msg("assistant", "?"), ctx)).toBe("tierB");
   });
+
+  // ── M1: a corrupt PRESENT stamp fails OPEN, even in a worker ctx ──
+  it("corrupt-present stamp in a WORKER ctx → tierB (M1: fail-OPEN, not hidden)", () => {
+    const ctx = ctxFor({ source: "tmux", name: "subagent-worker-abc123" }); // tier=worker
+    // A corrupt present value must NOT be treated as absent (which would run the
+    // worker retrospective → agent → meshChatter/hidden). It fails OPEN to shown.
+    const corrupt = msg("assistant", "bad stamp", { audience: "corrupt-wire-value" as never });
+    expect(classifyMessage(corrupt, ctx)).toBe("tierB");
+  });
+
+  it("absent stamp in a WORKER ctx → meshChatter (retrospective, distinct from corrupt)", () => {
+    const ctx = ctxFor({ source: "tmux", name: "subagent-worker-abc123" });
+    // No stamp → the retrospective worker tier applies → agent → meshChatter.
+    expect(classifyMessage(msg("assistant", "no stamp"), ctx)).toBe("meshChatter");
+  });
 });
 
 // ── projection: the toggle keeps the operator conversation; hides mesh ───────

@@ -9,16 +9,29 @@ import { parseSkillBlock, type SkillBlock } from "@blackbelt-technology/pi-dashb
 import { readAudienceStamp } from "./message-filter-classifier.js";
 
 /**
- * Read the stamp-at-emit audience off a raw message envelope (`data.message`),
- * runtime-validated (F4). The operator-voice extension stamps `msg.audience` on
- * the finalized `message_end` envelope; this retains it on the ChatMessage so
- * the classifier reads the authoritative signal. An absent/corrupt value → the
- * field stays undefined and the classifier fails open to the retrospective
- * heuristic. Single-sources the validator (`readAudienceStamp`).
+ * Read the stamp-at-emit audience off a raw ASSISTANT message envelope
+ * (`data.message`) and preserve it faithfully (F4/M1). The operator-voice
+ * extension stamps `msg.audience` on the finalized `message_end` envelope; this
+ * retains it on the ChatMessage so the classifier reads the authoritative signal.
+ *
+ * We PRESERVE a present value verbatim — valid OR corrupt — so the classifier's
+ * M1 triage sees a corrupt-present stamp and fails it OPEN (shown), rather than
+ * the reducer collapsing corrupt→undefined and letting a worker-ctx retrospective
+ * hide it. A truly-absent value stays undefined (→ retrospective).
+ *
+ * NOTE: no live producer stamps USER rows (the extension registers only
+ * assistant `message_end`; `message_start` has no result-envelope to return).
+ * User rows therefore rely on the retrospective tier path in the classifier —
+ * which is correct (a user row's audience = the session's audience). This reader
+ * is called ONLY on the assistant paths; the user-row reader was removed.
  */
 function readMessageAudience(msg: unknown): "operator" | "agent" | undefined {
   if (msg && typeof msg === "object") {
-    return readAudienceStamp((msg as { audience?: unknown }).audience);
+    const raw = (msg as { audience?: unknown }).audience;
+    const read = readAudienceStamp(raw);
+    if (read.state === "valid") return read.value;
+    // Preserve a corrupt-present value as a sentinel the classifier fails open on.
+    if (read.state === "corrupt") return raw as "operator" | "agent";
   }
   return undefined;
 }
@@ -1171,10 +1184,12 @@ export function reduceEvent(state: SessionState, event: DashboardEvent): Session
             // See change: fix-per-message-fork.
             entryId: data.entryId as string | undefined,
             nonce: data.nonce as string | undefined,
-            // Retain the stamp-at-emit audience (F4). The operator-voice
-            // extension stamps `msg.audience` on the finalized envelope; the
-            // classifier reads it as the authoritative operator-addressed signal.
-            audience: readMessageAudience(msg),
+            // NO audience stamp on user rows: no live producer stamps them (the
+            // extension registers only assistant `message_end`; `message_start`
+            // has no result-envelope). User-row audience is decided by the
+            // classifier's retrospective tier path (= the session's audience),
+            // which is correct. Removed the dead reader (Sol F4: no test may read
+            // a stamp no live producer writes).
           },
         ];
       }

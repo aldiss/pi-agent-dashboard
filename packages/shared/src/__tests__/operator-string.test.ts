@@ -86,10 +86,22 @@ describe("composeStatusString — typed StatusKind → operator-facing status (S
 	it("thinking → 'Thinking…'", () => {
 		expect(renderOperatorString(composeStatusString({ kind: "thinking" }))).toBe("Thinking…");
 	});
-	it("throws LOUD when a tool name carries jargon (never leaks to the operator)", () => {
-		expect(() => composeStatusString({ kind: "running", tool: "dl-42 sync" })).toThrow(
-			OperatorStringError,
+	it("M4: NEVER throws on a runtime tool name (herald-send / Auditor-9) — renders safely", () => {
+		// StatusBar passes arbitrary runtime tool names. A throw would crash the
+		// dashboard shell into its reload fallback. composeStatusString is TOTAL.
+		expect(() => composeStatusString({ kind: "running", tool: "herald-send" })).not.toThrow();
+		expect(renderOperatorString(composeStatusString({ kind: "running", tool: "herald-send" }))).toBe(
+			"Running herald-send…",
 		);
+		expect(() => composeStatusString({ kind: "running", tool: "Auditor-9" })).not.toThrow();
+		expect(renderOperatorString(composeStatusString({ kind: "running", tool: "Auditor-9" }))).toBe(
+			"Running Auditor-9…",
+		);
+		// even a dl-N tool name renders (it's a system tool id, not label jargon).
+		expect(() => composeStatusString({ kind: "running", tool: "dl-42 sync" })).not.toThrow();
+	});
+	it("running with an empty tool name → 'Running…' (no dangling)", () => {
+		expect(renderOperatorString(composeStatusString({ kind: "running", tool: "" }))).toBe("Running…");
 	});
 	it("a raw string is NOT a valid StatusKind (composer-only, no raw-string hatch)", () => {
 		// @ts-expect-error — composeStatusString takes a typed StatusKind, never a raw string.
