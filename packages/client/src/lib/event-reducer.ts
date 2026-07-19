@@ -6,6 +6,23 @@ import type { DashboardEvent, FlowState, ArchitectState, MessageAuthor } from "@
 import { isFlowEvent, reduceFlowEvent } from "@blackbelt-technology/pi-dashboard-flows-plugin/reducer";
 import { isArchitectEvent, reduceArchitectEvent } from "@blackbelt-technology/pi-dashboard-flows-plugin/reducer";
 import { parseSkillBlock, type SkillBlock } from "@blackbelt-technology/pi-dashboard-shared/skill-block-parser.js";
+import { readAudienceStamp } from "./message-filter-classifier.js";
+
+/**
+ * Read the stamp-at-emit audience off a raw message envelope (`data.message`),
+ * runtime-validated (F4). The operator-voice extension stamps `msg.audience` on
+ * the finalized `message_end` envelope; this retains it on the ChatMessage so
+ * the classifier reads the authoritative signal. An absent/corrupt value → the
+ * field stays undefined and the classifier fails open to the retrospective
+ * heuristic. Single-sources the validator (`readAudienceStamp`).
+ */
+function readMessageAudience(msg: unknown): "operator" | "agent" | undefined {
+  if (msg && typeof msg === "object") {
+    return readAudienceStamp((msg as { audience?: unknown }).audience);
+  }
+  return undefined;
+}
+
 
 export interface ChatImage {
   data: string;
@@ -1154,6 +1171,10 @@ export function reduceEvent(state: SessionState, event: DashboardEvent): Session
             // See change: fix-per-message-fork.
             entryId: data.entryId as string | undefined,
             nonce: data.nonce as string | undefined,
+            // Retain the stamp-at-emit audience (F4). The operator-voice
+            // extension stamps `msg.audience` on the finalized envelope; the
+            // classifier reads it as the authoritative operator-addressed signal.
+            audience: readMessageAudience(msg),
           },
         ];
       }
@@ -1233,6 +1254,7 @@ export function reduceEvent(state: SessionState, event: DashboardEvent): Session
               ...next.messages[flushedIdx],
               entryId: data.entryId as string | undefined,
               nonce: data.nonce as string | undefined,
+              audience: readMessageAudience(msg),
             };
             next.messages = [
               ...next.messages.slice(0, flushedIdx),
@@ -1252,6 +1274,7 @@ export function reduceEvent(state: SessionState, event: DashboardEvent): Session
               timestamp: event.timestamp,
               entryId: data.entryId as string | undefined,
               nonce: data.nonce as string | undefined,
+              audience: readMessageAudience(msg),
             },
           ];
           next.streamingText = "";
@@ -1272,6 +1295,7 @@ export function reduceEvent(state: SessionState, event: DashboardEvent): Session
                 timestamp: event.timestamp,
                 entryId: data.entryId as string | undefined,
                 nonce: data.nonce as string | undefined,
+                audience: readMessageAudience(msg),
               },
             ];
           } else {

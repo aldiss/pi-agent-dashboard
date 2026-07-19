@@ -1,9 +1,11 @@
-# Classifier `:83` fix — DESIGN + ready-to-apply patch (GATED on the Joan/Commwright session-field pin)
+# Classifier `:83` fix — DESIGN + APPLIED (Joan's session-field pin landed)
 
-**Status:** DESIGNED + code-ready, **NOT applied**. Per §18 the CC flags Commwright *when it touches*
-`message-filter-classifier.ts:83`; Commwright pins the exact server-session metadata field with Joan
-(build-context S3 JIT-PIN) BEFORE the edit lands. This doc is the concrete fix parameterized on that
-one pin, so the apply is mechanical the moment the field is named.
+**Status:** **APPLIED** (Joan's `:83` wiring pin landed — reuse the existing `classifyTier`; resolve
+`DashboardSession` from `sessionId` via `state` in App.tsx; thread `sessionCtx={tier}` through
+`filterMessages`/`countMessagesByCategory`). Committed on `feat/build1-comms-dashboard`. This doc
+records the design + the applied wiring; the real-seam test is
+`packages/client/src/lib/__tests__/message-filter-classifier-audience.test.ts` (+ the
+emit→reduce→classify corpus in `event-reducer-audience-stamp.test.ts`).
 
 Coverage-contract item #1 (the shared operator-addressed classifier). The `:83` bug:
 
@@ -123,8 +125,11 @@ client, is the owning `DashboardSession` (or its `source`/tier) in scope? If yes
 Joan pins the server session field instead + the stamp is applied at emit (Part 1) so the retrospective
 path is only for backfill.
 
-Until pinned: **do NOT edit `:83`.** The stamp-forward (Part 1) + fail-open retrospective are complete
-and safe; the pin only decides WHERE `tier` is threaded from.
+APPLIED: `:83` now reads the stamp (`readAudienceStamp(m.audience)`) then falls back to the
+retrospective `tier` heuristic (fail-open to operator/shown). The forward stamp (Part 1) is the
+authoritative signal — emitted by the extension's Door-3 and RETAINED by the real reducer constructors
+(`event-reducer.ts`), validated on read (M4). The `tier` is threaded from
+`classifyTier(selectedSession)` in App.tsx → ChatView → filterMessages/countMessagesByCategory.
 
 ## Tests to land with the apply (sister to the extension's exemption corpus)
 

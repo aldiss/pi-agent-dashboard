@@ -29,8 +29,9 @@ export interface OperatorStatusView {
 
 /**
  * Render an operator status view. The `text` parameter is `OperatorString` —
- * NOT `string` — so every call site MUST route through `composeOperatorString`
- * (or `operatorStringFromLiteral`). Handing a bare `string` fails to typecheck.
+ * NOT `string` — so every call site MUST route through a composer
+ * (`composeOperatorString` for typed facts, or `composeStatusString` for typed
+ * status kinds). Handing a bare `string` fails to typecheck.
  */
 export function renderOperatorStatus(text: OperatorString, drilldownRef?: string): OperatorStatusView {
 	return { text, drilldownRef };

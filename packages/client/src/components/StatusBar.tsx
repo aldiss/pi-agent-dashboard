@@ -5,6 +5,11 @@ import { ModelSelector } from "./ModelSelector.js";
 import { ThinkingLevelSelector } from "./ThinkingLevelSelector.js";
 import { BellToggle } from "./BellToggle.js";
 import type { ModelInfo, RoleInfo } from "@blackbelt-technology/pi-dashboard-shared/types.js";
+import {
+  composeStatusString,
+  renderOperatorString,
+  type OperatorString,
+} from "@blackbelt-technology/pi-dashboard-shared/operator-string.js";
 
 interface Props {
   model?: string;
@@ -29,19 +34,23 @@ interface Props {
 }
 
 export function StatusBar({ model, models, roles, thinkingLevel, status, currentTool, streamingText, onSelectModel, onSelectThinkingLevel, onRoleSet, onPresetLoad, onPresetSave, onPresetDelete, bellState, onBellClick, pushEnabled }: Props) {
-  let statusLabel: string | null = null;
+  // statusLabel is an OperatorString (Phase-2 / Ruling #3): it is constructible
+  // ONLY via composeStatusString(typed StatusKind) — a raw string assigned here
+  // fails to typecheck (the nominal brand). This binds the OperatorString
+  // primitive to the real status renderer (F6).
+  let statusLabel: OperatorString | null = null;
   let statusIcon = mdiLoading;
   let toolHighlight = false;
 
   if (status === "streaming") {
     if (currentTool) {
-      statusLabel = `Running ${currentTool}…`;
+      statusLabel = composeStatusString({ kind: "running", tool: currentTool });
       statusIcon = mdiFlash;
       toolHighlight = true;
     } else if (streamingText) {
-      statusLabel = "Generating…";
+      statusLabel = composeStatusString({ kind: "generating" });
     } else {
-      statusLabel = "Thinking…";
+      statusLabel = composeStatusString({ kind: "thinking" });
     }
   }
 
@@ -64,7 +73,7 @@ export function StatusBar({ model, models, roles, thinkingLevel, status, current
               spin={statusIcon === mdiLoading}
               className={toolHighlight ? "text-yellow-400" : ""}
             />
-            <span>{statusLabel}</span>
+            <span>{renderOperatorString(statusLabel)}</span>
           </div>
         )}
       </div>

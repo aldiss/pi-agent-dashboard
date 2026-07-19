@@ -57,6 +57,24 @@ export interface AudienceSessionCtx {
 }
 
 /**
+ * The audience stamp is a versioned, runtime-VALIDATED field (F4/M4). The wire
+ * value is untrusted external data; the TypeScript union is NOT validation.
+ * `readAudienceStamp` returns the value ONLY when it is one of the known
+ * variants, else `undefined` (→ caller falls through to the fail-open
+ * retrospective). Bump `AUDIENCE_SCHEMA_VERSION` + this validator together if
+ * the variant set ever changes.
+ */
+export const AUDIENCE_SCHEMA_VERSION = 1;
+const AUDIENCE_VALUES = new Set<string>(["operator", "agent"]);
+
+export function readAudienceStamp(value: unknown): "operator" | "agent" | undefined {
+  if (typeof value === "string" && AUDIENCE_VALUES.has(value)) {
+    return value as "operator" | "agent";
+  }
+  return undefined;
+}
+
+/**
  * Retrospective audience for a pre-stamp `user`/`assistant` row, derived from
  * the session tier. FAIL-OPEN to "operator" when the tier is absent/unknown
  * (`other` / undefined) — an unclassifiable row is SHOWN + linted, never
@@ -133,7 +151,13 @@ export function classifyMessage(
   //     left alone). One definition, two projections: the lint consumes the
   //     DIRECTION; the toggle keeps the operator CONVERSATION.
   if (m.role === "user" || m.role === "assistant") {
-    const audience = m.audience ?? retrospectiveAudience(sessionCtx);
+    // Runtime-validate the wire stamp (M4): an unrecognized value (corrupt wire
+    // data, schema drift) is NOT trusted — it falls through to the retrospective
+    // heuristic, which FAILS OPEN to operator/shown (§1.9 "unclassifiable →
+    // shown", never hidden-and-unlinted). `m.audience ?? …` alone would let a
+    // corrupt non-"operator" value fall to meshChatter (fail-CLOSED) — wrong.
+    const stamped = readAudienceStamp(m.audience);
+    const audience = stamped ?? retrospectiveAudience(sessionCtx);
     return audience === "operator" ? "tierB" : "meshChatter";
   }
 
