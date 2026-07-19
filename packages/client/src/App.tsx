@@ -35,8 +35,8 @@ import { TokenStatsBar } from "./components/TokenStatsBar.js";
 import { CommandInput } from "./components/CommandInput.js";
 import { readAllDrafts, writeDraft, deleteDraft } from "./lib/draft-storage.js";
 import { extractUserPromptHistory } from "./lib/message-history.js";
-import { classifyTier } from "./lib/session-grouping.js";
 import type { AudienceSessionCtx } from "./lib/message-filter-classifier.js";
+import { deriveHistoricalEvidence } from "./lib/message-filter-classifier.js";
 import { StatusBar } from "./components/StatusBar.js";
 import { LandingPage } from "./components/LandingPage.js";
 import { SettingsPanel } from "./components/SettingsPanel.js";
@@ -567,15 +567,16 @@ export default function App() {
 
   const selectedSession = selectedId ? sessions.get(selectedId) : undefined;
   // Operator-addressed audience context for the selected session (coverage-
-  // contract #1 — the shared operator-addressed classifier). Memoize the tier
-  // (from classifyTier, which reads source/name/sessionFile/cwd) once per
-  // session so ChatView's per-row classifyMessage doesn't recompute it. This is
-  // the RETROSPECTIVE fallback; the authoritative signal is the emit-stamp on
-  // ChatMessage.audience (see message-filter-classifier.ts). Threaded into
-  // ChatView → filterMessages / countMessagesByCategory. No session → undefined
-  // (the classifier fails open to operator-addressed).
+  // contract #1 — the shared operator-addressed classifier). B2: derive the
+  // PERSISTED-AT-THE-TIME positive evidence (sessionFile / cwd / source) once
+  // per session — NOT `classifyTier` (which reads today's registry + the
+  // standing-crew NAME regex; that leak let today's registry decide a pre-stamp
+  // row's audience). The classifier's retrospective heuristic reads ONLY this
+  // evidence; absent evidence → unknown (shown + exempt). The authoritative
+  // signal remains the emit-stamp on ChatMessage.audience (B3). Threaded into
+  // ChatView → filterMessages / countMessagesByCategory. No session → undefined.
   const sessionCtx = useMemo<AudienceSessionCtx | undefined>(
-    () => (selectedSession ? { tier: classifyTier(selectedSession) } : undefined),
+    () => (selectedSession ? { evidence: deriveHistoricalEvidence(selectedSession) } : undefined),
     [selectedSession],
   );
   const selectedCwd = selectedSession?.cwd;

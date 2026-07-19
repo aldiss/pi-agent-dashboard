@@ -73,13 +73,13 @@ describe("F1 consumer corpus — ASSISTANT rows: stamp → reducer → classifie
   it("unknown stamp (ratified 3rd state) → retained → tierB (shown), even in a worker ctx", () => {
     const row = assistantTurn("headless, no name", "unknown");
     expect(row.audience).toBe("unknown");
-    // Shown regardless of tier — the classifier VISIBILITY axis shows unknown.
-    expect(classifyMessage(row, { tier: "worker" })).toBe("tierB");
+    // Shown regardless of evidence — the classifier VISIBILITY axis shows unknown.
+    expect(classifyMessage(row, { evidence: { sessionFile: "/x/run-1/session.jsonl" } })).toBe("tierB");
   });
 
-  it("agent stamp WINS over an operator-chat-pane retrospective (source of truth)", () => {
+  it("agent stamp WINS over an operator-pane retrospective (source of truth)", () => {
     const row = assistantTurn("mesh note", "agent");
-    expect(classifyMessage(row, { tier: "operator-chat-pane" })).toBe("meshChatter");
+    expect(classifyMessage(row, { evidence: { source: "tui" } })).toBe("meshChatter");
   });
 });
 
@@ -90,19 +90,19 @@ describe("F2 consumer corpus — corrupt-null + pre-stamp at the real reducer/cl
     // (shown), distinct from truly-absent.
     const row = assistantTurn("bad stamp", null);
     expect(row.audience).toBe("unknown"); // corrupt-present → shown sentinel
-    expect(classifyMessage(row, { tier: "worker" })).toBe("tierB");
+    expect(classifyMessage(row, { evidence: { sessionFile: "/x/run-1/session.jsonl" } })).toBe("tierB");
   });
 
-  it("pre-stamp (no audience field) → undefined → retrospective fail-open → tierB", () => {
+  it("pre-stamp (no audience field) → undefined → retrospective absent-evidence → tierB (SHOWN)", () => {
     const row = assistantTurn("old row"); // no audience arg → field absent
     expect(row.audience).toBeUndefined();
-    expect(classifyMessage(row)).toBe("tierB"); // no ctx → retrospective fail-open operator
+    expect(classifyMessage(row)).toBe("tierB"); // no ctx → unknown → SHOWN
   });
 
-  it("pre-stamp in a WORKER ctx → retrospective agent → meshChatter (distinct from corrupt)", () => {
+  it("pre-stamp in a WORKER ctx → retrospective agent → meshChatter (positive evidence)", () => {
     const row = assistantTurn("old worker row");
     expect(row.audience).toBeUndefined();
-    expect(classifyMessage(row, { tier: "worker" })).toBe("meshChatter");
+    expect(classifyMessage(row, { evidence: { sessionFile: "/x/run-1/session.jsonl" } })).toBe("meshChatter");
   });
 
   it("over-cap SUMMARIZED envelope shape (content preview + audience) still classifies by the stamp", () => {
@@ -138,10 +138,10 @@ describe("F1 consumer corpus — USER rows are stamped now (the closed 'half the
     expect(classifyMessage(row)).toBe("meshChatter");
   });
 
-  it("an UNSTAMPED user row (pre-stamp) stays undefined → retrospective (session's audience)", () => {
+  it("an UNSTAMPED user row (pre-stamp) stays undefined → retrospective (session evidence)", () => {
     const row = userTurn("legacy prompt"); // no audience arg
     expect(row.audience).toBeUndefined();
-    expect(classifyMessage(row, { tier: "worker" })).toBe("meshChatter"); // session tier decides
-    expect(classifyMessage(row, { tier: "operator-chat-pane" })).toBe("tierB");
+    expect(classifyMessage(row, { evidence: { sessionFile: "/x/run-1/session.jsonl" } })).toBe("meshChatter"); // worker evidence
+    expect(classifyMessage(row, { evidence: { source: "tui" } })).toBe("tierB"); // operator pane
   });
 });
