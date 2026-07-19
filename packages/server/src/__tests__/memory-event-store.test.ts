@@ -550,6 +550,35 @@ describe("memory-event-store", () => {
       expect(store.sessionBytes("s1")).toBeLessThan(64_000);
     });
 
+    it("preserves the operator-voice audience stamp through an over-cap summary (Sol F2)", () => {
+      // Sol fix-cycle-3 F2: summarizeOverCap rebuilt data.message and DROPPED
+      // `audience`, so a stamped `agent` row on a large message fell through to the
+      // retrospective and flipped category. The stamp must survive the summary.
+      const store = createMemoryEventStore(neverPinned);
+      const data: Record<string, unknown> = {
+        message: { role: "assistant", content: "x".repeat(50), audience: "agent" },
+      };
+      for (let i = 0; i < 100; i++) data[`field_${i}`] = "q".repeat(3_900);
+      store.insertEvent("s1", { eventType: "message_end", timestamp: Date.now(), data });
+      const stored = store.getEvent("s1", 1) as any;
+      expect(stored.data.__truncated).toBe(true); // the over-cap path DID fire
+      expect(stored.data.message.audience).toBe("agent"); // stamp survived
+    });
+
+    it("preserves a corrupt-present (null) audience through an over-cap summary (Sol F2 fail-open)", () => {
+      const store = createMemoryEventStore(neverPinned);
+      const data: Record<string, unknown> = {
+        message: { role: "assistant", content: "y".repeat(50), audience: null },
+      };
+      for (let i = 0; i < 100; i++) data[`field_${i}`] = "q".repeat(3_900);
+      store.insertEvent("s1", { eventType: "message_end", timestamp: Date.now(), data });
+      const stored = store.getEvent("s1", 1) as any;
+      expect(stored.data.__truncated).toBe(true);
+      // `null` is carried verbatim (present) so the client classifier fails it OPEN
+      // (shown), rather than the summary dropping it → absent → hidden in a worker ctx.
+      expect(stored.data.message.audience).toBe(null);
+    });
+
     it("leaves a normal small event unsummarized", () => {
       const store = createMemoryEventStore(neverPinned);
       store.insertEvent("s1", {

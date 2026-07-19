@@ -276,6 +276,12 @@ function summarizeOverCap(data: Record<string, unknown>, bytes: number): Record<
     const m = msg as Record<string, unknown>;
     const msgSummary: Record<string, unknown> = {};
     if ("role" in m) msgSummary.role = m.role;
+    // Preserve the operator-voice audience stamp through the over-cap summary
+    // (Sol fix-cycle-3 F2): the forward stamp is the source of truth for lint
+    // scope + visibility; dropping it on a large message let a stamped `agent`
+    // row fall through to the retrospective and flip category. Carry it verbatim
+    // (valid OR corrupt-present) so the classifier's 3-state reader still sees it.
+    if ("audience" in m) msgSummary.audience = m.audience;
     // User/assistant chat text is operator-visible and must round-trip WHOLE
     // even when the WHOLE event trips the byte cap (e.g. a streaming
     // message_update bloated by a large thinking/signature block pushes the

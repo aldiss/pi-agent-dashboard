@@ -298,6 +298,14 @@ export const SESSION_TIER_ORDER: ReadonlyArray<SessionTier> = [
  * Broadened from the old `(-|$)` which missed the `" — …"` status-suffix shape
  * (Don/Alice grouping fix 2026-06-26). This merge keeps BOTH: the 9th name
  * (Harry, build-1) AND the stronger boundary (prod).
+ *
+ * NOTE (fix-cycle-3 M4 + B2): this tier is the PRE-STAMP audience fallback ONLY,
+ * and after B2 it no longer feeds the audience path at all — the authoritative
+ * operator-vs-agent signal is the extension's FORWARD audience stamp
+ * (role-registry EXACT identity, stamped on BOTH user + assistant rows at
+ * message_end), and pre-stamp history uses the positive-evidence
+ * `historicalAudience` (message-filter-classifier.ts), NOT this name regex (G3
+ * closed). `classifyTier` now drives SIDEBAR grouping only.
  */
 const STANDING_CREW_NAME_RE = /^(Bert|Joan|Peggy|Lane|Pete|Faye|Don|Alice|Harry)(?![A-Za-z])/i;
 
@@ -316,8 +324,9 @@ const THEMED_NAME_RE = /^[A-Z][a-z]+[A-Z][a-z]+/;
  * Decision order (first match wins):
  *   1. `name` matches `subagent-worker-…` → `worker`.
  *   2. `sessionFile` path ends `/run-N/session.jsonl` (cell-internal worker) → `worker`.
- *   3. `name` starts with a standing-crew canonical name (Bert / Joan / Peggy / Lane / Pete / Faye / Don / Alice)
- *      anchored at start-of-name → `standing-crew`.
+ *   3. `name` starts with a standing-crew canonical name (Bert / Joan / Peggy /
+ *      Lane / Pete / Faye / Don / Alice / Harry — all NINE; Sol fix-cycle-2 N3
+ *      added Alice + Harry) anchored at start-of-name → `standing-crew`.
  *   4. `source === "tui"` → `operator-chat-pane`.
  *   5. `source === "tmux"` AND cwd under `nos-cells/` (or a `-driver` cell-id
  *      outside `/.pi/cells/`) → `drivers`. Keyed on cwd, NOT a themed-name
