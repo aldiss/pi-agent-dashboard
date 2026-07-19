@@ -54,6 +54,23 @@ import {
   DEFAULT_PIN_CAP,
 } from "../lib/pinned-messages-storage.js";
 
+/**
+ * All-categories-on MessageFilter — the "reveal everything" shape applied by
+ * the A2 "Show all activity" affordance. Mirrors DEFAULT_MESSAGE_FILTER's
+ * shape but with every category ON, so tool executions + subagent executions
+ * (and all other categories) render for full native parity. Deliberately
+ * distinct from DEFAULT_MESSAGE_FILTER, which hides toolCalls +
+ * systemNotifications by design.
+ */
+const ALL_ON_MESSAGE_FILTER: MessageFilter = {
+  tierA: true,
+  tierB: true,
+  tierC: true,
+  meshChatter: true,
+  toolCalls: true,
+  systemNotifications: true,
+};
+
 interface Props {
   sessionId?: string;
   state: SessionState;
@@ -662,20 +679,32 @@ export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ se
         onClose={onCloseFilterControls}
       />
     )}
-    {isFilterActive && hiddenCount > 0 && !showFilterControls && (
+    {hiddenCount > 0 && !showFilterControls && (
       <div
-        className="px-3 py-1 border-b border-[var(--border-subtle)] bg-[var(--bg-secondary)] text-[10px] text-[var(--text-secondary)] flex items-center gap-2"
+        className="px-3 py-1.5 border-b border-[var(--border-subtle)] bg-[var(--bg-secondary)] text-[10px] text-[var(--text-secondary)] flex items-center gap-2 flex-wrap"
         data-testid="message-filter-banner"
       >
-        <span>Showing {visibleMessages.length} of {groupedMessages.length} messages — filter active</span>
+        <span>
+          Showing {visibleMessages.length} of {groupedMessages.length} · {hiddenCount} tool &amp; subagent {hiddenCount === 1 ? "step" : "steps"} hidden
+        </span>
         <button
           type="button"
-          onClick={() => handleFilterChange({ ...DEFAULT_MESSAGE_FILTER })}
-          className="underline hover:text-[var(--text-primary)]"
-          data-testid="message-filter-banner-reset"
+          onClick={() => handleFilterChange({ ...ALL_ON_MESSAGE_FILTER })}
+          className="ml-auto px-2 py-0.5 rounded bg-[var(--accent-primary)] text-white hover:bg-[var(--accent-primary)]/80 font-medium"
+          data-testid="message-filter-show-all"
         >
-          Reset filters
+          Show all activity
         </button>
+        {isFilterActive && (
+          <button
+            type="button"
+            onClick={() => handleFilterChange({ ...DEFAULT_MESSAGE_FILTER })}
+            className="underline hover:text-[var(--text-primary)] text-[var(--text-tertiary)]"
+            data-testid="message-filter-banner-reset"
+          >
+            Reset filters
+          </button>
+        )}
       </div>
     )}
     {pinCapHit && (
