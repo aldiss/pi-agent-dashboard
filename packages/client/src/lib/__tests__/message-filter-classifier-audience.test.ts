@@ -22,6 +22,7 @@ import {
   classifyMessage,
   filterMessages,
   countMessagesByCategory,
+  readAudienceStamp,
   type AudienceSessionCtx,
 } from "../message-filter-classifier.js";
 import type { ChatMessage } from "../event-reducer.js";
@@ -131,6 +132,34 @@ describe("fail-open — unclassifiable rows are SHOWN, never hidden-and-unlinted
     const ctx = ctxFor({ source: "tmux", name: "subagent-worker-abc123" });
     // No stamp → the retrospective worker tier applies → agent → meshChatter.
     expect(classifyMessage(msg("assistant", "no stamp"), ctx)).toBe("meshChatter");
+  });
+});
+
+// ── ratified 3-state: `unknown` is SHOWN but exempt (the two axes, independent) ──
+
+describe("ratified 3-state audience — unknown is SHOWN (visibility axis), decoupled from lint", () => {
+  it("an `unknown` stamp → tierB (SHOWN), even in a worker ctx (NOT hidden as meshChatter)", () => {
+    // The re-gate checks the axes INDEPENDENTLY: an unknown row must be SHOWN
+    // (visibility) regardless of tier. The LINT axis (exempt) is the extension
+    // Door-3's job, asserted at that seam — here we prove the classifier SHOWS it.
+    const ctx = ctxFor({ source: "tmux", name: "subagent-worker-abc123" }); // tier=worker
+    const unknown = msg("assistant", "headless no-name reply", { audience: "unknown" });
+    expect(classifyMessage(unknown, ctx)).toBe("tierB");
+  });
+
+  it("an `unknown` user row → tierB (SHOWN) in a worker ctx", () => {
+    const ctx = ctxFor({ source: "tmux", name: "subagent-worker-abc123" });
+    expect(classifyMessage(msg("user", "unknown-origin prompt", { audience: "unknown" }), ctx)).toBe("tierB");
+  });
+
+  it("a null (corrupt-present) stamp read → SHOWN, distinct from absent (readAudienceStamp)", () => {
+    // Sol F2: `null` is a present wire value → corrupt (shown), NOT absent (which
+    // would hide in a worker ctx). readAudienceStamp splits them: only `undefined`
+    // is absent.
+    expect(readAudienceStamp(null).state).toBe("corrupt");
+    expect(readAudienceStamp(undefined).state).toBe("absent");
+    expect(readAudienceStamp("unknown").state).toBe("unknown");
+    expect(readAudienceStamp("operator")).toEqual({ state: "valid", value: "operator" });
   });
 });
 

@@ -251,8 +251,13 @@ export const SESSION_TIER_ORDER: ReadonlyArray<SessionTier> = [
 /**
  * Anchored at start-of-name so e.g. `"NotJoan"` does not match. All NINE
  * standing-crew names (Sol fix-cycle-2 N3: Alice + Harry were omitted — the
- * iOS-Dispatcher Harry is the 9th seat; Alice is L0.4 standing crew). Kept in
- * sync with the extension's canonical-9 (`audience.ts:STANDING_CREW_NAME_RE`).
+ * iOS-Dispatcher Harry is the 9th seat; Alice is L0.4 standing crew).
+ *
+ * NOTE (fix-cycle-3 M4): this retrospective tier is the PRE-STAMP fallback only.
+ * The authoritative operator-vs-agent signal is the extension's FORWARD audience
+ * stamp (role-registry EXACT identity, stamped on BOTH user + assistant rows at
+ * message_end); a live row carries it and the classifier reads it directly. This
+ * name-prefix tier is consulted ONLY for a row with no stamp (old history).
  */
 const STANDING_CREW_NAME_RE = /^(Bert|Joan|Peggy|Lane|Pete|Faye|Don|Alice|Harry)(-|$)/i;
 
@@ -271,8 +276,9 @@ const THEMED_NAME_RE = /^[A-Z][a-z]+[A-Z][a-z]+/;
  * Decision order (first match wins):
  *   1. `name` matches `subagent-worker-…` → `worker`.
  *   2. `sessionFile` path ends `/run-N/session.jsonl` (cell-internal worker) → `worker`.
- *   3. `name` starts with a standing-crew canonical name (Bert / Joan / Peggy / Lane / Pete / Faye / Don)
- *      anchored at start-of-name → `standing-crew`.
+ *   3. `name` starts with a standing-crew canonical name (Bert / Joan / Peggy /
+ *      Lane / Pete / Faye / Don / Alice / Harry — all NINE; Sol fix-cycle-2 N3
+ *      added Alice + Harry) anchored at start-of-name → `standing-crew`.
  *   4. `source === "tui"` → `operator-chat-pane`.
  *   5. `source === "tmux"` AND (name contains `"cell-executor"` OR themed-PascalCase name
  *      combined with a cell-pattern indicator — `"cell"` / `"ephemeral"` / `"l2"` substring

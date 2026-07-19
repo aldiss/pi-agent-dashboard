@@ -9,29 +9,33 @@ import { parseSkillBlock, type SkillBlock } from "@blackbelt-technology/pi-dashb
 import { readAudienceStamp } from "./message-filter-classifier.js";
 
 /**
- * Read the stamp-at-emit audience off a raw ASSISTANT message envelope
- * (`data.message`) and preserve it faithfully (F4/M1). The operator-voice
- * extension stamps `msg.audience` on the finalized `message_end` envelope; this
+ * Read the stamp-at-emit audience off a raw message envelope (`data.message`)
+ * and preserve it faithfully (F1/F2). The operator-voice extension stamps
+ * `msg.audience` on the finalized `message_end` envelope for BOTH roles; this
  * retains it on the ChatMessage so the classifier reads the authoritative signal.
  *
- * We PRESERVE a present value verbatim — valid OR corrupt — so the classifier's
- * M1 triage sees a corrupt-present stamp and fails it OPEN (shown), rather than
- * the reducer collapsing corrupt→undefined and letting a worker-ctx retrospective
- * hide it. A truly-absent value stays undefined (→ retrospective).
+ * We PRESERVE a present value verbatim — valid, `unknown` (the ratified 3rd
+ * state), OR corrupt (incl `null`) — so the classifier's 4-state triage sees it
+ * and fails a corrupt/unknown-present stamp OPEN (shown), rather than the reducer
+ * collapsing it to undefined and letting a worker-ctx retrospective hide it. Only
+ * a truly-ABSENT (`undefined`) value stays undefined (→ retrospective).
  *
- * NOTE: no live producer stamps USER rows (the extension registers only
- * assistant `message_end`; `message_start` has no result-envelope to return).
- * User rows therefore rely on the retrospective tier path in the classifier —
- * which is correct (a user row's audience = the session's audience). This reader
- * is called ONLY on the assistant paths; the user-row reader was removed.
+ * Sol fix-cycle-3 F1: user rows ARE stamped now — the extension `message_end`
+ * hook fires for user messages too and returns a stamped replacement. This reader
+ * is used on BOTH the assistant paths AND the user-row back-fill (message_end).
  */
-function readMessageAudience(msg: unknown): "operator" | "agent" | undefined {
-  if (msg && typeof msg === "object") {
+function readMessageAudience(msg: unknown): "operator" | "agent" | "unknown" | undefined {
+  if (msg && typeof msg === "object" && "audience" in (msg as object)) {
     const raw = (msg as { audience?: unknown }).audience;
     const read = readAudienceStamp(raw);
     if (read.state === "valid") return read.value;
-    // Preserve a corrupt-present value as a sentinel the classifier fails open on.
-    if (read.state === "corrupt") return raw as "operator" | "agent";
+    if (read.state === "unknown") return "unknown";
+    // Preserve a corrupt-present value (incl null) as a sentinel the classifier
+    // fails open on. `null` becomes the string "unknown"? No — keep the raw so the
+    // classifier's readAudienceStamp re-derives corrupt→shown. But ChatMessage's
+    // typed field can't hold null; map corrupt-present → "unknown" (also shown,
+    // also exempt), preserving the "present-but-not-agent → shown" invariant.
+    if (read.state === "corrupt") return "unknown";
   }
   return undefined;
 }
@@ -81,14 +85,17 @@ export interface ChatMessage {
    */
   skill?: SkillBlock;
   /**
-   * Stamp-at-emit audience (operator-addressed vs mesh chatter). Source of
-   * truth for the operator-voice classifier + the "Mesh chatter" toggle: when
-   * present, `classifyMessage` reads it directly; when absent (pre-stamp
-   * history), the retrospective heuristic derives it from the session tier
-   * (spawn-source + canonical name). See message-filter-classifier.ts and
-   * the pi-operator-voice extension (src/audience.ts, the emit-side authority).
+   * Stamp-at-emit audience (operator-addressed vs mesh chatter vs unknown).
+   * Source of truth for the operator-voice classifier + the "Mesh chatter"
+   * toggle, stamped by the extension `message_end` hook for BOTH user and
+   * assistant rows (Sol fix-cycle-3 F1). Three states: `operator` (shown+linted),
+   * `agent` (hide-eligible+exempt), `unknown` (shown+exempt — the ratified
+   * fail-open, also used for a corrupt-present wire value). Absent (pre-stamp
+   * history) → the classifier's retrospective heuristic derives it from the
+   * session tier. See message-filter-classifier.ts + the pi-operator-voice
+   * extension (src/audience.ts, the emit-side authority).
    */
-  audience?: "operator" | "agent";
+  audience?: "operator" | "agent" | "unknown";
 }
 
 export interface ToolCallState {
@@ -916,12 +923,12 @@ export function reduceEvent(state: SessionState, event: DashboardEvent): Session
             // See change: fix-per-message-fork.
             entryId: data.entryId as string | undefined,
             nonce: data.nonce as string | undefined,
-            // NO audience stamp on user rows: no live producer stamps them (the
-            // extension registers only assistant `message_end`; `message_start`
-            // has no result-envelope). User-row audience is decided by the
-            // classifier's retrospective tier path (= the session's audience),
-            // which is correct. Removed the dead reader (Sol F4: no test may read
-            // a stamp no live producer writes).
+            // Audience is NOT known at message_start (the extension stamps at
+            // message_end, whose result-envelope carries it). The stamped user
+            // message_end back-fills `audience` by nonce below (Sol fix-cycle-3
+            // F1: user rows ARE stamped now — the "absent for half the
+            // conversation" gap is closed). Until then the classifier's
+            // retrospective tier path applies (correct = the session's audience).
           },
         ];
       }
@@ -1077,6 +1084,40 @@ export function reduceEvent(state: SessionState, event: DashboardEvent): Session
         // otherwise silently no-op the flush. See change:
         // fix-streaming-text-vs-interactive-ui-order.
         next.streamingTextFlushed = false;
+      } else if (msg?.role === "user") {
+        // F1 user-row back-fill (Sol fix-cycle-3): the user row is created at
+        // message_start WITHOUT an audience (the extension stamps at message_end,
+        // whose result-envelope carries it). The stamped user message_end arrives
+        // here carrying `audience` + the same `nonce` the message_start row was
+        // created with. Find that row by nonce and stamp its audience in place —
+        // closing the "absent for half the conversation" FATAL. Fail-safe: if the
+        // envelope carries no audience, leave the row's audience undefined (the
+        // classifier's retrospective tier path still applies).
+        const audience = readMessageAudience(msg);
+        if (audience !== undefined) {
+          const targetNonce = data.nonce as string | undefined;
+          // Match the most-recent unstamped user row by nonce (the message_start
+          // stamped `nonce` on the row); fall back to the last user row without an
+          // audience when no nonce correlation is available.
+          let idx = -1;
+          for (let i = next.messages.length - 1; i >= 0; i--) {
+            const m = next.messages[i];
+            if (m.role !== "user") continue;
+            if (m.audience !== undefined) continue;
+            if (targetNonce ? m.nonce === targetNonce : true) {
+              idx = i;
+              break;
+            }
+          }
+          if (idx >= 0) {
+            const stamped: ChatMessage = { ...next.messages[idx], audience };
+            next.messages = [
+              ...next.messages.slice(0, idx),
+              stamped,
+              ...next.messages.slice(idx + 1),
+            ];
+          }
+        }
       }
       break;
     }

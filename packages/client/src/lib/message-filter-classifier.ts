@@ -57,32 +57,39 @@ export interface AudienceSessionCtx {
 }
 
 /**
- * The audience stamp is a versioned, runtime-VALIDATED field (F4/M1). The wire
+ * The audience stamp is a versioned, runtime-VALIDATED field (F1/F2). The wire
  * value is untrusted external data; the TypeScript union is NOT validation.
- * `readAudienceStamp` distinguishes THREE states so the caller can treat a
- * corrupt PRESENT stamp differently from an ABSENT one (M1):
+ * `readAudienceStamp` distinguishes states so the caller treats a corrupt/unknown
+ * PRESENT stamp differently from a truly-ABSENT one (Sol fix-cycle-3 F2):
  *   - "valid":   a recognized "operator"/"agent" value → use it (source of truth).
- *   - "corrupt": a present-but-unrecognized value → FAIL-OPEN to shown (operator),
- *                NEVER fall through to the retrospective (which could hide it in a
- *                worker ctx). "unclassifiable → shown", never hidden-and-unlinted.
- *   - "absent":  no stamp → fall through to the retrospective heuristic.
+ *   - "unknown": the ratified 3rd state (a live producer that could NOT prove
+ *                operator) → SHOWN, but EXEMPT from lint. Distinct from agent.
+ *   - "corrupt": a present-but-unrecognized value INCLUDING `null` (Sol F2: the
+ *                wire reader used to map `null`→absent→retrospective→hidden in a
+ *                worker ctx) → FAIL-OPEN to shown, NEVER fall through to the
+ *                retrospective. "unclassifiable-but-present → shown", never hidden.
+ *   - "absent":  ONLY `undefined` (no stamp) → the retrospective heuristic decides.
  * Bump `AUDIENCE_SCHEMA_VERSION` + this validator together if the variant set
  * ever changes.
  */
-export const AUDIENCE_SCHEMA_VERSION = 1;
+export const AUDIENCE_SCHEMA_VERSION = 2;
 const AUDIENCE_VALUES = new Set<string>(["operator", "agent"]);
 
 export type AudienceStampRead =
   | { state: "valid"; value: "operator" | "agent" }
+  | { state: "unknown" }
   | { state: "corrupt" }
   | { state: "absent" };
 
 export function readAudienceStamp(value: unknown): AudienceStampRead {
-  if (value === undefined || value === null) return { state: "absent" };
+  // ONLY `undefined` is truly-absent (→ retrospective). `null` is a present wire
+  // value → corrupt → fail-open shown (Sol F2: null must NOT hide in a worker ctx).
+  if (value === undefined) return { state: "absent" };
+  if (value === "unknown") return { state: "unknown" }; // ratified 3rd state
   if (typeof value === "string" && AUDIENCE_VALUES.has(value)) {
     return { state: "valid", value: value as "operator" | "agent" };
   }
-  return { state: "corrupt" }; // present-but-invalid → fail-open at the caller
+  return { state: "corrupt" }; // present-but-invalid (incl null) → fail-open at the caller
 }
 
 /**
@@ -162,15 +169,19 @@ export function classifyMessage(
   //     left alone). One definition, two projections: the lint consumes the
   //     DIRECTION; the toggle keeps the operator CONVERSATION.
   if (m.role === "user" || m.role === "assistant") {
-    // Runtime-validate the wire stamp (M1). Three states:
+    // Runtime-validate the wire stamp (F1/F2). The classifier owns the VISIBILITY
+    // axis (operator + unknown + corrupt → shown; agent → hide-eligible); the
+    // extension Door-3 owns the LINT axis independently. Four states:
     //   - valid   → use the stamp (the authoritative source of truth).
-    //   - corrupt → present-but-invalid → FAIL-OPEN to operator/shown (NEVER
+    //   - unknown → the ratified 3rd state → SHOWN (tierB), not hidden.
+    //   - corrupt → present-but-invalid (incl null) → FAIL-OPEN to shown (NEVER
     //               fall through to the retrospective, which could hide it as
-    //               meshChatter in a worker ctx — that is the M1 fail-closed bug).
+    //               meshChatter in a worker ctx — the Sol F2 fail-closed bug).
     //   - absent  → no live stamp → the retrospective tier heuristic decides.
     const read = readAudienceStamp(m.audience);
     let audience: "operator" | "agent";
     if (read.state === "valid") audience = read.value;
+    else if (read.state === "unknown") audience = "operator"; // shown (visibility axis)
     else if (read.state === "corrupt") audience = "operator"; // fail-open: shown
     else audience = retrospectiveAudience(sessionCtx);
     return audience === "operator" ? "tierB" : "meshChatter";
