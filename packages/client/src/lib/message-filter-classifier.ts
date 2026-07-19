@@ -57,21 +57,32 @@ export interface AudienceSessionCtx {
 }
 
 /**
- * The audience stamp is a versioned, runtime-VALIDATED field (F4/M4). The wire
+ * The audience stamp is a versioned, runtime-VALIDATED field (F4/M1). The wire
  * value is untrusted external data; the TypeScript union is NOT validation.
- * `readAudienceStamp` returns the value ONLY when it is one of the known
- * variants, else `undefined` (→ caller falls through to the fail-open
- * retrospective). Bump `AUDIENCE_SCHEMA_VERSION` + this validator together if
- * the variant set ever changes.
+ * `readAudienceStamp` distinguishes THREE states so the caller can treat a
+ * corrupt PRESENT stamp differently from an ABSENT one (M1):
+ *   - "valid":   a recognized "operator"/"agent" value → use it (source of truth).
+ *   - "corrupt": a present-but-unrecognized value → FAIL-OPEN to shown (operator),
+ *                NEVER fall through to the retrospective (which could hide it in a
+ *                worker ctx). "unclassifiable → shown", never hidden-and-unlinted.
+ *   - "absent":  no stamp → fall through to the retrospective heuristic.
+ * Bump `AUDIENCE_SCHEMA_VERSION` + this validator together if the variant set
+ * ever changes.
  */
 export const AUDIENCE_SCHEMA_VERSION = 1;
 const AUDIENCE_VALUES = new Set<string>(["operator", "agent"]);
 
-export function readAudienceStamp(value: unknown): "operator" | "agent" | undefined {
+export type AudienceStampRead =
+  | { state: "valid"; value: "operator" | "agent" }
+  | { state: "corrupt" }
+  | { state: "absent" };
+
+export function readAudienceStamp(value: unknown): AudienceStampRead {
+  if (value === undefined || value === null) return { state: "absent" };
   if (typeof value === "string" && AUDIENCE_VALUES.has(value)) {
-    return value as "operator" | "agent";
+    return { state: "valid", value: value as "operator" | "agent" };
   }
-  return undefined;
+  return { state: "corrupt" }; // present-but-invalid → fail-open at the caller
 }
 
 /**
@@ -151,13 +162,17 @@ export function classifyMessage(
   //     left alone). One definition, two projections: the lint consumes the
   //     DIRECTION; the toggle keeps the operator CONVERSATION.
   if (m.role === "user" || m.role === "assistant") {
-    // Runtime-validate the wire stamp (M4): an unrecognized value (corrupt wire
-    // data, schema drift) is NOT trusted — it falls through to the retrospective
-    // heuristic, which FAILS OPEN to operator/shown (§1.9 "unclassifiable →
-    // shown", never hidden-and-unlinted). `m.audience ?? …` alone would let a
-    // corrupt non-"operator" value fall to meshChatter (fail-CLOSED) — wrong.
-    const stamped = readAudienceStamp(m.audience);
-    const audience = stamped ?? retrospectiveAudience(sessionCtx);
+    // Runtime-validate the wire stamp (M1). Three states:
+    //   - valid   → use the stamp (the authoritative source of truth).
+    //   - corrupt → present-but-invalid → FAIL-OPEN to operator/shown (NEVER
+    //               fall through to the retrospective, which could hide it as
+    //               meshChatter in a worker ctx — that is the M1 fail-closed bug).
+    //   - absent  → no live stamp → the retrospective tier heuristic decides.
+    const read = readAudienceStamp(m.audience);
+    let audience: "operator" | "agent";
+    if (read.state === "valid") audience = read.value;
+    else if (read.state === "corrupt") audience = "operator"; // fail-open: shown
+    else audience = retrospectiveAudience(sessionCtx);
     return audience === "operator" ? "tierB" : "meshChatter";
   }
 

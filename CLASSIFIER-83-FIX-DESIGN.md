@@ -7,15 +7,20 @@ records the design + the applied wiring; the real-seam test is
 `packages/client/src/lib/__tests__/message-filter-classifier-audience.test.ts` (+ the
 emit→reduce→classify corpus in `event-reducer-audience-stamp.test.ts`).
 
-Coverage-contract item #1 (the shared operator-addressed classifier). The `:83` bug:
+Coverage-contract item #1 (the shared operator-addressed classifier). The `:83` bug that WAS FIXED
+(this is the OLD code — no longer present; shown for context only):
 
 ```ts
-// packages/client/src/lib/message-filter-classifier.ts:83 (current)
-if (m.role === "user" || m.role === "assistant") return "meshChatter";
+// packages/client/src/lib/message-filter-classifier.ts — the OLD (pre-fix) blanket return:
+//   if (m.role === "user" || m.role === "assistant") return "meshChatter";
 ```
 
-returns `meshChatter` for EVERY plain user/assistant row — so an agent's reply *to the operator* AND
-the operator's own typed prompts are both mislabeled chatter, and the "Mesh chatter" toggle hides both.
+returned `meshChatter` for EVERY plain user/assistant row — so an agent's reply *to the operator* AND
+the operator's own typed prompts were both mislabeled chatter, and the "Mesh chatter" toggle hid both.
+
+**APPLIED (current code):** the classifier now reads a runtime-VALIDATED `audience` stamp
+(`readAudienceStamp` → valid | corrupt | absent), fails a corrupt-present stamp OPEN to shown (M1),
+and falls back to the retrospective tier heuristic only for genuinely pre-stamp rows.
 
 ## The fix — ADD an `audience` field (grep-confirmed none exists), two parts
 
@@ -75,12 +80,18 @@ export function classifyMessage(
 ): MessageCategory {
   // …unchanged through the interactiveUi / thinking / SYSTEM_ROLES / TOOL_CALL_ROLES / skill checks…
 
-  // ── REPLACED :83 ──────────────────────────────────────────────────────────
+  // ── REPLACED :83 (APPLIED — with runtime validation, M1) ──────────────────
   if (m.role === "user" || m.role === "assistant") {
-    // (1) stamp wins (source of truth).
-    const audience = m.audience ?? retrospectiveAudience(sessionCtx);
-    // operator-addressed → NOT chatter (keep it visible + let the lint see it);
-    // agent-addressed → meshChatter (internal mesh; §16 left alone).
+    // Runtime-validate the wire stamp (M1): valid | corrupt | absent.
+    //   valid   → use it (source of truth);
+    //   corrupt → FAIL-OPEN to operator/shown (never fall through to a worker
+    //             retrospective that could hide it);
+    //   absent  → the retrospective tier heuristic decides.
+    const read = readAudienceStamp(m.audience);
+    let audience: "operator" | "agent";
+    if (read.state === "valid") audience = read.value;
+    else if (read.state === "corrupt") audience = "operator"; // fail-open: shown
+    else audience = retrospectiveAudience(sessionCtx);
     return audience === "operator" ? "tierB" : "meshChatter";
   }
   // …unchanged defensive tierB default…

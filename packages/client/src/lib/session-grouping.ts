@@ -248,8 +248,13 @@ export const SESSION_TIER_ORDER: ReadonlyArray<SessionTier> = [
   "other",
 ];
 
-/** Anchored at start-of-name so e.g. `"NotJoan"` does not match. */
-const STANDING_CREW_NAME_RE = /^(Bert|Joan|Peggy|Lane|Pete|Faye|Don)(-|$)/i;
+/**
+ * Anchored at start-of-name so e.g. `"NotJoan"` does not match. All NINE
+ * standing-crew names (Sol fix-cycle-2 N3: Alice + Harry were omitted — the
+ * iOS-Dispatcher Harry is the 9th seat; Alice is L0.4 standing crew). Kept in
+ * sync with the extension's canonical-9 (`audience.ts:STANDING_CREW_NAME_RE`).
+ */
+const STANDING_CREW_NAME_RE = /^(Bert|Joan|Peggy|Lane|Pete|Faye|Don|Alice|Harry)(-|$)/i;
 
 /** Subagent worker by name (e.g. `subagent-worker-3f4a…`). */
 const SUBAGENT_WORKER_NAME_RE = /^subagent-worker-[0-9a-f]/i;

@@ -133,17 +133,26 @@ export type StatusKind =
 /**
  * Compose an operator-facing STATUS `OperatorString` from a typed `StatusKind`.
  * The rendered text is operator-language ("Running the build…", "Generating…",
- * "Thinking…"); the tool name for `running` is operator-visible by design (it
- * names what the agent is doing). Still legibility-gated: a tool name that
- * carries jargon (dl-id / §-cite / themed-name / version-tag) throws LOUD, so a
- * status string can never leak jargon to the operator.
+ * "Thinking…").
+ *
+ * TOTAL — NEVER THROWS (Sol fix-cycle-2 M4). StatusBar passes ARBITRARY runtime
+ * tool names (`herald-send`, `Auditor-9`, …) as `status.tool`. The prior version
+ * ran the label-legibility gate on the tool name and THREW on a themed-name
+ * match (`herald-send` → "Herald"), which crashed the dashboard shell into its
+ * reload fallback (StatusBar is outside the inner ChatView error boundary). A
+ * status string is NOT a needs-band label — the tool name is the literal system
+ * tool being run, legitimately operator-visible. So the tool name is NOT
+ * jargon-gated; it is rendered as-is. (A composed status string can never carry
+ * a dl-id/§-cite because the templates are fixed operator-language.)
  */
 export function composeStatusString(status: StatusKind): OperatorString {
 	let s: string;
 	switch (status.kind) {
-		case "running":
-			s = `Running ${status.tool.trim()}…`;
+		case "running": {
+			const tool = status.tool.trim();
+			s = tool.length > 0 ? `Running ${tool}…` : "Running…";
 			break;
+		}
 		case "generating":
 			s = "Generating…";
 			break;
@@ -153,18 +162,7 @@ export function composeStatusString(status: StatusKind): OperatorString {
 		default:
 			return assertNeverStatus(status);
 	}
-
-	const { violations } = isLegibleLabel(s);
-	const structural = violations.filter((v) => !v.startsWith("length:"));
-	if (structural.length > 0) {
-		throw new OperatorStringError(
-			`status string would carry jargon: ${structural.join("; ")}`,
-			{ who: "", outcome: s, whatNeedsYou: "" },
-			s,
-			violations,
-		);
-	}
-	return s as OperatorString;
+	return s as OperatorString; // total: never throws on a runtime tool name
 }
 
 function assertNeverStatus(x: never): never {
