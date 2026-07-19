@@ -14,7 +14,6 @@ import type { ChatMessage } from "./event-reducer.js";
 import type { ChatItem, ToolCallGroup } from "./group-tool-calls.js";
 import type { MessageFilter } from "./message-filter-storage.js";
 import { DEFAULT_MESSAGE_FILTER } from "./message-filter-storage.js";
-import type { SessionTier } from "./session-grouping.js";
 
 export type MessageCategory =
   | "tierA"
@@ -43,17 +42,65 @@ const TOOL_CALL_ROLES: ReadonlySet<ChatMessage["role"]> = new Set<ChatMessage["r
 ]);
 
 /**
+ * POSITIVE-EVIDENCE historical origin (B2 — restore the v3 retrospective floor).
+ *
+ * The retrospective classifier for a PRE-STAMP `user`/`assistant` row (no live
+ * `audience` stamp) must decide operator-vs-agent from metadata PERSISTED AT THE
+ * TIME the session ran — NOT today's role registry and NOT the sidebar
+ * `classifyTier` (which reads the standing-crew NAME regex + registry-derived
+ * name; Sol F4/G3: that lets today's registry leak into the audience path). The
+ * evidence fields are exactly the ones a session persisted about ITSELF:
+ *
+ *   - `sessionFile`: the on-disk session path. A cell-internal WORKER writes to
+ *     `…/run-<n>/session.jsonl` — positive evidence of a mesh worker.
+ *   - `cwd`: a CELL-EXECUTOR runs under `…/.pi/cells/…` — positive evidence of a
+ *     mesh cell.
+ *   - `source`: captured at spawn from the environment (`tui`/`tmux`/`zed`/…) and
+ *     persisted in the `.meta.json` sidecar. `tui` = the operator's own
+ *     interactive pane — positive evidence of operator-addressed.
+ *
+ * The `name` is DELIBERATELY absent: a name is today's registry/naming
+ * convention, not persisted-at-the-time origin. Absent positive evidence →
+ * `unknown` (shown + exempt), NEVER hidden.
+ */
+export interface HistoricalOriginEvidence {
+  /** On-disk session path (worker → `…/run-N/session.jsonl`). */
+  sessionFile?: string | undefined;
+  /** Working directory (cell-executor → contains `/.pi/cells/`). */
+  cwd?: string | undefined;
+  /** Spawn-env source persisted in `.meta.json` (`tui` = operator pane). */
+  source?: string | undefined;
+}
+
+/**
  * Session context for the operator-addressed classification (coverage-contract
- * #1 — the shared operator-addressed classifier). Carries the session TIER
- * derived from `classifyTier` (session-grouping.ts) — spawn-source (`source`)
- * + role-registry canonical name — so a pre-stamp `user`/`assistant` row can be
- * classified operator-addressed vs mesh WITHOUT a stamp. `role` alone can't
- * decide it (a `user` row in a driver session is a mesh-injected dispatch brief;
- * a driver's `assistant` reply is addressed to its dispatcher, not the operator).
+ * #1). Carries the PERSISTED-AT-THE-TIME positive evidence (B2) so a pre-stamp
+ * `user`/`assistant` row is classified operator-vs-mesh WITHOUT consulting
+ * today's registry. `role` alone can't decide it (a `user` row in a worker
+ * session is a mesh-injected dispatch brief; a worker's `assistant` reply is
+ * addressed to its dispatcher, not the operator).
  */
 export interface AudienceSessionCtx {
-  /** The owning session's tier from classifyTier (spawn-source + canonical name). */
-  tier?: SessionTier;
+  /** Persisted-at-the-time origin evidence for the owning session (B2). */
+  evidence?: HistoricalOriginEvidence;
+}
+
+/** A cell-internal worker writes its session to `…/run-<n>/session.jsonl`. */
+const WORKER_SESSION_FILE_RE = /\/run-\d+\/session\.jsonl$/;
+
+/**
+ * Project a session's persisted fields into the historical-origin evidence the
+ * retrospective classifier reads (B2). Pure; structurally typed so it does not
+ * depend on the full `DashboardSession`. App.tsx calls this per selected
+ * session; the classifier consumes ONLY the projected evidence (no registry, no
+ * `classifyTier`).
+ */
+export function deriveHistoricalEvidence(session: {
+  sessionFile?: string | undefined;
+  cwd?: string | undefined;
+  source?: string | undefined;
+}): HistoricalOriginEvidence {
+  return { sessionFile: session.sessionFile, cwd: session.cwd, source: session.source };
 }
 
 /**
@@ -93,25 +140,26 @@ export function readAudienceStamp(value: unknown): AudienceStampRead {
 }
 
 /**
- * Retrospective audience for a pre-stamp `user`/`assistant` row, derived from
- * the session tier. FAIL-OPEN to "operator" when the tier is absent/unknown
- * (`other` / undefined) — an unclassifiable row is SHOWN + linted, never
- * hidden-and-unlinted (§1.9 classifier-SPOF mitigation).
+ * Retrospective audience for a pre-stamp `user`/`assistant` row, from POSITIVE
+ * persisted-at-the-time evidence (B2 — the restored v3 floor). Returns the
+ * 3-state audience:
+ *   - worker session path (`…/run-N/session.jsonl`) → "agent" (mesh worker).
+ *   - cell-executor cwd (`…/.pi/cells/…`)          → "agent" (mesh cell).
+ *   - source === "tui" (the operator's own pane)    → "operator".
+ *   - ABSENT positive evidence                      → "unknown" (SHOWN + exempt).
+ *
+ * Absent-evidence projects `unknown`, NOT a fail-open `operator` guess and NOT a
+ * name-registry lookup — the §1.9 classifier-SPOF mitigation with the correct
+ * safety asymmetry (a truly-unclassifiable pre-stamp row is SHOWN, never hidden,
+ * and never retro-linted on a registry guess). Going forward the FORWARD stamp
+ * (B3) supersedes this for every live row.
  */
-function retrospectiveAudience(ctx?: AudienceSessionCtx): "operator" | "agent" {
-  switch (ctx?.tier) {
-    case "cell-executor":
-    case "worker":
-      // Mesh-dispatched work: the reply is addressed to the dispatcher.
-      return "agent";
-    case "operator-chat-pane":
-    case "standing-crew":
-    case "other":
-    case undefined:
-    default:
-      // operator-chat-pane / standing-crew = operator-facing; unknown = FAIL-OPEN.
-      return "operator";
-  }
+export function historicalAudience(evidence?: HistoricalOriginEvidence): "operator" | "agent" | "unknown" {
+  if (!evidence) return "unknown"; // no evidence → shown + exempt (not a guess)
+  if (evidence.sessionFile && WORKER_SESSION_FILE_RE.test(evidence.sessionFile)) return "agent";
+  if ((evidence.cwd ?? "").includes("/.pi/cells/")) return "agent";
+  if (evidence.source === "tui") return "operator";
+  return "unknown"; // no positive evidence → shown + exempt
 }
 
 /**
@@ -163,7 +211,9 @@ export function classifyMessage(
   // operator* AND the operator's own typed prompts as chatter, so the "Mesh
   // chatter" toggle hid both. Now:
   //   - stamp-at-emit wins (source of truth): `m.audience` when present;
-  //   - else the retrospective heuristic derives audience from the session tier;
+  //   - else the retrospective heuristic derives audience from persisted-at-the-
+  //     time positive evidence (B2 — worker path / cell cwd / tui source), NOT
+  //     today's registry;
   //   - operator-addressed → `tierB` (visible-by-default + the operator-voice
   //     lint sees it); agent-addressed → `meshChatter` (internal mesh, §16
   //     left alone). One definition, two projections: the lint consumes the
@@ -177,14 +227,17 @@ export function classifyMessage(
     //   - corrupt → present-but-invalid (incl null) → FAIL-OPEN to shown (NEVER
     //               fall through to the retrospective, which could hide it as
     //               meshChatter in a worker ctx — the Sol F2 fail-closed bug).
-    //   - absent  → no live stamp → the retrospective tier heuristic decides.
+    //   - absent  → no live stamp → the B2 positive-evidence retrospective decides
+    //               (worker/cell → agent; tui → operator; absent evidence →
+    //               unknown → SHOWN, never a registry guess).
     const read = readAudienceStamp(m.audience);
-    let audience: "operator" | "agent";
+    let audience: "operator" | "agent" | "unknown";
     if (read.state === "valid") audience = read.value;
-    else if (read.state === "unknown") audience = "operator"; // shown (visibility axis)
-    else if (read.state === "corrupt") audience = "operator"; // fail-open: shown
-    else audience = retrospectiveAudience(sessionCtx);
-    return audience === "operator" ? "tierB" : "meshChatter";
+    else if (read.state === "unknown") audience = "unknown"; // shown (visibility axis)
+    else if (read.state === "corrupt") audience = "unknown"; // fail-open: shown
+    else audience = historicalAudience(sessionCtx?.evidence);
+    // VISIBILITY projection: operator + unknown → SHOWN (tierB); agent → hide-eligible.
+    return audience === "agent" ? "meshChatter" : "tierB";
   }
 
   // Defensive default: anything not enumerated above falls into Tier-B

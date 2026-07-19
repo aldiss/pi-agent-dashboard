@@ -77,12 +77,13 @@ interface Props {
   state: SessionState;
   toolContext: ToolContext;
   /**
-   * The owning session's audience context (tier from classifyTier) for the
-   * operator-addressed vs mesh-chatter classification (coverage-contract #1).
-   * Resolved in App.tsx from the DashboardSession (which carries source/name/
-   * sessionFile/cwd) — ChatView only has per-session SessionState, so the tier
-   * is computed by the parent and threaded in. Omitted → classifier fails open
-   * to operator-addressed.
+   * The owning session's audience context (B2 — persisted-at-the-time positive
+   * evidence) for the operator-addressed vs mesh-chatter classification
+   * (coverage-contract #1). Resolved in App.tsx via `deriveHistoricalEvidence`
+   * from the DashboardSession (source / sessionFile / cwd) — NOT `classifyTier`
+   * (which would leak today's registry). ChatView only has per-session
+   * SessionState, so the evidence is projected by the parent and threaded in.
+   * Omitted → classifier projects `unknown` (shown + exempt), never hidden.
    */
   sessionCtx?: AudienceSessionCtx;
   onCancelPending?: () => void;
