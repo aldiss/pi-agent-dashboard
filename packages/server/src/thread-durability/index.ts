@@ -6,3 +6,4 @@ export * from "./atomic-write.js";
 export * from "./row-lock.js";
 export * from "./outbox-store.js";
 export * from "./push-channel.js";
+export * from "./drain-loop.js";

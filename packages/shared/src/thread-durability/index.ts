@@ -12,3 +12,4 @@ export * from "./recovery-decision.js";
 export * from "./outbox-types.js";
 export * from "./delivery-state.js";
 export * from "./holder-epoch-fence.js";
+export * from "./holder-resolver.js";
