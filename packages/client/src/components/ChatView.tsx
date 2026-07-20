@@ -93,6 +93,26 @@ interface Props {
    */
   showFilterControls?: boolean;
   onCloseFilterControls?: () => void;
+  /**
+   * The message-filter baseline for THIS surface (Tier-1 filter-param M-fix).
+   * Omitted = the canonical `DEFAULT_MESSAGE_FILTER` (every existing call site
+   * unchanged). The thread message-lane passes `{ ...DEFAULT_MESSAGE_FILTER,
+   * tierC: true }` so its "show all activity" default flows through init,
+   * session-reset, the "is default"/Reset affordances and the banner — a thread
+   * default is never mislabeled non-default (which would wrongly show Reset and
+   * turn tierC off). NOT a new drifting constant: the caller computes it inline
+   * from `DEFAULT_MESSAGE_FILTER`.
+   */
+  defaultFilter?: MessageFilter;
+  /**
+   * DISABLE the consecutive-tool-call grouping pass on this timeline (Tier-1
+   * M11). `groupConsecutiveToolCalls` treats separator/thinking/empty-assistant/
+   * rawEvent/commandFeedback rows as TRANSPARENT and silently DROPS them when a
+   * group forms — correct for the live chat, WRONG for the thread history lane
+   * where every native row must survive in committed order. Omitted/false =
+   * grouping on (default chat behavior). The thread message-lane passes `true`.
+   */
+  disableToolGrouping?: boolean;
 }
 
 const ImageAttachments = React.memo(function ImageAttachments({ images }: { images: ChatImage[] }) {
@@ -291,7 +311,7 @@ export interface ChatViewHandle {
   toggleSearch: () => void;
 }
 
-export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ sessionId, state, toolContext, onCancelPending, onRespondToUi, onAbort, onForceKill, onForkFromMessage, onDismissError, onRetryAfterError, onRetryQueued, onDismissQueued, showFilterControls, onCloseFilterControls }, ref) {
+export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ sessionId, state, toolContext, onCancelPending, onRespondToUi, onAbort, onForceKill, onForkFromMessage, onDismissError, onRetryAfterError, onRetryQueued, onDismissQueued, showFilterControls, onCloseFilterControls, defaultFilter = DEFAULT_MESSAGE_FILTER, disableToolGrouping = false }, ref) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const isNearBottom = useRef(true);
   const reducedMotion = useReducedMotion() ?? false;
@@ -493,12 +513,21 @@ export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ se
     };
   }, [sessionId, markProgrammatic]);
 
-  // Group consecutive repeated tool calls for cleaner display
+  // Group consecutive repeated tool calls for cleaner display.
+  // M11 (Tier-1): when `disableToolGrouping` is set (the thread history lane),
+  // SKIP grouping entirely — grouping treats separator/thinking/empty-assistant
+  // rows as transparent and DROPS them when a group forms, which would silently
+  // eat native rows on a history timeline. A ChatMessage[] is a valid ChatItem[]
+  // (every ChatMessage IS a ChatItem), so the un-grouped list passes straight
+  // through the downstream filter/render path unchanged.
   const filteredMessages = useMemo(() => {
     if (showDebugTools) return state.messages;
     return state.messages.filter((m) => m.role !== "toolResult" || !isDebugTool(m.toolName ?? ""));
   }, [state.messages, showDebugTools]);
-  const groupedMessages = useMemo(() => groupConsecutiveToolCalls(filteredMessages), [filteredMessages]);
+  const groupedMessages = useMemo(
+    () => (disableToolGrouping ? (filteredMessages as ChatItem[]) : groupConsecutiveToolCalls(filteredMessages)),
+    [filteredMessages, disableToolGrouping],
+  );
   const retriedErrorIds = useMemo(() => findRetriedErrorIds(filteredMessages), [filteredMessages]);
   const hiddenToolResultIds = useMemo(() => findActiveInteractiveToolResultIds(filteredMessages), [filteredMessages]);
 
@@ -506,12 +535,15 @@ export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ se
   // setMessageFilter on every change. Resets to the persisted snapshot
   // when sessionId changes so two open sessions keep independent filters.
   // See cell pi-agent-dashboard-ux-message-discoverability/v1 W4.2.
+  // Tier-1 filter-param: init + session-reset fall back to `defaultFilter`
+  // (this surface's baseline), so a fresh thread lane opens at its tierC:true
+  // default rather than the canonical chat default.
   const [messageFilter, setMessageFilterState] = useState<MessageFilter>(() =>
-    sessionId ? getMessageFilter(sessionId) : { ...DEFAULT_MESSAGE_FILTER }
+    sessionId ? getMessageFilter(sessionId, defaultFilter) : { ...defaultFilter }
   );
   useEffect(() => {
-    setMessageFilterState(sessionId ? getMessageFilter(sessionId) : { ...DEFAULT_MESSAGE_FILTER });
-  }, [sessionId]);
+    setMessageFilterState(sessionId ? getMessageFilter(sessionId, defaultFilter) : { ...defaultFilter });
+  }, [sessionId, defaultFilter]);
   const handleFilterChange = useCallback((next: MessageFilter) => {
     setMessageFilterState(next);
     if (sessionId) setMessageFilter(sessionId, next);
@@ -583,7 +615,7 @@ export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ se
     if (isAllCategoriesOn(messageFilter)) return groupedMessages;
     return applyMessageFilter(groupedMessages, messageFilter, { alwaysVisibleEntryIds: pinnedEntryIds });
   }, [groupedMessages, messageFilter, pinnedEntryIds]);
-  const isFilterActive = !isDefaultMessageFilter(messageFilter);
+  const isFilterActive = !isDefaultMessageFilter(messageFilter, defaultFilter);
   const hiddenCount = groupedMessages.length - visibleMessages.length;
 
   useImperativeHandle(ref, () => ({
@@ -654,6 +686,7 @@ export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ se
         onFilterChange={handleFilterChange}
         counts={categoryCounts}
         onClose={onCloseFilterControls}
+        defaultFilter={defaultFilter}
       />
     )}
     {hiddenCount > 0 && !showFilterControls && (
@@ -662,7 +695,7 @@ export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ se
         data-testid="message-filter-banner"
       >
         <span>
-          Showing {visibleMessages.length} of {groupedMessages.length} · {hiddenCount} tool &amp; subagent {hiddenCount === 1 ? "step" : "steps"} hidden
+          Showing {visibleMessages.length} of {groupedMessages.length} · {hiddenCount} {hiddenCount === 1 ? "row" : "rows"} hidden
         </span>
         <button
           type="button"
@@ -675,7 +708,7 @@ export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ se
         {isFilterActive && (
           <button
             type="button"
-            onClick={() => handleFilterChange({ ...DEFAULT_MESSAGE_FILTER })}
+            onClick={() => handleFilterChange({ ...defaultFilter })}
             className="underline hover:text-[var(--text-primary)] text-[var(--text-tertiary)]"
             data-testid="message-filter-banner-reset"
           >

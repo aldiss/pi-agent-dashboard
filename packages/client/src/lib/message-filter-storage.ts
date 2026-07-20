@@ -50,47 +50,68 @@ function storageKey(sessionId: string): string {
 }
 
 /**
- * Returns true when the given filter is the canonical defaults shape (no
- * categories suppressed beyond defaults). Used by the header dot/badge +
- * the "Showing N of M" banner to decide whether to render anything at all.
+ * Returns true when the given filter equals the reference `defaults` shape (no
+ * categories suppressed/revealed beyond that reference). Used by the header
+ * dot/badge + the "Showing N of M" banner to decide whether to render anything
+ * at all, and by the filter-panel Reset to know when it is a no-op.
+ *
+ * `defaults` is PARAMETERIZED (design v0.3 Tier-1 filter-param M-fix): a surface
+ * with a different baseline — e.g. the thread message-lane's "show all activity"
+ * default (`{ ...DEFAULT_MESSAGE_FILTER, tierC: true }`) — passes ITS baseline so
+ * a thread default is not mislabeled "non-default" (which would spuriously show
+ * the Reset affordance and turn the surface's own default off). Omitted =
+ * `DEFAULT_MESSAGE_FILTER`, so every existing caller is unchanged.
  */
-export function isDefaultMessageFilter(filter: MessageFilter): boolean {
+export function isDefaultMessageFilter(
+  filter: MessageFilter,
+  defaults: MessageFilter = DEFAULT_MESSAGE_FILTER,
+): boolean {
   return (
-    filter.tierA === DEFAULT_MESSAGE_FILTER.tierA &&
-    filter.tierB === DEFAULT_MESSAGE_FILTER.tierB &&
-    filter.tierC === DEFAULT_MESSAGE_FILTER.tierC &&
-    filter.meshChatter === DEFAULT_MESSAGE_FILTER.meshChatter &&
-    filter.toolCalls === DEFAULT_MESSAGE_FILTER.toolCalls &&
-    filter.systemNotifications === DEFAULT_MESSAGE_FILTER.systemNotifications
+    filter.tierA === defaults.tierA &&
+    filter.tierB === defaults.tierB &&
+    filter.tierC === defaults.tierC &&
+    filter.meshChatter === defaults.meshChatter &&
+    filter.toolCalls === defaults.toolCalls &&
+    filter.systemNotifications === defaults.systemNotifications
   );
 }
 
 /**
- * Read the persisted filter for a session, falling back to the canonical
- * defaults on parse error, missing key, or storage unavailable. Never
- * throws; sister-precedent session-filter-storage's try-catch wrapping.
+ * Read the persisted filter for a session, falling back to `defaults` on parse
+ * error, missing key, or storage unavailable. Never throws; sister-precedent
+ * session-filter-storage's try-catch wrapping.
+ *
+ * `defaults` is PARAMETERIZED (Tier-1 filter-param M-fix): a surface with a
+ * different baseline (the thread message-lane's `tierC:true` default) passes its
+ * own baseline so a fresh (un-persisted) lane opens at ITS default, not the
+ * canonical one. Omitted = `DEFAULT_MESSAGE_FILTER` (every existing caller
+ * unchanged). Persisted values still win when present (per-key merge over the
+ * supplied defaults).
  */
-export function getMessageFilter(sessionId: string): MessageFilter {
-  if (!sessionId) return { ...DEFAULT_MESSAGE_FILTER };
+export function getMessageFilter(
+  sessionId: string,
+  defaults: MessageFilter = DEFAULT_MESSAGE_FILTER,
+): MessageFilter {
+  if (!sessionId) return { ...defaults };
   try {
     const raw = getStorage().getItem(storageKey(sessionId));
-    if (!raw) return { ...DEFAULT_MESSAGE_FILTER };
+    if (!raw) return { ...defaults };
     const parsed = JSON.parse(raw) as Partial<MessageFilter> | null;
     if (!parsed || typeof parsed !== "object") {
-      return { ...DEFAULT_MESSAGE_FILTER };
+      return { ...defaults };
     }
-    // Merge against defaults so an older persisted shape missing newer
-    // keys still resolves to a complete filter without TypeScript holes.
+    // Merge against the supplied defaults so an older persisted shape missing
+    // newer keys still resolves to a complete filter without TypeScript holes.
     return {
-      tierA: typeof parsed.tierA === "boolean" ? parsed.tierA : DEFAULT_MESSAGE_FILTER.tierA,
-      tierB: typeof parsed.tierB === "boolean" ? parsed.tierB : DEFAULT_MESSAGE_FILTER.tierB,
-      tierC: typeof parsed.tierC === "boolean" ? parsed.tierC : DEFAULT_MESSAGE_FILTER.tierC,
-      meshChatter: typeof parsed.meshChatter === "boolean" ? parsed.meshChatter : DEFAULT_MESSAGE_FILTER.meshChatter,
-      toolCalls: typeof parsed.toolCalls === "boolean" ? parsed.toolCalls : DEFAULT_MESSAGE_FILTER.toolCalls,
-      systemNotifications: typeof parsed.systemNotifications === "boolean" ? parsed.systemNotifications : DEFAULT_MESSAGE_FILTER.systemNotifications,
+      tierA: typeof parsed.tierA === "boolean" ? parsed.tierA : defaults.tierA,
+      tierB: typeof parsed.tierB === "boolean" ? parsed.tierB : defaults.tierB,
+      tierC: typeof parsed.tierC === "boolean" ? parsed.tierC : defaults.tierC,
+      meshChatter: typeof parsed.meshChatter === "boolean" ? parsed.meshChatter : defaults.meshChatter,
+      toolCalls: typeof parsed.toolCalls === "boolean" ? parsed.toolCalls : defaults.toolCalls,
+      systemNotifications: typeof parsed.systemNotifications === "boolean" ? parsed.systemNotifications : defaults.systemNotifications,
     };
   } catch {
-    return { ...DEFAULT_MESSAGE_FILTER };
+    return { ...defaults };
   }
 }
 

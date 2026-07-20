@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>Tier-1 /threads — demo</title>
+    <script>
+      /* Mirror index.html's pre-paint skin boot so the demo wears the editorial
+         skin + theme tokens (the ThreadsView reads CSS-var tokens only). */
+      (function () {
+        try {
+          var skin = localStorage.getItem("dashboard:skin");
+          if (skin !== "editorial" && skin !== "legacy") skin = "editorial";
+          document.documentElement.setAttribute("data-skin", skin);
+        } catch (e) {
+          document.documentElement.setAttribute("data-skin", "editorial");
+        }
+      })();
+    </script>
+    <style>
+      html, body { margin: 0; padding: 0; background: #0f172a; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="./threads-demo.tsx"></script>
+  </body>
+</html>

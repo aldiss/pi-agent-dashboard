@@ -27,6 +27,13 @@ interface Props {
   counts?: Record<MessageCategory, number>;
   /** When set, parent owns the open/close gate; the controls render inline. */
   onClose?: () => void;
+  /**
+   * The baseline this surface resets to + measures "is default" against
+   * (Tier-1 filter-param M-fix). Omitted = the canonical `DEFAULT_MESSAGE_FILTER`.
+   * The thread message-lane passes its own `tierC:true` baseline so Reset here
+   * restores the lane default, not the canonical chat default.
+   */
+  defaultFilter?: MessageFilter;
 }
 
 interface CategoryMeta {
@@ -84,16 +91,16 @@ const CATEGORIES: CategoryMeta[] = [
   },
 ];
 
-export function MessageFilterControls({ sessionId: _sessionId, filter, onFilterChange, counts, onClose }: Props) {
+export function MessageFilterControls({ sessionId: _sessionId, filter, onFilterChange, counts, onClose, defaultFilter = DEFAULT_MESSAGE_FILTER }: Props) {
   const handleToggle = (key: MessageCategory) => {
     onFilterChange({ ...filter, [key]: !filter[key] });
   };
 
   const handleReset = () => {
-    onFilterChange({ ...DEFAULT_MESSAGE_FILTER });
+    onFilterChange({ ...defaultFilter });
   };
 
-  const isDefault = isDefaultMessageFilter(filter);
+  const isDefault = isDefaultMessageFilter(filter, defaultFilter);
 
   return (
     <div
