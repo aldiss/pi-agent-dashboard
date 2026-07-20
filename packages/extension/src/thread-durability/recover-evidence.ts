@@ -25,41 +25,16 @@ import {
   type DurableScanEvidence,
   type HolderIdentity,
   type HolderLiveness,
+  type OutboxEntry,
+  type RecoverEvidenceResolver,
 } from "@blackbelt-technology/pi-dashboard-shared/thread-durability/index.js";
 import { isProcessAlive } from "@blackbelt-technology/pi-dashboard-shared/platform/process.js";
 
-/**
- * Structural mirror of the B2 `OutboxEntry` fields this scan consults.
- *
- * PACKAGING NOTE (surfaced to the supervisor): B2 defined `OutboxEntry` +
- * `RecoverEvidenceResolver` in `packages/server`, which ships NO `exports`
- * field and has no tsconfig `references` edge from `packages/extension`, so a
- * cross-package `@blackbelt-technology/pi-dashboard-server/...` import resolves
- * to neither tsc nor vitest (extension→shared is the only wired cross-package
- * path). Rather than add an unauthorized `exports` field to the server package
- * or reach across `rootDir` with a relative import, this file declares the
- * contract STRUCTURALLY. TypeScript's structural typing guarantees the object
- * `createRecoverEvidenceResolver` returns satisfies B2's
- * `RecoverEvidenceResolver` at the real (held) drain-loop call site. If the
- * supervisor prefers a nominal import, the fix is to relocate `OutboxEntry` +
- * `RecoverEvidenceResolver` into `packages/shared` (B2 edit) — flagged, not
- * done, per the do-not-edit-B2 discipline.
- */
-export interface OutboxEntryView {
-  delivery_id: string;
-  attempt: number;
-  holder_session_id: string;
-  holder_identity: HolderIdentity;
-  entry_id?: string;
-  payload_hash: string;
-}
-
-/** Structural mirror of B2's `RecoverEvidenceResolver` (see note above). */
-export interface RecoverEvidenceResolverView {
-  resolveLiveness(entry: OutboxEntryView): HolderLiveness;
-  scanEvidence(entry: OutboxEntryView): DurableScanEvidence;
-  leaseElapsed?(entry: OutboxEntryView): boolean;
-}
+// B4 step 1: the seam contract (`OutboxEntry` + `RecoverEvidenceResolver`) now
+// lives NOMINALLY in the shared package. The prior structural mirrors
+// (`OutboxEntryView`, `RecoverEvidenceResolverView`) are deleted — this module
+// imports and returns the real shared types. The B2 server `OutboxStore`
+// injects THIS resolver into `recover()`; both sides now agree nominally.
 
 // ── the durable-session JSONL scan (pure over its text input) ──────────────
 
@@ -255,22 +230,22 @@ export interface RecoverEvidenceDeps {
   /** The exact-identity liveness probe. */
   liveness: LivenessProbe;
   /** Optional bounded `indeterminate` lease predicate (design §C3.1 step 7). */
-  leaseElapsed?: (entry: OutboxEntryView) => boolean;
+  leaseElapsed?: (entry: OutboxEntry) => boolean;
 }
 
 /**
  * Build the real `RecoverEvidenceResolver` the B2 `OutboxStore.recover`
  * consults under the per-row lock. The store owns the DECISION (B1
  * `decideRecovery`); this resolver owns the pi-side EVIDENCE (scan + liveness).
- * Returns the structural `RecoverEvidenceResolverView` — assignable to B2's
- * `RecoverEvidenceResolver` at the held drain-loop call site (structural typing).
+ * Returns the NOMINAL shared `RecoverEvidenceResolver` (B4 step 1) — the B2
+ * store injects it directly; both sides agree by nominal typing.
  */
-export function createRecoverEvidenceResolver(deps: RecoverEvidenceDeps): RecoverEvidenceResolverView {
+export function createRecoverEvidenceResolver(deps: RecoverEvidenceDeps): RecoverEvidenceResolver {
   return {
-    resolveLiveness(entry: OutboxEntryView): HolderLiveness {
+    resolveLiveness(entry: OutboxEntry): HolderLiveness {
       return resolveHolderLiveness(entry.holder_identity, deps.liveness);
     },
-    scanEvidence(entry: OutboxEntryView): DurableScanEvidence {
+    scanEvidence(entry: OutboxEntry): DurableScanEvidence {
       const filePath = deps.sessionFilePath(entry.holder_session_id);
       if (filePath === null || !fs.existsSync(filePath)) {
         // Absent session file (fresh/unflushed) → volatile, not durable (E1).

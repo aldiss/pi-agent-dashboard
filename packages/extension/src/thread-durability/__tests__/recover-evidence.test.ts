@@ -21,9 +21,11 @@ import {
   createRecoverEvidenceResolver,
   parseSessionEntries,
   type LivenessProbe,
-  type OutboxEntryView,
 } from "../recover-evidence.js";
-import type { HolderIdentity } from "@blackbelt-technology/pi-dashboard-shared/thread-durability/index.js";
+import type {
+  HolderIdentity,
+  OutboxEntry,
+} from "@blackbelt-technology/pi-dashboard-shared/thread-durability/index.js";
 
 const FIX = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures");
 const readFix = (name: string) => fs.readFileSync(path.join(FIX, name), "utf-8");
@@ -144,13 +146,19 @@ describe("resolveHolderLiveness — exact-identity, reuse-safe", () => {
 
 // ── the composed resolver (I/O layer) ───────────────────────────────────────
 
-function entryView(over: Partial<OutboxEntryView> = {}): OutboxEntryView {
+function entryView(over: Partial<OutboxEntry> = {}): OutboxEntry {
   return {
     delivery_id: "dlv-probe-0001",
     attempt: 1,
+    thread_id: "T1",
     holder_session_id: "sess-A",
     holder_identity: { ...CLAIM },
+    holder_epoch: 7,
     payload_hash: "hash-1",
+    state: "accepted",
+    revision: 3,
+    delivered: false,
+    updated_at: 100,
     ...over,
   };
 }

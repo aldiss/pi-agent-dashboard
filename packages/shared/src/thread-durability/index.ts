@@ -9,3 +9,5 @@ export * from "./state-machine.js";
 export * from "./revision-cas.js";
 export * from "./reconcile.js";
 export * from "./recovery-decision.js";
+export * from "./outbox-types.js";
+export * from "./delivery-state.js";

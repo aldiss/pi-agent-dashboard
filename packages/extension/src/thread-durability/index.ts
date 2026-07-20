@@ -7,3 +7,4 @@
 export * from "./recover-evidence.js";
 export * from "./inject.js";
 export * from "./delivery-state-channel.js";
+export * from "./terminalize.js";

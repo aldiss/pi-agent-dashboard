@@ -38,8 +38,11 @@
  * drain loop. `holder_epoch` is CARRIED in details, NOT gated on (death-only v1).
  */
 
-import type { DurableScanEvidence } from "@blackbelt-technology/pi-dashboard-shared/thread-durability/index.js";
-import type { OutboxEntryView } from "./recover-evidence.js";
+import type {
+  DurableScanEvidence,
+  OutboxEntry,
+  InjectableOutboxStore,
+} from "@blackbelt-technology/pi-dashboard-shared/thread-durability/index.js";
 import type { DeliveryStateEvent, DeliveryStateSink } from "./delivery-state-channel.js";
 
 // ── the real pi executing surface (grounded on ExtensionAPI 0.80.3) ─────────
@@ -81,60 +84,13 @@ export interface PiInjectHandle {
   off?(event: "message_end" | "turn_end", handler: (payload: unknown) => void): void;
 }
 
-// ── the store surface the injection drives (structural mirror of B2) ─────────
+// ── the store surface the injection drives ──────────────────────────────────
 //
-// PACKAGING NOTE: like `recover-evidence.ts`, the B2 store lives in
-// `packages/server` (no `exports` field, no tsconfig `references` edge from
-// `packages/extension`), so this declares the needed surface STRUCTURALLY. The
-// object B2 passes at the real (held) call site satisfies it by structural
-// typing.
-
-/** The CAS expectation each transition asserts (mirror of B2 `ExpectedMutation`). */
-export interface ExpectedMutationView {
-  expected_revision: number;
-  expected_attempt: number;
-  expected_state: OutboxStateView;
-}
-
-export type OutboxStateView =
-  | "injecting"
-  | "queued_executing"
-  | "observed"
-  | "accepted"
-  | "executed"
-  | "failed";
-
-export interface OutboxRowView extends OutboxEntryView {
-  state: OutboxStateView;
-  revision: number;
-  thread_id: string;
-  holder_epoch: number;
-}
-
-export type TransitionResultView =
-  | { ok: true; entry: OutboxRowView }
-  | { ok: false; reason: string };
-
-/** The store methods `injectDelivery` calls (mirror of B2 `OutboxStore`). */
-export interface InjectStoreView {
-  markQueued(input: { delivery_id: string; expected: ExpectedMutationView }): Promise<TransitionResultView>;
-  markObserved(input: { delivery_id: string; expected: ExpectedMutationView; entry_id?: string }): Promise<TransitionResultView>;
-  markAccepted(input: { delivery_id: string; expected: ExpectedMutationView }): Promise<TransitionResultView>;
-  markFailed(input: { delivery_id: string; expected: ExpectedMutationView }): Promise<TransitionResultView>;
-  reconcileAccepted(
-    fact: {
-      delivery_id: string;
-      attempt: number;
-      thread_id: string;
-      holder_session_id: string;
-      entry_id: string;
-      payload_hash: string;
-      accepted_at: number;
-      executed_at?: number;
-    },
-    original: { delivery_id: string; attempt: number; holder_session_id: string; payload_hash: string },
-  ): Promise<{ action: "terminalize" | "fail_loud" | "noop"; entry: OutboxRowView | null }>;
-}
+// B4 step 1: the store contract (`OutboxEntry`, `TransitionInput`,
+// `MutationResult`, `InjectableOutboxStore`) now lives NOMINALLY in the shared
+// package; the prior structural mirrors (`OutboxRowView`, `InjectStoreView`,
+// `ExpectedMutationView`, `TransitionResultView`) are deleted. The B2 server
+// `OutboxStore` satisfies `InjectableOutboxStore` nominally.
 
 // ── the E2 correlated-failure adapter (NARROW OPEN dependency) ──────────────
 
@@ -165,12 +121,12 @@ export interface InjectResult {
   outcome: InjectOutcome;
   entry_id?: string;
   /** The claim's terminal/newest row after the sequence (for the caller). */
-  row?: OutboxRowView;
+  row?: OutboxEntry;
 }
 
 export interface InjectDeps {
   pi: PiInjectHandle;
-  store: InjectStoreView;
+  store: InjectableOutboxStore;
   /** Is the holder idle? idle → triggerTurn; streaming → deliverAs:followUp. */
   holderIsIdle: boolean;
   /** Scan the holder's durable session JSONL → evidence (from recover-evidence). */
@@ -203,7 +159,7 @@ function defaultTimer(cb: () => void, ms: number): { cancel: () => void } {
  *
  * @param entry a ready row at `injecting` (created/re-armed by the caller).
  */
-export async function injectDelivery(entry: OutboxRowView, deps: InjectDeps): Promise<InjectResult> {
+export async function injectDelivery(entry: OutboxEntry, deps: InjectDeps): Promise<InjectResult> {
   const { pi, store, scan } = deps;
   const now = deps.now ?? (() => 0);
   const setTimer = deps.setTimer ?? defaultTimer;

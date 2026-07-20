@@ -28,92 +28,37 @@ import type {
   Claim,
   DeliveryRecord,
   DeliveryState,
-  DurableScanEvidence,
   HolderIdentity,
-  HolderLiveness,
   OriginalTuple,
-  RecoveryOutcome,
+  OutboxEntry,
+  MutationResult,
+  AttemptInput,
+  TransitionInput,
+  RecoverEvidenceResolver,
+  RecoverResult,
 } from "@blackbelt-technology/pi-dashboard-shared/thread-durability/index.js";
 import {
   canTransition,
   decideRecovery,
   reconcileAccepted as reconcileAcceptedPure,
   validateMutation,
-  type ExpectedMutation,
-  type MutationRejectReason,
 } from "@blackbelt-technology/pi-dashboard-shared/thread-durability/index.js";
 
 import { atomicWriteFileSync } from "./atomic-write.js";
 import { RowLockManager, type RowLockOpts } from "./row-lock.js";
 
-/**
- * The persisted outbox row — a superset of the B1 `DeliveryRecord` (row view)
- * and `Claim` (proof-tracking view). Both run under the SAME per-row lock
- * (N1), so they live in one durable file, not two domains.
- */
-export interface OutboxEntry {
-  // ── identity / causal fields ──
-  delivery_id: string;
-  attempt: number;
-  thread_id: string;
-  holder_session_id: string;
-  holder_identity: HolderIdentity;
-  holder_epoch: number;
-  payload_hash: string;
-  entry_id?: string;
-  // ── state / concurrency ──
-  state: DeliveryState;
-  revision: number;
-  delivered: boolean;
-  updated_at: number;
-}
-
-/** Result of a mutation attempt. `ok:false` carries a stable reason code. */
-export type MutationResult =
-  | { ok: true; entry: OutboxEntry }
-  | { ok: false; reason: MutationRejectReason | "not_found" | "illegal_transition" };
-
-/** The fields needed to create/re-arm a row at `injecting` (a fresh attempt). */
-export interface AttemptInput {
-  delivery_id: string;
-  attempt: number;
-  thread_id: string;
-  holder_session_id: string;
-  holder_identity: HolderIdentity;
-  holder_epoch: number;
-  payload_hash: string;
-  entry_id?: string;
-}
-
-/** A claim-state transition request: the CAS expectation + optional fields. */
-export interface TransitionInput {
-  delivery_id: string;
-  expected: ExpectedMutation;
-  /** Set on `markObserved` — the entry_id derived from the post-persist seam. */
-  entry_id?: string;
-}
-
-/**
- * The recover-evidence dependency (design §C3.2). B2 owns the claim read +
- * the decision + the reconcile write; the DURABLE SESSION SCAN is bridge-side
- * (B3), so it is injected here. All three are consulted UNDER the row lock.
- */
-export interface RecoverEvidenceResolver {
-  /** EXACT-identity liveness of the claim's holder (never a bare-PID check). */
-  resolveLiveness(entry: OutboxEntry): HolderLiveness;
-  /** Durable-scan evidence from the holder's FINAL session (exact-death only). */
-  scanEvidence(entry: OutboxEntry): DurableScanEvidence;
-  /** Whether the bounded `indeterminate` lease has elapsed (live progress rule). */
-  leaseElapsed?(entry: OutboxEntry): boolean;
-}
-
-/** Outcome of `recover()` — the B1 decision + whether the store terminalized. */
-export interface RecoverResult {
-  outcome: RecoveryOutcome;
-  /** True iff the store wrote a terminal `delivered` row (delivered_no_redeliver). */
-  terminalized: boolean;
-  entry: OutboxEntry;
-}
+// The durable outbox row + mutation-input/result shapes + the recover-evidence
+// resolver interface now live in the SHARED package (B4 step 1 relocate) so the
+// bridge can import them nominally. Re-exported here for existing server call
+// sites that import them from this module.
+export type {
+  OutboxEntry,
+  MutationResult,
+  AttemptInput,
+  TransitionInput,
+  RecoverEvidenceResolver,
+  RecoverResult,
+} from "@blackbelt-technology/pi-dashboard-shared/thread-durability/index.js";
 
 export interface OutboxStoreOpts extends RowLockOpts {
   now?: () => number;
@@ -424,5 +369,34 @@ export class OutboxStore {
   /** Test/introspection: is the row lock currently held by this store? */
   isLockHeld(delivery_id: string): boolean {
     return this.locks.isHeldLocally(delivery_id);
+  }
+
+  /**
+   * List every durable outbox row (unlocked snapshot; the outbox is the source
+   * of truth). Reads each `*.json` entry file in the outbox dir. A row being
+   * mutated concurrently is never torn (atomic rename) — a listing sees either
+   * its old or new revision, never a partial write. Malformed/half-deleted
+   * files are skipped. Order is unspecified — callers sort as needed.
+   */
+  list(): OutboxEntry[] {
+    let names: string[];
+    try {
+      names = fs.readdirSync(this.outboxDir);
+    } catch {
+      return [];
+    }
+    const out: OutboxEntry[] = [];
+    for (const name of names) {
+      if (!name.endsWith(".json")) continue; // skip .lock dirs + tmp files
+      const deliveryId = name.slice(0, -".json".length);
+      const row = this.read(deliveryId);
+      if (row !== null) out.push(row);
+    }
+    return out;
+  }
+
+  /** List the durable rows for one `thread_id` (the thread-view + A5 replay). */
+  listByThread(thread_id: string): OutboxEntry[] {
+    return this.list().filter((r) => r.thread_id === thread_id);
   }
 }

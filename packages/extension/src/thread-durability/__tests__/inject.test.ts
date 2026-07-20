@@ -12,13 +12,15 @@ import { describe, expect, it } from "vitest";
 
 import {
   injectDelivery,
-  type InjectStoreView,
-  type OutboxRowView,
   type PiInjectHandle,
   type SendMessageOptions,
-  type TransitionResultView,
 } from "../inject.js";
-import type { DurableScanEvidence } from "@blackbelt-technology/pi-dashboard-shared/thread-durability/index.js";
+import type {
+  DurableScanEvidence,
+  OutboxEntry,
+  InjectableOutboxStore,
+  MutationResult,
+} from "@blackbelt-technology/pi-dashboard-shared/thread-durability/index.js";
 
 // ── mock pi handle ──────────────────────────────────────────────────────────
 
@@ -51,36 +53,37 @@ function mockPi(opts: { failSend?: boolean } = {}) {
   };
 }
 
-// ── mock store (mirrors the B2 transition contract) ─────────────────────────
+// ── mock store (satisfies the shared InjectableOutboxStore contract) ─────────
 
-function mockStore(): { store: InjectStoreView; rows: Map<string, OutboxRowView>; calls: string[] } {
-  const rows = new Map<string, OutboxRowView>();
+function mockStore(): { store: InjectableOutboxStore; rows: Map<string, OutboxEntry>; calls: string[] } {
+  const rows = new Map<string, OutboxEntry>();
   const calls: string[] = [];
-  const bump = (id: string, state: OutboxRowView["state"], patch: Partial<OutboxRowView> = {}): TransitionResultView => {
+  const bump = (id: string, state: OutboxEntry["state"], patch: Partial<OutboxEntry> = {}): MutationResult => {
     const cur = rows.get(id);
     if (!cur) return { ok: false, reason: "not_found" };
-    const next: OutboxRowView = { ...cur, ...patch, state, revision: cur.revision + 1 };
+    const next: OutboxEntry = { ...cur, ...patch, state, revision: cur.revision + 1, updated_at: cur.updated_at + 1 };
     rows.set(id, next);
     return { ok: true, entry: next };
   };
-  const store: InjectStoreView = {
+  const store: InjectableOutboxStore = {
     markQueued: async ({ delivery_id }) => { calls.push("markQueued"); return bump(delivery_id, "queued_executing"); },
     markObserved: async ({ delivery_id, entry_id }) => { calls.push("markObserved"); return bump(delivery_id, "observed", { entry_id }); },
     markAccepted: async ({ delivery_id }) => { calls.push("markAccepted"); return bump(delivery_id, "accepted"); },
+    markExecuted: async ({ delivery_id }) => { calls.push("markExecuted"); return bump(delivery_id, "executed"); },
     markFailed: async ({ delivery_id }) => { calls.push("markFailed"); return bump(delivery_id, "failed"); },
-    reconcileAccepted: async ({ delivery_id }) => {
+    reconcileAccepted: async (fact) => {
       calls.push("reconcileAccepted");
-      const cur = rows.get(delivery_id);
+      const cur = rows.get(fact.delivery_id);
       if (!cur) return { action: "noop", entry: null };
-      const next: OutboxRowView = { ...cur, state: "executed", revision: cur.revision + 1 };
-      rows.set(delivery_id, next);
+      const next: OutboxEntry = { ...cur, state: "executed", delivered: true, revision: cur.revision + 1 };
+      rows.set(fact.delivery_id, next);
       return { action: "terminalize", entry: next };
     },
   };
   return { store, rows, calls };
 }
 
-function readyRow(over: Partial<OutboxRowView> = {}): OutboxRowView {
+function readyRow(over: Partial<OutboxEntry> = {}): OutboxEntry {
   return {
     delivery_id: "D1",
     attempt: 1,
@@ -91,6 +94,8 @@ function readyRow(over: Partial<OutboxRowView> = {}): OutboxRowView {
     revision: 0,
     thread_id: "T1",
     holder_epoch: 7,
+    delivered: false,
+    updated_at: 100,
     ...over,
   };
 }
@@ -189,7 +194,7 @@ describe("injectDelivery — ordered proof-tracking sequence (Bert ordering)", (
     const { store: base, rows } = mockStore();
     const row = readyRow();
     rows.set("D1", row);
-    const store: InjectStoreView = {
+    const store: InjectableOutboxStore = {
       ...base,
       markQueued: async (i) => { order.push("markQueued"); return base.markQueued(i); },
     };
@@ -276,12 +281,13 @@ describe("injectDelivery — failure boundary", () => {
 
   it("queue rejected (lost CAS race) → indeterminate, no pi call", async () => {
     const { pi, sendCalls } = mockPi();
-    const rows = new Map<string, OutboxRowView>();
-    const store: InjectStoreView = {
+    const rows = new Map<string, OutboxEntry>();
+    const store: InjectableOutboxStore = {
       markQueued: async () => ({ ok: false, reason: "revision_mismatch" }),
-      markObserved: async () => ({ ok: false, reason: "x" }),
-      markAccepted: async () => ({ ok: false, reason: "x" }),
-      markFailed: async () => ({ ok: false, reason: "x" }),
+      markObserved: async () => ({ ok: false, reason: "revision_mismatch" }),
+      markAccepted: async () => ({ ok: false, reason: "revision_mismatch" }),
+      markExecuted: async () => ({ ok: false, reason: "revision_mismatch" }),
+      markFailed: async () => ({ ok: false, reason: "revision_mismatch" }),
       reconcileAccepted: async () => ({ action: "noop", entry: null }),
     };
     const row = readyRow();
