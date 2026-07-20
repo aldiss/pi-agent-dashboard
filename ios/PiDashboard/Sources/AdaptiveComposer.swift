@@ -15,6 +15,9 @@ struct AdaptiveComposer: View {
     /// sidecar URLs. Passed from `DashboardStore` via `ChatView`; never hardcoded.
     let serverBase: URL?
     let serverToken: String?
+    /// The operator `pi_dash_token` cookie — carried on the voice sidecar's REST calls
+    /// (transcribe/health) so they pass the multi-operator gate with operator identity.
+    let serverCookie: String?
     let onSend: (String, [ImageContent]) -> Void
     let onStop: () -> Void
     /// Optional one-time seed for the draft (the `-uitest-composer-overflow` probe
@@ -79,7 +82,7 @@ struct AdaptiveComposer: View {
         }
         .onChange(of: photoItems) { _, items in Task { await loadImages(items) } }
         .onAppear {
-            voice.configure(base: serverBase, token: serverToken)
+            voice.configure(base: serverBase, token: serverToken, cookie: serverCookie)
             voice.onAppear()
             // Probe seed: pre-fill the draft ONCE with the overflow test line so the
             // wrap fix is screenshot-visible. Programmatic so the text view applies it;
@@ -91,7 +94,7 @@ struct AdaptiveComposer: View {
                 recomputeLayout()
             }
         }
-        .onChange(of: serverBase) { _, base in voice.configure(base: base, token: serverToken) }
+        .onChange(of: serverBase) { _, base in voice.configure(base: base, token: serverToken, cookie: serverCookie) }
         .onDisappear { voice.onDisappear() }
     }
 

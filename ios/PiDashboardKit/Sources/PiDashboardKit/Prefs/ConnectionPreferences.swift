@@ -6,10 +6,12 @@ import Foundation
 /// injectable so the load/save round-trip is unit-testable via `swift test` with
 /// an ephemeral suite (zero simulator dependency).
 public struct ConnectionPreferences: Equatable {
-    /// Baked-in default server for a fresh install (operator's tailnet dashboard).
+    /// Baked-in default server for a fresh install — the tunnel the multi-operator
+    /// `pi_dash_token` cookie is domain-bound to. A raw Tailscale-IP origin can't carry
+    /// the cookie (the WS would 401), so the app defaults its connect target here.
     /// Prefilled in the connect form; not treated as a "stored" server, so a fresh
     /// install still shows the editable connect screen rather than auto-connecting.
-    public static let defaultServerURL = "https://s-macbook-pro.tail954a35.ts.net"
+    public static let defaultServerURL = "https://dash.deckdeckshare.com"
 
     private static let urlKey = "pi.dashboard.serverURL"
     private static let tokenKey = "pi.dashboard.serverToken"

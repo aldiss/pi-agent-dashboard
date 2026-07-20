@@ -31,6 +31,9 @@ final class VoiceRecorder {
     /// composer from `DashboardStore`; never hardcoded.
     private var serverBase: URL?
     private var token: String?
+    /// The operator `pi_dash_token` cookie — attached to the transcribe/health REST
+    /// calls so they pass the multi-operator gate with operator identity.
+    private var cookie: String?
 
     private var recorder: AVAudioRecorder?
     private var fileURL: URL?
@@ -46,12 +49,13 @@ final class VoiceRecorder {
 
     // MARK: configuration + lifecycle
 
-    /// Point the recorder at the connected dashboard. Called whenever base/token
+    /// Point the recorder at the connected dashboard. Called whenever base/token/cookie
     /// change; restarts the health poll against the new server.
-    func configure(base: URL?, token: String?) {
-        let changed = base != serverBase || token != self.token
+    func configure(base: URL?, token: String?, cookie: String?) {
+        let changed = base != serverBase || token != self.token || cookie != self.cookie
         serverBase = base
         self.token = token
+        self.cookie = cookie
         if changed { restartHealthPolling() }
     }
 
@@ -153,16 +157,17 @@ final class VoiceRecorder {
         phase = .uploading
         let base = serverBase
         let token = self.token
+        let cookie = self.cookie
         Task { [weak self] in
-            await self?.upload(data: data, base: base, token: token, fileURL: url)
+            await self?.upload(data: data, base: base, token: token, cookie: cookie, fileURL: url)
         }
     }
 
-    private func upload(data: Data, base: URL?, token: String?, fileURL: URL) async {
+    private func upload(data: Data, base: URL?, token: String?, cookie: String?, fileURL: URL) async {
         defer { try? FileManager.default.removeItem(at: fileURL) }
         guard let base else { finishUpload(error: "Not connected to a server."); return }
         let req = VoiceTranscriber.transcribeRequest(
-            base: base, audio: data, boundary: UUID().uuidString, token: token)
+            base: base, audio: data, boundary: UUID().uuidString, token: token, cookie: cookie)
         do {
             let (body, response) = try await URLSession.shared.data(for: req)
             let status = (response as? HTTPURLResponse)?.statusCode ?? 0
@@ -219,17 +224,18 @@ final class VoiceRecorder {
         healthTask?.cancel()
         guard let base = serverBase else { isHealthy = false; return }
         let token = self.token
+        let cookie = self.cookie
         healthTask = Task { [weak self] in
             while !Task.isCancelled {
-                let healthy = await Self.probeHealth(base: base, token: token)
+                let healthy = await Self.probeHealth(base: base, token: token, cookie: cookie)
                 await MainActor.run { self?.isHealthy = healthy }
                 try? await Task.sleep(nanoseconds: 5_000_000_000)
             }
         }
     }
 
-    private static func probeHealth(base: URL, token: String?) async -> Bool {
-        let req = VoiceTranscriber.healthRequest(base: base, token: token)
+    private static func probeHealth(base: URL, token: String?, cookie: String?) async -> Bool {
+        let req = VoiceTranscriber.healthRequest(base: base, token: token, cookie: cookie)
         guard let (body, response) = try? await URLSession.shared.data(for: req) else { return false }
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         return VoiceTranscriber.parseHealthy(body, statusCode: status)

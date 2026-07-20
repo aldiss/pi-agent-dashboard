@@ -8,6 +8,9 @@ private let clientLog = Logger(subsystem: "technology.blackbelt.pidashboard", ca
 public enum DashboardClientError: Error, Sendable {
     case notConnected
     case badURL
+    /// REST returned 401 — the `pi_dash_token` cookie is missing/expired/rejected. The
+    /// store clears the stored cookie and re-prompts GitHub sign-in.
+    case unauthorized
 }
 
 /// Live WebSocket client for the dashboard **browser** gateway. Opens the WS,
@@ -63,12 +66,18 @@ public actor DashboardClient {
     /// FINISHES when the socket drops — the caller (DashboardStore) observes that
     /// end-of-stream to drive its reconnect/backoff + the disconnect banner.
     ///
+    /// AUTH (multi-operator gate): the live WS upgrade is **cookie-only** — the gate
+    /// rejects `Authorization: Bearer` here. `cookie` is the `pi_dash_token` JWT value;
+    /// it's framed as `Cookie: pi_dash_token=<jwt>` on the upgrade request. Without a
+    /// valid cookie the server 401s the upgrade, the socket never opens, and the stream
+    /// finishes immediately.
+    ///
     /// Ownership note (cc-ios-build): the seed set `state = .connected` synchronously
     /// after `resume()` and the receive loop mutated the actor's `continuation`
     /// without checking it still owned the live socket — so an old loop tearing down
     /// after a reconnect could finish the *new* stream. Reworked to bind the socket
     /// into the loop and identity-gate every shared-state write on `socket === task`.
-    public func connect(base: URL, token: String? = nil) -> AsyncStream<ServerMessage> {
+    public func connect(base: URL, cookie: String? = nil) -> AsyncStream<ServerMessage> {
         disconnect()
         guard let wsURL = Self.websocketURL(base: base) else {
             state = .failed("invalid server URL")
@@ -76,8 +85,8 @@ public actor DashboardClient {
         }
         state = .connecting
         var req = URLRequest(url: wsURL)
-        if let token, !token.isEmpty {
-            req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        if let cookie, let header = AuthToken.cookieHeaderValue(cookie) {
+            req.setValue(header, forHTTPHeaderField: "Cookie")
         }
         let socket = session.webSocketTask(with: req)
         self.task = socket
@@ -228,40 +237,55 @@ public actor DashboardClient {
 
 /// REST client for the dashboard HTTP API. Stateless + `Sendable`. Used by the
 /// Connect screen (health probe) and for the initial `/api/sessions` load.
+///
+/// AUTH (multi-operator gate): REST accepts the `pi_dash_token` **cookie** (operator
+/// identity) — set it when present, framed as `Cookie: pi_dash_token=<jwt>`. A 401
+/// surfaces as `DashboardClientError.unauthorized` so the store can clear + re-prompt
+/// sign-in rather than showing a generic "unreachable".
 public struct RestClient: Sendable {
     public let base: URL
-    public let token: String?
+    public let cookie: String?
     private let session: URLSession
 
-    public init(base: URL, token: String? = nil, session: URLSession = .shared) {
+    public init(base: URL, cookie: String? = nil, session: URLSession = .shared) {
         self.base = base
-        self.token = token
+        self.cookie = cookie
         self.session = session
     }
 
     private func makeRequest(_ path: String) -> URLRequest {
         var req = URLRequest(url: base.appendingPathComponent(path))
-        if let token, !token.isEmpty {
-            req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        if let cookie, let header = AuthToken.cookieHeaderValue(cookie) {
+            req.setValue(header, forHTTPHeaderField: "Cookie")
         }
         req.timeoutInterval = 10
         return req
     }
 
     /// `GET /api/health` — verifies the URL is a live dashboard (raw, not wrapped).
+    /// Throws `.unauthorized` on a 401 (cookie missing/expired) so the caller re-prompts.
     public func health() async throws -> HealthStatus {
-        let (data, _) = try await session.data(for: makeRequest("api/health"))
+        let (data, response) = try await session.data(for: makeRequest("api/health"))
+        try Self.throwIfUnauthorized(response)
         return try JSONDecoder().decode(HealthStatus.self, from: data)
     }
 
     /// `GET /api/sessions` — initial session load. Handles both the
     /// `ApiResponse<[…]>` envelope and a bare array, for resilience.
     public func sessions() async throws -> [DashboardSession] {
-        let (data, _) = try await session.data(for: makeRequest("api/sessions"))
+        let (data, response) = try await session.data(for: makeRequest("api/sessions"))
+        try Self.throwIfUnauthorized(response)
         if let wrapped = try? JSONDecoder().decode(ApiResponse<[DashboardSession]>.self, from: data),
            let arr = wrapped.data {
             return arr
         }
         return try JSONDecoder().decode([DashboardSession].self, from: data)
+    }
+
+    /// Map a 401 to `.unauthorized`; other statuses pass through (decode decides).
+    static func throwIfUnauthorized(_ response: URLResponse) throws {
+        if let http = response as? HTTPURLResponse, http.statusCode == 401 {
+            throw DashboardClientError.unauthorized
+        }
     }
 }

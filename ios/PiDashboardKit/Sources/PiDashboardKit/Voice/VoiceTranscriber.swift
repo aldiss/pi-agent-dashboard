@@ -62,31 +62,44 @@ public enum VoiceTranscriber {
     }
 
     /// Build the fully-formed transcribe `URLRequest` (method, headers, body, 120s
-    /// timeout). Bearer header added only when `token` is non-empty.
+    /// timeout). Auth headers: the multi-operator gate accepts the `pi_dash_token`
+    /// **cookie** (operator identity) on REST — set it when `cookie` is non-empty. A
+    /// legacy `token` still adds `Authorization: Bearer` (kept for the shared-secret
+    /// path + backward compat); both may be present.
     public static func transcribeRequest(base: URL, audio: Data, boundary: String,
                                          token: String? = nil,
+                                         cookie: String? = nil,
                                          timeout: TimeInterval = 120) -> URLRequest {
         var req = URLRequest(url: transcribeURL(base: base))
         req.httpMethod = "POST"
         req.timeoutInterval = timeout
         req.setValue(multipartContentType(boundary: boundary), forHTTPHeaderField: "Content-Type")
-        if let token, !token.isEmpty {
-            req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        }
+        applyAuth(&req, token: token, cookie: cookie)
         req.httpBody = multipartBody(audio: audio, boundary: boundary)
         return req
     }
 
-    /// Build the health-probe `GET` (short timeout — it's a liveness poll).
+    /// Build the health-probe `GET` (short timeout — it's a liveness poll). Same auth
+    /// rule as `transcribeRequest`: `pi_dash_token` cookie and/or legacy Bearer.
     public static func healthRequest(base: URL, token: String? = nil,
+                                     cookie: String? = nil,
                                      timeout: TimeInterval = 8) -> URLRequest {
         var req = URLRequest(url: healthURL(base: base))
         req.httpMethod = "GET"
         req.timeoutInterval = timeout
+        applyAuth(&req, token: token, cookie: cookie)
+        return req
+    }
+
+    /// Attach the operator `pi_dash_token` cookie (preferred) and/or a legacy Bearer
+    /// token to a request. Cookie framing is centralized in `AuthToken.cookieHeaderValue`.
+    private static func applyAuth(_ req: inout URLRequest, token: String?, cookie: String?) {
+        if let cookie, let header = AuthToken.cookieHeaderValue(cookie) {
+            req.setValue(header, forHTTPHeaderField: "Cookie")
+        }
         if let token, !token.isEmpty {
             req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
-        return req
     }
 
     // MARK: Response decode

@@ -64,7 +64,8 @@ struct ChatView: View {
                 isWorking: state.isStreaming,
                 queuedCount: state.activeQueuedCount,
                 serverBase: store.connectedBase,
-                serverToken: store.connectionToken,
+                serverToken: nil,
+                serverCookie: store.connectionCookie,
                 onSend: { text, images in
                     Task { await store.sendPrompt(sessionId, text: text, images: images.isEmpty ? nil : images) }
                 },

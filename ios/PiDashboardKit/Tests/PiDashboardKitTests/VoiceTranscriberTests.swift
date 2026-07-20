@@ -87,6 +87,35 @@ final class VoiceTranscriberTests: XCTestCase {
         XCTAssertEqual(req.value(forHTTPHeaderField: "Authorization"), "Bearer t")
     }
 
+    // MARK: Operator cookie (multi-operator gate — the pi_dash_token path)
+
+    func testTranscribeRequestAttachesCookieWhenPresent() {
+        let req = VoiceTranscriber.transcribeRequest(
+            base: base, audio: Data([0xAA]), boundary: "BB", cookie: "jwt-xyz")
+        XCTAssertEqual(req.value(forHTTPHeaderField: "Cookie"), "pi_dash_token=jwt-xyz")
+        // Cookie-only (no legacy token) → no Authorization header.
+        XCTAssertNil(req.value(forHTTPHeaderField: "Authorization"))
+    }
+
+    func testTranscribeRequestNoCookieForEmpty() {
+        let req = VoiceTranscriber.transcribeRequest(
+            base: base, audio: Data([0xAA]), boundary: "BB", cookie: "")
+        XCTAssertNil(req.value(forHTTPHeaderField: "Cookie"))
+    }
+
+    func testHealthRequestAttachesCookie() {
+        let req = VoiceTranscriber.healthRequest(base: base, cookie: "jwt-health")
+        XCTAssertEqual(req.value(forHTTPHeaderField: "Cookie"), "pi_dash_token=jwt-health")
+    }
+
+    func testCookieAndTokenCanCoexist() {
+        // Both provided → both headers present (cookie = operator identity, Bearer = legacy).
+        let req = VoiceTranscriber.transcribeRequest(
+            base: base, audio: Data([0xAA]), boundary: "BB", token: "sec", cookie: "jwt")
+        XCTAssertEqual(req.value(forHTTPHeaderField: "Cookie"), "pi_dash_token=jwt")
+        XCTAssertEqual(req.value(forHTTPHeaderField: "Authorization"), "Bearer sec")
+    }
+
     // MARK: Transcript decode
 
     func testParseTranscriptSuccessTrims() {

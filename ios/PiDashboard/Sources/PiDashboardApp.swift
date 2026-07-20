@@ -35,6 +35,7 @@ final class ThemeController {
 struct PiDashboardApp: App {
     @State private var store = DashboardStore()
     @State private var themeController = ThemeController()
+    @State private var auth = AuthManager()
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
@@ -47,6 +48,7 @@ struct PiDashboardApp: App {
             ThemedRoot()
                 .environment(store)
                 .environment(themeController)
+                .environment(auth)
                 .preferredColorScheme(themeController.colorSchemeOverride)
                 // DF#4 foreground-reconnect: returning to `.active` (from background/
                 // inactive) may find the socket silently half-open — a backgrounded WS

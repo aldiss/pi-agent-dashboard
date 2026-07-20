@@ -59,6 +59,13 @@ targets:
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
           NSAllowsLocalNetworking: true
+        # ASWebAuthenticationSession OAuth callback scheme (multi-operator cookie gate).
+        # xcodegen regenerates Info.plist from here, so the scheme must live in BOTH.
+        CFBundleURLTypes:
+          - CFBundleTypeRole: Editor
+            CFBundleURLName: technology.blackbelt.pidashboard.auth
+            CFBundleURLSchemes:
+              - pidashboard
 
   PiDashboardUITests:
     type: bundle.ui-testing

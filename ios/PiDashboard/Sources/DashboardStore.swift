@@ -27,7 +27,10 @@ final class DashboardStore {
     private(set) var phase: ConnectionPhase = .idle
     private(set) var health: HealthStatus?
     var serverURLString: String
-    var token: String
+    /// The operator's `pi_dash_token` JWT cookie, sourced from the Keychain at connect
+    /// time (written by `AuthManager` after GitHub sign-in). Empty when signed out. This
+    /// replaces the old bearer `token` — the multi-operator WS gate is cookie-only.
+    var cookie: String { AuthCookieStore.load() ?? "" }
     /// Set once a successful connect has entered the dashboard — keeps MainView
     /// mounted across transient drops (only the banner changes).
     private(set) var hasEnteredDashboard = false
@@ -128,8 +131,9 @@ final class DashboardStore {
     var connectedBase: URL? {
         base ?? URL(string: serverURLString.trimmingCharacters(in: .whitespaces))
     }
-    /// The bearer token for the connected server, if any.
-    var connectionToken: String? { token.isEmpty ? nil : token }
+    /// The operator `pi_dash_token` cookie for the connected server, if any — threaded to
+    /// the voice sidecar's REST calls (transcribe/health) so they carry operator identity.
+    var connectionCookie: String? { cookie.isEmpty ? nil : cookie }
 
     init() {
         let args = ProcessInfo.processInfo.arguments
@@ -139,14 +143,13 @@ final class DashboardStore {
         // Fixture mode is a superset of UITest (suppresses live mutation + network).
         isUITest = isFixtureMode || args.contains("-uitest")
         if isUITest {
-            // Hermetic: the e2e/smoke suites pin the localhost default + empty token.
+            // Hermetic: the e2e/smoke suites pin the localhost default.
             serverURLString = "http://localhost:8000"
-            token = ""
         } else {
-            // Fresh install → baked-in default; otherwise the last persisted server.
+            // Fresh install → baked-in tunnel default; otherwise the last persisted server.
+            // The auth cookie is sourced from the Keychain (see `cookie`), not persisted here.
             let prefs = ConnectionPreferences.load()
             serverURLString = prefs.serverURL
-            token = prefs.token ?? ""
         }
     }
 
@@ -154,19 +157,33 @@ final class DashboardStore {
 
     /// Probe `/api/health` then open the WS. On UITest launch, load bundled
     /// fixtures instead of touching the network (hermetic, no live mutation).
+    ///
+    /// AUTH: the live WS is cookie-only. A missing/expired cookie → route to sign-in
+    /// (`.failed` with a sign-in prompt) rather than a doomed connect. A 401 from the
+    /// health probe clears the stored cookie so ConnectView re-prompts GitHub sign-in.
     func connect() async {
         if isFixtureMode { injectFixtures(); return }
         if isUITest { loadFixtures(); return }
         guard let url = URL(string: serverURLString.trimmingCharacters(in: .whitespaces)) else {
             phase = .failed("Invalid URL"); return
         }
+        // Cookie-only gate: no plausible cookie → don't even probe; prompt sign-in.
+        let cookie = self.cookie
+        guard AuthToken.isPlausiblyValid(cookie) else {
+            phase = .failed("Sign in with GitHub to connect."); return
+        }
         base = url
         phase = .connecting
-        let rest = RestClient(base: url, token: token.isEmpty ? nil : token)
+        let rest = RestClient(base: url, cookie: cookie)
         do {
             let h = try await rest.health()
             guard h.ok else { phase = .failed("Server reported not-ok"); return }
             health = h
+        } catch DashboardClientError.unauthorized {
+            // Cookie rejected/expired — clear it and re-prompt sign-in.
+            AuthCookieStore.clear()
+            phase = .failed("Session expired — sign in with GitHub again.")
+            return
         } catch {
             phase = .failed("Unreachable — is the dashboard running?")
             return
@@ -176,7 +193,7 @@ final class DashboardStore {
         if Task.isCancelled { return }
         // Reached only on a good probe: remember this server so the next launch
         // auto-connects to it (skips the connect form).
-        ConnectionPreferences.save(serverURL: serverURLString, token: token.isEmpty ? nil : token)
+        ConnectionPreferences.save(serverURL: serverURLString, token: nil)
         startStream(base: url)
     }
 
@@ -193,6 +210,9 @@ final class DashboardStore {
         guard !isUITest else { return }
         didBootstrap = true
         guard ConnectionPreferences.hasStoredServer() else { return }
+        // Cookie-only gate: auto-connect only when a plausible operator cookie is stored;
+        // otherwise fall through to the connect form (which shows the sign-in button).
+        guard AuthToken.isPlausiblyValid(cookie) else { return }
         isAutoConnecting = true
         bootstrapTask = Task { [weak self] in
             guard let self else { return }
@@ -213,10 +233,10 @@ final class DashboardStore {
 
     private func startStream(base: URL) {
         consumeTask?.cancel()
-        let token = self.token
+        let cookie = self.cookie
         consumeTask = Task { [weak self] in
             guard let self else { return }
-            let stream = await self.client.connect(base: base, token: token.isEmpty ? nil : token)
+            let stream = await self.client.connect(base: base, cookie: cookie.isEmpty ? nil : cookie)
             for await message in stream {
                 if Task.isCancelled { return }
                 self.apply(message)
