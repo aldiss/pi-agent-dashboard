@@ -90,6 +90,18 @@ describe("HTTP cell route/actor classification", () => {
     expect(classifyCellHttpRoute("GET", "/api/health")).toEqual({ kind: "health" });
   });
 
+  it("exempts POST /api/auth/exchange as safe-public (native code-exchange, pre-auth; matches gate #1) — exact-scoped", () => {
+    // The 256-bit random single-use 60s-TTL code IS the credential; the handler self-guards
+    // (single-use burn + expiry-at-take + exact-origin CORS + per-IP rate-limit + no-store).
+    // Exempting it here makes gate #2 consistent with gate #1 (auth-plugin onRequest hook).
+    expect(classifyCellHttpRoute("POST", "/api/auth/exchange")).toEqual({ kind: "safe-public" });
+    // Exact-scoped: a different method or a sibling /api/auth/* route never inherits the bypass
+    // (proves it is not a prefix/wildcard exemption — no reserved-prefix hole).
+    expect(classifyCellHttpRoute("GET", "/api/auth/exchange")).toEqual({ kind: "operator-only" });
+    expect(classifyCellHttpRoute("POST", "/api/auth/exchange-sibling")).toEqual({ kind: "operator-only" });
+    expect(classifyCellHttpRoute("POST", "/api/auth/other")).toEqual({ kind: "operator-only" });
+  });
+
   it("verified human identity wins over loopback; trusted-network omission is anonymous", () => {
     expect(classifyCellHttpActor(req({ route: "/api/health", principal: GUEST, ip: "127.0.0.1" }), access)).toBe("guest");
     expect(classifyCellHttpActor(req({ route: "/api/health", ip: "127.0.0.1" }), access)).toBe("local");
