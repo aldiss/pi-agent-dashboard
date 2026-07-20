@@ -27,6 +27,13 @@ const PUBLIC_AUTH_ROUTES = new Set([
   "GET /auth/callback/:provider",
   "POST /auth/logout",
   "GET /auth/status",
+  // Native code-exchange: the 256-bit random single-use 60s-TTL code IS the credential
+  // (pre-auth by design — this endpoint ISSUES the JWT, so it cannot require auth to reach it).
+  // The handler self-guards: single-use burn + expiry-at-take + exact-origin CORS + per-IP
+  // rate-limit + no-store (auth-plugin.ts createAuthCodeStore/POST /api/auth/exchange). This
+  // mirrors gate #1's op-2 exempt-set (auth-plugin.ts onRequest hook) so the two gates agree;
+  // it touches no cell/session, so no cell-access protection is bypassed.
+  "POST /api/auth/exchange",
 ]);
 const MODEL_PROXY_ROUTES = new Set([
   "GET /v1/models",
