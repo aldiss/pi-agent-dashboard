@@ -1,0 +1,3 @@
+{"type":"session","version":3,"id":"019f7ef7-b1ec-71e1-9d52-dd2398151a3c","timestamp":"2026-07-20T09:59:49.996Z","cwd":"/var/folders/sh/rtc7_3wd27q_jffxy54dt44m0000gn/T/td-probe-fresh-dPnpOa"}
+{"type":"custom_message","customType":"thread_delivery","content":"please run the thread prompt","display":false,"details":{"delivery_id":"dlv-probe-0001","thread_id":"thr-probe-A","attempt":1,"holder_epoch":7},"id":"ccda72d9","parentId":null,"timestamp":"2026-07-20T09:59:49.997Z"}
+{"type":"message","id":"9a08dca9","parentId":"ccda72d9","timestamp":"2026-07-20T09:59:49.999Z","message":{"role":"assistant","content":[{"type":"text","text":"done — thread prompt executed"}],"stopReason":"stop"}}
