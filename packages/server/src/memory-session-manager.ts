@@ -3,6 +3,7 @@
  * Replaces SQLite-backed session-manager.ts.
  */
 import type { DashboardSession, SessionSource, SessionStatus } from "@blackbelt-technology/pi-dashboard-shared/types.js";
+import type { Audience } from "@blackbelt-technology/pi-dashboard-shared/vendor/operator-voice-audience/audience-core.js";
 
 export interface RegisterSessionParams {
   id: string;
@@ -60,7 +61,17 @@ export interface SessionManager {
   onUnregister?: (sessionId: string) => void;
 }
 
-export function createMemorySessionManager(): SessionManager {
+/**
+ * Optional dependencies for the session manager. `deriveAudience` (door-3 Item 1)
+ * is injected from `audience-registry.ts` so the pure manager stays FS-decoupled
+ * while still stamping the server-derived audience at the register/restore
+ * choke-point. See change: operator-voice-buffer-hold.
+ */
+export interface SessionManagerDeps {
+  deriveAudience?: (name: string | undefined, source: string | undefined) => Audience;
+}
+
+export function createMemorySessionManager(deps: SessionManagerDeps = {}): SessionManager {
   const sessions = new Map<string, DashboardSession>();
 
   const mgr: SessionManager = {
@@ -95,6 +106,10 @@ export function createMemorySessionManager(): SessionManager {
         cwd: params.cwd,
         name: params.name ?? existing?.name,
         source: params.source,
+        // door-3 (Item 1): stamp the server-derived audience at the register
+        // choke-point so LIVE bridge-registered sessions buffer from the first
+        // operator turn. See change: operator-voice-buffer-hold.
+        audience: deps.deriveAudience?.(params.name ?? existing?.name, params.source),
         status: "active",
         model: params.model,
         thinkingLevel: params.thinkingLevel,
@@ -116,6 +131,12 @@ export function createMemorySessionManager(): SessionManager {
     },
 
     restore(session: DashboardSession): void {
+      // door-3 (Item 1): a reconstructed session built inline (session-bootstrap)
+      // carries no audience — derive it here. A scanned session already has it
+      // (sessionFromMeta); keep that value. See change: operator-voice-buffer-hold.
+      if (session.audience === undefined && deps.deriveAudience) {
+        session.audience = deps.deriveAudience(session.name, session.source);
+      }
       sessions.set(session.id, session);
     },
 

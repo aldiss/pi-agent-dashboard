@@ -13,6 +13,7 @@ import { existsSync } from "node:fs";
 import { createMemoryEventStore, type EventStore } from "./memory-event-store.js";
 import { createHeapWatchdog } from "./heap-watchdog.js";
 import { createMemorySessionManager, type SessionManager } from "./memory-session-manager.js";
+import { audienceRegistry } from "./audience-registry.js";
 import { createPiGateway, type PiGateway } from "./pi-gateway.js";
 import { failLoudCrash } from "./fail-loud.js";
 import { createBrowserGateway, type BrowserGateway } from "./browser-gateway.js";
@@ -321,7 +322,7 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
   }
 
   const preferencesStore = createPreferencesStore();
-  const sessionManager = createMemorySessionManager();
+  const sessionManager = createMemorySessionManager({ deriveAudience: audienceRegistry.deriveSessionAudience });
   /** Per-session push preferences (in-memory, resets on restart). */
   const pushPrefsMap = new Map<string, PushPrefs>();
   const metaPersistence = createMetaPersistence();
@@ -627,6 +628,21 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
   });
 
   const browserGateway = createBrowserGateway(sessionManager, eventStore, piGateway, undefined, pendingForkRegistry, sessionOrderManager, preferencesStore, directoryService, terminalManager, pendingDashboardSpawns, config.maxWsBufferBytes, pendingAttachRegistry, pendingResumeIntents, pendingClientCorrelations, pushPrefsMap, () => config.push?.defaults);
+
+  // door-3 (Item 2): watch role-registry.json coarsely; on a registry CHANGE,
+  // re-derive audience for known sessions going FORWARD (future messages only —
+  // NOT retroactive; already-rendered rows are not retro-held). Lets a session
+  // established under a partial/stale/unreadable registry self-correct
+  // `unknown → operator` once the registry completes. See change: operator-voice-buffer-hold.
+  audienceRegistry.startWatch(() => {
+    for (const s of sessionManager.listAll()) {
+      const nextAudience = audienceRegistry.deriveSessionAudience(s.name, s.source);
+      if (nextAudience !== s.audience) {
+        sessionManager.update(s.id, { audience: nextAudience });
+        browserGateway.broadcastSessionUpdated(s.id, { audience: nextAudience });
+      }
+    }
+  });
 
   // Driver self-report poller (dl-2620): re-reads the driver-state sidecars
   // (written by the `driver-report` CLI) and pushes per-driver progress-% +

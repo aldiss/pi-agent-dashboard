@@ -9,6 +9,8 @@ import os from "node:os";
 import type { DashboardSession, SessionSource } from "@blackbelt-technology/pi-dashboard-shared/types.js";
 import { type SessionMeta, metaPath, readSessionMeta, writeSessionMeta } from "@blackbelt-technology/pi-dashboard-shared/session-meta.js";
 import { condenseForFirstMessage } from "@blackbelt-technology/pi-dashboard-shared/skill-block-parser.js";
+import type { Audience } from "@blackbelt-technology/pi-dashboard-shared/vendor/operator-voice-audience/audience-core.js";
+import { audienceRegistry } from "./audience-registry.js";
 import { extractSessionStats } from "./session-stats-reader.js";
 
 function getSessionsDir(): string {
@@ -53,18 +55,26 @@ function readJsonlMtime(sessionFile: string): number | undefined {
 }
 
 /** Build a DashboardSession from cached `.meta.json` data */
-function sessionFromMeta(
+export function sessionFromMeta(
   sessionId: string,
   sessionFile: string,
   sessionDir: string,
   meta: SessionMeta,
   startedAt: number,
+  deriveAudience: (name: string | undefined, source: string | undefined) => Audience = audienceRegistry.deriveSessionAudience,
 ): DashboardSession {
+  const source = (meta.source as SessionSource) ?? "tui";
   return {
     id: sessionId,
     cwd: meta.cwd ?? "",
     name: meta.name,
-    source: (meta.source as SessionSource) ?? "tui",
+    source,
+    // door-3 (Item 1): derive audience from name + source via the vendored core.
+    // Evaluate on the SAME resolved source the scanner uses (missing → "tui") so
+    // display + audience stay consistent; hasUI is derived from source inside the
+    // deriver (INTERACTIVE_SOURCES={tui,terminal,zed} — zed included so the start-
+    // derive matches the extension's end-stamp). See change: operator-voice-buffer-hold.
+    audience: deriveAudience(meta.name, source),
     status: (meta.status as DashboardSession["status"]) ?? "ended",
     model: meta.model,
     thinkingLevel: meta.thinkingLevel,

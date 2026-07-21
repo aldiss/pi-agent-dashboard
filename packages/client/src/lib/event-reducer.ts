@@ -6,6 +6,7 @@ import type { DashboardEvent, FlowState, ArchitectState } from "@blackbelt-techn
 import { isFlowEvent, reduceFlowEvent } from "@blackbelt-technology/pi-dashboard-flows-plugin/reducer";
 import { isArchitectEvent, reduceArchitectEvent } from "@blackbelt-technology/pi-dashboard-flows-plugin/reducer";
 import { parseSkillBlock, type SkillBlock } from "@blackbelt-technology/pi-dashboard-shared/skill-block-parser.js";
+import type { Audience } from "@blackbelt-technology/pi-dashboard-shared/vendor/operator-voice-audience/audience-core.js";
 
 export interface ChatImage {
   data: string;
@@ -231,6 +232,27 @@ export interface SessionState {
    * See change: fix-streaming-text-vs-interactive-ui-order.
    */
   streamingTextFlushed?: boolean;
+  /**
+   * door-3 operator-voice pre-render hold (render-layer only). Session-level
+   * audience: the server-derived `session.audience` mirrored into state by
+   * useMessageHandler, self-corrected at message_end by the authoritative end-
+   * stamp. `operator` → assistant partials are HELD (see `heldOperatorText`);
+   * `agent`/`unknown`/undefined → render live (unknown = shown+exempt).
+   * See change: operator-voice-buffer-hold.
+   */
+  audience?: Audience;
+  /**
+   * Held operator partials — the pre-render buffer. When `shouldBuffer(audience)`,
+   * assistant streaming text is routed HERE instead of `streamingText`, so NOTHING
+   * renders live during the turn. Released BYTE-IDENTICAL on clean/observe-hit,
+   * dropped on enforce-hit, released to a neutral placeholder on Contract-D timeout.
+   */
+  heldOperatorText: string;
+  /**
+   * Contract-D inactivity anchor: epoch-ms of the last held partial. Re-armed on
+   * each held partial, cleared at message_end. `undefined` ⇒ no open buffer.
+   */
+  heldBufferLastActivityAt?: number;
 }
 
 /**
@@ -261,6 +283,7 @@ export function createInitialState(): SessionState {
     messagesIndex: new Map(),
     toolCalls: new Map(),
     streamingText: "",
+    heldOperatorText: "",
     streamingThinking: "",
     isStreaming: false,
     tokensIn: 0,
@@ -280,6 +303,78 @@ export function createInitialState(): SessionState {
     subagents: new Map(),
     turnCount: 0,
   };
+}
+
+// ── door-3 operator-voice pre-render hold ────────────────────────────────────
+
+/**
+ * The buffer SEAM — the ONE point deciding which audiences pre-render-hold.
+ * Ratified FINAL/PERMANENT (operator ACCEPT, unknown=shown+exempt): hold
+ * `{operator}` ONLY; `agent` + `unknown` render live. Isolated so any future
+ * policy change is a one-line edit (it is now moot — the rule is permanent — but
+ * the seam stays as self-documenting isolation).
+ */
+export function shouldBuffer(audience: Audience | undefined): boolean {
+  return audience === "operator";
+}
+
+/**
+ * Contract-D bound (ratified): a held operator buffer with no verdict/activity for
+ * this long releases to a neutral placeholder (never hangs). INACTIVITY timer —
+ * re-armed on each held partial — so a legitimately long stream never false-fires;
+ * only a genuine producer stall (crash / dropped message_end) trips it. Tunable.
+ */
+export const OPERATOR_BUFFER_TIMEOUT_MS = 30000;
+
+/**
+ * Neutral placeholder rendered when a held operator buffer times out (Contract-D
+ * fail-safe). NOT the held (unverified) text — fails toward neutral.
+ */
+export const OPERATOR_BUFFER_TIMEOUT_PLACEHOLDER = "\u2026";
+
+const AUDIENCE_VALUES: ReadonlySet<string> = new Set(["operator", "agent", "unknown"]);
+
+/** Runtime-validate an end-stamp `audience` off the (untrusted) wire message. */
+function asAudience(v: unknown): Audience | undefined {
+  return typeof v === "string" && AUDIENCE_VALUES.has(v) ? (v as Audience) : undefined;
+}
+
+/**
+ * True iff an operator buffer is open AND inactive ≥ `boundMs` (Contract-D check).
+ * Pure — inject `nowMs` (tests advance the clock; production passes `Date.now()`),
+ * never a wall-clock read here.
+ */
+export function isOperatorBufferTimedOut(
+  state: SessionState,
+  nowMs: number,
+  boundMs: number = OPERATOR_BUFFER_TIMEOUT_MS,
+): boolean {
+  return state.heldBufferLastActivityAt !== undefined && nowMs - state.heldBufferLastActivityAt >= boundMs;
+}
+
+/**
+ * Contract-D fail-safe: release a timed-out operator buffer to a neutral
+ * placeholder (never the unverified held text, never hang). No-op if no buffer is
+ * open. Called OUTSIDE `reduceEvent` (from the React inactivity timer), so it
+ * rebuilds `messagesIndex` itself.
+ */
+export function releaseOperatorBufferAsNeutral(state: SessionState, nowMs: number): SessionState {
+  if (state.heldBufferLastActivityAt === undefined) return state;
+  const next: SessionState = { ...state, toolCalls: new Map(state.toolCalls) };
+  next.messages = [
+    ...next.messages,
+    {
+      id: `msg-${next.messages.length}`,
+      role: "assistant",
+      content: OPERATOR_BUFFER_TIMEOUT_PLACEHOLDER,
+      timestamp: nowMs,
+    },
+  ];
+  next.heldOperatorText = "";
+  next.heldBufferLastActivityAt = undefined;
+  next.streamingText = "";
+  next.messagesIndex = rebuildMessagesIndex(next.messages);
+  return next;
 }
 
 
@@ -1114,7 +1209,18 @@ export function reduceEvent(state: SessionState, event: DashboardEvent): Session
                 .map((c: any) => c.text)
                 .join("")
             : String(msg.content ?? "");
-          next.streamingText = text;
+          // door-3 operator-voice pre-render hold: for an operator session, route
+          // partials into the HELD buffer instead of `streamingText` so NOTHING
+          // renders live during the turn; re-arm the Contract-D inactivity timer on
+          // each partial. agent/unknown/undefined → unchanged live streaming
+          // (unknown = shown+exempt). The buffer decision is isolated to
+          // `shouldBuffer` (the one seam). See change: operator-voice-buffer-hold.
+          if (shouldBuffer(next.audience)) {
+            next.heldOperatorText = text;
+            next.heldBufferLastActivityAt = event.timestamp;
+          } else {
+            next.streamingText = text;
+          }
         }
       }
       break;
@@ -1123,6 +1229,48 @@ export function reduceEvent(state: SessionState, event: DashboardEvent): Session
     case "message_end": {
       const msg = data.message as any;
       if (msg?.role === "assistant") {
+        // door-3 end-stamp-authoritative reconciliation. The end-stamp `audience`
+        // is authoritative (start-derive was only the buffer prediction); self-
+        // correct the session audience going forward. If a hold buffer was open
+        // this turn, resolve it by the lint verdict and SKIP the normal
+        // streamingText path. Render-layer only: we move render-state, never the
+        // message object. See change: operator-voice-buffer-hold.
+        const endStampAudience = asAudience(msg.audience);
+        if (endStampAudience !== undefined) next.audience = endStampAudience;
+        if (next.heldBufferLastActivityAt !== undefined || next.heldOperatorText !== "") {
+          const held = next.heldOperatorText;
+          const effEndAudience = endStampAudience ?? next.audience;
+          const verdict = typeof msg.voiceVerdict === "string" ? msg.voiceVerdict : undefined;
+          // HOLD only when the (authoritative) audience is operator AND the verdict
+          // is `enforce-hit`. Every other case RELEASES: clean / observe-hit /
+          // missing-verdict (fail-open shown), or an end-stamp of agent/unknown
+          // (start over-predicted operator — e.g. missing-source→default-tui). unknown
+          // + agent = shown+exempt, never held.
+          const hold = shouldBuffer(effEndAudience) && verdict === "enforce-hit";
+          next.heldOperatorText = "";
+          next.heldBufferLastActivityAt = undefined;
+          if (!hold && held) {
+            // RELEASE: commit the held text BYTE-IDENTICAL to what streamed.
+            next.messages = [
+              ...next.messages,
+              {
+                id: `msg-${next.messages.length}`,
+                role: "assistant",
+                content: held,
+                timestamp: event.timestamp,
+                entryId: data.entryId as string | undefined,
+                nonce: data.nonce as string | undefined,
+              },
+            ];
+            if (Array.isArray(msg?.content)) {
+              next.messages = reorderToolCardsForAssistantMessage(next.messages, msg.content);
+            }
+          }
+          // HOLD path: render nothing — the re-composed message arrives fresh and
+          // re-runs this whole path. Buffer already cleared above.
+          next.streamingTextFlushed = false;
+          break;
+        }
         if (next.streamingTextFlushed) {
           // Streaming text was already flushed at tool_execution_start.
           // Locate the unstamped flushed row and stamp entryId / nonce in

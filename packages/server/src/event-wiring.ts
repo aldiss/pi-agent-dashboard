@@ -22,6 +22,7 @@ import type { DashboardSession } from "@blackbelt-technology/pi-dashboard-shared
 import { detectOpenSpecActivity, isValidOpenSpecChangeSlug } from "@blackbelt-technology/pi-dashboard-shared/openspec-activity-detector.js";
 import { extractTurnStats } from "@blackbelt-technology/pi-dashboard-shared/stats-extractor.js";
 import { attachRenameTarget, isNameAutoSetFromAttachment } from "./proposal-attach-naming.js";
+import { audienceRegistry } from "./audience-registry.js";
 import { detectWorktree, resolveMainRepoRoot } from "./worktree-manager.js";
 
 export interface EventWiringDeps {
@@ -353,6 +354,9 @@ export function wireEvents(deps: EventWiringDeps): void {
                 const newName = attachRenameTarget(updatedSession, updatedSession.openspecChange);
                 if (newName !== undefined) {
                   attachUpdates.name = newName;
+                  // door-3 (Item 1): a rename changes session identity → re-derive
+                  // audience so the buffer decision tracks the new name.
+                  attachUpdates.audience = audienceRegistry.deriveSessionAudience(newName, updatedSession.source);
                   piGateway.sendToSession(sessionId, {
                     type: "rename_session",
                     sessionId,
@@ -903,7 +907,12 @@ export function wireEvents(deps: EventWiringDeps): void {
     }
 
     if (msg.type === "session_name_update") {
-      const nameUpdates = { name: msg.name || undefined };
+      const newName = msg.name || undefined;
+      // door-3 (Item 1): a rename changes session identity → re-derive audience so
+      // the client's buffer decision tracks the new name. See change: operator-voice-buffer-hold.
+      const renamedSession = sessionManager.get(sessionId);
+      const nameUpdates: Partial<DashboardSession> = { name: newName };
+      if (renamedSession) nameUpdates.audience = audienceRegistry.deriveSessionAudience(newName, renamedSession.source);
       sessionManager.update(sessionId, nameUpdates);
       browserGateway.broadcastSessionUpdated(sessionId, nameUpdates);
     }
