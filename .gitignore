@@ -12,6 +12,7 @@ packages/electron/resources/bundled-extensions
 packages/electron/out
 packages/electron/.vite
 site/.astro/
+ios/PiDashboard/build/
 *.tsbuildinfo
 .pi-worktrees/
 .pi/*
