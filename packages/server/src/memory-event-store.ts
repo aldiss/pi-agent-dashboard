@@ -298,6 +298,20 @@ function summarizeOverCap(data: Record<string, unknown>, bytes: number): Record<
     } else if (preview !== undefined) {
       msgSummary.content = preview;
     }
+    // door-3: preserve the message-level `audience` end-stamp + the operator-voice
+    // verdict stamp through the over-cap summary. These are the signals the
+    // reducer's strip-and-show / hold / audience-reconciliation consume; dropping
+    // them on a >64KB message (long thinking/signature block = verbose, jargon-
+    // dense operator reply — the HIGH-VALUE case) makes the reducer see them
+    // undefined → disposition falls through to release → jargon renders UNMASKED.
+    // Tiny (an audience + verdict string + small id/match arrays) vs the shed
+    // bloat, so cap-shedding is unaffected. Also protects the already-shipped #2
+    // hold + audience-reconciliation — verdict/audience dropped on over-cap was a
+    // LATENT #2 bug (phase-2 used normal-size messages). See change:
+    // operator-voice-strip-and-show.
+    for (const vk of ["audience", "voiceVerdict", "voiceHitIds", "voiceEnforceHits", "voiceMatches", "voiceRecomposeState"]) {
+      if (vk in m) msgSummary[vk] = m[vk];
+    }
     summary.message = msgSummary;
   }
   // Tool-result images: live events carry data.result.content[], replayed

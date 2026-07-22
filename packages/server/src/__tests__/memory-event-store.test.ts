@@ -244,6 +244,45 @@ describe("memory-event-store", () => {
       expect(stored.data.message.content).not.toContain("truncated");
     });
 
+    it("door-3: preserves the operator-voice stamp through the >64KB over-cap summarizer", () => {
+      // A verbose, jargon-dense operator reply (the HIGH-VALUE case) trips the
+      // 64KB total-byte cap → summarizeOverCap. The verdict stamp the reducer's
+      // strip-and-show / hold logic consumes MUST survive the summary, else a
+      // >64KB operator message loses its verdict → disposition=release → jargon
+      // renders UNMASKED. See change: operator-voice-strip-and-show.
+      const store = createMemoryEventStore(neverPinned);
+      const verboseReply = "Per the ledger the work shipped. ".repeat(2200) + "See dl-11131.";
+      expect(verboseReply.length).toBeGreaterThan(64_000);
+      store.insertEvent("s1", {
+        eventType: "message_end",
+        timestamp: Date.now(),
+        data: {
+          message: {
+            role: "assistant",
+            content: verboseReply,
+            audience: "operator",
+            voiceVerdict: "enforce-hit",
+            voiceHitIds: ["ledger-id-dl-11131"],
+            voiceEnforceHits: 1,
+            voiceMatches: [{ id: "ledger-id-dl-11131", match: "dl-11131", index: verboseReply.indexOf("dl-11131"), mode: "enforce", category: "internal-id" }],
+            voiceRecomposeState: "terminal",
+          },
+        },
+      });
+      const stored = store.getEvent("s1", 1) as any;
+      expect(stored.data.__truncated).toBe(true); // the over-cap summarizer fired
+      // The message-level audience end-stamp + the 5 voice* fields SURVIVE the
+      // summarizer (the fix protects MOVE-2 strip AND #2 hold/audience-reconcile):
+      expect(stored.data.message.audience).toBe("operator");
+      expect(stored.data.message.voiceRecomposeState).toBe("terminal");
+      expect(stored.data.message.voiceVerdict).toBe("enforce-hit");
+      expect(stored.data.message.voiceEnforceHits).toBe(1);
+      expect(stored.data.message.voiceHitIds).toEqual(["ledger-id-dl-11131"]);
+      expect(stored.data.message.voiceMatches).toHaveLength(1);
+      expect(stored.data.message.voiceMatches[0].match).toBe("dl-11131");
+      expect(stored.data.message.voiceMatches[0].category).toBe("internal-id");
+    });
+
     it("preserves a long TEXT BLOCK inside a user message content array", () => {
       const store = small();
       store.insertEvent("s1", {
