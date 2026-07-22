@@ -355,12 +355,24 @@ export interface VoiceMatch {
   category: string; // internal-id | section-cite | tenure-id | themed-name | shape-*
 }
 
-/** The jargon-id categories that STRIP on an enforce hit. shape-* + observe never strip. */
+/**
+ * The enforce IDENTIFIER-TOKEN categories that MUST strip: `internal-id` (dl-ids
+ * AND tenure-ids) + `internal-cite` (§-cites). Verified own-hand against the
+ * AUTHORITATIVE emitter data (pi-operator-voice operator-lexicon.json @739cdf4,
+ * 23 entries) — NOT a handoff label set (the dl-10977 labels
+ * section-cite/tenure-id/themed-name never emit as a category):
+ *   enforce: internal-id, internal-cite → STRIP (id/cite tokens; masking is clean)
+ *   enforce: theater-praise             → NOT stripped (prose words "excellent",
+ *            "superb", … — masking mid-sentence corrupts prose; re-compose owns it)
+ *   observe: internal-noun, mention-risky, filler-jargon → the mode gate keeps them
+ *            non-stripping (fail-open to SHOWN; a future enforce-flip renders shown
+ *            until explicitly opted in — the safe direction).
+ * (v0.5+ Voicewright-4 may emit a per-match `strip` boolean computed producer-side
+ *  from mode+category, retiring this set entirely — deferred, not build-1.)
+ */
 const JARGON_ID_CATEGORIES: ReadonlySet<string> = new Set([
   "internal-id",
-  "section-cite",
-  "tenure-id",
-  "themed-name",
+  "internal-cite",
 ]);
 
 /** The masked-span marker (plain text, markdown-safe). Tunable. */

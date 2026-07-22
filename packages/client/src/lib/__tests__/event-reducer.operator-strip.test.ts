@@ -47,24 +47,52 @@ function matchesIn(text: string, specs: Array<{ match: string; mode: string; cat
   return specs.map((s, i) => ({ id: `m${i}`, match: s.match, index: text.indexOf(s.match, s.from ?? 0), mode: s.mode, category: s.category }));
 }
 
-const JARGON = "Shipped per dl-11131 in \u00a716.1; Joan ratified at tenure-16.";
+const JARGON = "Shipped per dl-11131 in \u00a716.1; retagged at tenure-16.";
 const JARGON_MATCHES = matchesIn(JARGON, [
   { match: "dl-11131", mode: "enforce", category: "internal-id" },
-  { match: "\u00a716.1", mode: "enforce", category: "section-cite" },
-  { match: "Joan", mode: "enforce", category: "themed-name" },
-  { match: "tenure-16", mode: "enforce", category: "tenure-id" },
+  { match: "\u00a716.1", mode: "enforce", category: "internal-cite" },
+  { match: "tenure-16", mode: "enforce", category: "internal-id" }, // tenure-ids emit as internal-id
 ]);
 
 describe("maskJargonSpans — strip filter + offset basis", () => {
-  it("masks each jargon-id enforce span; non-masked spans byte-identical", () => {
+  it("masks each jargon-id enforce span (internal-id dl+tenure, internal-cite §); non-masked byte-identical", () => {
     const out = maskJargonSpans(JARGON, JARGON_MATCHES);
     for (const tok of ["dl-11131", "\u00a716.1", "tenure-16"]) expect(out).not.toContain(tok);
-    expect(out).not.toMatch(/\bJoan\b/);
     // non-jargon prose survives verbatim
-    expect(out).toContain("Shipped per ");
-    expect(out).toContain(" ratified at ");
     expect(out.startsWith("Shipped per ")).toBe(true);
+    expect(out).toContain(" in ");
+    expect(out).toContain("; retagged at ");
     expect(out).toContain(JARGON_REDACTION_MARKER);
+  });
+
+  it("§-cite (internal-cite enforce) strips; themed-name (observe) renders as-is", () => {
+    // The exact leak the real-emit co-verify caught: §-cites are category
+    // internal-cite (were missing from the strip set); themed-names emit observe.
+    const text = "See \u00a716.1 — approved by Joan.";
+    const matches: VoiceMatch[] = [
+      ...matchesIn(text, [{ match: "\u00a716.1", mode: "enforce", category: "internal-cite" }]),
+      ...matchesIn(text, [{ match: "Joan", mode: "observe", category: "themed-name" }]),
+    ];
+    const out = maskJargonSpans(text, matches);
+    expect(out).not.toContain("\u00a716.1"); // §-cite masked
+    expect(out).toContain("Joan");            // themed-name observe → shown as-is
+    expect(out).toContain("approved by ");
+  });
+
+  it("theater-praise (ENFORCE but a prose word, not an id-token) renders as-is; the id-token still strips", () => {
+    // operator-lexicon.json: theater-praise is enforce (12 entries: excellent,
+    // superb, …) but a PROSE word — masking mid-sentence corrupts prose, so it is
+    // deliberately NOT in JARGON_ID_CATEGORIES (re-compose owns theater; strip owns
+    // id-tokens). Verified against the emitter, not the re-handed set.
+    const text = "Excellent — shipped per dl-11131.";
+    const matches: VoiceMatch[] = [
+      ...matchesIn(text, [{ match: "Excellent", mode: "enforce", category: "theater-praise" }]),
+      ...matchesIn(text, [{ match: "dl-11131", mode: "enforce", category: "internal-id" }]),
+    ];
+    const out = maskJargonSpans(text, matches);
+    expect(out).toContain("Excellent");     // theater-praise enforce → NOT stripped (stylistic)
+    expect(out).not.toContain("dl-11131");  // id-token IS stripped
+    expect(out).toContain("shipped per ");
   });
 
   it("repeated token → EACH occurrence masked", () => {

@@ -70,7 +70,7 @@ describe("door-3 strip-and-show — render boundary (operator-VISIBLE)", () => {
     const joined = "Done per dl-77 in \u00a716.1.";
     const matches: VoiceMatch[] = [
       { id: "a", match: "dl-77", index: joined.indexOf("dl-77"), mode: "enforce", category: "internal-id" },
-      { id: "b", match: "\u00a716.1", index: joined.indexOf("\u00a716.1"), mode: "enforce", category: "section-cite" },
+      { id: "b", match: "\u00a716.1", index: joined.indexOf("\u00a716.1"), mode: "enforce", category: "internal-cite" },
     ];
     let s = operatorStart();
     s = reduceEvent(s, { eventType: "message_update", timestamp: 2, data: { message: { role: "assistant", content: [{ type: "text", text: "Done per " }, { type: "text", text: "dl-77 in \u00a716.1." }] } } } as DashboardEvent);
