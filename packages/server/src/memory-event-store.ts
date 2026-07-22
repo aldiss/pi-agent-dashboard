@@ -304,6 +304,19 @@ function summarizeOverCap(data: Record<string, unknown>, bytes: number): Record<
     } else if (preview !== undefined) {
       msgSummary.content = preview;
     }
+    // door-3: preserve the operator-voice VERDICT stamp (voice*) through the over-cap
+    // summary. The message-level `audience` end-stamp is already preserved above by
+    // the base's line (Sol fix-cycle-3 F2, the VISIBILITY axis); here we add the
+    // LINT-TIMING axis's fields the reducer's strip-and-show / hold consume. Dropping
+    // them on a >64KB message (long thinking/signature block = verbose, jargon-dense
+    // operator reply — the HIGH-VALUE case) makes the reducer see them undefined →
+    // disposition falls through to release → jargon renders UNMASKED. Tiny (a verdict
+    // string + small id/match arrays) vs the shed bloat, so cap-shedding is unaffected.
+    // Both axes' stamps now survive over-cap (base audience + door-3 voice*). See
+    // change: operator-voice-strip-and-show.
+    for (const vk of ["voiceVerdict", "voiceHitIds", "voiceEnforceHits", "voiceMatches", "voiceRecomposeState"]) {
+      if (vk in m) msgSummary[vk] = m[vk];
+    }
     summary.message = msgSummary;
   }
   // Tool-result images: live events carry data.result.content[], replayed

@@ -7,6 +7,7 @@ import { isFlowEvent, reduceFlowEvent } from "@blackbelt-technology/pi-dashboard
 import { isArchitectEvent, reduceArchitectEvent } from "@blackbelt-technology/pi-dashboard-flows-plugin/reducer";
 import { parseSkillBlock, type SkillBlock } from "@blackbelt-technology/pi-dashboard-shared/skill-block-parser.js";
 import { readAudienceStamp } from "./message-filter-classifier.js";
+import type { Audience } from "@blackbelt-technology/pi-dashboard-shared/vendor/operator-voice-audience/audience-core.js";
 
 /**
  * Read the stamp-at-emit audience off a raw message envelope (`data.message`)
@@ -39,7 +40,6 @@ function readMessageAudience(msg: unknown): "operator" | "agent" | "unknown" | u
   }
   return undefined;
 }
-
 
 export interface ChatImage {
   data: string;
@@ -303,6 +303,27 @@ export interface SessionState {
    * the per-event reducer on the `isLast` frame.
    */
   replayComplete?: boolean;
+  /**
+   * door-3 operator-voice pre-render hold (render-layer only). Session-level
+   * audience: the server-derived `session.audience` mirrored into state by
+   * useMessageHandler, self-corrected at message_end by the authoritative end-
+   * stamp. `operator` → assistant partials are HELD (see `heldOperatorText`);
+   * `agent`/`unknown`/undefined → render live (unknown = shown+exempt).
+   * See change: operator-voice-buffer-hold.
+   */
+  audience?: Audience;
+  /**
+   * Held operator partials — the pre-render buffer. When `shouldBuffer(audience)`,
+   * assistant streaming text is routed HERE instead of `streamingText`, so NOTHING
+   * renders live during the turn. Released BYTE-IDENTICAL on clean/observe-hit,
+   * dropped on enforce-hit, released to a neutral placeholder on Contract-D timeout.
+   */
+  heldOperatorText: string;
+  /**
+   * Contract-D inactivity anchor: epoch-ms of the last held partial. Re-armed on
+   * each held partial, cleared at message_end. `undefined` ⇒ no open buffer.
+   */
+  heldBufferLastActivityAt?: number;
 }
 
 /**
@@ -333,6 +354,7 @@ export function createInitialState(): SessionState {
     messagesIndex: new Map(),
     toolCalls: new Map(),
     streamingText: "",
+    heldOperatorText: "",
     streamingThinking: "",
     isStreaming: false,
     tokensIn: 0,
@@ -352,6 +374,185 @@ export function createInitialState(): SessionState {
     subagents: new Map(),
     turnCount: 0,
   };
+}
+
+// ── door-3 operator-voice pre-render hold ────────────────────────────────────
+
+/**
+ * The buffer SEAM — the ONE point deciding which audiences pre-render-hold.
+ * Ratified FINAL/PERMANENT (operator ACCEPT, unknown=shown+exempt): hold
+ * `{operator}` ONLY; `agent` + `unknown` render live. Isolated so any future
+ * policy change is a one-line edit (it is now moot — the rule is permanent — but
+ * the seam stays as self-documenting isolation).
+ */
+export function shouldBuffer(audience: Audience | undefined): boolean {
+  return audience === "operator";
+}
+
+/**
+ * Contract-D bound (ratified): a held operator buffer with no verdict/activity for
+ * this long releases to a neutral placeholder (never hangs). INACTIVITY timer —
+ * re-armed on each held partial — so a legitimately long stream never false-fires;
+ * only a genuine producer stall (crash / dropped message_end) trips it. Tunable.
+ */
+export const OPERATOR_BUFFER_TIMEOUT_MS = 30000;
+
+/**
+ * Neutral placeholder rendered when a held operator buffer times out (Contract-D
+ * fail-safe). NOT the held (unverified) text — fails toward neutral.
+ */
+export const OPERATOR_BUFFER_TIMEOUT_PLACEHOLDER = "\u2026";
+
+const AUDIENCE_VALUES: ReadonlySet<string> = new Set(["operator", "agent", "unknown"]);
+
+/** Runtime-validate an end-stamp `audience` off the (untrusted) wire message. */
+function asAudience(v: unknown): Audience | undefined {
+  return typeof v === "string" && AUDIENCE_VALUES.has(v) ? (v as Audience) : undefined;
+}
+
+// ── door-3 MOVE-2: deterministic strip-and-show ──────────────────────────────
+
+/**
+ * A producer `voiceMatches[]` entry (pi-operator-voice message-end-door AuditMatch,
+ * raw-offset re-located @65ab66f). `index` = char offset into the assistant text
+ * as the extension extracts it (string content OR text-parts joined with ""),
+ * `slice(index, index+match.length) === match` guaranteed against that raw text.
+ */
+export interface VoiceMatch {
+  id: string;
+  match: string;
+  index: number;
+  mode: string; // "enforce" | "observe"
+  category: string; // internal-id | section-cite | tenure-id | themed-name | shape-*
+}
+
+/**
+ * The enforce IDENTIFIER-TOKEN categories that MUST strip: `internal-id` (dl-ids
+ * AND tenure-ids) + `internal-cite` (§-cites). Verified own-hand against the
+ * AUTHORITATIVE emitter data (pi-operator-voice operator-lexicon.json @739cdf4,
+ * 23 entries) — NOT a handoff label set (the dl-10977 labels
+ * section-cite/tenure-id/themed-name never emit as a category):
+ *   enforce: internal-id, internal-cite → STRIP (id/cite tokens; masking is clean)
+ *   enforce: theater-praise             → NOT stripped (prose words "excellent",
+ *            "superb", … — masking mid-sentence corrupts prose; re-compose owns it)
+ *   observe: internal-noun, mention-risky, filler-jargon → the mode gate keeps them
+ *            non-stripping (fail-open to SHOWN; a future enforce-flip renders shown
+ *            until explicitly opted in — the safe direction).
+ * (v0.5+ Voicewright-4 may emit a per-match `strip` boolean computed producer-side
+ *  from mode+category, retiring this set entirely — deferred, not build-1.)
+ */
+const JARGON_ID_CATEGORIES: ReadonlySet<string> = new Set([
+  "internal-id",
+  "internal-cite",
+]);
+
+/** The masked-span marker (plain text, markdown-safe). Tunable. */
+export const JARGON_REDACTION_MARKER = "[redacted]";
+
+/** Defensively parse the untrusted wire `voiceMatches` into VoiceMatch[]. */
+function parseVoiceMatches(v: unknown): VoiceMatch[] {
+  if (!Array.isArray(v)) return [];
+  const out: VoiceMatch[] = [];
+  for (const m of v) {
+    if (
+      m && typeof m === "object" &&
+      typeof (m as any).match === "string" &&
+      typeof (m as any).index === "number" &&
+      typeof (m as any).mode === "string" &&
+      typeof (m as any).category === "string"
+    ) {
+      out.push({
+        id: typeof (m as any).id === "string" ? (m as any).id : "",
+        match: (m as any).match,
+        index: (m as any).index,
+        mode: (m as any).mode,
+        category: (m as any).category,
+      });
+    }
+  }
+  return out;
+}
+
+/**
+ * door-3 MOVE-2 strip-and-show core: mask the jargon-id spans in `text`, KEEP the
+ * rest. Mask iff `(mode==="enforce" AND category ∈ JARGON_ID_CATEGORIES)`; shape-* +
+ * all observe render AS-IS. Two paths (self-verifying, offset-basis per the seam):
+ *   - offsets EXACT (string content, or a text-parts join that matches the raw the
+ *     producer indexed) — verified via `slice(index,len)===match` for ALL eligible
+ *     → index-precise mask right-to-left (byte-identical on the non-masked spans;
+ *     each repeated occurrence masked at its own offset).
+ *   - offset DRIFT (block-array join mismatch / any misaligned span) → whole-line
+ *     redaction fallback: redact every line containing an eligible jargon token
+ *     (found by value), never trusting the raw offset. Conservative — the jargon
+ *     never survives to the DOM. Pure; render-layer only (never mutates the message).
+ */
+export function maskJargonSpans(text: string, matches: readonly VoiceMatch[]): string {
+  const eligible = matches.filter((m) => m.mode === "enforce" && JARGON_ID_CATEGORIES.has(m.category));
+  if (eligible.length === 0) return text; // shape-* / observe only → render as-is
+
+  const allAligned = eligible.every(
+    (m) => m.index >= 0 && text.slice(m.index, m.index + m.match.length) === m.match,
+  );
+  if (allAligned) {
+    // Index-precise: splice right-to-left so earlier offsets stay valid.
+    const sorted = [...eligible].sort((a, b) => b.index - a.index);
+    let out = text;
+    let lastStart = Number.POSITIVE_INFINITY;
+    for (const m of sorted) {
+      const end = m.index + m.match.length;
+      if (end <= lastStart) {
+        // non-overlapping with the already-masked span to its right
+        out = out.slice(0, m.index) + JARGON_REDACTION_MARKER + out.slice(end);
+        lastStart = m.index;
+      }
+    }
+    return out;
+  }
+
+  // Offset-drift fallback: whole-line redaction by token value.
+  const tokens = eligible.map((m) => m.match).filter((t) => t.length > 0);
+  return text
+    .split("\n")
+    .map((line) => (tokens.some((t) => line.includes(t)) ? JARGON_REDACTION_MARKER : line))
+    .join("\n");
+}
+
+/**
+ * True iff an operator buffer is open AND inactive ≥ `boundMs` (Contract-D check).
+ * Pure — inject `nowMs` (tests advance the clock; production passes `Date.now()`),
+ * never a wall-clock read here.
+ */
+export function isOperatorBufferTimedOut(
+  state: SessionState,
+  nowMs: number,
+  boundMs: number = OPERATOR_BUFFER_TIMEOUT_MS,
+): boolean {
+  return state.heldBufferLastActivityAt !== undefined && nowMs - state.heldBufferLastActivityAt >= boundMs;
+}
+
+/**
+ * Contract-D fail-safe: release a timed-out operator buffer to a neutral
+ * placeholder (never the unverified held text, never hang). No-op if no buffer is
+ * open. Called OUTSIDE `reduceEvent` (from the React inactivity timer), so it
+ * rebuilds `messagesIndex` itself.
+ */
+export function releaseOperatorBufferAsNeutral(state: SessionState, nowMs: number): SessionState {
+  if (state.heldBufferLastActivityAt === undefined) return state;
+  const next: SessionState = { ...state, toolCalls: new Map(state.toolCalls) };
+  next.messages = [
+    ...next.messages,
+    {
+      id: `msg-${next.messages.length}`,
+      role: "assistant",
+      content: OPERATOR_BUFFER_TIMEOUT_PLACEHOLDER,
+      timestamp: nowMs,
+    },
+  ];
+  next.heldOperatorText = "";
+  next.heldBufferLastActivityAt = undefined;
+  next.streamingText = "";
+  next.messagesIndex = rebuildMessagesIndex(next.messages);
+  return next;
 }
 
 
@@ -1255,7 +1456,18 @@ export function reduceEvent(state: SessionState, event: DashboardEvent): Session
                 .map((c: any) => c.text)
                 .join("")
             : String(msg.content ?? "");
-          next.streamingText = text;
+          // door-3 operator-voice pre-render hold: for an operator session, route
+          // partials into the HELD buffer instead of `streamingText` so NOTHING
+          // renders live during the turn; re-arm the Contract-D inactivity timer on
+          // each partial. agent/unknown/undefined → unchanged live streaming
+          // (unknown = shown+exempt). The buffer decision is isolated to
+          // `shouldBuffer` (the one seam). See change: operator-voice-buffer-hold.
+          if (shouldBuffer(next.audience)) {
+            next.heldOperatorText = text;
+            next.heldBufferLastActivityAt = event.timestamp;
+          } else {
+            next.streamingText = text;
+          }
         }
       }
       break;
@@ -1264,6 +1476,68 @@ export function reduceEvent(state: SessionState, event: DashboardEvent): Session
     case "message_end": {
       const msg = data.message as any;
       if (msg?.role === "assistant") {
+        // door-3 end-stamp-authoritative reconciliation. The end-stamp `audience`
+        // is authoritative (start-derive was only the buffer prediction); self-
+        // correct the session audience going forward. If a hold buffer was open
+        // this turn, resolve it by the lint verdict and SKIP the normal
+        // streamingText path. Render-layer only: we move render-state, never the
+        // message object. See change: operator-voice-buffer-hold.
+        const endStampAudience = asAudience(msg.audience);
+        if (endStampAudience !== undefined) next.audience = endStampAudience;
+        if (next.heldBufferLastActivityAt !== undefined || next.heldOperatorText !== "") {
+          const held = next.heldOperatorText;
+          const effEndAudience = endStampAudience ?? next.audience;
+          const verdict = typeof msg.voiceVerdict === "string" ? msg.voiceVerdict : undefined;
+          // door-3 MOVE-2 disposition, driven by the producer's deterministic
+          // recompose-state signal (Voicewright-4 65ab66f+):
+          //   "held"      → HOLD (a re-drive WILL fire; render nothing, leak-safe)
+          //   "terminal"  → STRIP-AND-SHOW (no re-drive; mask jargon-id spans from the
+          //                 message's OWN voiceMatches, render the real content)
+          //   "converged" → RELEASE byte-identical (clean / observe)
+          // Backward-compat: voiceRecomposeState ABSENT → the #2 verdict-only rule
+          // (HOLD iff operator+enforce-hit, else release). agent/unknown = shown+exempt.
+          const recomposeState = typeof msg.voiceRecomposeState === "string" ? msg.voiceRecomposeState : undefined;
+          const isOperator = shouldBuffer(effEndAudience);
+          let disposition: "hold" | "strip" | "release";
+          if (isOperator && recomposeState === "held") disposition = "hold";
+          else if (isOperator && recomposeState === "terminal") disposition = "strip";
+          else if (isOperator && recomposeState === undefined && verdict === "enforce-hit") disposition = "hold";
+          else disposition = "release";
+          next.heldOperatorText = "";
+          next.heldBufferLastActivityAt = undefined;
+          next.streamingTextFlushed = false;
+          if (disposition !== "hold") {
+            // STRIP masks jargon-id spans (never reshapes non-jargon); RELEASE is
+            // BYTE-IDENTICAL. Both move render-state only — the message object is
+            // never mutated. Empty content (e.g. an all-masked strip) is not committed.
+            const content = disposition === "strip" ? maskJargonSpans(held, parseVoiceMatches(msg.voiceMatches)) : held;
+            if (content) {
+              next.messages = [
+                ...next.messages,
+                {
+                  id: `msg-${next.messages.length}`,
+                  role: "assistant",
+                  content,
+                  timestamp: event.timestamp,
+                  entryId: data.entryId as string | undefined,
+                  nonce: data.nonce as string | undefined,
+                  // Reconcile with the base visibility-classifier: a released/stripped
+                  // operator message MUST carry the same audience stamp the base's
+                  // other commit paths set, or the Mesh-chatter filter sees
+                  // audience=undefined and falls to the retrospective. door-3 strip/hold
+                  // (lint-timing) composes with the base classifier (visibility) here.
+                  audience: readMessageAudience(msg),
+                },
+              ];
+              if (Array.isArray(msg?.content)) {
+                next.messages = reorderToolCardsForAssistantMessage(next.messages, msg.content);
+              }
+            }
+          }
+          // HOLD path: render nothing — the re-composed message arrives fresh and
+          // re-runs this whole path. Buffer already cleared above.
+          break;
+        }
         if (next.streamingTextFlushed) {
           // Streaming text was already flushed at tool_execution_start.
           // Locate the unstamped flushed row and stamp entryId / nonce in

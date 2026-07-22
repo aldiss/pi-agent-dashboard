@@ -60,6 +60,17 @@ export interface DashboardSession {
    */
   accessCellId?: string;
   source: SessionSource;
+  /**
+   * Operator-voice audience classification (door-3 pre-render hold). Server-
+   * derived ONCE per session from `name` + `source` + role-registry via the
+   * vendored audience-core (`deriveAudienceFromEnv`); re-derived on a registry
+   * CHANGE (forward-only). `operator` → the client buffers assistant partials
+   * until the message_end lint verdict (render nothing live; hold on
+   * `enforce-hit`). `agent`/`unknown` render live (unknown = ratified
+   * shown+exempt). Server-managed — Bridges SHALL NOT send this.
+   * See change: operator-voice-buffer-hold.
+   */
+  audience?: "operator" | "agent" | "unknown";
   status: SessionStatus;
   model?: string;
   thinkingLevel?: string;

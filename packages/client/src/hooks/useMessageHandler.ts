@@ -2,8 +2,8 @@
  * Hook that handles ServerToBrowserMessage dispatch.
  * Extracted from App.tsx — maps each message type to the correct state setter.
  */
-import { useCallback } from "react";
-import { createInitialState, reduceEvent, addInteractiveRequest, resolveInteractiveRequest, dismissInteractiveRequest, markQueueEntryFailed, type SessionState } from "../lib/event-reducer.js";
+import { useCallback, useRef } from "react";
+import { createInitialState, reduceEvent, addInteractiveRequest, resolveInteractiveRequest, dismissInteractiveRequest, markQueueEntryFailed, releaseOperatorBufferAsNeutral, OPERATOR_BUFFER_TIMEOUT_MS, type SessionState } from "../lib/event-reducer.js";
 import type { DashboardSession, CommandInfo, FlowInfo, FileEntry, OpenSpecData, OpenSpecGroup, ModelInfo, RoleInfo, PresenceParticipant } from "@blackbelt-technology/pi-dashboard-shared/types.js";
 import type { PendingOperatorInput } from "@blackbelt-technology/pi-dashboard-shared/browser-protocol.js";
 import { encodeFolderPath } from "../lib/folder-encoding.js";
@@ -98,7 +98,33 @@ export function useMessageHandler(
   } = setters;
   const { send, navigate, clearSpawningCwd, spawningCwdsRef, subscribedRef, pendingTerminalCwdRef, lastCreatedTerminalIdRef, maxSeqMapRef, selectedSessionIdRef, pendingSpawnsRef } = deps;
 
+  // door-3 Contract-D: per-session inactivity timers for open operator buffers.
+  const bufferTimersRef = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+
   return useCallback((msg: ServerToBrowserMessage) => {
+    // door-3 Contract-D: (re)arm/clear a held operator buffer's inactivity timer.
+    // Re-armed on each event while the buffer is open; on a genuine producer stall
+    // (no event for OPERATOR_BUFFER_TIMEOUT_MS) it releases the buffer to a neutral
+    // placeholder (never hangs). The fire-callback re-checks live state, so a stale
+    // timer after a reset self-guards to a no-op. See change: operator-voice-buffer-hold.
+    const armBufferTimeout = (sessionId: string, state: SessionState) => {
+      const timers = bufferTimersRef.current;
+      const existing = timers.get(sessionId);
+      if (existing) clearTimeout(existing);
+      if (state.heldBufferLastActivityAt === undefined) { timers.delete(sessionId); return; }
+      timers.set(sessionId, setTimeout(() => {
+        timers.delete(sessionId);
+        setSessionStates((prev) => {
+          const s = prev.get(sessionId);
+          if (!s || s.heldBufferLastActivityAt === undefined) return prev;
+          const released = releaseOperatorBufferAsNeutral(s, Date.now());
+          if (released === s) return prev;
+          const next = new Map(prev);
+          next.set(sessionId, released);
+          return next;
+        });
+      }, OPERATOR_BUFFER_TIMEOUT_MS));
+    };
     switch (msg.type) {
       case "session_added":
         setSessions((prev) => {
@@ -113,6 +139,18 @@ export function useMessageHandler(
           }
           return next;
         });
+        // door-3: mirror the server-derived audience into sessionStates so the
+        // reducer's buffer decision has it from the first message_update (pre-create
+        // the state, mirroring the existing model/thinkingLevel propagation).
+        if (msg.session.audience !== undefined) {
+          setSessionStates((prev) => {
+            const existing = prev.get(msg.session.id);
+            if (existing && existing.audience === msg.session.audience) return prev;
+            const next = new Map(prev);
+            next.set(msg.session.id, { ...(existing ?? createInitialState()), audience: msg.session.audience });
+            return next;
+          });
+        }
         // Tier 1: exact correlation by spawnRequestId. Works for both
         // spawn-from-folder and fork-from-card (closes the no-auto-select-
         // after-fork UX gap). See change: spawn-correlation-token.
@@ -152,13 +190,15 @@ export function useMessageHandler(
         // See change: enrich-custom-provider-model-metadata.
         {
           const updates = msg.updates as Partial<DashboardSession>;
-          if (updates.thinkingLevel !== undefined || updates.model !== undefined) {
+          if (updates.thinkingLevel !== undefined || updates.model !== undefined || updates.audience !== undefined) {
             setSessionStates((prev) => {
               const next = new Map(prev);
               const existing = next.get(msg.sessionId) ?? createInitialState();
               const patched: SessionState = { ...existing };
               if (updates.thinkingLevel !== undefined) patched.thinkingLevel = updates.thinkingLevel;
               if (updates.model !== undefined) patched.model = updates.model;
+              // door-3: track the server re-derived audience (registry-change / rename).
+              if (updates.audience !== undefined) patched.audience = updates.audience;
               next.set(msg.sessionId, patched);
               return next;
             });
@@ -230,17 +270,22 @@ export function useMessageHandler(
         maxSeqMapRef.current.set(msg.sessionId, 0);
         break;
 
-      case "event":
+      case "event": {
+        let updatedState: SessionState | undefined;
         setSessionStates((prev) => {
           const next = new Map(prev);
           const current = next.get(msg.sessionId) ?? createInitialState();
-          next.set(msg.sessionId, reduceEvent(current, msg.event));
+          updatedState = reduceEvent(current, msg.event);
+          next.set(msg.sessionId, updatedState);
           return next;
         });
+        // door-3 Contract-D: (re)arm/clear the inactivity timer per the new buffer state.
+        if (updatedState) armBufferTimeout(msg.sessionId, updatedState);
         if (msg.seq > (maxSeqMapRef.current.get(msg.sessionId) ?? 0)) {
           maxSeqMapRef.current.set(msg.sessionId, msg.seq);
         }
         break;
+      }
 
       // AMEND #5 (f) delivery-aware-fail (2b): the server could not deliver the
       // send_prompt to the bridge (sent === false → bridge absent). This is the
@@ -365,6 +410,7 @@ export function useMessageHandler(
         // See change: fix-replay-duplicates-tool-and-flushed-rows.
         const maxSeq = maxSeqMapRef.current.get(msg.sessionId) ?? 0;
         const shouldReset = firstSeq != null && (firstSeq === 1 || firstSeq <= maxSeq);
+        let replayedState: SessionState | undefined;
         setSessionStates((prev) => {
           const next = new Map(prev);
           // Same rationale as session_state_reset: preserve optimistic
@@ -392,8 +438,12 @@ export function useMessageHandler(
             current = { ...current, replayComplete: false };
           }
           next.set(msg.sessionId, current);
+          replayedState = current;
           return next;
         });
+        // door-3 Contract-D: arm/clear the inactivity timer if the replay left an
+        // operator buffer open (e.g. reconnect mid-held-turn). See operator-voice-buffer-hold.
+        if (replayedState) armBufferTimeout(msg.sessionId, replayedState);
         // If we reset, also reset maxSeq tracking so a subsequent batch isn't
         // misclassified. We rebuild it below from this batch's events.
         if (shouldReset) {
