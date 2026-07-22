@@ -607,6 +607,22 @@ export function createBrowserGateway(
               `[browser-gw] browser message refused by cell boundary ` +
                 `(type=${String((msg as any).type)}, reason=${boundary.reason})`,
             );
+            // Make a refused send_prompt OBSERVABLE instead of a silent drop: the
+            // operator otherwise gets zero signal why the send died (a hung
+            // optimistic card) — the real defect. Emit a typed send_prompt_failed
+            // carrying the boundary reason so the client can react (no-principal →
+            // re-auth; session-unavailable/operator-only → a clear failed card)
+            // rather than a silent strand. Only send_prompt carries a queue card.
+            if ((msg as { type?: string }).type === "send_prompt") {
+              const failSessionId = (msg as { sessionId?: string }).sessionId ?? "";
+              const failNonce = (msg as { queueNonce?: string }).queueNonce;
+              sendTo(ws, {
+                type: "send_prompt_failed",
+                sessionId: failSessionId,
+                ...(failNonce ? { queueNonce: failNonce } : {}),
+                reason: boundary.reason ?? "unauthorized",
+              } as ServerToBrowserMessage);
+            }
             return;
           }
         }

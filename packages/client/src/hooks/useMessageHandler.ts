@@ -7,6 +7,7 @@ import { createInitialState, reduceEvent, addInteractiveRequest, resolveInteract
 import type { DashboardSession, CommandInfo, FlowInfo, FileEntry, OpenSpecData, OpenSpecGroup, ModelInfo, RoleInfo, PresenceParticipant } from "@blackbelt-technology/pi-dashboard-shared/types.js";
 import type { PendingOperatorInput } from "@blackbelt-technology/pi-dashboard-shared/browser-protocol.js";
 import { encodeFolderPath } from "../lib/folder-encoding.js";
+import { redirectToLogin } from "./useAuthStatus.js";
 import type { TerminalSession } from "@blackbelt-technology/pi-dashboard-shared/terminal-types.js";
 import type { EditorInstanceStatus } from "@blackbelt-technology/pi-dashboard-shared/editor-types.js";
 import type { DiscoveredServerInfo } from "../components/ServerSelector.js";
@@ -260,6 +261,15 @@ export function useMessageHandler(
             next.set(msg.sessionId, updated);
             return next;
           });
+        }
+        // Auth-loss on a send (WS principal absent/dropped — e.g. after a server
+        // bounce): the write was refused for lack of a bound principal, not a
+        // bridge fault. Surface a re-auth so the operator gets a path back instead
+        // of a silently stranded send. Scoped to auth reasons only — a per-session
+        // refusal (session-unavailable/operator-only) fails the card above without
+        // a disruptive redirect.
+        if (msg.reason === "no-principal" || msg.reason === "invalid-principal") {
+          redirectToLogin();
         }
         break;
 
