@@ -339,6 +339,101 @@ function asAudience(v: unknown): Audience | undefined {
   return typeof v === "string" && AUDIENCE_VALUES.has(v) ? (v as Audience) : undefined;
 }
 
+// ── door-3 MOVE-2: deterministic strip-and-show ──────────────────────────────
+
+/**
+ * A producer `voiceMatches[]` entry (pi-operator-voice message-end-door AuditMatch,
+ * raw-offset re-located @65ab66f). `index` = char offset into the assistant text
+ * as the extension extracts it (string content OR text-parts joined with ""),
+ * `slice(index, index+match.length) === match` guaranteed against that raw text.
+ */
+export interface VoiceMatch {
+  id: string;
+  match: string;
+  index: number;
+  mode: string; // "enforce" | "observe"
+  category: string; // internal-id | section-cite | tenure-id | themed-name | shape-*
+}
+
+/** The jargon-id categories that STRIP on an enforce hit. shape-* + observe never strip. */
+const JARGON_ID_CATEGORIES: ReadonlySet<string> = new Set([
+  "internal-id",
+  "section-cite",
+  "tenure-id",
+  "themed-name",
+]);
+
+/** The masked-span marker (plain text, markdown-safe). Tunable. */
+export const JARGON_REDACTION_MARKER = "[redacted]";
+
+/** Defensively parse the untrusted wire `voiceMatches` into VoiceMatch[]. */
+function parseVoiceMatches(v: unknown): VoiceMatch[] {
+  if (!Array.isArray(v)) return [];
+  const out: VoiceMatch[] = [];
+  for (const m of v) {
+    if (
+      m && typeof m === "object" &&
+      typeof (m as any).match === "string" &&
+      typeof (m as any).index === "number" &&
+      typeof (m as any).mode === "string" &&
+      typeof (m as any).category === "string"
+    ) {
+      out.push({
+        id: typeof (m as any).id === "string" ? (m as any).id : "",
+        match: (m as any).match,
+        index: (m as any).index,
+        mode: (m as any).mode,
+        category: (m as any).category,
+      });
+    }
+  }
+  return out;
+}
+
+/**
+ * door-3 MOVE-2 strip-and-show core: mask the jargon-id spans in `text`, KEEP the
+ * rest. Mask iff `(mode==="enforce" AND category ∈ JARGON_ID_CATEGORIES)`; shape-* +
+ * all observe render AS-IS. Two paths (self-verifying, offset-basis per the seam):
+ *   - offsets EXACT (string content, or a text-parts join that matches the raw the
+ *     producer indexed) — verified via `slice(index,len)===match` for ALL eligible
+ *     → index-precise mask right-to-left (byte-identical on the non-masked spans;
+ *     each repeated occurrence masked at its own offset).
+ *   - offset DRIFT (block-array join mismatch / any misaligned span) → whole-line
+ *     redaction fallback: redact every line containing an eligible jargon token
+ *     (found by value), never trusting the raw offset. Conservative — the jargon
+ *     never survives to the DOM. Pure; render-layer only (never mutates the message).
+ */
+export function maskJargonSpans(text: string, matches: readonly VoiceMatch[]): string {
+  const eligible = matches.filter((m) => m.mode === "enforce" && JARGON_ID_CATEGORIES.has(m.category));
+  if (eligible.length === 0) return text; // shape-* / observe only → render as-is
+
+  const allAligned = eligible.every(
+    (m) => m.index >= 0 && text.slice(m.index, m.index + m.match.length) === m.match,
+  );
+  if (allAligned) {
+    // Index-precise: splice right-to-left so earlier offsets stay valid.
+    const sorted = [...eligible].sort((a, b) => b.index - a.index);
+    let out = text;
+    let lastStart = Number.POSITIVE_INFINITY;
+    for (const m of sorted) {
+      const end = m.index + m.match.length;
+      if (end <= lastStart) {
+        // non-overlapping with the already-masked span to its right
+        out = out.slice(0, m.index) + JARGON_REDACTION_MARKER + out.slice(end);
+        lastStart = m.index;
+      }
+    }
+    return out;
+  }
+
+  // Offset-drift fallback: whole-line redaction by token value.
+  const tokens = eligible.map((m) => m.match).filter((t) => t.length > 0);
+  return text
+    .split("\n")
+    .map((line) => (tokens.some((t) => line.includes(t)) ? JARGON_REDACTION_MARKER : line))
+    .join("\n");
+}
+
 /**
  * True iff an operator buffer is open AND inactive ≥ `boundMs` (Contract-D check).
  * Pure — inject `nowMs` (tests advance the clock; production passes `Date.now()`),
@@ -1241,34 +1336,48 @@ export function reduceEvent(state: SessionState, event: DashboardEvent): Session
           const held = next.heldOperatorText;
           const effEndAudience = endStampAudience ?? next.audience;
           const verdict = typeof msg.voiceVerdict === "string" ? msg.voiceVerdict : undefined;
-          // HOLD only when the (authoritative) audience is operator AND the verdict
-          // is `enforce-hit`. Every other case RELEASES: clean / observe-hit /
-          // missing-verdict (fail-open shown), or an end-stamp of agent/unknown
-          // (start over-predicted operator — e.g. missing-source→default-tui). unknown
-          // + agent = shown+exempt, never held.
-          const hold = shouldBuffer(effEndAudience) && verdict === "enforce-hit";
+          // door-3 MOVE-2 disposition, driven by the producer's deterministic
+          // recompose-state signal (Voicewright-4 65ab66f+):
+          //   "held"      → HOLD (a re-drive WILL fire; render nothing, leak-safe)
+          //   "terminal"  → STRIP-AND-SHOW (no re-drive; mask jargon-id spans from the
+          //                 message's OWN voiceMatches, render the real content)
+          //   "converged" → RELEASE byte-identical (clean / observe)
+          // Backward-compat: voiceRecomposeState ABSENT → the #2 verdict-only rule
+          // (HOLD iff operator+enforce-hit, else release). agent/unknown = shown+exempt.
+          const recomposeState = typeof msg.voiceRecomposeState === "string" ? msg.voiceRecomposeState : undefined;
+          const isOperator = shouldBuffer(effEndAudience);
+          let disposition: "hold" | "strip" | "release";
+          if (isOperator && recomposeState === "held") disposition = "hold";
+          else if (isOperator && recomposeState === "terminal") disposition = "strip";
+          else if (isOperator && recomposeState === undefined && verdict === "enforce-hit") disposition = "hold";
+          else disposition = "release";
           next.heldOperatorText = "";
           next.heldBufferLastActivityAt = undefined;
-          if (!hold && held) {
-            // RELEASE: commit the held text BYTE-IDENTICAL to what streamed.
-            next.messages = [
-              ...next.messages,
-              {
-                id: `msg-${next.messages.length}`,
-                role: "assistant",
-                content: held,
-                timestamp: event.timestamp,
-                entryId: data.entryId as string | undefined,
-                nonce: data.nonce as string | undefined,
-              },
-            ];
-            if (Array.isArray(msg?.content)) {
-              next.messages = reorderToolCardsForAssistantMessage(next.messages, msg.content);
+          next.streamingTextFlushed = false;
+          if (disposition !== "hold") {
+            // STRIP masks jargon-id spans (never reshapes non-jargon); RELEASE is
+            // BYTE-IDENTICAL. Both move render-state only — the message object is
+            // never mutated. Empty content (e.g. an all-masked strip) is not committed.
+            const content = disposition === "strip" ? maskJargonSpans(held, parseVoiceMatches(msg.voiceMatches)) : held;
+            if (content) {
+              next.messages = [
+                ...next.messages,
+                {
+                  id: `msg-${next.messages.length}`,
+                  role: "assistant",
+                  content,
+                  timestamp: event.timestamp,
+                  entryId: data.entryId as string | undefined,
+                  nonce: data.nonce as string | undefined,
+                },
+              ];
+              if (Array.isArray(msg?.content)) {
+                next.messages = reorderToolCardsForAssistantMessage(next.messages, msg.content);
+              }
             }
           }
           // HOLD path: render nothing — the re-composed message arrives fresh and
           // re-runs this whole path. Buffer already cleared above.
-          next.streamingTextFlushed = false;
           break;
         }
         if (next.streamingTextFlushed) {
