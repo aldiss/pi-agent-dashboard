@@ -18,6 +18,7 @@ import { createTunnel, deleteTunnel, getTunnelStatus } from "../tunnel.js";
 import { getModelProxyStatus } from "../model-proxy/registry-singleton.js";
 import { getModelProxySecondPortStatus } from "../model-proxy-second-port.js";
 import { spawnRestart } from "../restart-helper.js";
+import { classifyHeap, readHeapStats } from "../heap-watchdog.js";
 import { spawn } from "@blackbelt-technology/pi-dashboard-shared/platform/exec.js";
 import path from "node:path";
 import os from "node:os";
@@ -248,6 +249,11 @@ export function registerSystemRoutes(
   // Health endpoint — includes server + agent process metrics
   fastify.get("/api/health", async (request) => {
     const mem = process.memoryUsage();
+    // Real V8 cap axis — dissolves the heapUsed/heapTotal ~96% illusion. heapLimit
+    // is the hard cap (v8 heap_size_limit, set by NODE_OPTIONS --max-old-space-size,
+    // e.g. 8 GiB here); heapRatio is heapUsed/heapLimit (~26%, the truth). Reuses
+    // the heap-watchdog's live reader + ratio computation rather than re-deriving.
+    const heapStats = classifyHeap(readHeapStats(), 0.70, 0.85);
     const activeSessions = sessionManager.listActive();
     const agentMetrics = activeSessions
       .filter(s => s.processMetrics)
@@ -274,6 +280,10 @@ export function registerSystemRoutes(
         rss: mem.rss,
         heapUsed: mem.heapUsed,
         heapTotal: mem.heapTotal,
+        // V8 hard cap + real-cap ratio: the axis that dissolves the ~96%-of-heapTotal
+        // vs ~26%-of-heapLimit confusion. Sourced from heap-watchdog.readHeapStats().
+        heapLimit: heapStats.heapLimit,
+        heapRatio: heapStats.ratio,
         activeSessions: activeSessions.length,
         totalSessions: sessionManager.listAll().length,
         // Serialized bytes retained in the in-memory event store — the byte
