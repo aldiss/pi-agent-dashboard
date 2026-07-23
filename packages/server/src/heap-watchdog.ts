@@ -45,7 +45,14 @@ export interface HeapWatchdogOptions {
 
 const MB = 1024 * 1024;
 
-function defaultReadHeap(): HeapReading {
+/**
+ * Read the LIVE V8 heap usage + hard cap. Exported so other surfaces (the
+ * /api/health route) expose the SAME real-cap numbers this watchdog classifies
+ * against, instead of re-deriving them or reading `heapTotal` — which is the
+ * illusion: `heapUsed / heapTotal` reads ~96% while `heapUsed / heap_size_limit`
+ * (the real NODE_OPTIONS cap) is ~26%. Single source of truth for the cap.
+ */
+export function readHeapStats(): HeapReading {
   const stats = v8.getHeapStatistics();
   return { heapUsed: stats.used_heap_size, heapLimit: stats.heap_size_limit };
 }
@@ -77,7 +84,7 @@ export function createHeapWatchdog(options: HeapWatchdogOptions = {}): HeapWatch
   const intervalMs = options.intervalMs ?? 60_000;
   const warnRatio = options.warnRatio ?? 0.70;
   const errorRatio = options.errorRatio ?? 0.85;
-  const readHeap = options.readHeap ?? defaultReadHeap;
+  const readHeap = options.readHeap ?? readHeapStats;
   const getContext = options.getContext;
   const warn = options.warn ?? ((m) => console.warn(m));
   const error = options.error ?? ((m) => console.error(m));
