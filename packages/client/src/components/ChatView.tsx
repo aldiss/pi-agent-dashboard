@@ -38,6 +38,7 @@ import {
   countMessagesByCategory,
   isAllOn as isAllCategoriesOn,
 } from "../lib/message-filter-classifier.js";
+import { isHiddenDirectiveItem, isHiddenDirectiveContent } from "../lib/operator-voice-directive.js";
 import { MessageFilterControls } from "./MessageFilterControls.js";
 import { PinnedMessagesSection } from "./PinnedMessagesSection.js";
 import { PinToggleButton } from "./PinToggleButton.js";
@@ -499,6 +500,21 @@ export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ se
     return state.messages.filter((m) => m.role !== "toolResult" || !isDebugTool(m.toolName ?? ""));
   }, [state.messages, showDebugTools]);
   const groupedMessages = useMemo(() => groupConsecutiveToolCalls(filteredMessages), [filteredMessages]);
+  // Render-hide belt (defense-in-depth): drop injected operator-voice recompose
+  // directives from the operator's view UNCONDITIONALLY — before the category
+  // filter, pin-exemption, AND the all-on "Show all activity" fast-path. Keyed on
+  // the leading directive marker (content-based, independent of the extension's
+  // audience stamp so it backstops a mis-stamp). See lib/operator-voice-directive.ts.
+  const beltMessages = useMemo(
+    () => groupedMessages.filter((item) => !isHiddenDirectiveItem(item)),
+    [groupedMessages],
+  );
+  // Same belt over the raw (pre-group) entries feeding PinnedMessagesSection, so a
+  // stale pre-belt pin can't resurface a directive (secondary defense-in-depth guard).
+  const beltStateMessages = useMemo(
+    () => state.messages.filter((mm) => !(mm.role === "user" && isHiddenDirectiveContent(mm.content))),
+    [state.messages],
+  );
   const retriedErrorIds = useMemo(() => findRetriedErrorIds(filteredMessages), [filteredMessages]);
   const hiddenToolResultIds = useMemo(() => findActiveInteractiveToolResultIds(filteredMessages), [filteredMessages]);
 
@@ -516,7 +532,7 @@ export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ se
     setMessageFilterState(next);
     if (sessionId) setMessageFilter(sessionId, next);
   }, [sessionId]);
-  const categoryCounts = useMemo(() => countMessagesByCategory(groupedMessages), [groupedMessages]);
+  const categoryCounts = useMemo(() => countMessagesByCategory(beltMessages), [beltMessages]);
 
   // Feature 3 (W4.3) — pinned messages state. ChatView owns the canonical
   // Set<entryId>; storage is per-session localStorage. State + storage are
@@ -580,11 +596,11 @@ export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ se
   }, [markProgrammatic]);
 
   const visibleMessages = useMemo(() => {
-    if (isAllCategoriesOn(messageFilter)) return groupedMessages;
-    return applyMessageFilter(groupedMessages, messageFilter, { alwaysVisibleEntryIds: pinnedEntryIds });
-  }, [groupedMessages, messageFilter, pinnedEntryIds]);
+    if (isAllCategoriesOn(messageFilter)) return beltMessages;
+    return applyMessageFilter(beltMessages, messageFilter, { alwaysVisibleEntryIds: pinnedEntryIds });
+  }, [beltMessages, messageFilter, pinnedEntryIds]);
   const isFilterActive = !isDefaultMessageFilter(messageFilter);
-  const hiddenCount = groupedMessages.length - visibleMessages.length;
+  const hiddenCount = beltMessages.length - visibleMessages.length;
 
   useImperativeHandle(ref, () => ({
     scrollToTurn(turnIndex: number) {
@@ -739,7 +755,7 @@ export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ se
       {sessionId && pinnedEntryIds.size > 0 && (
         <PinnedMessagesSection
           sessionId={sessionId}
-          entries={state.messages}
+          entries={beltStateMessages}
           pinnedEntryIds={pinnedEntryIds}
           onUnpinAll={handleUnpinAll}
           onScrollToMessage={handleScrollToMessage}
