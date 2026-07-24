@@ -389,9 +389,9 @@ export interface ExtUiDecoratorMessage {
 // hash. Emitted by the bridge BEFORE the `message_update` / `message_end`
 // event whose text references `pi-asset:<hash>`. Bytes ride exactly once
 // per (session, hash) pair — subsequent references in later events emit
-// no further `asset_register`. Persisted in `events.jsonl` alongside the
-// referencing message events so reconnect/replay rebuilds the per-session
-// asset registry deterministically. See change:
+// no further `asset_register`. A bounded asset sidecar is persisted on the
+// referencing message entry; replay emits it before the message events so the
+// per-session registry rebuilds deterministically across server/bridge restarts. See change:
 // chat-markdown-local-images-and-math.
 export interface AssetRegisterMessage {
   type: "asset_register";

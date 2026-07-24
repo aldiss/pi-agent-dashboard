@@ -47,6 +47,10 @@ import {
 import { isHiddenDirectiveItem, isHiddenDirectiveContent } from "../lib/operator-voice-directive.js";
 import { MessageFilterControls } from "./MessageFilterControls.js";
 import { PinnedMessagesSection } from "./PinnedMessagesSection.js";
+import {
+  operatorDeliveryTextForChat,
+  operatorDeliveryTextForPresentation,
+} from "../lib/operator-delivery.js";
 import { PinToggleButton } from "./PinToggleButton.js";
 import {
   getPinnedEntryIds,
@@ -145,12 +149,15 @@ const ImageAttachments = React.memo(function ImageAttachments({ images }: { imag
   );
 });
 
-const MessageBubble = React.memo(function MessageBubble({ content, className, timestamp, entryId, onFork, isPinned, onTogglePin }: { content: string; className: string; timestamp?: number; entryId?: string; onFork?: (entryId: string) => void; isPinned?: boolean; onTogglePin?: (entryId: string) => void }) {
+const MessageBubble = React.memo(function MessageBubble({ content, className, timestamp, entryId, onFork, isPinned, onTogglePin, sanitizeTransportIds = false }: { content: string; className: string; timestamp?: number; entryId?: string; onFork?: (entryId: string) => void; isPinned?: boolean; onTogglePin?: (entryId: string) => void; sanitizeTransportIds?: boolean }) {
   const contentRef = useRef<HTMLDivElement>(null);
+  const displayContent = sanitizeTransportIds
+    ? operatorDeliveryTextForChat(content)
+    : content;
 
   const getPlainText = useCallback(() => {
-    return contentRef.current?.innerText ?? content;
-  }, [content]);
+    return contentRef.current?.innerText ?? displayContent;
+  }, [displayContent]);
 
   return (
     <div
@@ -158,13 +165,13 @@ const MessageBubble = React.memo(function MessageBubble({ content, className, ti
       {...(entryId ? { "data-entry-id": entryId } : {})}
     >
       <div ref={contentRef}>
-        <MarkdownContent content={content} />
+        <MarkdownContent content={displayContent} />
       </div>
       <div className="border-t border-[var(--border-secondary)] mt-2 pt-1.5 flex justify-end items-center gap-0.5 opacity-50 hover:opacity-100 transition-opacity">
         {timestamp != null && (
           <span className="text-[10px] text-[var(--text-tertiary)] mr-auto">{formatMessageTime(timestamp)}</span>
         )}
-        <CopyButton text={content} icon={<Icon path={mdiContentCopy} size={0.6} />} title="Copy as Markdown" />
+        <CopyButton text={operatorDeliveryTextForPresentation(content)} icon={<Icon path={mdiContentCopy} size={0.6} />} title="Copy as Markdown" />
         <CopyButton text={getPlainText()} icon={<Icon path={mdiTextBox} size={0.6} />} title="Copy as plain text" />
         {entryId && onFork && (
           <button
@@ -936,7 +943,7 @@ export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ se
           return (
             <ThinkingBlock
               key={`${msg.id}-${isLatestThinking ? "latest" : "older"}`}
-              content={msg.content}
+              content={operatorDeliveryTextForChat(msg.content)}
               defaultExpanded={isLatestThinking}
               startedAt={msg.startedAt}
               duration={msg.duration}
@@ -1057,6 +1064,7 @@ export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ se
           >
             <MessageBubble
               content={msg.content}
+              sanitizeTransportIds
               className={`bg-[var(--bg-tertiary)] border border-[var(--border-subtle)] rounded-xl shadow-md px-4 py-2 ${bMax}`}
               timestamp={msg.timestamp}
               entryId={msg.entryId}

@@ -8,6 +8,10 @@ import { ElapsedBadge } from "./ElapsedBadge.js";
 import { ErrorBoundary } from "./ErrorBoundary.js";
 import { PinToggleButton } from "./PinToggleButton.js";
 import type { PinContext } from "./ThinkingBlock.js";
+import {
+  isOperatorProseTool,
+  operatorProseToolLabel,
+} from "@blackbelt-technology/pi-dashboard-shared/operator-tool-visibility.js";
 
 type StopState = "idle" | "aborting" | "killing";
 
@@ -39,7 +43,7 @@ const toolSummaries: Record<string, (args?: Record<string, unknown>) => string> 
   grep: (args) => `Grep ${args?.pattern ?? ""}`,
   find: (args) => `Find ${args?.glob ?? ""}`,
   ls: (args) => `ls ${args?.path ?? "."}`,
-  ask_user: (args) => `${String(args?.title ?? "ask_user").slice(0, 80)}`,
+  ask_user: () => "Question",
   Agent: (args) => `${args?.subagent_type ?? "Agent"}: ${String(args?.description ?? "").slice(0, 60)}`,
   get_subagent_result: (args) => `Get result: ${String(args?.agent_id ?? "").slice(0, 30)}`,
   steer_subagent: (args) => `Steer: ${String(args?.agent_id ?? "").slice(0, 30)}`,
@@ -62,8 +66,10 @@ export function ToolCallStep({ toolName, toolCallId, args, status, result, image
   const hasImages = images && images.length > 0;
   const isAgentRunning = toolName === "Agent" && status === "running";
   const isAskUser = toolName === "ask_user";
+  const isProtectedOperatorTool = isOperatorProseTool(toolName);
+  const protectedLabel = operatorProseToolLabel(toolName);
   const isFailedAskUser = isAskUser && status === "error";
-  const [expanded, setExpanded] = useState(hasImages || isAgentRunning || (isAskUser && !isFailedAskUser));
+  const [expanded, setExpanded] = useState(!isProtectedOperatorTool && (hasImages || isAgentRunning || (isAskUser && !isFailedAskUser)));
   const [stopState, setStopState] = useState<StopState>("idle");
   const Renderer = getToolRenderer(toolName);
 
@@ -80,7 +86,7 @@ export function ToolCallStep({ toolName, toolCallId, args, status, result, image
       {...(pinContext?.entryId ? { "data-entry-id": pinContext.entryId } : {})}
     >
       <button
-        onClick={() => setExpanded(!expanded)}
+        onClick={() => { if (!isProtectedOperatorTool) setExpanded(!expanded); }}
         className={`flex items-center gap-1.5 text-xs text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] w-full text-left ${isMobile ? "min-h-[44px] py-2" : ""}`}
       >
         <span className={`inline-flex ${
@@ -96,7 +102,7 @@ export function ToolCallStep({ toolName, toolCallId, args, status, result, image
             ? <Icon path={mdiHelpCircleOutline} size={0.55} />
             : statusIcons[status]}
         </span>
-        <span className="truncate">{getSummary(toolName, args)}</span>
+        <span className="truncate">{protectedLabel ?? getSummary(toolName, args)}</span>
         <ElapsedBadge startedAt={startedAt} duration={duration} />
         {status === "running" && onAbort && stopState === "idle" && (
           <span
@@ -131,11 +137,13 @@ export function ToolCallStep({ toolName, toolCallId, args, status, result, image
             />
           </span>
         )}
-        <span className="ml-auto text-[var(--text-muted)] inline-flex">
-          <Icon path={expanded ? mdiChevronDown : mdiChevronRight} size={0.6} />
-        </span>
+        {!isProtectedOperatorTool && (
+          <span className="ml-auto text-[var(--text-muted)] inline-flex">
+            <Icon path={expanded ? mdiChevronDown : mdiChevronRight} size={0.6} />
+          </span>
+        )}
       </button>
-      {expanded && (
+      {expanded && !isProtectedOperatorTool && (
         <div className="mt-1 ml-4 p-2 bg-[var(--bg-secondary)] rounded-xl shadow-md border border-[var(--border-subtle)] text-xs text-[var(--text-secondary)] overflow-x-auto">
           <ErrorBoundary>
             <Renderer

@@ -6,6 +6,7 @@ import type { DashboardSession } from "@blackbelt-technology/pi-dashboard-shared
 import { getSessionDisplayName } from "../lib/session-display-name.js";
 import { InlineRenameInput } from "./InlineRenameInput.js";
 import { PiLogo } from "./PiLogo.js";
+import { operatorProseToolLabel } from "@blackbelt-technology/pi-dashboard-shared/operator-tool-visibility.js";
 
 interface Props {
   sessions: DashboardSession[];
@@ -109,7 +110,7 @@ export function SessionSidebar({ sessions, selectedId, onSelect, onRename, error
                 <span title="Tokens out">↑{formatTokens(session.tokensOut)}</span>
                 <span>{formatCost(session.cost)}</span>
                 {session.currentTool && (
-                  <span className="text-yellow-500 inline-flex items-center gap-0.5"><Icon path={mdiCog} size={0.5} /> {session.currentTool}</span>
+                  <span className="text-yellow-500 inline-flex items-center gap-0.5"><Icon path={mdiCog} size={0.5} /> {operatorProseToolLabel(session.currentTool) ?? session.currentTool}</span>
                 )}
               </div>
             </li>

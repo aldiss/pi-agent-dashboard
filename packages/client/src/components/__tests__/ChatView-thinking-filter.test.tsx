@@ -56,7 +56,10 @@ beforeAll(() => {
   });
 });
 
-function stateWithThinkingRow(content: string = "model reasoning content") {
+function stateWithThinkingRow(
+  content: string = "model reasoning content",
+  audience?: "operator" | "agent" | "unknown",
+) {
   const state = createInitialState();
   state.messages.push({
     id: "thinking-1",
@@ -65,6 +68,7 @@ function stateWithThinkingRow(content: string = "model reasoning content") {
     timestamp: Date.now(),
     startedAt: 1000,
     duration: 500,
+    ...(audience ? { audience } : {}),
   });
   return state;
 }
@@ -175,6 +179,51 @@ describe("ChatView committed thinking-row filter visibility", () => {
     expect(reasoningButtons.length).toBe(1);
 
     // Clean up localStorage so we don't pollute sibling tests.
+    window.localStorage.removeItem(`dashboard:messageFilter:${sessionId}`);
+  });
+
+  it("keeps finalized agent thinking aligned with the Agent-only chat toggle", () => {
+    const sessionId = "agent-thinking-filter";
+    const state = stateWithThinkingRow("dl-11743 §2A private reasoning", "agent");
+    window.localStorage.setItem(
+      `dashboard:messageFilter:${sessionId}`,
+      JSON.stringify({
+        tierA: true,
+        tierB: true,
+        tierC: false,
+        meshChatter: false,
+        toolCalls: false,
+        systemNotifications: false,
+      }),
+    );
+    const hidden = render(
+      <ThemeProvider>
+        <ChatView sessionId={sessionId} state={state} toolContext={defaultToolContext} />
+      </ThemeProvider>,
+    );
+    expect(Array.from(hidden.container.querySelectorAll("button"))
+      .some((button) => /Reasoning/.test(button.textContent ?? ""))).toBe(false);
+    expect(hidden.container.textContent).not.toContain("dl-11743");
+    hidden.unmount();
+
+    window.localStorage.setItem(
+      `dashboard:messageFilter:${sessionId}`,
+      JSON.stringify({
+        tierA: true,
+        tierB: true,
+        tierC: false,
+        meshChatter: true,
+        toolCalls: false,
+        systemNotifications: false,
+      }),
+    );
+    const revealed = render(
+      <ThemeProvider>
+        <ChatView sessionId={sessionId} state={state} toolContext={defaultToolContext} />
+      </ThemeProvider>,
+    );
+    expect(Array.from(revealed.container.querySelectorAll("button"))
+      .some((button) => /Reasoning/.test(button.textContent ?? ""))).toBe(true);
     window.localStorage.removeItem(`dashboard:messageFilter:${sessionId}`);
   });
 });

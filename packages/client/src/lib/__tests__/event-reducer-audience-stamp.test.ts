@@ -23,6 +23,7 @@ import { describe, it, expect } from "vitest";
 import { createInitialState, reduceEvent, type ChatMessage } from "../event-reducer.js";
 import { classifyMessage } from "../message-filter-classifier.js";
 import type { DashboardEvent } from "@blackbelt-technology/pi-dashboard-shared/types.js";
+import { sha256Hex } from "../operator-delivery.js";
 
 /** Drive a live assistant turn (message_update sets streamingText; message_end commits). */
 function assistantTurn(text: string, audience?: unknown): ChatMessage {
@@ -35,6 +36,9 @@ function assistantTurn(text: string, audience?: unknown): ChatMessage {
   } as DashboardEvent);
   const message: Record<string, unknown> = { role: "assistant", content: [{ type: "text", text }] };
   if (arguments.length > 1) message.audience = audience; // include even when null
+  if (audience === "agent") {
+    message.operatorDelivery = { version: 1, sourceSha256: sha256Hex(text), status: "agent" };
+  }
   state = reduceEvent(state, { eventType: "message_end", timestamp: 3, data: { message } } as DashboardEvent);
   return state.messages[state.messages.length - 1]!;
 }
@@ -93,16 +97,16 @@ describe("F2 consumer corpus — corrupt-null + pre-stamp at the real reducer/cl
     expect(classifyMessage(row, { evidence: { sessionFile: "/x/run-1/session.jsonl" } })).toBe("tierB");
   });
 
-  it("pre-stamp (no audience field) → undefined → retrospective absent-evidence → tierB (SHOWN)", () => {
+  it("pre-stamp final → explicit unknown → tierB (SHOWN)", () => {
     const row = assistantTurn("old row"); // no audience arg → field absent
-    expect(row.audience).toBeUndefined();
-    expect(classifyMessage(row)).toBe("tierB"); // no ctx → unknown → SHOWN
+    expect(row.audience).toBe("unknown");
+    expect(classifyMessage(row)).toBe("tierB");
   });
 
-  it("pre-stamp in a WORKER ctx → retrospective agent → meshChatter (positive evidence)", () => {
+  it("pre-stamp final in a WORKER ctx remains explicit unknown and visible", () => {
     const row = assistantTurn("old worker row");
-    expect(row.audience).toBeUndefined();
-    expect(classifyMessage(row, { evidence: { sessionFile: "/x/run-1/session.jsonl" } })).toBe("meshChatter");
+    expect(row.audience).toBe("unknown");
+    expect(classifyMessage(row, { evidence: { sessionFile: "/x/run-1/session.jsonl" } })).toBe("tierB");
   });
 
   it("over-cap SUMMARIZED envelope shape (content preview + audience) still classifies by the stamp", () => {
@@ -116,12 +120,44 @@ describe("F2 consumer corpus — corrupt-null + pre-stamp at the real reducer/cl
       timestamp: 2,
       data: {
         __truncated: true,
-        message: { role: "assistant", content: "hello world preview", audience: "agent" },
+        message: {
+          role: "assistant",
+          content: "hello world preview",
+          audience: "agent",
+          operatorDelivery: {
+            version: 1,
+            sourceSha256: sha256Hex("hello world preview"),
+            status: "agent",
+          },
+        },
       },
     } as DashboardEvent);
     const row = state.messages[state.messages.length - 1]!;
     expect(row.audience).toBe("agent");
     expect(classifyMessage(row)).toBe("meshChatter");
+  });
+});
+
+describe("finalized agent thinking visibility", () => {
+  it("classifies source-bound agent thinking as agent-only chat", () => {
+    const row: ChatMessage = {
+      id: "thinking-agent",
+      role: "thinking",
+      content: "private reasoning",
+      timestamp: 1,
+      audience: "agent",
+    };
+    expect(classifyMessage(row)).toBe("meshChatter");
+  });
+
+  it("retains legacy unstamped thinking as narrative compatibility", () => {
+    const row: ChatMessage = {
+      id: "thinking-legacy",
+      role: "thinking",
+      content: "legacy reasoning",
+      timestamp: 1,
+    };
+    expect(classifyMessage(row)).toBe("tierB");
   });
 });
 

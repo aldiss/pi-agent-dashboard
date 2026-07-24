@@ -30,23 +30,24 @@ import {
   type SessionState,
 } from "../event-reducer.js";
 import type { DashboardEvent } from "@blackbelt-technology/pi-dashboard-shared/types.js";
+import { extractFinalizedAssistantProse, sha256Hex } from "../operator-delivery.js";
 
 function applyEvents(events: DashboardEvent[]): SessionState {
-  return events.reduce(reduceEvent, createInitialState());
+  return events.reduce(reduceEvent, { ...createInitialState(), audience: "agent" });
 }
 
 function asstStart(t: number): DashboardEvent {
   return {
     eventType: "message_start",
     timestamp: t,
-    data: { message: { role: "assistant", content: [] } },
+    data: { message: { role: "assistant", audience: "agent", content: [] } },
   };
 }
 function textDelta(t: number, text: string): DashboardEvent {
   return {
     eventType: "message_update",
     timestamp: t,
-    data: { message: { role: "assistant", content: [{ type: "text", text }] } },
+    data: { message: { role: "assistant", audience: "agent", content: [{ type: "text", text }] } },
   };
 }
 function toolStart(t: number, id: string, name = "ask_user"): DashboardEvent {
@@ -75,11 +76,17 @@ function thinkingEnd(t: number): DashboardEvent {
   };
 }
 function asstEnd(t: number, content: unknown[]): DashboardEvent {
+  const source = extractFinalizedAssistantProse(content);
   return {
     eventType: "message_end",
     timestamp: t,
     data: {
-      message: { role: "assistant", content },
+      message: {
+        role: "assistant",
+        audience: "agent",
+        content,
+        operatorDelivery: { version: 1, sourceSha256: sha256Hex(source), status: "agent" },
+      },
       entryId: undefined,
     },
   };
@@ -124,7 +131,7 @@ describe("fix-interactive-ui-reorder: ask_user ordering", () => {
     expect(idxUi).toBe(idxTool + 1);
   });
 
-  it("[thinking, text, toolCall:ask_user] — thinking, text, tool, ui in that order", () => {
+  it("[thinking, text, toolCall:ask_user] — delays thinking until final agent proof, then preserves order", () => {
     let state = applyEvents([
       asstStart(100),
       thinkingDelta(101, "Reasoning..."),

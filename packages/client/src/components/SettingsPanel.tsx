@@ -451,12 +451,12 @@ export function SettingsPanel({ availableModels }: { availableModels?: Array<{ p
                 </div>
                 <div>
                   <NumberField
-                    label="ask_user Prompt Timeout (seconds)"
+                    label="Interactive Question Timeout (seconds)"
                     value={config.askUserPromptTimeoutSeconds ?? 300}
                     onChange={(v) => update((c) => { c.askUserPromptTimeoutSeconds = v; })}
                   />
                   <p className="mt-1 text-xs text-[var(--text-tertiary)]">
-                    How long an interactive ask_user prompt waits for an answer before auto-cancelling. Use <code>-1</code> (or <code>0</code>) to wait forever. Default: 300 (5&nbsp;min).
+                    How long an interactive question waits for an answer before auto-cancelling. Use <code>-1</code> (or <code>0</code>) to wait forever. Default: 300 (5&nbsp;min).
                   </p>
                 </div>
                 <div>

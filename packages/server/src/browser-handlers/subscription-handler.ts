@@ -226,6 +226,12 @@ export function handleSubscribe(
       });
       directoryService.loadSessionEvents(msg.sessionId, session.sessionFile, session.contextWindow).then(async (result) => {
         if (result.success) {
+          if (result.assets && Object.keys(result.assets).length > 0) {
+            const current = sessionManager.get(msg.sessionId);
+            sessionManager.update(msg.sessionId, {
+              assets: { ...(current?.assets ?? {}), ...result.assets },
+            });
+          }
           for (const evt of result.events) {
             eventStore.insertEvent(msg.sessionId, evt);
           }

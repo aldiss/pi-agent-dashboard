@@ -9,6 +9,7 @@ import { ToolCallStep } from "./ToolCallStep.js";
 import type { ToolCallGroup } from "../lib/group-tool-calls.js";
 import type { ToolContext } from "./tool-renderers/index.js";
 import { useMobile } from "../hooks/useMobile.js";
+import { operatorProseToolLabel } from "@blackbelt-technology/pi-dashboard-shared/operator-tool-visibility.js";
 
 interface Props {
   group: ToolCallGroup;
@@ -23,6 +24,8 @@ const toolSummaries: Record<string, (args?: Record<string, unknown>) => string> 
 };
 
 function getSummary(toolName: string, args?: Record<string, unknown>): string {
+  const protectedLabel = operatorProseToolLabel(toolName);
+  if (protectedLabel) return protectedLabel;
   const fn = toolSummaries[toolName];
   if (fn) return fn(args);
   return toolName;

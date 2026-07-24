@@ -2,9 +2,9 @@
  * Hook that handles ServerToBrowserMessage dispatch.
  * Extracted from App.tsx — maps each message type to the correct state setter.
  */
-import { useCallback, useRef } from "react";
-import { createInitialState, reduceEvent, addInteractiveRequest, resolveInteractiveRequest, dismissInteractiveRequest, markQueueEntryFailed, releaseOperatorBufferAsNeutral, OPERATOR_BUFFER_TIMEOUT_MS, type SessionState } from "../lib/event-reducer.js";
-import type { DashboardSession, CommandInfo, FlowInfo, FileEntry, OpenSpecData, OpenSpecGroup, ModelInfo, RoleInfo, PresenceParticipant } from "@blackbelt-technology/pi-dashboard-shared/types.js";
+import { useCallback, useEffect, useRef } from "react";
+import { createInitialState, reduceEvent, addInteractiveRequest, resolveInteractiveRequest, dismissInteractiveRequest, markQueueEntryFailed, releaseAssistantBufferAsFallback, OPERATOR_BUFFER_TIMEOUT_MS, type SessionState } from "../lib/event-reducer.js";
+import type { DashboardEvent, DashboardSession, CommandInfo, FlowInfo, FileEntry, OpenSpecData, OpenSpecGroup, ModelInfo, RoleInfo, PresenceParticipant } from "@blackbelt-technology/pi-dashboard-shared/types.js";
 import type { PendingOperatorInput } from "@blackbelt-technology/pi-dashboard-shared/browser-protocol.js";
 import { encodeFolderPath } from "../lib/folder-encoding.js";
 import { redirectToLogin } from "./useAuthStatus.js";
@@ -98,32 +98,127 @@ export function useMessageHandler(
   } = setters;
   const { send, navigate, clearSpawningCwd, spawningCwdsRef, subscribedRef, pendingTerminalCwdRef, lastCreatedTerminalIdRef, maxSeqMapRef, selectedSessionIdRef, pendingSpawnsRef } = deps;
 
-  // door-3 Contract-D: per-session inactivity timers for open operator buffers.
-  const bufferTimersRef = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+  const bufferTimersRef = useRef(new Map<string, {
+    handle: ReturnType<typeof setTimeout>;
+    deadline: number;
+    messageKey?: string;
+  }>());
+
+  useEffect(() => () => {
+    for (const timer of bufferTimersRef.current.values()) {
+      clearTimeout(timer.handle);
+    }
+    bufferTimersRef.current.clear();
+  }, []);
 
   return useCallback((msg: ServerToBrowserMessage) => {
-    // door-3 Contract-D: (re)arm/clear a held operator buffer's inactivity timer.
-    // Re-armed on each event while the buffer is open; on a genuine producer stall
-    // (no event for OPERATOR_BUFFER_TIMEOUT_MS) it releases the buffer to a neutral
-    // placeholder (never hangs). The fire-callback re-checks live state, so a stale
-    // timer after a reset self-guards to a no-op. See change: operator-voice-buffer-hold.
-    const armBufferTimeout = (sessionId: string, state: SessionState) => {
+    const clearBufferTimeout = (sessionId: string) => {
       const timers = bufferTimersRef.current;
       const existing = timers.get(sessionId);
-      if (existing) clearTimeout(existing);
-      if (state.heldBufferLastActivityAt === undefined) { timers.delete(sessionId); return; }
-      timers.set(sessionId, setTimeout(() => {
+      if (existing) clearTimeout(existing.handle);
+      timers.delete(sessionId);
+    };
+
+    const carryOpenDeliveryFallback = (source: SessionState | undefined, target: SessionState) => {
+      if (!source) return;
+      const released = source.heldBufferLastActivityAt === undefined
+        ? source
+        : releaseAssistantBufferAsFallback(
+            source,
+            source.heldBufferLastActivityAt + OPERATOR_BUFFER_TIMEOUT_MS,
+          );
+      const fallbackId = released.timedOutAssistantFallbackId;
+      if (!fallbackId) return;
+      const fallback = released.messages.find((message) => message.id === fallbackId);
+      if (!fallback) return;
+      target.messages = [...target.messages, fallback];
+      target.messagesIndex = new Map(target.messages.map((message, index) => [message.id, index]));
+      target.timedOutAssistantFallbackId = fallback.id;
+      target.timedOutAssistantFallbackKey = released.timedOutAssistantFallbackKey;
+      target.timedOutAssistantFallbackEntryKey = released.timedOutAssistantFallbackEntryKey;
+    };
+
+    // Schedule from the wire event's activity timestamp, never from a value
+    // assigned inside a React functional updater (which may run later).
+    const eventAssistantKey = (event: DashboardEvent): string | undefined => {
+      const data = event.data as Record<string, unknown>;
+      if (typeof data.nonce === "string" && data.nonce.length > 0) return `nonce:${data.nonce}`;
+      if (typeof data.entryId === "string" && data.entryId.length > 0) return `entry:${data.entryId}`;
+      return undefined;
+    };
+
+    const replayHasMatchingAssistantEnd = (
+      source: SessionState | undefined,
+      events: readonly { event: DashboardEvent }[],
+    ): boolean => {
+      if (!source) return false;
+      const primary = source.heldBufferLastActivityAt !== undefined
+        ? source.heldAssistantKey
+        : source.timedOutAssistantFallbackKey;
+      const entryAlias = source.heldBufferLastActivityAt !== undefined
+        ? source.heldAssistantEntryKey
+        : source.timedOutAssistantFallbackEntryKey;
+      if (primary === undefined && entryAlias === undefined) return false;
+      return events.some(({ event }) => {
+        if (event.eventType !== "message_end") return false;
+        const message = (event.data as Record<string, any>).message;
+        if (message?.role !== "assistant") return false;
+        const key = eventAssistantKey(event);
+        return key !== undefined && (key === primary || key === entryAlias);
+      });
+    };
+
+    const armBufferTimeout = (sessionId: string, activityAt: number, messageKey?: string) => {
+      const timers = bufferTimersRef.current;
+      const existing = timers.get(sessionId);
+      const deadline = activityAt + OPERATOR_BUFFER_TIMEOUT_MS;
+      if (existing?.deadline === deadline && existing.messageKey === messageKey) return;
+      if (existing) clearTimeout(existing.handle);
+      const delay = Math.max(0, deadline - Date.now());
+      const handle = setTimeout(() => {
+        const currentTimer = timers.get(sessionId);
+        if (!currentTimer || currentTimer.handle !== handle) return;
         timers.delete(sessionId);
         setSessionStates((prev) => {
           const s = prev.get(sessionId);
           if (!s || s.heldBufferLastActivityAt === undefined) return prev;
-          const released = releaseOperatorBufferAsNeutral(s, Date.now());
+          const released = releaseAssistantBufferAsFallback(s, Date.now());
           if (released === s) return prev;
           const next = new Map(prev);
           next.set(sessionId, released);
           return next;
         });
-      }, OPERATOR_BUFFER_TIMEOUT_MS));
+      }, delay);
+      timers.set(sessionId, { handle, deadline, messageKey });
+    };
+
+    // Conservative event-derived timer FSM. Explicit agent traffic may arm a
+    // timer, but the fire callback re-reads state and no-ops because that path
+    // has no heldBufferLastActivityAt. Unrelated events never move a deadline.
+    const syncBufferTimeoutForEvent = (sessionId: string, event: DashboardEvent) => {
+      const data = event.data as Record<string, any>;
+      const message = data.message;
+      if (event.eventType === "message_start") {
+        if (message?.role === "assistant" || message?.role === "user") {
+          clearBufferTimeout(sessionId);
+        }
+        return;
+      }
+      if (event.eventType === "message_end") {
+        if (message?.role === "assistant") {
+          const existing = bufferTimersRef.current.get(sessionId);
+          if (existing && existing.messageKey === eventAssistantKey(event)) {
+            clearBufferTimeout(sessionId);
+          }
+        }
+        return;
+      }
+      if (event.eventType !== "message_update" || message?.role !== "assistant") return;
+      const updateType = data.assistantMessageEvent?.type;
+      if (updateType === "thinking_start" || updateType === "thinking_delta" || updateType === "thinking_end") {
+        return;
+      }
+      armBufferTimeout(sessionId, event.timestamp, eventAssistantKey(event));
     };
     switch (msg.type) {
       case "session_added":
@@ -139,9 +234,8 @@ export function useMessageHandler(
           }
           return next;
         });
-        // door-3: mirror the server-derived audience into sessionStates so the
-        // reducer's buffer decision has it from the first message_update (pre-create
-        // the state, mirroring the existing model/thinkingLevel propagation).
+        // Preserve server-derived audience for visibility classification. Streaming
+        // decisions require a current-message stamp and do not trust this prediction.
         if (msg.session.audience !== undefined) {
           setSessionStates((prev) => {
             const existing = prev.get(msg.session.id);
@@ -218,6 +312,19 @@ export function useMessageHandler(
         break;
 
       case "session_removed":
+        clearBufferTimeout(msg.sessionId);
+        setSessionStates((prev) => {
+          const current = prev.get(msg.sessionId);
+          if (!current || current.heldBufferLastActivityAt === undefined) return prev;
+          const released = releaseAssistantBufferAsFallback(
+            current,
+            current.heldBufferLastActivityAt + OPERATOR_BUFFER_TIMEOUT_MS,
+          );
+          if (released === current) return prev;
+          const next = new Map(prev);
+          next.set(msg.sessionId, released);
+          return next;
+        });
         setSessions((prev) => {
           const next = new Map(prev);
           const existing = next.get(msg.sessionId);
@@ -240,6 +347,7 @@ export function useMessageHandler(
         break;
 
       case "session_state_reset":
+        clearBufferTimeout(msg.sessionId);
         setSessionStates((prev) => {
           const next = new Map(prev);
           // Carry `pendingPrompt` across reset: it's optimistic UI state
@@ -249,7 +357,8 @@ export function useMessageHandler(
           // bridge re-register triggers this reset, and dropping the bubble
           // makes the user feel their message vanished.
           // See change: preserve-pending-prompt-across-replay.
-          const carry = next.get(msg.sessionId)?.pendingPrompt;
+          const prior = next.get(msg.sessionId);
+          const carry = prior?.pendingPrompt;
           // Message-queue (dashboard-message-queue/v1): also carry the visible
           // queue across the bridge-reconnect reset. The authoritative
           // queue_state snapshot atomic-replaces the confirmed portion shortly
@@ -261,6 +370,7 @@ export function useMessageHandler(
           // stays inert (sister to the queue carry). See dashboard-message-queue.
           const carrySuperseded = next.get(msg.sessionId)?.supersededNonces;
           const fresh = createInitialState();
+          carryOpenDeliveryFallback(prior, fresh);
           if (carry) fresh.pendingPrompt = carry;
           if (carryQueue && carryQueue.length > 0) fresh.queue = carryQueue;
           if (carrySuperseded && carrySuperseded.size > 0) fresh.supersededNonces = carrySuperseded;
@@ -271,16 +381,13 @@ export function useMessageHandler(
         break;
 
       case "event": {
-        let updatedState: SessionState | undefined;
+        syncBufferTimeoutForEvent(msg.sessionId, msg.event);
         setSessionStates((prev) => {
           const next = new Map(prev);
           const current = next.get(msg.sessionId) ?? createInitialState();
-          updatedState = reduceEvent(current, msg.event);
-          next.set(msg.sessionId, updatedState);
+          next.set(msg.sessionId, reduceEvent(current, msg.event));
           return next;
         });
-        // door-3 Contract-D: (re)arm/clear the inactivity timer per the new buffer state.
-        if (updatedState) armBufferTimeout(msg.sessionId, updatedState);
         if (msg.seq > (maxSeqMapRef.current.get(msg.sessionId) ?? 0)) {
           maxSeqMapRef.current.set(msg.sessionId, msg.seq);
         }
@@ -410,23 +517,58 @@ export function useMessageHandler(
         // See change: fix-replay-duplicates-tool-and-flushed-rows.
         const maxSeq = maxSeqMapRef.current.get(msg.sessionId) ?? 0;
         const shouldReset = firstSeq != null && (firstSeq === 1 || firstSeq <= maxSeq);
-        let replayedState: SessionState | undefined;
+        // Replay pages are historical batches, not live activity. Never arm a
+        // per-page timer: a nonterminal page can split update/end and its old
+        // timestamp would fire immediately before the next page arrives.
+        if (shouldReset || msg.isLast === false) clearBufferTimeout(msg.sessionId);
         setSessionStates((prev) => {
           const next = new Map(prev);
           // Same rationale as session_state_reset: preserve optimistic
           // pendingPrompt across the full-replay reset branch.
           // See change: preserve-pending-prompt-across-replay.
-          const carry = shouldReset ? next.get(msg.sessionId)?.pendingPrompt : undefined;
-          const carryQueue = shouldReset ? next.get(msg.sessionId)?.queue : undefined;
+          const prior = next.get(msg.sessionId);
+          const carry = shouldReset ? prior?.pendingPrompt : undefined;
+          const carryQueue = shouldReset ? prior?.queue : undefined;
           // AMEND #5 (f): carry retry-superseded nonces across the full-replay
           // reset (sister to the queue carry). See dashboard-message-queue.
-          const carrySuperseded = shouldReset ? next.get(msg.sessionId)?.supersededNonces : undefined;
+          const carrySuperseded = shouldReset ? prior?.supersededNonces : undefined;
           let current = shouldReset ? createInitialState() : (next.get(msg.sessionId) ?? createInitialState());
+          let pinnedFallback: SessionState["messages"][number] | undefined;
+          if (!shouldReset && current.timedOutAssistantFallbackId) {
+            const pinnedIndex = current.messages.findIndex(
+              (message) => message.id === current.timedOutAssistantFallbackId,
+            );
+            if (pinnedIndex >= 0) {
+              pinnedFallback = current.messages[pinnedIndex];
+              const messages = current.messages.filter((_, index) => index !== pinnedIndex);
+              current = {
+                ...current,
+                messages,
+                messagesIndex: new Map(messages.map((message, index) => [message.id, index])),
+              };
+            }
+          }
           if (carry) current.pendingPrompt = carry;
           if (carryQueue && carryQueue.length > 0) current.queue = carryQueue;
           if (carrySuperseded && carrySuperseded.size > 0) current.supersededNonces = carrySuperseded;
           for (const { event } of msg.events) {
             current = reduceEvent(current, event);
+          }
+          // Replayed history is older than a live partial that was open when
+          // the reset began. Append its honest terminal fallback after history;
+          // no unrelated historical message_end may erase or replace it.
+          if (shouldReset) {
+            if (!replayHasMatchingAssistantEnd(prior, msg.events)) {
+              carryOpenDeliveryFallback(prior, current);
+            }
+          } else if (
+            pinnedFallback &&
+            current.timedOutAssistantFallbackId === pinnedFallback.id
+          ) {
+            current.messages = [...current.messages, pinnedFallback];
+            current.messagesIndex = new Map(
+              current.messages.map((message, index) => [message.id, index]),
+            );
           }
           // Loading ≠ empty (build-2 fix-cycle MAJOR 2): a terminal batch
           // (`isLast:true`) marks replay DONE — ChatView may now show a truthful
@@ -438,12 +580,26 @@ export function useMessageHandler(
             current = { ...current, replayComplete: false };
           }
           next.set(msg.sessionId, current);
-          replayedState = current;
           return next;
         });
-        // door-3 Contract-D: arm/clear the inactivity timer if the replay left an
-        // operator buffer open (e.g. reconnect mid-held-turn). See operator-voice-buffer-hold.
-        if (replayedState) armBufferTimeout(msg.sessionId, replayedState);
+        if (msg.isLast === true) {
+          // Functional updater ordering guarantees this observes the fully
+          // reduced terminal replay state. Arm only when that complete sweep
+          // genuinely ends with an unmatched assistant partial.
+          setSessionStates((prev) => {
+            const current = prev.get(msg.sessionId);
+            if (current?.heldBufferLastActivityAt !== undefined) {
+              armBufferTimeout(
+                msg.sessionId,
+                current.heldBufferLastActivityAt,
+                current.heldAssistantKey,
+              );
+            } else {
+              clearBufferTimeout(msg.sessionId);
+            }
+            return prev;
+          });
+        }
         // If we reset, also reset maxSeq tracking so a subsequent batch isn't
         // misclassified. We rebuild it below from this batch's events.
         if (shouldReset) {

@@ -51,8 +51,8 @@ function renderStep(props: Partial<React.ComponentProps<typeof ToolCallStep>> = 
 }
 
 describe("ToolCallStep", () => {
-  it("renders ask_user as a standard collapsible tool step, not an InteractiveRenderer", () => {
-    const { container, getByText } = renderStep({
+  it("renders ask_user as fixed status-only chrome, not an InteractiveRenderer", () => {
+    const { container } = renderStep({
       toolName: "ask_user",
       toolCallId: "tc-ask-1",
       args: { method: "confirm", title: "Are you sure?" },
@@ -60,10 +60,12 @@ describe("ToolCallStep", () => {
       result: 'User responded: true',
     });
 
-    // Should render the summary button (collapsible tool step)
+    // The independently rendered prompt owns the prose; lifecycle chrome does not.
     const button = container.querySelector("button");
     expect(button).toBeTruthy();
-    expect(button!.textContent).toContain("Are you sure?");
+    expect(button!.textContent).toContain("Question");
+    expect(container.textContent).not.toContain("Are you sure?");
+    expect(container.textContent).not.toContain("User responded");
 
     // Should NOT render an interactive renderer (no confirm/select UI)
     // InteractiveRenderers have data-testid or specific class patterns
@@ -72,7 +74,7 @@ describe("ToolCallStep", () => {
     expect(container.querySelector("[data-testid='select-renderer']")).toBeNull();
   });
 
-  it("renders ask_user summary with title from args", () => {
+  it("never renders the ask_user title from lifecycle args", () => {
     const { container } = renderStep({
       toolName: "ask_user",
       toolCallId: "tc-ask-2",
@@ -81,7 +83,9 @@ describe("ToolCallStep", () => {
     });
 
     const button = container.querySelector("button");
-    expect(button!.textContent).toContain("Pick a color");
+    expect(button!.textContent).toContain("Question");
+    expect(container.textContent).not.toContain("Pick a color");
+    expect(container.textContent).not.toContain("red");
   });
 
   it("renders non-ask_user tools normally", () => {
@@ -150,17 +154,17 @@ describe("ToolCallStep", () => {
       return container.querySelector(".overflow-x-auto") !== null;
     }
 
-    it("auto-expands ask_user when status is running (pending dialog)", () => {
+    it("keeps ask_user collapsed when status is running", () => {
       const { container } = renderStep({
         toolName: "ask_user",
         toolCallId: "tc-run",
         args: { method: "confirm", title: "Proceed?" },
         status: "running",
       });
-      expect(isExpanded(container)).toBe(true);
+      expect(isExpanded(container)).toBe(false);
     });
 
-    it("auto-expands ask_user when status is complete (answer visible)", () => {
+    it("keeps ask_user collapsed when status is complete", () => {
       const { container } = renderStep({
         toolName: "ask_user",
         toolCallId: "tc-ok",
@@ -168,7 +172,7 @@ describe("ToolCallStep", () => {
         status: "complete",
         result: "User responded: true",
       });
-      expect(isExpanded(container)).toBe(true);
+      expect(isExpanded(container)).toBe(false);
     });
 
     it("does NOT auto-expand ask_user when status is error", () => {
@@ -182,7 +186,7 @@ describe("ToolCallStep", () => {
       expect(isExpanded(container)).toBe(false);
     });
 
-    it("clicking a collapsed failed ask_user expands it", () => {
+    it("clicking protected ask_user chrome cannot expose its result", () => {
       const { container } = renderStep({
         toolName: "ask_user",
         toolCallId: "tc-err-click",
@@ -192,7 +196,8 @@ describe("ToolCallStep", () => {
       });
       expect(isExpanded(container)).toBe(false);
       fireEvent.click(container.querySelector("button")!);
-      expect(isExpanded(container)).toBe(true);
+      expect(isExpanded(container)).toBe(false);
+      expect(container.textContent).not.toContain("Some error");
     });
   });
 

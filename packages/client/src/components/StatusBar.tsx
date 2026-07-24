@@ -10,6 +10,7 @@ import {
   renderOperatorString,
   type OperatorString,
 } from "@blackbelt-technology/pi-dashboard-shared/operator-string.js";
+import { operatorProseToolLabel } from "@blackbelt-technology/pi-dashboard-shared/operator-tool-visibility.js";
 
 interface Props {
   model?: string;
@@ -44,7 +45,10 @@ export function StatusBar({ model, models, roles, thinkingLevel, status, current
 
   if (status === "streaming") {
     if (currentTool) {
-      statusLabel = composeStatusString({ kind: "running", tool: currentTool });
+      statusLabel = composeStatusString({
+        kind: "running",
+        tool: operatorProseToolLabel(currentTool) ?? currentTool,
+      });
       statusIcon = mdiFlash;
       toolHighlight = true;
     } else if (streamingText) {

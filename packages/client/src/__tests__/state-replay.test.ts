@@ -96,6 +96,40 @@ describe("replayEntriesAsEvents", () => {
     expect((events[0].event.data as any).isError).toBe(false);
   });
 
+  it.each(["ask_user", "push_notify_user"])(
+    "replays persisted %s results as status-only events",
+    (toolName) => {
+      const raw = "CommsReset dl-11743 §2A";
+      const entries = [{
+        type: "message",
+        id: "protected-result",
+        timestamp: "2025-01-01T00:00:00Z",
+        message: {
+          role: "toolResult",
+          toolCallId: "protected-1",
+          toolName,
+          content: [
+            { type: "text", text: raw },
+            { type: "image", data: raw, mimeType: "image/png" },
+          ],
+          details: { raw },
+          isError: true,
+        },
+      }];
+      const events = replayEntriesAsEvents("sess-1", entries);
+      expect(events).toHaveLength(1);
+      expect(events[0].event.data).toEqual(expect.objectContaining({
+        toolCallId: "protected-1",
+        toolName,
+        result: "",
+        isError: true,
+      }));
+      expect((events[0].event.data as any).details).toBeUndefined();
+      expect((events[0].event.data as any).images).toBeUndefined();
+      expect(JSON.stringify(events[0])).not.toContain(raw);
+    },
+  );
+
   it("should return empty array for empty entries", () => {
     expect(replayEntriesAsEvents("sess-1", [])).toEqual([]);
   });

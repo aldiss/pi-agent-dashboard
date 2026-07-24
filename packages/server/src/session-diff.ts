@@ -7,6 +7,11 @@ import { resolve, relative, isAbsolute, sep as pathSep } from "node:path";
 import * as git from "@blackbelt-technology/pi-dashboard-shared/platform/git.js";
 import type { DashboardEvent } from "@blackbelt-technology/pi-dashboard-shared/types.js";
 import type { FileChangeEvent, FileDiffEntry, EditOperation } from "@blackbelt-technology/pi-dashboard-shared/diff-types.js";
+import {
+  extractFinalizedAssistantProse,
+  operatorDeliveryTextForPresentation,
+  selectOperatorVisibleAssistantText,
+} from "@blackbelt-technology/pi-dashboard-shared/operator-delivery.js";
 import { isGitRepo } from "./git-operations.js";
 
 const GIT_TIMEOUT = 15_000;
@@ -28,16 +33,18 @@ export function extractFileChanges(events: DashboardEvent[], cwd: string): FileD
     if (event.eventType === "message_end") {
       const msg = event.data.message as any;
       if (msg?.role === "assistant") {
-        const content = Array.isArray(msg.content)
-          ? msg.content
-              .filter((c: any) => c?.type === "text")
-              .map((c: any) => c.text)
-              .join("")
-          : typeof msg.content === "string" ? msg.content : "";
-        if (content) {
-          lastAssistantMessage = content.length > MAX_MESSAGE_LENGTH
-            ? content.slice(0, MAX_MESSAGE_LENGTH) + "..."
-            : content;
+        const source = extractFinalizedAssistantProse(msg.content);
+        if (source) {
+          const display = operatorDeliveryTextForPresentation(
+            selectOperatorVisibleAssistantText(
+              source,
+              msg.operatorDelivery,
+              msg.operatorDeliveryPresentation,
+            ),
+          );
+          lastAssistantMessage = display.length > MAX_MESSAGE_LENGTH
+            ? display.slice(0, MAX_MESSAGE_LENGTH) + "..."
+            : display;
         }
       }
     }

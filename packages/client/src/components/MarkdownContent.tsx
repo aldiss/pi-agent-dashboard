@@ -300,7 +300,7 @@ function PiAssetImg(props: React.ImgHTMLAttributes<HTMLImageElement>) {
     return (
       <span
         className="inline-block px-2 py-1 my-1 text-xs italic text-[var(--text-muted)] bg-[var(--bg-surface)] rounded border border-dashed border-[var(--border-secondary)]"
-        title={`Asset ${hash} not yet loaded`}
+        title="Image is still loading"
       >
         ⦿ {alt || "image"} (loading…)
       </span>

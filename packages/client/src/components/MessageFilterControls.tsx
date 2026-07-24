@@ -4,10 +4,10 @@
  * setMessageFilter; this component is render + click-dispatch only.
  *
  * Visual taxonomy per W3 Q2 recommended-default:
- *   - Tier-A asks       — emphasized chip (highlighted when active)
- *   - Tier-B content    — narrative
- *   - Tier-C ledger     — rare ledger-only row (DEFAULT OFF; muted)
- *   - Mesh chatter      — dimmed chip (mesh / chat lines)
+ *   - Questions         — emphasized chip (highlighted when active)
+ *   - Narrative         — normal conversation
+ *   - Background events — rare internal-only row (DEFAULT OFF; muted)
+ *   - Agent-only chat   — dimmed chip
  *   - Tool calls        — collapsible chip (DEFAULT OFF)
  *   - System notes      — debug / thinking / separator (DEFAULT OFF)
  *
@@ -42,8 +42,8 @@ interface CategoryMeta {
 const CATEGORIES: CategoryMeta[] = [
   {
     key: "tierA",
-    label: "Tier-A asks",
-    description: "Operator-direct asks (ask_user / confirm / select)",
+    label: "Questions",
+    description: "Questions and choices sent directly to the operator",
     onClass: "bg-amber-500/15 border-amber-500/40 text-amber-300",
     offClass: "border-amber-500/20 text-amber-400/60",
   },
@@ -56,8 +56,8 @@ const CATEGORIES: CategoryMeta[] = [
   },
   {
     key: "meshChatter",
-    label: "Mesh chatter",
-    description: "Plain user / assistant chat lines",
+    label: "Agent-only chat",
+    description: "Messages explicitly addressed to another agent",
     onClass: "bg-slate-400/15 border-slate-400/40 text-slate-200",
     offClass: "border-slate-400/20 text-slate-400/60",
   },
@@ -77,8 +77,8 @@ const CATEGORIES: CategoryMeta[] = [
   },
   {
     key: "tierC",
-    label: "Ledger only",
-    description: "Substrate-ledger events (rarely shown in chat)",
+    label: "Background events",
+    description: "Rare internal activity rows",
     onClass: "bg-rose-500/15 border-rose-500/40 text-rose-300",
     offClass: "border-rose-500/20 text-rose-400/60",
   },

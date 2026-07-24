@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { extractFileChanges } from "../session-diff.js";
 import type { DashboardEvent } from "@blackbelt-technology/pi-dashboard-shared/types.js";
+import { OPERATOR_DELIVERY_FALLBACK, sha256Hex } from "@blackbelt-technology/pi-dashboard-shared/operator-delivery.js";
 
 function makeEvent(eventType: string, timestamp: number, data: Record<string, unknown> = {}): DashboardEvent {
   return { eventType, timestamp, data: { type: eventType, ...data } };
@@ -10,9 +11,27 @@ function makeToolStart(toolName: string, args: Record<string, unknown>, timestam
   return makeEvent("tool_execution_start", timestamp, { toolName, toolCallId: `tc-${timestamp}`, args });
 }
 
-function makeMessageEnd(text: string, timestamp = 900): DashboardEvent {
+function makeMessageEnd(text: string, timestamp = 900, options: {
+  plain?: string;
+  audience?: "operator" | "agent";
+  withoutDelivery?: boolean;
+} = {}): DashboardEvent {
+  const plain = options.plain ?? text;
   return makeEvent("message_end", timestamp, {
-    message: { role: "assistant", content: [{ type: "text", text }] },
+    message: {
+      role: "assistant",
+      audience: options.audience ?? "operator",
+      content: [{ type: "text", text }],
+      ...(!options.withoutDelivery ? {
+        operatorDelivery: {
+          version: 1,
+          sourceSha256: sha256Hex(text),
+          status: "ready",
+          text: plain,
+          checks: { plain: true, anchorsPreserved: true },
+        },
+      } : {}),
+    },
   });
 }
 
@@ -112,6 +131,30 @@ describe("extractFileChanges", () => {
     ];
     const result = extractFileChanges(events, cwd);
     expect(result[0].changes[0].message!.length).toBeLessThanOrEqual(123); // 120 + "..."
+  });
+
+  it("uses verified plain context and never leaks source, including agent-stamped rows", () => {
+    const source = "Per dl-11743 §2A, CODENAME-47 failed. Decision: do not deploy.";
+    const plain = "The final review failed. Do not deploy.";
+    for (const audience of ["operator", "agent"] as const) {
+      const result = extractFileChanges([
+        makeMessageEnd(source, 900, { plain, audience }),
+        makeToolStart("Write", { path: `${audience}.ts`, content: "hello" }, 1000),
+      ], cwd);
+      expect(result[0].changes[0].message).toBe(plain);
+      expect(result[0].changes[0].message).not.toContain("dl-11743");
+      expect(result[0].changes[0].message).not.toContain("CODENAME-47");
+    }
+  });
+
+  it("uses the exact fallback when file context has no valid delivery", () => {
+    const source = "Per dl-11743 §2A, CODENAME-47 failed.";
+    const result = extractFileChanges([
+      makeMessageEnd(source, 900, { withoutDelivery: true, audience: "agent" }),
+      makeToolStart("Edit", { path: "src/foo.ts", edits: [] }, 1000),
+    ], cwd);
+    expect(result[0].changes[0].message).toBe(OPERATOR_DELIVERY_FALLBACK);
+    expect(result[0].changes[0].message).not.toContain("dl-11743");
   });
 
   it("should ignore non-Write/Edit tool events", () => {

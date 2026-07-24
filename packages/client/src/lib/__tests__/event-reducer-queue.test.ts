@@ -21,6 +21,7 @@ import {
   type QueuedMessage,
 } from "../event-reducer.js";
 import type { DashboardEvent } from "@blackbelt-technology/pi-dashboard-shared/types.js";
+import { sha256Hex } from "../operator-delivery.js";
 
 const TS = 1777032001000;
 
@@ -519,7 +520,7 @@ describe("event-reducer queue: AMEND #3 same-text reconciliation (FIFO-oldest + 
   it("REPLY-LINKAGE (Bert dl-2691 falsifiable criterion): two same-text sends dispatch in send-order so replies thread to the correct card", () => {
     // Two genuine same-text sends, confirmed by their EXACT nonces (the normal
     // dashboard round-trip: client mints o1 then o2; bridge reuses each).
-    let s: SessionState = stateWithTwoSameText();
+    let s: SessionState = { ...stateWithTwoSameText(), audience: "agent" };
     s = reduceEvent(s, ev("message_enqueued", { queueNonce: "o1", text: "same text", source: "dashboard" }));
     s = reduceEvent(s, ev("message_enqueued", { queueNonce: "o2", text: "same text", source: "dashboard" }));
     expect(s.queue.map((q) => q.queueNonce)).toEqual(["o1", "o2"]); // send-order intact, NOT swapped
@@ -531,18 +532,18 @@ describe("event-reducer queue: AMEND #3 same-text reconciliation (FIFO-oldest + 
       queueNonce: "o1", nonce: "n1",
     }));
     // assistant reply #1 (distinct text) threads positionally after o1's bubble.
-    s = reduceEvent(s, ev("message_start", { message: { role: "assistant", content: [] }, nonce: "r1" }));
-    s = reduceEvent(s, ev("message_update", { message: { role: "assistant", content: [{ type: "text", text: "REPLY-ONE" }] } }));
-    s = reduceEvent(s, ev("message_end", { message: { role: "assistant", content: [{ type: "text", text: "REPLY-ONE" }] }, nonce: "r1", entryId: "e-r1" }));
+    s = reduceEvent(s, ev("message_start", { message: { role: "assistant", audience: "agent", content: [] }, nonce: "r1" }));
+    s = reduceEvent(s, ev("message_update", { message: { role: "assistant", audience: "agent", content: [{ type: "text", text: "REPLY-ONE" }] } }));
+    s = reduceEvent(s, ev("message_end", { message: { role: "assistant", audience: "agent", content: [{ type: "text", text: "REPLY-ONE" }], operatorDelivery: { version: 1, sourceSha256: sha256Hex("REPLY-ONE"), status: "agent" } }, nonce: "r1", entryId: "e-r1" }));
 
     // Then o2 dispatches; its reply follows.
     s = reduceEvent(s, ev("message_start", {
       message: { role: "user", content: [{ type: "text", text: "same text" }] },
       queueNonce: "o2", nonce: "n2",
     }));
-    s = reduceEvent(s, ev("message_start", { message: { role: "assistant", content: [] }, nonce: "r2" }));
-    s = reduceEvent(s, ev("message_update", { message: { role: "assistant", content: [{ type: "text", text: "REPLY-TWO" }] } }));
-    s = reduceEvent(s, ev("message_end", { message: { role: "assistant", content: [{ type: "text", text: "REPLY-TWO" }] }, nonce: "r2", entryId: "e-r2" }));
+    s = reduceEvent(s, ev("message_start", { message: { role: "assistant", audience: "agent", content: [] }, nonce: "r2" }));
+    s = reduceEvent(s, ev("message_update", { message: { role: "assistant", audience: "agent", content: [{ type: "text", text: "REPLY-TWO" }] } }));
+    s = reduceEvent(s, ev("message_end", { message: { role: "assistant", audience: "agent", content: [{ type: "text", text: "REPLY-TWO" }], operatorDelivery: { version: 1, sourceSha256: sha256Hex("REPLY-TWO"), status: "agent" } }, nonce: "r2", entryId: "e-r2" }));
 
     // Reply-linkage = positional thread in messages[]. The first user bubble is
     // immediately followed by REPLY-ONE; the second by REPLY-TWO. A nonce-swap

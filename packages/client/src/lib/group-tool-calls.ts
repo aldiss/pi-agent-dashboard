@@ -3,7 +3,7 @@
  * Used to collapse repetitive retry loops (e.g. health check polling) in the chat view.
  *
  * Identical tool-only assistant turns are interleaved by `turnSeparator`,
- * `assistant` (empty), `thinking`, `rawEvent`, and `commandFeedback` rows
+ * empty `assistant`, `thinking`, `rawEvent`, and `commandFeedback` rows
  * inserted by the reducer. These are *transparent* for grouping purposes:
  * a polling loop that issues the same bash command 40 times still collapses
  * into a single ×N pill as long as no "hard" row (user / different
@@ -13,12 +13,16 @@ import type { ChatMessage } from "./event-reducer.js";
 
 /** Roles that are skipped when looking for the next groupable toolResult. */
 const TRANSPARENT_ROLES: ReadonlySet<ChatMessage["role"]> = new Set([
-  "assistant",
   "thinking",
   "turnSeparator",
   "rawEvent",
   "commandFeedback",
 ]);
+
+function isTransparent(message: ChatMessage): boolean {
+  if (message.role === "assistant") return message.content.length === 0;
+  return TRANSPARENT_ROLES.has(message.role);
+}
 
 export interface ToolCallGroup {
   type: "group";
@@ -73,7 +77,7 @@ export function groupConsecutiveToolCalls(messages: ChatMessage[]): ChatItem[] {
     let lastToolEnd = j; // exclusive index of last consumed toolResult
     while (j < messages.length) {
       const next = messages[j];
-      if (TRANSPARENT_ROLES.has(next.role)) {
+      if (isTransparent(next)) {
         j++;
         continue;
       }

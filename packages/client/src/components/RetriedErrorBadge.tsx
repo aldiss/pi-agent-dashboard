@@ -11,6 +11,7 @@ import { Icon } from "@mdi/react";
 import { mdiAlertCircleOutline, mdiChevronDown, mdiChevronRight } from "@mdi/js";
 import { ToolCallStep } from "./ToolCallStep.js";
 import type { ToolContext } from "./tool-renderers/index.js";
+import { operatorProseToolLabel } from "@blackbelt-technology/pi-dashboard-shared/operator-tool-visibility.js";
 
 interface Props {
   toolName: string;
@@ -34,6 +35,7 @@ export function RetriedErrorBadge({
   toolDetails,
 }: Props) {
   const [expanded, setExpanded] = useState(false);
+  const displayName = operatorProseToolLabel(toolName) ?? toolName;
 
   if (expanded) {
     return (
@@ -65,12 +67,12 @@ export function RetriedErrorBadge({
     <button
       type="button"
       onClick={() => setExpanded(true)}
-      title={`${toolName} failed and was retried — click to view error`}
+      title={`${displayName} failed and was retried — click to view error`}
       className="my-1 inline-flex items-center gap-1.5 px-2 py-0.5 text-xs text-[var(--text-tertiary)] hover:text-[var(--text-secondary)] border border-[var(--border-subtle)] rounded-md bg-[var(--bg-tertiary)]/40 hover:bg-[var(--bg-tertiary)]"
     >
       <Icon path={mdiAlertCircleOutline} size={0.6} className="text-red-400/80" />
       <span>
-        <span className="font-mono">{toolName}</span> failed — retried
+        <span className="font-mono">{displayName}</span> failed — retried
       </span>
       <Icon path={mdiChevronRight} size={0.55} />
     </button>

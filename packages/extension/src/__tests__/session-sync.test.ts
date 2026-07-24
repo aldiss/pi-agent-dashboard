@@ -2,7 +2,7 @@
  * Tests for session-sync: sendStateSync and handleSessionSwitch.
  */
 import { describe, it, expect, vi } from "vitest";
-import { sendStateSync, handleSessionChange } from "../session-sync.js";
+import { sendStateSync, handleSessionChange, replaySessionEntries } from "../session-sync.js";
 import type { BridgeContext } from "../bridge-context.js";
 
 function createMockBridgeContext(overrides?: Partial<BridgeContext>): BridgeContext {
@@ -106,6 +106,42 @@ describe("sendStateSync", () => {
     const sent = (bc as any)._sent;
     const registerMsg = sent.find((m: any) => m.type === "session_register");
     expect(registerMsg.registerReason).toBe("reattach");
+  });
+});
+
+describe("replaySessionEntries persisted assets", () => {
+  it("re-registers asset bytes before the referencing message events", () => {
+    const hash = "0123456789abcdef";
+    const entry = {
+      id: "entry-1",
+      type: "message",
+      timestamp: new Date(1).toISOString(),
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "source" }],
+        audience: "agent",
+        dashboardAssets: [{ hash, mimeType: "image/png", data: "AAAA" }],
+      },
+    };
+    const bc = createMockBridgeContext({
+      cachedCtx: { sessionManager: { getBranch: () => [entry] } } as any,
+    });
+
+    replaySessionEntries(bc);
+
+    const sent = (bc as any)._sent;
+    expect(sent[0]).toEqual({
+      type: "asset_register",
+      sessionId: "sess-123",
+      hash,
+      mimeType: "image/png",
+      data: "AAAA",
+    });
+    const forwarded = sent.filter((message: any) => message.type === "event_forward");
+    expect(forwarded.length).toBeGreaterThan(0);
+    expect(forwarded.every((message: any) =>
+      !("dashboardAssets" in (message.event.data.message ?? {})),
+    )).toBe(true);
   });
 });
 

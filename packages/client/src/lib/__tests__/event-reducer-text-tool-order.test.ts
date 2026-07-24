@@ -13,10 +13,11 @@
 
 import { describe, it, expect } from "vitest";
 import { createInitialState, reduceEvent, type SessionState } from "../event-reducer.js";
+import { extractFinalizedAssistantProse, sha256Hex } from "../operator-delivery.js";
 import type { DashboardEvent } from "@blackbelt-technology/pi-dashboard-shared/types.js";
 
 function applyEvents(events: DashboardEvent[]): SessionState {
-  return events.reduce(reduceEvent, createInitialState());
+  return events.reduce(reduceEvent, { ...createInitialState(), audience: "agent" });
 }
 
 /** Build a `message_start` event with role:"assistant" (no-op in reducer but
@@ -25,7 +26,7 @@ function asstStart(t: number): DashboardEvent {
   return {
     eventType: "message_start",
     timestamp: t,
-    data: { message: { role: "assistant", content: [] } },
+    data: { message: { role: "assistant", audience: "agent", content: [] } },
   };
 }
 
@@ -34,7 +35,7 @@ function textDelta(t: number, text: string): DashboardEvent {
   return {
     eventType: "message_update",
     timestamp: t,
-    data: { message: { role: "assistant", content: [{ type: "text", text }] } },
+    data: { message: { role: "assistant", audience: "agent", content: [{ type: "text", text }] } },
   };
 }
 
@@ -49,11 +50,17 @@ function toolStart(t: number, id: string, name = "edit"): DashboardEvent {
 
 /** Build a `message_end` event with a fully-formed assistant content array. */
 function asstEnd(t: number, content: unknown[]): DashboardEvent {
+  const source = extractFinalizedAssistantProse(content);
   return {
     eventType: "message_end",
     timestamp: t,
     data: {
-      message: { role: "assistant", content },
+      message: {
+        role: "assistant",
+        audience: "agent",
+        content,
+        operatorDelivery: { version: 1, sourceSha256: sha256Hex(source), status: "agent" },
+      },
       entryId: undefined,
     },
   };
@@ -147,7 +154,7 @@ describe("event-reducer: assistant content-array order", () => {
     expect(tail[1].content).toBe("That's why I called it");
   });
 
-  it("[thinking, text, toolCall] places thinking, then assistant, then tool card", () => {
+  it("[thinking, text, toolCall] restores finalized agent thinking in content order", () => {
     const state = applyEvents([
       asstStart(1000),
       thinkingStart(1001),

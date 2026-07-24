@@ -1,9 +1,24 @@
 import { describe, it, expect } from "vitest";
 import { createInitialState, findLastUserPrompt, reduceEvent, toDisplayString, addInteractiveRequest, resolveInteractiveRequest, dismissInteractiveRequest, extractAgentEndError, type SessionState, type PendingPrompt, type ChatMessage } from "../event-reducer.js";
 import type { DashboardEvent } from "@blackbelt-technology/pi-dashboard-shared/types.js";
+import { extractFinalizedAssistantProse, sha256Hex } from "../operator-delivery.js";
 
 function applyEvents(events: DashboardEvent[]): SessionState {
-  return events.reduce(reduceEvent, createInitialState());
+  return events.reduce((state, event) => {
+    const message = event.data.message as Record<string, unknown> | undefined;
+    const stamped = message?.role === "assistant" && message.audience === undefined
+      ? { ...event, data: { ...event.data, message: {
+          ...message,
+          audience: "agent",
+          operatorDelivery: {
+            version: 1,
+            sourceSha256: sha256Hex(extractFinalizedAssistantProse(message.content)),
+            status: "agent",
+          },
+        } } } as DashboardEvent
+      : event;
+    return reduceEvent(state, stamped);
+  }, createInitialState());
 }
 
 describe("eventReducer", () => {
@@ -118,7 +133,8 @@ describe("eventReducer", () => {
     ]);
 
     expect(state.isStreaming).toBe(true);
-    expect(state.streamingText).toBe("Hello world");
+    expect(state.streamingText).toBe("");
+    expect(state.heldOperatorText).toBe("Hello world");
   });
 
   it("should finalize assistant message on message_end", () => {
@@ -142,7 +158,7 @@ describe("eventReducer", () => {
         eventType: "message_end",
         timestamp: Date.now(),
         data: {
-          message: { role: "assistant" },
+          message: { role: "assistant", content: [{ type: "text", text: "Final answer" }] },
         },
       },
     ]);
@@ -354,7 +370,7 @@ describe("eventReducer", () => {
       {
         eventType: "message_end",
         timestamp: now + 5,
-        data: { message: { role: "assistant" } },
+        data: { message: { role: "assistant", content: [{ type: "text", text: "I'll fix it" }] } },
       },
       // Agent ends
       { eventType: "agent_end", timestamp: now + 6, data: { messages: [] } },
@@ -647,7 +663,7 @@ describe("thinking events", () => {
   });
 
   it("should reset streamingThinking on thinking_start", () => {
-    let state = createInitialState();
+    let state: SessionState = { ...createInitialState(), audience: "agent" as const };
     state = { ...state, streamingThinking: "leftover" };
     state = reduceEvent(state, {
       eventType: "message_update",
@@ -686,7 +702,7 @@ describe("thinking events", () => {
         assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta: " about this..." },
       },
     });
-    expect(state.streamingThinking).toBe("Let me think about this...");
+    expect(state.streamingThinking).toBe("");
   });
 
   it("should create thinking message on thinking_end and reset streamingThinking", () => {
@@ -717,10 +733,7 @@ describe("thinking events", () => {
       },
     });
     expect(state.streamingThinking).toBe("");
-    expect(state.messages).toHaveLength(1);
-    expect(state.messages[0].role).toBe("thinking");
-    expect(state.messages[0].content).toBe("Deep reasoning here");
-    expect(state.messages[0].timestamp).toBe(ts);
+    expect(state.messages).toHaveLength(0);
   });
 
   it("should skip creating thinking message when streamingThinking is empty", () => {
@@ -798,11 +811,7 @@ describe("thinking events", () => {
         assistantMessageEvent: { type: "thinking_end", contentIndex: 1, content: "Second thought" },
       },
     });
-    expect(state.messages).toHaveLength(2);
-    expect(state.messages[0].role).toBe("thinking");
-    expect(state.messages[0].content).toBe("First thought");
-    expect(state.messages[1].role).toBe("thinking");
-    expect(state.messages[1].content).toBe("Second thought");
+    expect(state.messages).toHaveLength(0);
   });
 
   it("should store full reasoning text without truncation", () => {
@@ -832,11 +841,12 @@ describe("thinking events", () => {
         assistantMessageEvent: { type: "thinking_end", contentIndex: 0, content: longThinking },
       },
     });
-    expect(state.messages[0].content).toHaveLength(10000);
+    expect(state.messages).toHaveLength(0);
+    expect(state.streamingThinking).toBe("");
   });
 
   it("should not interfere with text streaming during thinking", () => {
-    let state = createInitialState();
+    let state: SessionState = { ...createInitialState(), audience: "agent" as const };
     state = reduceEvent(state, { eventType: "agent_start", timestamp: Date.now(), data: {} });
     // Thinking happens
     state = reduceEvent(state, {
@@ -868,13 +878,13 @@ describe("thinking events", () => {
       eventType: "message_update",
       timestamp: Date.now(),
       data: {
-        message: { role: "assistant", content: [{ type: "text", text: "Here is the answer" }] },
+        message: { role: "assistant", audience: "agent", content: [{ type: "text", text: "Here is the answer" }] },
         assistantMessageEvent: { type: "text_delta", contentIndex: 1, delta: "Here is the answer" },
       },
     });
-    expect(state.messages).toHaveLength(1); // thinking message
-    expect(state.messages[0].role).toBe("thinking");
-    expect(state.streamingText).toBe("Here is the answer");
+    expect(state.messages).toHaveLength(0);
+    expect(state.streamingText).toBe("");
+    expect(state.heldOperatorText).toBe("Here is the answer");
     expect(state.streamingThinking).toBe("");
   });
 });
@@ -1090,14 +1100,14 @@ describe("command_feedback events", () => {
       expect(s2.messages).toHaveLength(1);
     });
 
-    it("should ignore duplicate pending request with same method+title but different requestId", () => {
+    it("keeps distinct pending requests even when their fallback titles are identical", () => {
       const initial = createInitialState();
+      const fallbackTitle = "I couldn't translate this question into plain language.";
 
-      const s1 = addInteractiveRequest(initial, "req-1", "confirm", { title: "Continue?" });
-      // Different requestId, same method+title (recursive proxy scenario)
-      const s2 = addInteractiveRequest(s1, "req-2", "confirm", { title: "Continue?" });
-      expect(s2).toBe(s1);
-      expect(s2.interactiveRequests).toHaveLength(1);
+      const s1 = addInteractiveRequest(initial, "req-1", "confirm", { title: fallbackTitle });
+      const s2 = addInteractiveRequest(s1, "req-2", "confirm", { title: fallbackTitle });
+      expect(s2.interactiveRequests.map((request) => request.requestId)).toEqual(["req-1", "req-2"]);
+      expect(s2.messages.map((message) => message.id)).toEqual(["ui-req-1", "ui-req-2"]);
     });
 
     it("should allow same title after previous request is resolved", () => {
@@ -1189,7 +1199,7 @@ describe("command_feedback events", () => {
       expect(toolMsg?.duration).toBe(3500);
     });
 
-    it("should store startedAt and duration on thinking messages", () => {
+    it("should suppress thinking timing metadata before finalization", () => {
       const state = applyEvents([
         {
           eventType: "message_update",
@@ -1207,12 +1217,11 @@ describe("command_feedback events", () => {
           data: { assistantMessageEvent: { type: "thinking_end", contentIndex: 0 } },
         },
       ]);
-      const thinkingMsg = state.messages.find((m) => m.role === "thinking");
-      expect(thinkingMsg?.startedAt).toBe(2000);
-      expect(thinkingMsg?.duration).toBe(3000);
+      expect(state.messages.some((m) => m.role === "thinking")).toBe(false);
+      expect(state.thinkingStartedAt).toBeUndefined();
     });
 
-    it("should track thinkingStartedAt for live counter during streaming", () => {
+    it("should not expose a live thinking counter", () => {
       const state = applyEvents([
         {
           eventType: "message_update",
@@ -1225,9 +1234,8 @@ describe("command_feedback events", () => {
           data: { assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta: "still thinking" } },
         },
       ]);
-      // While still streaming, thinkingStartedAt is set
-      expect(state.thinkingStartedAt).toBe(2000);
-      expect(state.streamingThinking).toBe("still thinking");
+      expect(state.thinkingStartedAt).toBeUndefined();
+      expect(state.streamingThinking).toBe("");
     });
 
     it("should clear thinkingStartedAt on thinking_end", () => {
@@ -1779,7 +1787,7 @@ describe("turnIndex tracking", () => {
       {
         eventType: "message_end",
         timestamp: 2000,
-        data: { message: { role: "assistant" }, entryId: "entry-a1" },
+        data: { message: { role: "assistant", content: [{ type: "text", text: "Hello" }] }, entryId: "entry-a1" },
       },
     ]);
     const assistant = state.messages.find(m => m.role === "assistant");

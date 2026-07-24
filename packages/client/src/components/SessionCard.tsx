@@ -14,6 +14,7 @@ import type { ContextUsageInfo } from "./SessionList.js";
 import type { OpenSpecChange } from "@blackbelt-technology/pi-dashboard-shared/types.js";
 import { OpenSpecActivityBadge } from "./OpenSpecActivityBadge.js";
 import { Pressable } from "../motion/index.js";
+import { operatorProseToolLabel } from "@blackbelt-technology/pi-dashboard-shared/operator-tool-visibility.js";
 
 export const statusColors: Record<string, string> = {
   active: "bg-green-500",
@@ -84,7 +85,7 @@ export function ActivityIndicator({ session }: { session: DashboardSession }) {
     return <span className="editorial-activity text-purple-400 truncate inline-flex items-center gap-0.5"><Icon path={mdiFlash} size={0.5} /> Waiting for input</span>;
   }
   if (session.currentTool) {
-    return <span className="editorial-activity text-yellow-400 truncate inline-flex items-center gap-0.5"><Icon path={mdiFlash} size={0.5} /> {session.currentTool}</span>;
+    return <span className="editorial-activity text-yellow-400 truncate inline-flex items-center gap-0.5"><Icon path={mdiFlash} size={0.5} /> {operatorProseToolLabel(session.currentTool) ?? session.currentTool}</span>;
   }
   if (session.status === "streaming") {
     return <span className="editorial-activity text-yellow-400 truncate inline-flex items-center gap-0.5"><Icon path={mdiFlash} size={0.5} /> Thinking…</span>;

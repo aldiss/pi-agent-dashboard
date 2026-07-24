@@ -26,7 +26,10 @@ import { createSemaphore, type Semaphore } from "@blackbelt-technology/pi-dashbo
 import { discoverSessionsForCwd } from "./session-discovery.js";
 import { discoverClaudeSessionsForCwd } from "./claude-session-discovery.js";
 import { isClaudeSessionFile, loadClaudeSessionEntries } from "./claude-transcript-reader.js";
-import { replayEntriesAsEvents } from "@blackbelt-technology/pi-dashboard-shared/state-replay.js";
+import {
+  collectPersistedDashboardAssets,
+  replayEntriesAsEvents,
+} from "@blackbelt-technology/pi-dashboard-shared/state-replay.js";
 import { scanPiResources } from "./pi-resource-scanner.js";
 import type { OpenSpecData, OpenSpecChange } from "@blackbelt-technology/pi-dashboard-shared/types.js";
 import type { PiResourcesResult } from "@blackbelt-technology/pi-dashboard-shared/rest-api.js";
@@ -39,6 +42,7 @@ export type { DiscoveredSession } from "./session-discovery.js";
 export interface LoadResult {
   success: boolean;
   events: Array<{ eventType: string; timestamp: number; data: Record<string, unknown> }>;
+  assets?: Record<string, { data: string; mimeType: string }>;
   error?: string;
 }
 
@@ -269,7 +273,8 @@ export function createDirectoryService(
       // real value instead of inferContextWindow(modelId)'s 200k Claude default.
       const eventMessages = replayEntriesAsEvents(sessionId, entries, knownContextWindow);
       const events = eventMessages.map((m) => m.event);
-      return { success: true, events };
+      const assets = collectPersistedDashboardAssets(entries);
+      return { success: true, events, assets };
     } catch (err: any) {
       const error = err?.code === "ENOENT" ? "file_not_found" : (err?.message ?? "parse_error");
       return { success: false, events: [], error };

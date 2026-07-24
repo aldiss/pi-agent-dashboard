@@ -29,6 +29,7 @@ vi.mock("../pi-resource-scanner.js", () => ({
 // Mock the shared state replay
 vi.mock("@blackbelt-technology/pi-dashboard-shared/state-replay.js", () => ({
   replayEntriesAsEvents: vi.fn(() => []),
+  collectPersistedDashboardAssets: vi.fn(() => ({})),
 }));
 
 // Mock session-discovery
@@ -164,13 +165,16 @@ describe("DirectoryService", () => {
   describe("loadSessionEvents", () => {
     it("loads and converts session entries", async () => {
       const { loadSessionEntries } = await import("../session-file-reader.js");
-      const { replayEntriesAsEvents } = await import("@blackbelt-technology/pi-dashboard-shared/state-replay.js");
+      const { collectPersistedDashboardAssets, replayEntriesAsEvents } = await import("@blackbelt-technology/pi-dashboard-shared/state-replay.js");
       
       const mockEntries = [{ type: "message", message: { role: "user", content: "hi" } }];
       (loadSessionEntries as any).mockReturnValueOnce(mockEntries);
       (replayEntriesAsEvents as any).mockReturnValueOnce([
         { type: "event_forward", sessionId: "s1", event: { eventType: "message_start", timestamp: 1, data: {} } },
       ]);
+      (collectPersistedDashboardAssets as any).mockReturnValueOnce({
+        "0123456789abcdef": { mimeType: "image/png", data: "AAAA" },
+      });
 
       const stateStore = createMockPreferencesStore();
       const sessionManager = createMockSessionManager();
@@ -179,6 +183,9 @@ describe("DirectoryService", () => {
       const result = await service.loadSessionEvents("s1", "/path/to/session.jsonl");
       expect(result.success).toBe(true);
       expect(result.events).toHaveLength(1);
+      expect(result.assets).toEqual({
+        "0123456789abcdef": { mimeType: "image/png", data: "AAAA" },
+      });
       expect(loadSessionEntries).toHaveBeenCalledWith("/path/to/session.jsonl");
     });
 

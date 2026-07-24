@@ -5,6 +5,8 @@
 import { describe, it, expect } from "vitest";
 import {
   inlineMessageText,
+  inlineAssistantMessageImages,
+  sha256Text,
   parseImageTokens,
   isLocalSrc,
   mimeFromExtension,
@@ -28,6 +30,193 @@ function fakeReader(files: Record<string, Buffer | "EACCES" | "EISDIR" | "EOTHER
 const PNG = Buffer.from("png-bytes");
 const PNG_2 = Buffer.from("different-png-bytes");
 const SVG = Buffer.from("<svg/>");
+
+describe("operator delivery image inlining", () => {
+  it("keeps source and certified delivery byte-identical and writes a bound presentation sidecar", () => {
+    const source = "Per dl-11743, inspect ![chart](./chart.png) before deciding.";
+    const sourceSha256 = sha256Text(source);
+    const certified = "Inspect the chart before deciding whether to release. ![chart](./chart.png)";
+    const message: any = {
+      role: "assistant",
+      content: source,
+      audience: "operator",
+      operatorDelivery: {
+        version: 1,
+        sourceSha256,
+        status: "ready",
+        text: certified,
+        checks: { plain: true, anchorsPreserved: true },
+      },
+    };
+
+    const assets = inlineAssistantMessageImages(message, {
+      readFile: fakeReader({ "/work/chart.png": PNG }),
+      cwd: "/work",
+      alreadyEmitted: new Set(),
+    });
+
+    expect(message.content).toBe(source);
+    expect(sha256Text(message.content)).toBe(sourceSha256);
+    expect(message.operatorDelivery.text).toBe(certified);
+    expect(message.operatorDeliveryPresentation).toEqual({
+      version: 1,
+      deliverySha256: sha256Text(certified),
+      text: `Inspect the chart before deciding whether to release. ![chart](pi-asset:${hashBytes(PNG)})`,
+    });
+    expect(assets).toEqual([
+      { hash: hashBytes(PNG), mimeType: "image/png", data: PNG.toString("base64") },
+    ]);
+    expect(message.dashboardAssets).toEqual(assets);
+  });
+
+  it("keeps source content unchanged for a valid failed delivery", () => {
+    const source = "Inspect ![chart](./chart.png).";
+    const message: any = {
+      role: "assistant",
+      content: source,
+      operatorDelivery: {
+        version: 1,
+        sourceSha256: sha256Text(source),
+        status: "failed",
+        code: "provider-timeout",
+      },
+    };
+    const assets = inlineAssistantMessageImages(message, {
+      readFile: fakeReader({ "/work/chart.png": PNG }),
+      cwd: "/work",
+      alreadyEmitted: new Set(),
+    });
+    expect(message.content).toBe(source);
+    expect(message.operatorDeliveryPresentation).toBeUndefined();
+    expect(assets).toEqual([]);
+  });
+
+  it("persists bytes for a reused asset even when no duplicate register is emitted", () => {
+    const source = "Inspect the chart.";
+    const hash = hashBytes(PNG);
+    const knownAssets = new Map([[hash, {
+      hash,
+      mimeType: "image/png",
+      data: PNG.toString("base64"),
+    }]]);
+    const message: any = {
+      role: "assistant",
+      content: source,
+      operatorDelivery: {
+        version: 1,
+        sourceSha256: sha256Text(source),
+        status: "ready",
+        text: "Use this chart. ![chart](./chart.png)",
+        checks: { plain: true, anchorsPreserved: true },
+      },
+    };
+    const assets = inlineAssistantMessageImages(message, {
+      readFile: fakeReader({ "/work/chart.png": PNG }),
+      cwd: "/work",
+      alreadyEmitted: new Set([hash]),
+      knownAssets,
+    });
+    expect(assets).toEqual([]);
+    expect(message.operatorDelivery.text).toBe("Use this chart. ![chart](./chart.png)");
+    expect(message.operatorDeliveryPresentation.text).toBe(
+      `Use this chart. ![chart](pi-asset:${hash})`,
+    );
+    expect(message.dashboardAssets).toEqual([knownAssets.get(hash)]);
+  });
+
+  it("keeps a bound agent source immutable and presents its local image through the same sidecar", () => {
+    const source = "Inspect ![chart](./chart.png).";
+    const message: any = {
+      role: "assistant",
+      content: source,
+      audience: "agent",
+      operatorDelivery: {
+        version: 1,
+        sourceSha256: sha256Text(source),
+        status: "agent",
+      },
+    };
+    const assets = inlineAssistantMessageImages(message, {
+      readFile: fakeReader({ "/work/chart.png": PNG }),
+      cwd: "/work",
+      alreadyEmitted: new Set(),
+    });
+    expect(message.content).toBe(source);
+    expect(message.operatorDeliveryPresentation).toEqual({
+      version: 1,
+      deliverySha256: sha256Text(source),
+      text: `Inspect ![chart](pi-asset:${hashBytes(PNG)}).`,
+    });
+    expect(assets).toHaveLength(1);
+  });
+
+  it("leaves failed image tokens unchanged in a certified presentation rewrite", () => {
+    const source = "Inspect the attachments.";
+    const certified = "See ![available](./ok.png) and ![missing](./missing.png).";
+    const message: any = {
+      role: "assistant",
+      content: source,
+      operatorDelivery: {
+        version: 1,
+        sourceSha256: sha256Text(source),
+        status: "ready",
+        text: certified,
+        checks: { plain: true, anchorsPreserved: true },
+      },
+    };
+    inlineAssistantMessageImages(message, {
+      readFile: fakeReader({ "/work/ok.png": PNG }),
+      cwd: "/work",
+      alreadyEmitted: new Set(),
+    });
+    expect(message.operatorDelivery.text).toBe(certified);
+    expect(message.operatorDeliveryPresentation.text).toBe(
+      `See ![available](pi-asset:${hashBytes(PNG)}) and ![missing](./missing.png).`,
+    );
+  });
+
+  it("keeps legacy agent/no-envelope source inlining behavior", () => {
+    const message: any = { role: "assistant", content: "Inspect ![chart](./chart.png).", audience: "agent" };
+    const assets = inlineAssistantMessageImages(message, {
+      readFile: fakeReader({ "/work/chart.png": PNG }),
+      cwd: "/work",
+      alreadyEmitted: new Set(),
+    });
+    expect(message.content).toBe(`Inspect ![chart](pi-asset:${hashBytes(PNG)}).`);
+    expect(assets).toHaveLength(1);
+  });
+
+  it("does not mutate shallow-shared source blocks on an unstamped update before final delivery", () => {
+    const blocks = [{ type: "text", text: "Inspect ![chart](./chart.png) before deciding." }];
+    const partial: any = { role: "assistant", content: blocks };
+    const finalMessage: any = { role: "assistant", content: blocks, audience: "operator" };
+    const opts = {
+      readFile: fakeReader({ "/work/chart.png": PNG }),
+      cwd: "/work",
+      alreadyEmitted: new Set<string>(),
+    };
+
+    expect(inlineAssistantMessageImages(partial, opts, "update")).toEqual([]);
+    expect(finalMessage.content[0].text).toBe("Inspect ![chart](./chart.png) before deciding.");
+
+    const source = finalMessage.content[0].text;
+    finalMessage.operatorDelivery = {
+      version: 1,
+      sourceSha256: sha256Text(source),
+      status: "ready",
+      text: "The chart supports keeping the release undeployed. ![chart](./chart.png)",
+      checks: { plain: true, anchorsPreserved: true },
+    };
+    const assets = inlineAssistantMessageImages(finalMessage, opts, "end");
+
+    expect(sha256Text(finalMessage.content[0].text)).toBe(finalMessage.operatorDelivery.sourceSha256);
+    expect(finalMessage.operatorDelivery.text).toBe(
+      "The chart supports keeping the release undeployed. ![chart](./chart.png)",
+    );
+    expect(finalMessage.operatorDeliveryPresentation.text).toContain(`pi-asset:${hashBytes(PNG)}`);
+    expect(assets).toHaveLength(1);
+  });
+});
 
 describe("parseImageTokens", () => {
   it("matches a single image token", () => {

@@ -22,6 +22,8 @@ import React, { useMemo, useState } from "react";
 import { Icon } from "@mdi/react";
 import { mdiPin, mdiPinOff, mdiChevronRight, mdiChevronDown, mdiClose } from "@mdi/js";
 import type { ChatMessage } from "../lib/event-reducer.js";
+import { operatorDeliveryTextForPresentation } from "../lib/operator-delivery.js";
+import { operatorProseToolLabel } from "@blackbelt-technology/pi-dashboard-shared/operator-tool-visibility.js";
 
 interface Props {
   sessionId: string;
@@ -61,7 +63,7 @@ function roleIndicator(msg: ChatMessage): { label: string; colorClass: string } 
       return { label: "thinking", colorClass: "text-purple-300" };
     case "toolResult":
       return {
-        label: msg.toolName ? `tool: ${msg.toolName}` : "tool",
+        label: msg.toolName ? `tool: ${operatorProseToolLabel(msg.toolName) ?? msg.toolName}` : "tool",
         colorClass: "text-amber-400",
       };
     case "bashOutput":
@@ -87,9 +89,9 @@ function previewText(msg: ChatMessage): string {
   // tool-calls we prefer the friendly toolName + args summary if content
   // is empty; for plain text we use content directly. Newlines flatten
   // to spaces so the preview stays single-line.
-  let src = msg.content;
+  let src = operatorDeliveryTextForPresentation(msg.content);
   if (!src && msg.role === "toolResult") {
-    src = msg.toolName ?? "tool call";
+    src = operatorProseToolLabel(msg.toolName) ?? msg.toolName ?? "tool call";
   }
   if (!src) src = "(empty)";
   const flat = src.replace(/\s+/g, " ").trim();

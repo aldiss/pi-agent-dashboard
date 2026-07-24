@@ -48,10 +48,18 @@ function stateWithToolMessage(overrides: Partial<ChatMessage> = {}) {
   return state;
 }
 
+function renderToolChat(state: ReturnType<typeof stateWithToolMessage>) {
+  const rendered = render(<ThemeProvider><ChatView state={state} toolContext={defaultToolContext} /></ThemeProvider>);
+  const reveal = [...rendered.container.querySelectorAll("button")]
+    .find((button) => button.textContent?.includes("Show all activity"));
+  if (reveal) fireEvent.click(reveal);
+  return rendered;
+}
+
 describe("ChatView", () => {
   it("loading ≠ empty: zero messages + replay NOT complete → 'Loading messages…' (build-2 fix-cycle MAJOR 2)", () => {
     const state = createInitialState(); // replayComplete undefined = still loading
-    const { container } = render(<ThemeProvider><ChatView state={state} toolContext={defaultToolContext} /></ThemeProvider>);
+    const { container } = renderToolChat(state);
     expect(container.querySelector('[data-testid="chat-loading"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="chat-empty"]')).toBeNull();
     expect(container.querySelector('[data-testid="chat-data-unavailable"]')).toBeNull();
@@ -59,7 +67,7 @@ describe("ChatView", () => {
 
   it("truthful empty: zero messages + replay COMPLETE → 'No messages yet'", () => {
     const state = { ...createInitialState(), replayComplete: true };
-    const { container } = render(<ThemeProvider><ChatView state={state} toolContext={defaultToolContext} /></ThemeProvider>);
+    const { container } = renderToolChat(state);
     expect(container.querySelector('[data-testid="chat-empty"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="chat-loading"]')).toBeNull();
   });
@@ -76,7 +84,7 @@ describe("ChatView", () => {
     const state = stateWithMessages([
       { id: "1", role: "user", content: "Hello **world**" },
     ]);
-    const { container } = render(<ThemeProvider><ChatView state={state} toolContext={defaultToolContext} /></ThemeProvider>);
+    const { container } = renderToolChat(state);
     const mdBtn = container.querySelector('button[title="Copy as Markdown"]');
     const plainBtn = container.querySelector('button[title="Copy as plain text"]');
     expect(mdBtn).not.toBeNull();
@@ -87,7 +95,7 @@ describe("ChatView", () => {
     const state = stateWithMessages([
       { id: "1", role: "assistant", content: "Here is the answer" },
     ]);
-    const { container } = render(<ThemeProvider><ChatView state={state} toolContext={defaultToolContext} /></ThemeProvider>);
+    const { container } = renderToolChat(state);
     const mdBtn = container.querySelector('button[title="Copy as Markdown"]');
     const plainBtn = container.querySelector('button[title="Copy as plain text"]');
     expect(mdBtn).not.toBeNull();
@@ -96,7 +104,7 @@ describe("ChatView", () => {
 
   it("renders toolResult messages using ToolCallStep", () => {
     const state = stateWithToolMessage();
-    const { container } = render(<ThemeProvider><ChatView state={state} toolContext={defaultToolContext} /></ThemeProvider>);
+    const { container } = renderToolChat(state);
 
     // Should show the tool summary (ToolCallStep renders a button with summary text)
     const button = container.querySelector("button");
@@ -109,7 +117,7 @@ describe("ChatView", () => {
 
   it("renders expandable tool call with args and result", () => {
     const state = stateWithToolMessage();
-    const { container } = render(<ThemeProvider><ChatView state={state} toolContext={defaultToolContext} /></ThemeProvider>);
+    const { container } = renderToolChat(state);
 
     // Click to expand
     const button = container.querySelector("button")!;
@@ -125,7 +133,7 @@ describe("ChatView", () => {
 
   it("renders running tool call with spinner icon", () => {
     const state = stateWithToolMessage({ toolStatus: "running" });
-    const { container } = render(<ThemeProvider><ChatView state={state} toolContext={defaultToolContext} /></ThemeProvider>);
+    const { container } = renderToolChat(state);
 
     const button = container.querySelector("button");
     expect(button!.querySelector("svg")).not.toBeNull();
@@ -133,7 +141,7 @@ describe("ChatView", () => {
 
   it("renders error tool call with error icon", () => {
     const state = stateWithToolMessage({ toolStatus: "error" });
-    const { container } = render(<ThemeProvider><ChatView state={state} toolContext={defaultToolContext} /></ThemeProvider>);
+    const { container } = renderToolChat(state);
 
     const button = container.querySelector("button");
     expect(button!.querySelector("svg")).not.toBeNull();
@@ -174,7 +182,7 @@ describe("ChatView", () => {
 
   it("renders tool call step with left accent border", () => {
     const state = stateWithToolMessage();
-    const { container } = render(<ThemeProvider><ChatView state={state} toolContext={defaultToolContext} /></ThemeProvider>);
+    const { container } = renderToolChat(state);
     const toolStep = container.querySelector(".border-l-2.border-\\[var\\(--border-secondary\\)\\]");
     expect(toolStep).not.toBeNull();
   });

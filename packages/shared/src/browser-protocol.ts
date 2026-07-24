@@ -568,10 +568,9 @@ export interface BrowserExtUiDecoratorMessage {
 
 /**
  * Server → browser: register a base64-encoded image asset under a content
- * hash for the given session. Forwarded verbatim from the bridge's
- * `asset_register` message and replayed to reconnecting browsers (in
- * chronological position relative to its referencing `message_update` /
- * `message_end`). The client populates a per-session `Map<hash,{data,mime}>`
+ * hash for the given session. Forwarded from the bridge's `asset_register`
+ * message and replayed to reconnecting browsers before referencing message
+ * events. The client populates a per-session `Map<hash,{data,mime}>`
  * consumed by the `MarkdownContent` `pi-asset:` resolver.
  * See change: chat-markdown-local-images-and-math.
  */

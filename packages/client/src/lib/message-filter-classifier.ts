@@ -185,11 +185,16 @@ export function classifyMessage(
   // Covers ask_user / select / batch / input / confirm / multiselect.
   if (m.role === "interactiveUi") return "tierA";
 
-  // Thinking — model reasoning content; narrative not system-notification.
-  // Explicit clause for readability + future-resilience against the
-  // defensive default at function-end being changed. See fix-thinking-block-
-  // streaming-state-loss-2026-05-25.
-  if (m.role === "thinking") return "tierB";
+  // Finalized thinking is reconstructed only for a source-bound explicit-agent
+  // message. Keep that detail available behind Agent-only chat without making
+  // it visible under the default narrative filter. Historical unstamped rows
+  // retain the prior tier-B compatibility behavior.
+  if (m.role === "thinking") {
+    const stamp = readAudienceStamp(m.audience);
+    return stamp.state === "valid" && stamp.value === "agent"
+      ? "meshChatter"
+      : "tierB";
+  }
 
   // System notifications — turnSeparator / raw debug events.
   if (SYSTEM_ROLES.has(m.role)) return "systemNotifications";

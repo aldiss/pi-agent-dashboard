@@ -9,10 +9,23 @@
  */
 import { describe, it, expect } from "vitest";
 import { replayEntriesAsEvents } from "@blackbelt-technology/pi-dashboard-shared/state-replay.js";
+import { extractFinalizedAssistantProse, sha256Hex } from "@blackbelt-technology/pi-dashboard-shared/operator-delivery.js";
 import { createInitialState, reduceEvent } from "../lib/event-reducer.js";
 
+function stampAgentMessage(message: Record<string, unknown>): Record<string, unknown> {
+  const source = extractFinalizedAssistantProse(message.content);
+  return {
+    ...message,
+    audience: "agent",
+    operatorDelivery: { version: 1, sourceSha256: sha256Hex(source), status: "agent" },
+  };
+}
+
 function replayAndReduce(entries: any[]) {
-  const events = replayEntriesAsEvents("sess-1", entries);
+  const stamped = entries.map((entry) => entry?.message?.role === "assistant"
+    ? { ...entry, message: stampAgentMessage(entry.message) }
+    : entry);
+  const events = replayEntriesAsEvents("sess-1", stamped);
   let state = createInitialState();
   for (const env of events) {
     state = reduceEvent(state, env.event);
@@ -104,7 +117,7 @@ describe("state-replay text+toolCall order", () => {
     expect(idxToolB).toBe(idxAssistantB + 1);
   });
 
-  it("[thinking, text, toolCall] assistant message replays as thinking → text → tool", () => {
+  it("[thinking, text, toolCall] delays thinking until final agent proof, then preserves order", () => {
     const entries = [
       {
         type: "message",
@@ -124,10 +137,6 @@ describe("state-replay text+toolCall order", () => {
 
     const state = replayAndReduce(entries);
     const tail = state.messages.slice(-3);
-    // After fix-thinking-block-streaming-state-loss-2026-05-25:
-    // state-replay synthesizes thinking_* events for persisted
-    // {type:"thinking"} content blocks, so the thinking row IS in the
-    // suffix and precedes the assistant text + tool result.
     const thinkingIdx = tail.findIndex((m) => m.role === "thinking");
     const assistantIdx = tail.findIndex((m) => m.role === "assistant");
     const toolIdx = tail.findIndex((m) => m.role === "toolResult");
@@ -144,7 +153,7 @@ describe("state-replay text+toolCall order", () => {
   // | thinking_end } for every persisted {type:"thinking"} content
   // block so the reducer can rebuild role:"thinking" rows on cold-replay.
 
-  it("[thinking] assistant message replays as a thinking row in messages[]", () => {
+  it("[thinking] synthesis stays hidden pre-final and becomes one finalized agent row", () => {
     const entries = [
       {
         type: "message",
@@ -179,7 +188,7 @@ describe("state-replay text+toolCall order", () => {
     expect((events[deltaIdx].data as any).assistantMessageEvent.delta).toBe("Reasoning content here.");
     expect((events[endIdx].data as any).assistantMessageEvent.signature).toBe("sig-1");
 
-    // Assert at reduced-state level: the thinking row is in messages[].
+    // The authoritative agent-stamped message_end reconstructs the row.
     const state = replayAndReduce(entries);
     const thinkingRows = state.messages.filter((m) => m.role === "thinking");
     expect(thinkingRows).toHaveLength(1);
@@ -215,19 +224,8 @@ describe("state-replay text+toolCall order", () => {
   });
 
   it("multiple thinking blocks in one assistant message both produce synthesized events", () => {
-    // Empirical note: this scenario has not been observed in 2636 real
-    // assistant messages sampled across 30 recent sessions (all have
-    // n=0 or n=1 thinking blocks per message). Test is defensive only.
-    //
-    // The reorder pass at message_end pairs thinking rows by walking
-    // suffix backwards (findLastUnclaimed), which preserves correct
-    // pairing for the dominant n=1 case but reverses the pairing when
-    // n>=2 within a single message. We assert at the synth-events
-    // level (always correct) rather than the reduced-state level
-    // (subject to the reorder-helper limitation). The multi-thinking-
-    // reorder N-to-N pairing limitation is a v0.5+ candidate sister-
-    // cluster signal for the reorder helper at event-reducer.ts:~388
-    // findLastUnclaimed.
+    // Defensive multi-block fixture: finalized content indexes make the
+    // N-to-N thinking order deterministic even around a tool call.
     const entries = [
       {
         type: "message",
@@ -254,11 +252,47 @@ describe("state-replay text+toolCall order", () => {
       .map((e) => (e.data as any).assistantMessageEvent.delta as string);
     expect(thinkingEndDeltas).toEqual(["first thought", "second thought after tool"]);
 
-    // At reduced-state level, the reorder pass produces two thinking
-    // rows (count is correct); pairing-order is a known pre-existing
-    // limitation banked as v0.5+ candidate.
     const state = replayAndReduce(entries);
     const thinkingRows = state.messages.filter((m) => m.role === "thinking");
-    expect(thinkingRows).toHaveLength(2);
+    expect(thinkingRows.map((row) => row.content)).toEqual([
+      "first thought",
+      "second thought after tool",
+    ]);
+    expect(state.messages.slice(-4).map((row) => [row.role, row.content])).toEqual([
+      ["thinking", "first thought"],
+      ["toolResult", "edit"],
+      ["thinking", "second thought after tool"],
+      ["assistant", "final answer"],
+    ]);
+  });
+
+  it("replaying the same finalized entry twice is idempotent for text, thinking, and tools", () => {
+    const entries = [{
+      type: "message",
+      id: "a-idempotent",
+      timestamp: "2026-04-29T06:31:21.000Z",
+      message: {
+        role: "assistant",
+        content: [
+          { type: "thinking", thinking: "private agent detail" },
+          { type: "text", text: "Final agent text" },
+          { type: "toolCall", id: "t-idempotent", name: "read", arguments: { path: "x" } },
+        ],
+      },
+    }];
+    const stampedEntries = entries.map((entry) => ({
+      ...entry,
+      message: stampAgentMessage(entry.message),
+    }));
+    const events = replayEntriesAsEvents("sess-1", stampedEntries);
+    let state = createInitialState();
+    for (const pass of [events, events]) {
+      for (const envelope of pass) {
+        state = reduceEvent(state, envelope.event);
+      }
+    }
+    expect(state.messages.filter((row) => row.role === "thinking")).toHaveLength(1);
+    expect(state.messages.filter((row) => row.role === "assistant")).toHaveLength(1);
+    expect(state.messages.filter((row) => row.toolCallId === "t-idempotent")).toHaveLength(1);
   });
 });

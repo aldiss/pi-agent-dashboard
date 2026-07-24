@@ -24,6 +24,9 @@ import { discoverDashboard } from "@blackbelt-technology/pi-dashboard-shared/mdn
 import { launchServer } from "./server-launcher.js";
 import { autoStartServer } from "./server-auto-start.js";
 import type { ServerToExtensionMessage } from "@blackbelt-technology/pi-dashboard-shared/protocol.js";
+import {
+  withoutPersistedDashboardAssets,
+} from "@blackbelt-technology/pi-dashboard-shared/state-replay.js";
 import { expandPromptTemplateFromDisk } from "./prompt-expander.js";
 
 import { PromptBus } from "./prompt-bus.js";
@@ -43,7 +46,9 @@ import { sendStateSync as _sendStateSync, replaySessionEntries as _replaySession
 import { sendModelUpdateIfChanged as _sendModelUpdateIfChanged, sendSessionNameIfChanged as _sendSessionNameIfChanged, sendGitInfoIfChanged as _sendGitInfoIfChanged, resetReconnectCaches as _resetReconnectCaches } from "./model-tracker.js";
 import { registerFlowEventListeners, FLOW_EVENT_MAP, SUBAGENT_EVENT_MAP } from "./flow-event-wiring.js";
 import { refreshUiModules, subscribeUiInvalidate, handleUiManagement, type UiModulesBridgeCtx } from "./ui-modules.js";
-import { inlineMessageText, type ReadFileOutcome } from "./markdown-image-inliner.js";
+import { inlineAssistantMessageImages, type AssetToEmit, type ReadFileOutcome } from "./markdown-image-inliner.js";
+import { createAppendBoundMessageEndForwarder, isAppendMessageRole } from "./message-end-forwarder.js";
+import { OperatorToolWireTracker } from "./operator-tool-wire-tracker.js";
 
 const HEARTBEAT_INTERVAL = 15_000;
 const GIT_POLL_INTERVAL = 30_000;
@@ -273,8 +278,8 @@ function initBridge(pi: ExtensionAPI) {
   // entry id of the message currently being emitted. We solve this by:
   //  1. Wrapping ctx.sessionManager.appendMessage at session_start to stamp
   //     the just-generated entry id onto the message object reference.
-  //  2. Deferring the message_end enrichment-and-send via setTimeout(0) so
-  //     the awaited dispatcher unwinds and appendMessage runs in between.
+  //  2. Binding message_end preparation and forwarding to the wrapped
+  //     appendMessage call after every awaited extension handler completes.
   //  3. Stamping a nonce on message_start/message_end events; emitting an
   //     entry_persisted event after appendMessage so the client reducer can
   //     back-fill user-message ChatMessage.entryId.
@@ -283,6 +288,7 @@ function initBridge(pi: ExtensionAPI) {
   const pendingNonces = new WeakMap<object, string>();
   let nonceCounter = 0;
   const nextNonce = (): string => `n-${++nonceCounter}-${Date.now()}`;
+  let activeAssistantNonce: string | undefined;
   let appendMessageWrapped = false;
   let lastWrappedSm: any = null;
 
@@ -304,6 +310,7 @@ function initBridge(pi: ExtensionAPI) {
   // session_start). The Map keys are sessionId strings.
   // ---------------------------------------------------------------------
   const emittedAssetHashesBySession = new Map<string, Set<string>>();
+  const knownAssetsBySession = new Map<string, Map<string, AssetToEmit>>();
   function getEmittedAssetHashes(sid: string): Set<string> {
     let s = emittedAssetHashesBySession.get(sid);
     if (!s) {
@@ -311,6 +318,14 @@ function initBridge(pi: ExtensionAPI) {
       emittedAssetHashesBySession.set(sid, s);
     }
     return s;
+  }
+  function getKnownAssets(sid: string): Map<string, AssetToEmit> {
+    let assets = knownAssetsBySession.get(sid);
+    if (!assets) {
+      assets = new Map<string, AssetToEmit>();
+      knownAssetsBySession.set(sid, assets);
+    }
+    return assets;
   }
 
   /**
@@ -337,14 +352,12 @@ function initBridge(pi: ExtensionAPI) {
   }
 
   /**
-   * Apply the markdown-image inliner to an assistant message_update /
-   * message_end event. Mutates `event.message.content` in place (string
-   * → rewritten string; array<{type:"text",text}> → rewritten text in
-   * each text block). Emits `asset_register` messages BEFORE returning so
-   * the caller's subsequent `connection.send(eventForward)` lands AFTER
-   * the assets it references. User-role and thinking events are no-ops.
+   * Apply the markdown-image inliner to an assistant event. A valid finalized
+   * operatorDelivery freezes certified bytes and receives a digest-bound image
+   * presentation sidecar; legacy/no-envelope finals retain source rewriting.
+   * Assets emit first.
    */
-  function maybeInlineAssistantImages(event: any): void {
+  function maybeInlineAssistantImages(event: any, phase: "update" | "end"): void {
     const msg = event?.message;
     if (!msg || typeof msg !== "object") return;
     if (msg.role !== "assistant") return;
@@ -352,27 +365,12 @@ function initBridge(pi: ExtensionAPI) {
     // process cwd. The inliner resolves relative `./pic.png` against this.
     const cwd = (cachedCtx?.cwd as string | undefined) ?? process.cwd();
     const alreadyEmitted = getEmittedAssetHashes(sessionId);
-    const allAssets: { hash: string; mimeType: string; data: string }[] = [];
-
-    const rewriteOne = (text: string): string => {
-      const r = inlineMessageText(text, {
-        readFile: inlinerReadFile,
-        cwd,
-        alreadyEmitted,
-      });
-      for (const a of r.assetsToEmit) allAssets.push(a);
-      return r.rewritten;
-    };
-
-    if (typeof msg.content === "string") {
-      msg.content = rewriteOne(msg.content);
-    } else if (Array.isArray(msg.content)) {
-      for (const block of msg.content) {
-        if (block && typeof block === "object" && block.type === "text" && typeof block.text === "string") {
-          block.text = rewriteOne(block.text);
-        }
-      }
-    }
+    const allAssets = inlineAssistantMessageImages(msg, {
+      readFile: inlinerReadFile,
+      cwd,
+      alreadyEmitted,
+      knownAssets: getKnownAssets(sessionId),
+    }, phase);
 
     // Send each new asset BEFORE the (rewritten) message event lands.
     for (const a of allAssets) {
@@ -386,6 +384,39 @@ function initBridge(pi: ExtensionAPI) {
     }
   }
 
+  function sendFinalMessageEnd(event: any, message: object, entryId: string | undefined, nonce: string): void {
+    if (!isActive() || !sessionReady) return;
+    const wireMessage = operatorToolWireTracker.sanitizeMessage(
+      withoutPersistedDashboardAssets(message),
+    );
+    connection.send(mapEventToProtocol(sessionId, { ...event, message: wireMessage, entryId, nonce }));
+    const synthetic = retryTracker.observeMessageEnd(sessionId, message as any);
+    if (synthetic) {
+      sendSyntheticRetryEvent(synthetic.eventType, synthetic.data);
+      if (synthetic.eventType === "auto_retry_start") {
+        usageLimitOrderer.noteRetryStart(sessionId);
+      } else {
+        usageLimitOrderer.noteRetryEnd(sessionId);
+      }
+    }
+  }
+
+  const messageEndForwarder = createAppendBoundMessageEndForwarder<{
+    event: any;
+    ctx: any;
+    messageRef: any;
+  }>({
+    prepare: ({ event }, message) => {
+      maybeInlineAssistantImages({ ...event, message }, "end");
+    },
+    resolveFallbackEntryId: (message, { ctx }) => (
+      (typeof (message as any).id === "string" ? (message as any).id : undefined)
+      ?? idByMessage.get(message)
+      ?? ctx.sessionManager?.getLeafId?.()
+    ),
+    send: ({ event }, message, entryId, nonce) => sendFinalMessageEnd(event, message, entryId, nonce),
+  });
+
   /**
    * Wrap ctx.sessionManager.appendMessage once per session so that when pi
    * generates an entry id we capture it in the WeakMap and emit
@@ -398,6 +429,13 @@ function initBridge(pi: ExtensionAPI) {
     if (sm === lastWrappedSm && appendMessageWrapped) return;
     const original = sm.appendMessage.bind(sm);
     sm.appendMessage = (msg: any, ...rest: any[]) => {
+      const objectMessage = msg && typeof msg === "object" ? msg as object : undefined;
+      const preparedAppend = objectMessage
+        ? messageEndForwarder.beforeAppend(objectMessage)
+        : undefined;
+      if (objectMessage && preparedAppend && !pendingNonces.has(objectMessage)) {
+        pendingNonces.set(objectMessage, preparedAppend.nonce);
+      }
       const result = original(msg, ...rest);
       try {
         if (msg && typeof msg === "object" && typeof msg.id === "string") {
@@ -412,6 +450,10 @@ function initBridge(pi: ExtensionAPI) {
             connection.send(mapEventToProtocol(sessionId, ev));
             pendingNonces.delete(msg as object);
           }
+        }
+        if (objectMessage) {
+          const entryId = typeof msg.id === "string" ? msg.id : idByMessage.get(objectMessage);
+          messageEndForwarder.afterAppend(objectMessage, entryId);
         }
       } catch (err) {
         console.error("[dashboard] entry_persisted emit failed:", err);
@@ -948,6 +990,11 @@ function initBridge(pi: ExtensionAPI) {
     "session_before_tree",
     "session_tree",
   ] as const;
+
+  const operatorToolWireTracker = new OperatorToolWireTracker();
+  const operatorToolEventForWire = (eventType: string, event: any): Record<string, unknown> =>
+    operatorToolWireTracker.sanitize(eventType, event);
+
   // Excluded from subscription (not forwarded):
   // - `context`: carries full message arrays (very large)
   // - `before_provider_request`: carries raw API payloads (very large)
@@ -1023,6 +1070,7 @@ function initBridge(pi: ExtensionAPI) {
         if (messageRef && typeof messageRef === "object") {
           const nonce = nextNonce();
           pendingNonces.set(messageRef as object, nonce);
+          if ((messageRef as any).role === "assistant") activeAssistantNonce = nonce;
           // Message-queue dispatch→work classification. A committing user
           // message_start is NOT always a queued follow-up being pulled into
           // work — a TUI STEER (Enter-while-streaming) ALSO emits
@@ -1067,62 +1115,58 @@ function initBridge(pi: ExtensionAPI) {
         }
       }
 
-      // For message_end: defer the SEND via setTimeout(0). Pi 0.69+ runs
-      // sessionManager.appendMessage AFTER the awaited extension dispatcher
-      // returns, so a queueMicrotask deferral is no longer enough. By the
-      // time the macrotask fires, appendMessage has run, pi has mutated
-      // event.message.id in place, and the wrapped appendMessage above has
-      // populated idByMessage. We also stamp a nonce so a downstream
-      // entry_persisted can correlate (covers user message_end where the
-      // earlier message_start nonce is what the reducer is waiting on).
-      // See change: fix-per-message-fork.
+      // Hold message_end on its shared message object until appendMessage runs
+      // after every awaited extension handler. This is handler-order independent:
+      // producer materialization finishes before persistence and forwarding.
       if (eventType === "message_end") {
         wrapAppendMessageForCtx(ctx);
         const messageRef = (event as any).message;
         const nonce = messageRef && typeof messageRef === "object"
-          ? (pendingNonces.get(messageRef as object) ?? nextNonce())
+          ? (pendingNonces.get(messageRef as object) ??
+              ((messageRef as any).role === "assistant" ? activeAssistantNonce : undefined) ??
+              nextNonce())
           : nextNonce();
         if (messageRef && typeof messageRef === "object" && !pendingNonces.has(messageRef as object)) {
           pendingNonces.set(messageRef as object, nonce);
         }
-        // Apply markdown image inliner to assistant content. Mutates
-        // event.message.content in place AND ships any new asset_register
-        // messages immediately so they precede the deferred message_end
-        // send below. See change: chat-markdown-local-images-and-math.
-        maybeInlineAssistantImages(event);
-        setTimeout(() => {
-          if (!isActive() || !sessionReady) return;
-          const entryId =
-            (messageRef && typeof messageRef === "object" && typeof messageRef.id === "string" ? messageRef.id : undefined)
-            ?? (messageRef ? idByMessage.get(messageRef as object) : undefined)
-            ?? ctx.sessionManager?.getLeafId?.();
-          const enriched = { ...event, entryId, nonce };
-          const protoMsg = mapEventToProtocol(sessionId, enriched);
-          connection.send(protoMsg);
-          // After forwarding the original message_end, ask the retry tracker
-          // whether to synthesize an auto_retry_* event. See change:
-          // fix-provider-retry-infinite-loop.
-          const synthetic = retryTracker.observeMessageEnd(sessionId, messageRef as any);
-          if (synthetic) {
-            sendSyntheticRetryEvent(synthetic.eventType, synthetic.data);
-            if (synthetic.eventType === "auto_retry_start") {
-              usageLimitOrderer.noteRetryStart(sessionId);
-            } else {
-              usageLimitOrderer.noteRetryEnd(sessionId);
-            }
-          }
-        }, 0);
+        if (isAppendMessageRole(messageRef)) {
+          messageEndForwarder.hold(messageRef as object, { event, ctx, messageRef }, nonce);
+        } else {
+          // Custom messages use appendCustomMessageEntry, not appendMessage;
+          // forward them immediately instead of waiting for the escape timer.
+          const immediateMessage = messageRef && typeof messageRef === "object"
+            ? messageRef as object
+            : { role: "unknown", content: "" };
+          sendFinalMessageEnd(event, immediateMessage, undefined, nonce);
+        }
+        if ((messageRef as any)?.role === "assistant") activeAssistantNonce = undefined;
         return;
       }
 
       // Apply markdown image inliner to assistant message_update events.
       // For other event types this is a no-op (role check inside the helper).
       // See change: chat-markdown-local-images-and-math.
+      let eventForForward = event;
       if (eventType === "message_update") {
-        maybeInlineAssistantImages(event);
+        const messageRef = (event as any).message;
+        const nonce = messageRef && typeof messageRef === "object"
+          ? pendingNonces.get(messageRef as object) ?? activeAssistantNonce
+          : activeAssistantNonce;
+        eventForForward = nonce ? { ...event, nonce } : event;
+        maybeInlineAssistantImages(eventForForward, "update");
+        if ((eventForForward as any).message?.role === "assistant") {
+          eventForForward = {
+            ...eventForForward,
+            message: operatorToolWireTracker.sanitizeMessage((eventForForward as any).message),
+          };
+        }
       }
 
-      const msg = mapEventToProtocol(sessionId, event);
+      // Core emits tool_execution_start before beforeToolCall mutation. Clone
+      // only the wire event and deny raw ask/push prose without touching the
+      // core-owned args object.
+      const eventForWire = operatorToolEventForWire(eventType, eventForForward);
+      const msg = mapEventToProtocol(sessionId, eventForWire);
       connection.send(msg);
     }));
   }
@@ -1133,7 +1177,7 @@ function initBridge(pi: ExtensionAPI) {
       if (!isActive()) return;
       cachedCtx = ctx;
       if (!sessionReady) return;
-      const msg = mapEventToProtocol(sessionId, event);
+      const msg = mapEventToProtocol(sessionId, operatorToolEventForWire(eventType, event));
       connection.send(msg);
     }));
   }
@@ -1227,13 +1271,14 @@ function initBridge(pi: ExtensionAPI) {
     cachedCtx = ctx;
     sessionId = newSessionId;
 
-    // Wrap sessionManager.appendMessage so that future message_end events can
-    // recover the just-generated entry id, even when their setTimeout(0)
-    // fires before pi has finished mutating event.message in place. The
-    // helper is idempotent and re-wraps on session replacement.
+    // Wrap sessionManager.appendMessage so future message_end events prepare,
+    // persist, and forward the same finalized object with its generated entry
+    // id. The helper is idempotent and re-wraps on session replacement.
     // See change: fix-per-message-fork.
     appendMessageWrapped = false;
     lastWrappedSm = null;
+    activeAssistantNonce = undefined;
+    operatorToolWireTracker.clear();
     wrapAppendMessageForCtx(ctx);
 
     // Register ask_user at runtime (not at load time) to avoid static

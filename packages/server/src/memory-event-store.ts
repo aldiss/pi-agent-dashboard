@@ -217,9 +217,15 @@ function deepSanitize(obj: unknown, maxSize: number, depth: number, ctx: Sanitiz
         changed = true;
         continue;
       }
-      // A user/assistant message's `content` is preserved whole; everything else
-      // inherits the current preservation state (default: cap enforced).
-      const childPreserve = preserveStrings || (isChatMessage && key === "content");
+      // Chat source text and the complete finalized delivery contract must both
+      // survive replay unchanged. Everything else keeps the normal cap.
+      const childPreserve = preserveStrings || (
+        isChatMessage && (
+          key === "content" ||
+          key === "operatorDelivery" ||
+          key === "operatorDeliveryPresentation"
+        )
+      );
       const t = deepSanitize(val, maxSize, depth + 1, ctx, childPreserve);
       if (t !== val) changed = true;
       result[key] = t;
@@ -282,6 +288,13 @@ function summarizeOverCap(data: Record<string, unknown>, bytes: number): Record<
     // row fall through to the retrospective and flip category. Carry it verbatim
     // (valid OR corrupt-present) so the classifier's 3-state reader still sees it.
     if ("audience" in m) msgSummary.audience = m.audience;
+    // The reducer accepts plain prose only from this source-bound contract.
+    // Preserve the complete object so cold replay has the same proof material
+    // as the live message_end path.
+    if ("operatorDelivery" in m) msgSummary.operatorDelivery = m.operatorDelivery;
+    if ("operatorDeliveryPresentation" in m) {
+      msgSummary.operatorDeliveryPresentation = m.operatorDeliveryPresentation;
+    }
     // User/assistant chat text is operator-visible and must round-trip WHOLE
     // even when the WHOLE event trips the byte cap (e.g. a streaming
     // message_update bloated by a large thinking/signature block pushes the
@@ -303,19 +316,6 @@ function summarizeOverCap(data: Record<string, unknown>, bytes: number): Record<
       msgSummary.content = content;
     } else if (preview !== undefined) {
       msgSummary.content = preview;
-    }
-    // door-3: preserve the operator-voice VERDICT stamp (voice*) through the over-cap
-    // summary. The message-level `audience` end-stamp is already preserved above by
-    // the base's line (Sol fix-cycle-3 F2, the VISIBILITY axis); here we add the
-    // LINT-TIMING axis's fields the reducer's strip-and-show / hold consume. Dropping
-    // them on a >64KB message (long thinking/signature block = verbose, jargon-dense
-    // operator reply — the HIGH-VALUE case) makes the reducer see them undefined →
-    // disposition falls through to release → jargon renders UNMASKED. Tiny (a verdict
-    // string + small id/match arrays) vs the shed bloat, so cap-shedding is unaffected.
-    // Both axes' stamps now survive over-cap (base audience + door-3 voice*). See
-    // change: operator-voice-strip-and-show.
-    for (const vk of ["voiceVerdict", "voiceHitIds", "voiceEnforceHits", "voiceMatches", "voiceRecomposeState"]) {
-      if (vk in m) msgSummary[vk] = m[vk];
     }
     summary.message = msgSummary;
   }

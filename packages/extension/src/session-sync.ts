@@ -5,7 +5,10 @@
 import type { BridgeContext } from "./bridge-context.js";
 import { getCurrentModelString, extractFirstMessage, filterHiddenCommands } from "./bridge-context.js";
 import { detectSessionSource } from "./source-detector.js";
-import { replayEntriesAsEvents } from "@blackbelt-technology/pi-dashboard-shared/state-replay.js";
+import {
+  collectPersistedDashboardAssets,
+  replayEntriesAsEvents,
+} from "@blackbelt-technology/pi-dashboard-shared/state-replay.js";
 import { gatherGitInfo } from "./vcs-info.js";
 import type { FlowInfo } from "@blackbelt-technology/pi-dashboard-shared/types.js";
 import { buildProviderCatalogue } from "./provider-register.js";
@@ -105,6 +108,17 @@ export function replaySessionEntries(bc: BridgeContext): void {
   try {
     const entries = bc.cachedCtx?.sessionManager?.getBranch?.();
     if (!entries || entries.length === 0) return;
+    // Rebuild the out-of-band registry from sidecars persisted on message
+    // entries. Send bytes before replayed events that reference pi-asset ids.
+    for (const [hash, asset] of Object.entries(collectPersistedDashboardAssets(entries))) {
+      bc.connection.send({
+        type: "asset_register",
+        sessionId: bc.sessionId,
+        hash,
+        mimeType: asset.mimeType,
+        data: asset.data,
+      });
+    }
     const events = replayEntriesAsEvents(bc.sessionId, entries);
     for (const msg of events) {
       bc.connection.send(msg);

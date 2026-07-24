@@ -3,6 +3,94 @@
  * so the browser can rebuild the chat view after a reconnect or DB reset.
  */
 import type { EventForwardMessage } from "./protocol.js";
+import {
+  isOperatorProseTool,
+  sanitizeOperatorProseToolArgs,
+} from "./operator-tool-visibility.js";
+
+export const PERSISTED_DASHBOARD_ASSETS_FIELD = "dashboardAssets";
+
+export interface PersistedDashboardAsset {
+  hash: string;
+  mimeType: string;
+  data: string;
+}
+
+const ASSET_HASH = /^[a-f0-9]{16}$/;
+
+/** Read the bounded, validated asset sidecar stored on a persisted message. */
+export function readPersistedDashboardAssets(message: unknown): PersistedDashboardAsset[] {
+  if (!message || typeof message !== "object") return [];
+  const raw = (message as Record<string, unknown>)[PERSISTED_DASHBOARD_ASSETS_FIELD];
+  if (!Array.isArray(raw)) return [];
+  const assets: PersistedDashboardAsset[] = [];
+  for (const value of raw) {
+    if (!value || typeof value !== "object") continue;
+    const asset = value as Record<string, unknown>;
+    if (typeof asset.hash !== "string" || !ASSET_HASH.test(asset.hash)) continue;
+    if (typeof asset.mimeType !== "string" || !asset.mimeType.startsWith("image/")) continue;
+    if (typeof asset.data !== "string" || asset.data.length === 0) continue;
+    assets.push({ hash: asset.hash, mimeType: asset.mimeType, data: asset.data });
+  }
+  return assets;
+}
+
+/** Last reference wins for identical content hashes. */
+export function collectPersistedDashboardAssets(
+  entries: readonly unknown[],
+): Record<string, { mimeType: string; data: string }> {
+  const collected: Record<string, { mimeType: string; data: string }> = {};
+  for (const entry of entries) {
+    if (!entry || typeof entry !== "object") continue;
+    const message = (entry as { message?: unknown }).message;
+    for (const asset of readPersistedDashboardAssets(message)) {
+      collected[asset.hash] = { mimeType: asset.mimeType, data: asset.data };
+    }
+  }
+  return collected;
+}
+
+/** Keep persisted bytes out of live/replay event frames after rebuilding the registry. */
+export function withoutPersistedDashboardAssets<T>(message: T): T {
+  if (!message || typeof message !== "object" ||
+      !(PERSISTED_DASHBOARD_ASSETS_FIELD in (message as object))) return message;
+  const copy = { ...(message as Record<string, unknown>) };
+  delete copy[PERSISTED_DASHBOARD_ASSETS_FIELD];
+  return copy as T;
+}
+
+/**
+ * Clone assistant content so protected ask/push tool-call prose never rides in
+ * dashboard live or replay message frames. The persisted pi entry is untouched;
+ * dedicated lifecycle frames retain only their fixed status fields.
+ */
+export function withoutOperatorProseToolPayloads<T>(message: T): T {
+  if (!message || typeof message !== "object") return message;
+  const record = message as Record<string, unknown>;
+  if (record.role === "toolResult" && isOperatorProseTool(record.toolName)) {
+    return {
+      role: "toolResult",
+      ...(typeof record.toolCallId === "string" ? { toolCallId: record.toolCallId } : {}),
+      ...(typeof record.toolName === "string" ? { toolName: record.toolName } : {}),
+      ...(record.isError === true ? { isError: true } : {}),
+      content: "",
+    } as unknown as T;
+  }
+  if (record.role !== "assistant" || !Array.isArray(record.content)) return message;
+  let changed = false;
+  const content = record.content.map((part) => {
+    if (!part || typeof part !== "object" || Array.isArray(part)) return part;
+    const block = part as Record<string, unknown>;
+    if (block.type !== "toolCall" || !isOperatorProseTool(block.name)) return part;
+    changed = true;
+    return {
+      type: "toolCall",
+      ...(typeof block.id === "string" ? { id: block.id } : {}),
+      ...(typeof block.name === "string" ? { name: block.name } : {}),
+    };
+  });
+  return changed ? { ...record, content } as unknown as T : message;
+}
 
 /**
  * Convert pi session entries (from ctx.sessionManager.getBranch())
@@ -39,6 +127,7 @@ export function replayEntriesAsEvents(
 ): EventForwardMessage[] {
   const messages: EventForwardMessage[] = [];
   const openToolCalls = new Set<string>(); // track tool calls without results
+  const toolNamesById = new Map<string, string>();
 
   let currentModel = "";
 
@@ -51,7 +140,16 @@ export function replayEntriesAsEvents(
     }
 
     if (entry.type === "message" && entry.message) {
-      const msg = entry.message;
+      const withoutAssets = withoutPersistedDashboardAssets(entry.message);
+      const knownToolName = withoutAssets?.role === "toolResult" &&
+        typeof withoutAssets.toolCallId === "string"
+        ? toolNamesById.get(withoutAssets.toolCallId)
+        : undefined;
+      const msg = withoutOperatorProseToolPayloads(
+        knownToolName && !withoutAssets.toolName
+          ? { ...withoutAssets, toolName: knownToolName }
+          : withoutAssets,
+      );
 
       if (msg.role === "user") {
         messages.push(makeEvent(sessionId, "message_start", ts, { message: msg, entryId: entry.id }));
@@ -88,18 +186,21 @@ export function replayEntriesAsEvents(
             }));
           }
           if (part?.type === "toolCall") {
+            if (typeof part.id === "string" && typeof part.name === "string") {
+              toolNamesById.set(part.id, part.name);
+            }
             messages.push(makeEvent(sessionId, "tool_execution_start", ts, {
               toolCallId: part.id,
               toolName: part.name,
-              args: typeof part.arguments === "string"
+              args: sanitizeOperatorProseToolArgs(part.name, typeof part.arguments === "string"
                 ? tryParseJson(part.arguments)
-                : part.arguments,
+                : part.arguments),
             }));
             openToolCalls.add(part.id);
           }
         }
         // Emit message_update (sets streamingText) then message_end (finalizes)
-        messages.push(makeEvent(sessionId, "message_update", ts, { message: msg }));
+        messages.push(makeEvent(sessionId, "message_update", ts, { message: msg, entryId: entry.id }));
         messages.push(makeEvent(sessionId, "message_end", ts, { message: msg, entryId: entry.id }));
 
         // Emit stats_update if usage data is present
@@ -132,7 +233,8 @@ export function replayEntriesAsEvents(
       // Tool results: toolCallId and toolName are at the message level
       // Structure: { role: "toolResult", toolCallId, toolName, content: [{type:"text",text:"..."}], isError }
       if (msg.role === "toolResult" && msg.toolCallId) {
-        const resultText = Array.isArray(msg.content)
+        const protectedOperatorTool = isOperatorProseTool(msg.toolName);
+        const resultText = protectedOperatorTool ? "" : Array.isArray(msg.content)
           ? msg.content
               .filter((c: any) => c.type === "text")
               .map((c: any) => c.text)
@@ -148,15 +250,16 @@ export function replayEntriesAsEvents(
           result: resultText,
           isError: msg.isError ?? false,
         };
-        if (imageBlocks.length > 0) {
+        if (!protectedOperatorTool && imageBlocks.length > 0) {
           eventData.images = imageBlocks.map((c: any) => ({ data: c.data, mimeType: c.mimeType }));
         }
         // Include tool details (e.g. AgentDetails from pi-subagents) if present
-        if (msg.details && typeof msg.details === "object") {
+        if (!protectedOperatorTool && msg.details && typeof msg.details === "object") {
           eventData.details = msg.details;
         }
         messages.push(makeEvent(sessionId, "tool_execution_end", ts, eventData));
         openToolCalls.delete(msg.toolCallId);
+        toolNamesById.delete(msg.toolCallId);
       }
     }
 

@@ -8,6 +8,17 @@ import { isArchitectEvent, reduceArchitectEvent } from "@blackbelt-technology/pi
 import { parseSkillBlock, type SkillBlock } from "@blackbelt-technology/pi-dashboard-shared/skill-block-parser.js";
 import { readAudienceStamp } from "./message-filter-classifier.js";
 import type { Audience } from "@blackbelt-technology/pi-dashboard-shared/vendor/operator-voice-audience/audience-core.js";
+import {
+  extractFinalizedAssistantProse,
+  isValidAgentDelivery,
+  OPERATOR_DELIVERY_FALLBACK,
+  selectFinalAssistantText,
+} from "./operator-delivery.js";
+import {
+  isOperatorProseTool,
+  operatorProseToolLabel,
+  sanitizeOperatorProseToolArgs,
+} from "@blackbelt-technology/pi-dashboard-shared/operator-tool-visibility.js";
 
 /**
  * Read the stamp-at-emit audience off a raw message envelope (`data.message`)
@@ -64,6 +75,8 @@ export interface ChatMessage {
   duration?: number;
   /** Turn index for scroll-to-turn navigation */
   turnIndex?: number;
+  /** Finalized assistant content[] index, used to order delayed agent thinking. */
+  assistantContentIndex?: number;
   /** Structured metadata from tool (e.g. AgentDetails from pi-subagents) */
   toolDetails?: Record<string, unknown>;
   /** Session entry ID (for fork-from-message) */
@@ -303,27 +316,28 @@ export interface SessionState {
    * the per-event reducer on the `isLast` frame.
    */
   replayComplete?: boolean;
-  /**
-   * door-3 operator-voice pre-render hold (render-layer only). Session-level
-   * audience: the server-derived `session.audience` mirrored into state by
-   * useMessageHandler, self-corrected at message_end by the authoritative end-
-   * stamp. `operator` → assistant partials are HELD (see `heldOperatorText`);
-   * `agent`/`unknown`/undefined → render live (unknown = shown+exempt).
-   * See change: operator-voice-buffer-hold.
-   */
+  /** Session-level audience metadata; final message envelopes remain authoritative. */
   audience?: Audience;
   /**
-   * Held operator partials — the pre-render buffer. When `shouldBuffer(audience)`,
-   * assistant streaming text is routed HERE instead of `streamingText`, so NOTHING
-   * renders live during the turn. Released BYTE-IDENTICAL on clean/observe-hit,
-   * dropped on enforce-hit, released to a neutral placeholder on Contract-D timeout.
+   * Held non-agent partials. Final display is selected from the finalized
+   * message's source-bound operatorDelivery, never from this buffer.
    */
   heldOperatorText: string;
+  /** Exact wire identity of the currently-held assistant message, when present. */
+  heldAssistantKey?: string;
+  /** Persisted-entry alias learned from entry_persisted before finalization. */
+  heldAssistantEntryKey?: string;
   /**
    * Contract-D inactivity anchor: epoch-ms of the last held partial. Re-armed on
    * each held partial, cleared at message_end. `undefined` ⇒ no open buffer.
    */
   heldBufferLastActivityAt?: number;
+  /** Timeout fallback row awaiting a possible late message_end replacement. */
+  timedOutAssistantFallbackId?: string;
+  /** Only the matching late final may replace the timeout fallback row. */
+  timedOutAssistantFallbackKey?: string;
+  /** Persisted-entry alias for matching a cold-replay final after reconnect. */
+  timedOutAssistantFallbackEntryKey?: string;
 }
 
 /**
@@ -379,29 +393,18 @@ export function createInitialState(): SessionState {
 // ── door-3 operator-voice pre-render hold ────────────────────────────────────
 
 /**
- * The buffer SEAM — the ONE point deciding which audiences pre-render-hold.
- * Ratified FINAL/PERMANENT (operator ACCEPT, unknown=shown+exempt): hold
- * `{operator}` ONLY; `agent` + `unknown` render live. Isolated so any future
- * policy change is a one-line edit (it is now moot — the rule is permanent — but
- * the seam stays as self-documenting isolation).
+ * No production-authenticated audience proof exists before message_end, so
+ * every assistant partial is held. The finalized envelope alone may release
+ * source prose for explicit agent traffic.
  */
-export function shouldBuffer(audience: Audience | undefined): boolean {
-  return audience === "operator";
+export function shouldBuffer(_audience?: Audience): boolean {
+  return true;
 }
 
 /**
- * Contract-D bound (ratified): a held operator buffer with no verdict/activity for
- * this long releases to a neutral placeholder (never hangs). INACTIVITY timer —
- * re-armed on each held partial — so a legitimately long stream never false-fires;
- * only a genuine producer stall (crash / dropped message_end) trips it. Tunable.
+ * Inactivity bound for a missing message_end. Each partial rearms the timer.
  */
 export const OPERATOR_BUFFER_TIMEOUT_MS = 30000;
-
-/**
- * Neutral placeholder rendered when a held operator buffer times out (Contract-D
- * fail-safe). NOT the held (unverified) text — fails toward neutral.
- */
-export const OPERATOR_BUFFER_TIMEOUT_PLACEHOLDER = "\u2026";
 
 const AUDIENCE_VALUES: ReadonlySet<string> = new Set(["operator", "agent", "unknown"]);
 
@@ -410,147 +413,56 @@ function asAudience(v: unknown): Audience | undefined {
   return typeof v === "string" && AUDIENCE_VALUES.has(v) ? (v as Audience) : undefined;
 }
 
+/** Stable per-message identity carried by live nonces and cold-replay entry ids. */
+function assistantCorrelationKey(data: Record<string, any>): string | undefined {
+  if (typeof data.nonce === "string" && data.nonce.length > 0) return `nonce:${data.nonce}`;
+  if (typeof data.entryId === "string" && data.entryId.length > 0) return `entry:${data.entryId}`;
+  return undefined;
+}
+
+function matchesAssistantKey(
+  candidate: string | undefined,
+  primary: string | undefined,
+  entryAlias: string | undefined,
+): boolean {
+  return candidate !== undefined && (candidate === primary || candidate === entryAlias);
+}
+
 // ── door-3 MOVE-2: deterministic strip-and-show ──────────────────────────────
 
 /**
- * A producer `voiceMatches[]` entry (pi-operator-voice message-end-door AuditMatch,
- * raw-offset re-located @65ab66f). `index` = char offset into the assistant text
- * as the extension extracts it (string content OR text-parts joined with ""),
- * `slice(index, index+match.length) === match` guaranteed against that raw text.
+ * Resolve a timed-out buffer to the exact honest fallback. Called outside the
+ * reducer by the React timer, so it rebuilds messagesIndex itself.
  */
-export interface VoiceMatch {
-  id: string;
-  match: string;
-  index: number;
-  mode: string; // "enforce" | "observe"
-  category: string; // internal-id | section-cite | tenure-id | themed-name | shape-*
-}
-
-/**
- * The enforce IDENTIFIER-TOKEN categories that MUST strip: `internal-id` (dl-ids
- * AND tenure-ids) + `internal-cite` (§-cites). Verified own-hand against the
- * AUTHORITATIVE emitter data (pi-operator-voice operator-lexicon.json @739cdf4,
- * 23 entries) — NOT a handoff label set (the dl-10977 labels
- * section-cite/tenure-id/themed-name never emit as a category):
- *   enforce: internal-id, internal-cite → STRIP (id/cite tokens; masking is clean)
- *   enforce: theater-praise             → NOT stripped (prose words "excellent",
- *            "superb", … — masking mid-sentence corrupts prose; re-compose owns it)
- *   observe: internal-noun, mention-risky, filler-jargon → the mode gate keeps them
- *            non-stripping (fail-open to SHOWN; a future enforce-flip renders shown
- *            until explicitly opted in — the safe direction).
- * (v0.5+ Voicewright-4 may emit a per-match `strip` boolean computed producer-side
- *  from mode+category, retiring this set entirely — deferred, not build-1.)
- */
-const JARGON_ID_CATEGORIES: ReadonlySet<string> = new Set([
-  "internal-id",
-  "internal-cite",
-]);
-
-/** The masked-span marker (plain text, markdown-safe). Tunable. */
-export const JARGON_REDACTION_MARKER = "[redacted]";
-
-/** Defensively parse the untrusted wire `voiceMatches` into VoiceMatch[]. */
-function parseVoiceMatches(v: unknown): VoiceMatch[] {
-  if (!Array.isArray(v)) return [];
-  const out: VoiceMatch[] = [];
-  for (const m of v) {
-    if (
-      m && typeof m === "object" &&
-      typeof (m as any).match === "string" &&
-      typeof (m as any).index === "number" &&
-      typeof (m as any).mode === "string" &&
-      typeof (m as any).category === "string"
-    ) {
-      out.push({
-        id: typeof (m as any).id === "string" ? (m as any).id : "",
-        match: (m as any).match,
-        index: (m as any).index,
-        mode: (m as any).mode,
-        category: (m as any).category,
-      });
-    }
-  }
-  return out;
-}
-
-/**
- * door-3 MOVE-2 strip-and-show core: mask the jargon-id spans in `text`, KEEP the
- * rest. Mask iff `(mode==="enforce" AND category ∈ JARGON_ID_CATEGORIES)`; shape-* +
- * all observe render AS-IS. Two paths (self-verifying, offset-basis per the seam):
- *   - offsets EXACT (string content, or a text-parts join that matches the raw the
- *     producer indexed) — verified via `slice(index,len)===match` for ALL eligible
- *     → index-precise mask right-to-left (byte-identical on the non-masked spans;
- *     each repeated occurrence masked at its own offset).
- *   - offset DRIFT (block-array join mismatch / any misaligned span) → whole-line
- *     redaction fallback: redact every line containing an eligible jargon token
- *     (found by value), never trusting the raw offset. Conservative — the jargon
- *     never survives to the DOM. Pure; render-layer only (never mutates the message).
- */
-export function maskJargonSpans(text: string, matches: readonly VoiceMatch[]): string {
-  const eligible = matches.filter((m) => m.mode === "enforce" && JARGON_ID_CATEGORIES.has(m.category));
-  if (eligible.length === 0) return text; // shape-* / observe only → render as-is
-
-  const allAligned = eligible.every(
-    (m) => m.index >= 0 && text.slice(m.index, m.index + m.match.length) === m.match,
-  );
-  if (allAligned) {
-    // Index-precise: splice right-to-left so earlier offsets stay valid.
-    const sorted = [...eligible].sort((a, b) => b.index - a.index);
-    let out = text;
-    let lastStart = Number.POSITIVE_INFINITY;
-    for (const m of sorted) {
-      const end = m.index + m.match.length;
-      if (end <= lastStart) {
-        // non-overlapping with the already-masked span to its right
-        out = out.slice(0, m.index) + JARGON_REDACTION_MARKER + out.slice(end);
-        lastStart = m.index;
-      }
-    }
-    return out;
-  }
-
-  // Offset-drift fallback: whole-line redaction by token value.
-  const tokens = eligible.map((m) => m.match).filter((t) => t.length > 0);
-  return text
-    .split("\n")
-    .map((line) => (tokens.some((t) => line.includes(t)) ? JARGON_REDACTION_MARKER : line))
-    .join("\n");
-}
-
-/**
- * True iff an operator buffer is open AND inactive ≥ `boundMs` (Contract-D check).
- * Pure — inject `nowMs` (tests advance the clock; production passes `Date.now()`),
- * never a wall-clock read here.
- */
-export function isOperatorBufferTimedOut(
-  state: SessionState,
-  nowMs: number,
-  boundMs: number = OPERATOR_BUFFER_TIMEOUT_MS,
-): boolean {
-  return state.heldBufferLastActivityAt !== undefined && nowMs - state.heldBufferLastActivityAt >= boundMs;
-}
-
-/**
- * Contract-D fail-safe: release a timed-out operator buffer to a neutral
- * placeholder (never the unverified held text, never hang). No-op if no buffer is
- * open. Called OUTSIDE `reduceEvent` (from the React inactivity timer), so it
- * rebuilds `messagesIndex` itself.
- */
-export function releaseOperatorBufferAsNeutral(state: SessionState, nowMs: number): SessionState {
+export function releaseAssistantBufferAsFallback(state: SessionState, nowMs: number): SessionState {
   if (state.heldBufferLastActivityAt === undefined) return state;
+  if (nowMs - state.heldBufferLastActivityAt < OPERATOR_BUFFER_TIMEOUT_MS) return state;
   const next: SessionState = { ...state, toolCalls: new Map(state.toolCalls) };
+  const fallbackId = `delivery-timeout-${nowMs}`;
   next.messages = [
     ...next.messages,
     {
-      id: `msg-${next.messages.length}`,
+      id: fallbackId,
       role: "assistant",
-      content: OPERATOR_BUFFER_TIMEOUT_PLACEHOLDER,
+      content: OPERATOR_DELIVERY_FALLBACK,
       timestamp: nowMs,
+      // message_end never arrived, so the per-message audience is unproven.
+      // Explicit unknown keeps this degradation visible even when the
+      // surrounding session is an agent/relay pane with mesh chatter hidden.
+      audience: "unknown",
     },
   ];
   next.heldOperatorText = "";
+  next.heldAssistantKey = undefined;
+  next.heldAssistantEntryKey = undefined;
   next.heldBufferLastActivityAt = undefined;
   next.streamingText = "";
+  next.streamingThinking = "";
+  next.thinkingStartedAt = undefined;
+  next.streamingTextFlushed = false;
+  next.timedOutAssistantFallbackId = fallbackId;
+  next.timedOutAssistantFallbackKey = state.heldAssistantKey;
+  next.timedOutAssistantFallbackEntryKey = state.heldAssistantEntryKey;
   next.messagesIndex = rebuildMessagesIndex(next.messages);
   return next;
 }
@@ -711,18 +623,24 @@ function reorderToolCardsForAssistantMessage(
   assistantContent: unknown[],
 ): ChatMessage[] {
   if (!Array.isArray(assistantContent)) return messages;
-  // Fast path: nothing to reorder if there are no tool calls in this message.
-  const hasToolCall = assistantContent.some(
-    (b: any) => b && typeof b === "object" && b.type === "toolCall",
+  // Text-only messages have one finalized row and require no ordering pass.
+  const hasOrderedBlocks = assistantContent.some(
+    (b: any) => b && typeof b === "object" && (b.type === "toolCall" || b.type === "thinking"),
   );
-  if (!hasToolCall) return messages;
+  if (!hasOrderedBlocks) return messages;
 
-  const relevant = assistantContent.filter(
-    (b: any) =>
-      b &&
-      typeof b === "object" &&
-      (b.type === "text" || b.type === "toolCall" || b.type === "thinking"),
-  ) as Array<{ type: string; id?: string }>;
+  const relevant = assistantContent
+    .map((block, contentIndex) => ({ block, contentIndex }))
+    .filter(({ block }: any) =>
+      block &&
+      typeof block === "object" &&
+      (block.type === "text" || block.type === "toolCall" || block.type === "thinking"),
+    )
+    .map(({ block, contentIndex }: any) => ({ ...block, contentIndex })) as Array<{
+      type: string;
+      id?: string;
+      contentIndex: number;
+    }>;
   if (relevant.length === 0) return messages;
 
   // Build the turn-boundary anchored window: walk backwards from the tail
@@ -792,7 +710,10 @@ function reorderToolCardsForAssistantMessage(
         }
       }
     } else if (block.type === "thinking") {
-      const si = findLastUnclaimed((m) => m.role === "thinking");
+      let si = findLastUnclaimed(
+        (m) => m.role === "thinking" && m.assistantContentIndex === block.contentIndex,
+      );
+      if (si < 0) si = findLastUnclaimed((m) => m.role === "thinking");
       if (si >= 0) {
         claimedSuffixIdxs.add(si);
         claimedInContentOrder.push(suffix[si]);
@@ -871,6 +792,38 @@ function reorderToolCardsForAssistantMessage(
   }
 
   return [...messages.slice(0, start), ...(newSuffix as ChatMessage[])];
+}
+
+/**
+ * Thinking is never rendered before the authoritative final audience exists.
+ * Once a message is explicitly proven agent-internal, rebuild its finalized
+ * thinking blocks from content[] so agent panes retain their prior detail.
+ */
+function appendFinalAgentThinkingRows(
+  messages: ChatMessage[],
+  assistantContent: unknown,
+  timestamp: number,
+  messageKey: string,
+): ChatMessage[] {
+  if (!Array.isArray(assistantContent)) return messages;
+  const existingIds = new Set(messages.map((message) => message.id));
+  const rows: ChatMessage[] = [];
+  assistantContent.forEach((block, contentIndex) => {
+    if (!block || typeof block !== "object") return;
+    const thinking = block as { type?: unknown; thinking?: unknown };
+    if (thinking.type !== "thinking" || typeof thinking.thinking !== "string" || thinking.thinking.length === 0) return;
+    const id = `thinking-final-${messageKey}-${contentIndex}`;
+    if (existingIds.has(id)) return;
+    rows.push({
+      id,
+      role: "thinking",
+      content: thinking.thinking,
+      timestamp,
+      assistantContentIndex: contentIndex,
+      audience: "agent",
+    });
+  });
+  return rows.length > 0 ? [...messages, ...rows] : messages;
 }
 
 /** Extract text from content blocks: [{ type: "text", text: "..." }, ...] */
@@ -959,12 +912,10 @@ export function addInteractiveRequest(
   // is sent to the dashboard exactly once, with the correct component.
   // No more client-side guessing about which prompts to suppress.
 
-  // Deduplicate by requestId (re-sent on reconnect) or by content
-  // (recursive proxy generates multiple requestIds for the same dialog)
-  if (state.interactiveRequests.some((r) =>
-    r.requestId === requestId ||
-    (r.status === "pending" && r.method === method && r.params.title === params.title),
-  )) {
+  // PromptBus requestId is the stable identity and is re-sent verbatim on
+  // reconnect. Content is not identity: two concurrent questions may
+  // intentionally share the same materialization-failure title.
+  if (state.interactiveRequests.some((r) => r.requestId === requestId)) {
     return state;
   }
   const request: InteractiveUiRequest = { requestId, method, params, status: "pending" };
@@ -1282,12 +1233,59 @@ export function reduceEvent(state: SessionState, event: DashboardEvent): Session
 
     case "message_start": {
       const msg = data.message as any;
+      if ((msg?.role === "assistant" || msg?.role === "user") && next.heldBufferLastActivityAt !== undefined) {
+        // A new message is a hard boundary. If the prior assistant end was
+        // dropped before its timer elapsed, surface one honest fallback now;
+        // otherwise clearing the timer and overwriting the hold would silently
+        // erase that prior update.
+        next.messages = [
+          ...next.messages,
+          {
+            id: `delivery-boundary-${event.timestamp}`,
+            role: "assistant",
+            content: OPERATOR_DELIVERY_FALLBACK,
+            timestamp: event.timestamp,
+            audience: "unknown",
+          },
+        ];
+        next.heldOperatorText = "";
+        next.heldAssistantKey = undefined;
+        next.heldAssistantEntryKey = undefined;
+        next.heldBufferLastActivityAt = undefined;
+        next.streamingText = "";
+        next.streamingThinking = "";
+        next.thinkingStartedAt = undefined;
+        next.streamingTextFlushed = false;
+        next.timedOutAssistantFallbackId = undefined;
+        next.timedOutAssistantFallbackKey = undefined;
+        next.timedOutAssistantFallbackEntryKey = undefined;
+      }
       if (msg?.role === "assistant") {
+        const startKey = assistantCorrelationKey(data);
+        if (next.timedOutAssistantFallbackId &&
+            !matchesAssistantKey(
+              startKey,
+              next.timedOutAssistantFallbackKey,
+              next.timedOutAssistantFallbackEntryKey,
+            )) {
+          // The old fallback row remains honest history, but a genuinely new
+          // turn must not be swallowed by an unmatchable replacement pointer.
+          next.timedOutAssistantFallbackId = undefined;
+          next.timedOutAssistantFallbackKey = undefined;
+          next.timedOutAssistantFallbackEntryKey = undefined;
+        }
+        next.heldAssistantKey = startKey;
+        next.heldAssistantEntryKey = undefined;
         // Reset the per-message flush flag at the start of every assistant
         // message. See change: fix-streaming-text-vs-interactive-ui-order.
         next.streamingTextFlushed = false;
       }
       if (msg?.role === "user") {
+        next.heldAssistantKey = undefined;
+        next.heldAssistantEntryKey = undefined;
+        next.timedOutAssistantFallbackId = undefined;
+        next.timedOutAssistantFallbackKey = undefined;
+        next.timedOutAssistantFallbackEntryKey = undefined;
         next.pendingPrompt = undefined;
         // Message-queue dispatch→work edge (dashboard-message-queue/v1): when
         // this user message_start carries a `queueNonce`, the queued follow-up
@@ -1405,43 +1403,34 @@ export function reduceEvent(state: SessionState, event: DashboardEvent): Session
     }
 
     case "message_update": {
+      const msg = data.message as any;
+      const updateKey = assistantCorrelationKey(data);
+      // A timeout terminalizes only its own partial stream. A replayed or later
+      // message with a different identity must not be swallowed by that row.
+      if (msg?.role === "assistant" && next.timedOutAssistantFallbackId &&
+          (updateKey === undefined || matchesAssistantKey(
+            updateKey,
+            next.timedOutAssistantFallbackKey,
+            next.timedOutAssistantFallbackEntryKey,
+          ))) break;
       const assistantEvent = data.assistantMessageEvent as any;
 
       // Handle thinking events from assistantMessageEvent
-      if (assistantEvent) {
-        if (assistantEvent.type === "thinking_start") {
-          next.streamingThinking = "";
-          next.thinkingStartedAt = event.timestamp;
-          break;
-        }
-        if (assistantEvent.type === "thinking_delta") {
-          next.streamingThinking = next.streamingThinking + (assistantEvent.delta ?? "");
-          break;
-        }
-        if (assistantEvent.type === "thinking_end") {
-          if (next.streamingThinking) {
-            const startedAt = next.thinkingStartedAt;
-            next.messages = [
-              ...next.messages,
-              {
-                id: `thinking-${next.messages.length}`,
-                role: "thinking",
-                content: next.streamingThinking,
-                timestamp: event.timestamp,
-                startedAt,
-                duration: startedAt ? event.timestamp - startedAt : undefined,
-              },
-            ];
-          }
-          next.streamingThinking = "";
-          next.thinkingStartedAt = undefined;
-          break;
-        }
+      const isThinkingEvent = assistantEvent?.type === "thinking_start"
+        || assistantEvent?.type === "thinking_delta"
+        || assistantEvent?.type === "thinking_end";
+      if (isThinkingEvent) {
+        // Thinking is also raw assistant output. Never expose it without a
+        // current-message agent stamp; operatorDelivery replaces the visible
+        // operator prose at message_end.
+        next.streamingThinking = "";
+        next.thinkingStartedAt = undefined;
+        break;
       }
 
       // Handle text streaming
-      const msg = data.message as any;
       if (msg?.role === "assistant") {
+        if (updateKey !== undefined) next.heldAssistantKey = updateKey;
         // If streamingText was already flushed for this message,
         // re-populating it here would re-show the flushed prefix below the
         // messages list (or, for [text, toolCall, text]-shaped messages,
@@ -1456,18 +1445,9 @@ export function reduceEvent(state: SessionState, event: DashboardEvent): Session
                 .map((c: any) => c.text)
                 .join("")
             : String(msg.content ?? "");
-          // door-3 operator-voice pre-render hold: for an operator session, route
-          // partials into the HELD buffer instead of `streamingText` so NOTHING
-          // renders live during the turn; re-arm the Contract-D inactivity timer on
-          // each partial. agent/unknown/undefined → unchanged live streaming
-          // (unknown = shown+exempt). The buffer decision is isolated to
-          // `shouldBuffer` (the one seam). See change: operator-voice-buffer-hold.
-          if (shouldBuffer(next.audience)) {
-            next.heldOperatorText = text;
-            next.heldBufferLastActivityAt = event.timestamp;
-          } else {
-            next.streamingText = text;
-          }
+          // All partials are untrusted until the finalized message envelope.
+          next.heldOperatorText = text;
+          next.heldBufferLastActivityAt = event.timestamp;
         }
       }
       break;
@@ -1476,139 +1456,137 @@ export function reduceEvent(state: SessionState, event: DashboardEvent): Session
     case "message_end": {
       const msg = data.message as any;
       if (msg?.role === "assistant") {
-        // door-3 end-stamp-authoritative reconciliation. The end-stamp `audience`
-        // is authoritative (start-derive was only the buffer prediction); self-
-        // correct the session audience going forward. If a hold buffer was open
-        // this turn, resolve it by the lint verdict and SKIP the normal
-        // streamingText path. Render-layer only: we move render-state, never the
-        // message object. See change: operator-voice-buffer-hold.
         const endStampAudience = asAudience(msg.audience);
-        if (endStampAudience !== undefined) next.audience = endStampAudience;
-        if (next.heldBufferLastActivityAt !== undefined || next.heldOperatorText !== "") {
-          const held = next.heldOperatorText;
-          const effEndAudience = endStampAudience ?? next.audience;
-          const verdict = typeof msg.voiceVerdict === "string" ? msg.voiceVerdict : undefined;
-          // door-3 MOVE-2 disposition, driven by the producer's deterministic
-          // recompose-state signal (Voicewright-4 65ab66f+):
-          //   "held"      → HOLD (a re-drive WILL fire; render nothing, leak-safe)
-          //   "terminal"  → STRIP-AND-SHOW (no re-drive; mask jargon-id spans from the
-          //                 message's OWN voiceMatches, render the real content)
-          //   "converged" → RELEASE byte-identical (clean / observe)
-          // Backward-compat: voiceRecomposeState ABSENT → the #2 verdict-only rule
-          // (HOLD iff operator+enforce-hit, else release). agent/unknown = shown+exempt.
-          const recomposeState = typeof msg.voiceRecomposeState === "string" ? msg.voiceRecomposeState : undefined;
-          const isOperator = shouldBuffer(effEndAudience);
-          let disposition: "hold" | "strip" | "release";
-          if (isOperator && recomposeState === "held") disposition = "hold";
-          else if (isOperator && recomposeState === "terminal") disposition = "strip";
-          else if (isOperator && recomposeState === undefined && verdict === "enforce-hit") disposition = "hold";
-          else disposition = "release";
-          next.heldOperatorText = "";
-          next.heldBufferLastActivityAt = undefined;
-          next.streamingTextFlushed = false;
-          if (disposition !== "hold") {
-            // STRIP masks jargon-id spans (never reshapes non-jargon); RELEASE is
-            // BYTE-IDENTICAL. Both move render-state only — the message object is
-            // never mutated. Empty content (e.g. an all-masked strip) is not committed.
-            const content = disposition === "strip" ? maskJargonSpans(held, parseVoiceMatches(msg.voiceMatches)) : held;
-            if (content) {
-              next.messages = [
-                ...next.messages,
-                {
-                  id: `msg-${next.messages.length}`,
-                  role: "assistant",
-                  content,
-                  timestamp: event.timestamp,
-                  entryId: data.entryId as string | undefined,
-                  nonce: data.nonce as string | undefined,
-                  // Reconcile with the base visibility-classifier: a released/stripped
-                  // operator message MUST carry the same audience stamp the base's
-                  // other commit paths set, or the Mesh-chatter filter sees
-                  // audience=undefined and falls to the retrospective. door-3 strip/hold
-                  // (lint-timing) composes with the base classifier (visibility) here.
-                  audience: readMessageAudience(msg),
-                },
-              ];
-              if (Array.isArray(msg?.content)) {
-                next.messages = reorderToolCardsForAssistantMessage(next.messages, msg.content);
-              }
-            }
-          }
-          // HOLD path: render nothing — the re-composed message arrives fresh and
-          // re-runs this whole path. Buffer already cleared above.
-          break;
+        const endKey = assistantCorrelationKey(data);
+        const terminalizesHeld = next.heldBufferLastActivityAt === undefined ||
+          next.heldAssistantKey === undefined ||
+          matchesAssistantKey(endKey, next.heldAssistantKey, next.heldAssistantEntryKey);
+        const matchesTimedOutFallback = next.timedOutAssistantFallbackId !== undefined &&
+          matchesAssistantKey(
+            endKey,
+            next.timedOutAssistantFallbackKey,
+            next.timedOutAssistantFallbackEntryKey,
+          );
+        const finalizedSource = extractFinalizedAssistantProse(msg.content);
+        const agentAuthorized = endStampAudience === "agent" &&
+          isValidAgentDelivery(finalizedSource, msg.operatorDelivery);
+        if (endStampAudience !== undefined) {
+          next.audience = agentAuthorized
+            ? "agent"
+            : endStampAudience === "operator"
+            ? "operator"
+            : "unknown";
         }
-        if (next.streamingTextFlushed) {
-          // Streaming text was already flushed at tool_execution_start.
-          // Locate the unstamped flushed row and stamp entryId / nonce in
-          // place — do NOT push a duplicate. The reorder pass below still
-          // runs against the existing row. See change:
-          // fix-streaming-text-vs-interactive-ui-order.
-          const flushedIdx = findFlushedAssistantRowIndex(next.messages);
-          if (flushedIdx >= 0) {
-            const stamped: ChatMessage = {
+        const hadProse = finalizedSource.length > 0 || (terminalizesHeld && (
+          next.streamingText.length > 0 || next.heldOperatorText.length > 0 ||
+          next.streamingTextFlushed === true
+        ));
+        const selectedText = hadProse
+          ? selectFinalAssistantText(
+              finalizedSource,
+              endStampAudience,
+              msg.operatorDelivery,
+              msg.operatorDeliveryPresentation,
+            )
+          : "";
+        // A selected delivery is operator-visible unless this exact message is
+        // explicitly proven agent traffic. Never let a missing/corrupt end
+        // stamp fall back to session-level agent classification and disappear.
+        const audience: ChatMessage["audience"] = agentAuthorized
+          ? "agent"
+          : endStampAudience === "operator"
+          ? "operator"
+          : "unknown";
+        const timeoutIdx = matchesTimedOutFallback && next.timedOutAssistantFallbackId
+          ? next.messages.findIndex((message) => message.id === next.timedOutAssistantFallbackId)
+          : -1;
+        const finalizedEntryId = data.entryId as string | undefined;
+        const existingFinalIdx = finalizedEntryId
+          ? next.messages.findLastIndex(
+              (message) => message.role === "assistant" && message.entryId === finalizedEntryId,
+            )
+          : -1;
+        const flushedIdx = timeoutIdx >= 0
+          ? timeoutIdx
+          : existingFinalIdx >= 0
+          ? existingFinalIdx
+          : terminalizesHeld && next.streamingTextFlushed
+          ? findFlushedAssistantRowIndex(next.messages)
+          : -1;
+
+        // Finalization is authoritative across live, held, flushed, and replay
+        // paths. Never commit the partial buffer for a non-agent audience.
+        if (terminalizesHeld) {
+          next.heldOperatorText = "";
+          next.heldAssistantKey = undefined;
+          next.heldAssistantEntryKey = undefined;
+          next.heldBufferLastActivityAt = undefined;
+          next.streamingText = "";
+        }
+        if (matchesTimedOutFallback) {
+          next.timedOutAssistantFallbackId = undefined;
+          next.timedOutAssistantFallbackKey = undefined;
+          next.timedOutAssistantFallbackEntryKey = undefined;
+        }
+
+        if (agentAuthorized) {
+          const thinkingKey = String(data.entryId ?? data.nonce ?? event.timestamp);
+          next.messages = appendFinalAgentThinkingRows(
+            next.messages,
+            msg.content,
+            event.timestamp,
+            thinkingKey,
+          );
+        }
+
+        if (flushedIdx >= 0) {
+          if (selectedText) {
+            const finalized: ChatMessage = {
               ...next.messages[flushedIdx],
+              content: selectedText,
+              timestamp: event.timestamp,
               entryId: data.entryId as string | undefined,
               nonce: data.nonce as string | undefined,
-              audience: readMessageAudience(msg),
+              audience,
             };
             next.messages = [
               ...next.messages.slice(0, flushedIdx),
-              stamped,
+              finalized,
+              ...next.messages.slice(flushedIdx + 1),
+            ];
+          } else {
+            next.messages = [
+              ...next.messages.slice(0, flushedIdx),
               ...next.messages.slice(flushedIdx + 1),
             ];
           }
-          // Note: streamingText is already "" because the flush cleared it.
-          // We deliberately leave next.streamingText untouched here.
-        } else if (next.streamingText) {
+        } else if (selectedText) {
           next.messages = [
             ...next.messages,
             {
               id: `msg-${next.messages.length}`,
               role: "assistant",
-              content: next.streamingText,
+              content: selectedText,
               timestamp: event.timestamp,
               entryId: data.entryId as string | undefined,
               nonce: data.nonce as string | undefined,
-              audience: readMessageAudience(msg),
+              audience,
             },
           ];
-          next.streamingText = "";
         } else {
-          // Replay/fork scenario: streamingText is empty but message may have content
-          const replayText = msg.content
-            ? (Array.isArray(msg.content)
-                ? msg.content.filter((c: any) => c.type === "text").map((c: any) => c.text).join("")
-                : String(msg.content))
-            : "";
-          if (replayText) {
+          // Tool-only assistant turn (no prose) — add a thin separator so
+          // consecutive tool call groups do not blend together.
+          const lastMsg = next.messages[next.messages.length - 1];
+          if (lastMsg?.role === "toolResult") {
             next.messages = [
               ...next.messages,
               {
-                id: `msg-${next.messages.length}`,
-                role: "assistant",
-                content: replayText,
+                id: `sep-${next.messages.length}`,
+                role: "turnSeparator",
+                content: "",
                 timestamp: event.timestamp,
-                entryId: data.entryId as string | undefined,
-                nonce: data.nonce as string | undefined,
-                audience: readMessageAudience(msg),
               },
             ];
-          } else {
-            // Tool-only assistant turn (no prose) — add a thin separator
-            // so consecutive tool call groups don't blend together
-            const lastMsg = next.messages[next.messages.length - 1];
-            if (lastMsg?.role === "toolResult") {
-              next.messages = [
-                ...next.messages,
-                {
-                  id: `sep-${next.messages.length}`,
-                  role: "turnSeparator",
-                  content: "",
-                  timestamp: event.timestamp,
-                },
-              ];
-            }
           }
         }
 
@@ -1620,12 +1598,7 @@ export function reduceEvent(state: SessionState, event: DashboardEvent): Session
           next.messages = reorderToolCardsForAssistantMessage(next.messages, msg.content);
         }
 
-        // R7 defense-in-depth: reset the flag at message_end so the flag's
-        // lifecycle equals "between message_start and message_end". A stray
-        // tool_execution_start arriving before the next message_start would
-        // otherwise silently no-op the flush. See change:
-        // fix-streaming-text-vs-interactive-ui-order.
-        next.streamingTextFlushed = false;
+        if (terminalizesHeld) next.streamingTextFlushed = false;
       } else if (msg?.role === "user") {
         // F1 user-row back-fill (Sol fix-cycle-3): the user row is created at
         // message_start WITHOUT an audience (the extension stamps at message_end,
@@ -1681,7 +1654,8 @@ export function reduceEvent(state: SessionState, event: DashboardEvent): Session
           flushStreamingTextAsAssistantRow(next, event.timestamp, toolCallId),
         );
       }
-      const args = data.args as Record<string, unknown> | undefined;
+      const args = sanitizeOperatorProseToolArgs(toolName, data.args);
+      const protectedLabel = operatorProseToolLabel(toolName);
       next.toolCalls.set(toolCallId, {
         toolCallId,
         toolName,
@@ -1713,6 +1687,12 @@ export function reduceEvent(state: SessionState, event: DashboardEvent): Session
           ...next.messages[existingToolIdx],
           toolName,
           args,
+          content: protectedLabel ?? next.messages[existingToolIdx].content,
+          ...(protectedLabel ? {
+            result: undefined,
+            images: undefined,
+            toolDetails: undefined,
+          } : {}),
           // Keep startedAt/timestamp from the original row — the existing
           // values are already correct for terminal rows, and refreshing them
           // would invalidate `duration` derived from startedAt at end-time.
@@ -1726,7 +1706,7 @@ export function reduceEvent(state: SessionState, event: DashboardEvent): Session
         {
           id: `tool-${toolCallId}`,
           role: "toolResult",
-          content: toolName,
+          content: protectedLabel ?? toolName,
           toolName,
           toolCallId,
           args,
@@ -1744,6 +1724,22 @@ export function reduceEvent(state: SessionState, event: DashboardEvent): Session
       if (partialResult) {
         const idx = next.messages.findLastIndex((m) => m.toolCallId === toolCallId);
         if (idx !== -1) {
+          const protectedOperatorTool = isOperatorProseTool(data.toolName) ||
+            isOperatorProseTool(next.toolCalls.get(toolCallId)?.toolName) ||
+            isOperatorProseTool(next.messages[idx].toolName);
+          if (protectedOperatorTool) {
+            const protectedName = next.toolCalls.get(toolCallId)?.toolName ??
+              next.messages[idx].toolName ?? String(data.toolName ?? "");
+            next.messages = [...next.messages];
+            next.messages[idx] = {
+              ...next.messages[idx],
+              content: operatorProseToolLabel(protectedName) ?? next.messages[idx].content,
+              result: undefined,
+              images: undefined,
+              toolDetails: undefined,
+            };
+            break;
+          }
           next.messages = [...next.messages];
           // Structured partialResult (e.g. Agent tool sends { content, details })
           if (typeof partialResult === "object" && partialResult !== null) {
@@ -1791,11 +1787,14 @@ export function reduceEvent(state: SessionState, event: DashboardEvent): Session
       // Update existing tool message in-place
       const idx = next.messages.findLastIndex((m) => m.toolCallId === toolCallId);
       if (idx !== -1) {
-        const result = data.result as string | undefined;
+        const protectedOperatorTool = isOperatorProseTool(data.toolName) ||
+          isOperatorProseTool(existing?.toolName) ||
+          isOperatorProseTool(next.messages[idx].toolName);
+        const result = protectedOperatorTool ? undefined : data.result as string | undefined;
         const msgStartedAt = next.messages[idx].startedAt;
         next.messages = [...next.messages];
         // Extract tool details (e.g. AgentDetails from replayed sessions)
-        const endDetails = data.details as Record<string, unknown> | undefined;
+        const endDetails = protectedOperatorTool ? undefined : data.details as Record<string, unknown> | undefined;
         // For live events (no endDetails), update existing toolDetails.status
         // so renderers (e.g. AgentToolRenderer) see the final status
         const isError = data.isError as boolean;
@@ -1811,10 +1810,12 @@ export function reduceEvent(state: SessionState, event: DashboardEvent): Session
         next.messages[idx] = {
           ...next.messages[idx],
           toolStatus: isError ? "error" : "complete",
-          result: result ? truncateLines(result, 30) : next.messages[idx].result,
+          result: protectedOperatorTool
+            ? undefined
+            : result ? truncateLines(result, 30) : next.messages[idx].result,
           duration: msgStartedAt ? event.timestamp - msgStartedAt : undefined,
-          ...(images ? { images } : {}),
-          ...(mergedDetails ? { toolDetails: mergedDetails } : {}),
+          images: protectedOperatorTool ? undefined : (images ?? next.messages[idx].images),
+          toolDetails: protectedOperatorTool ? undefined : (mergedDetails ?? next.messages[idx].toolDetails),
         };
       }
       break;
@@ -2184,6 +2185,14 @@ export function reduceEvent(state: SessionState, event: DashboardEvent): Session
       const targetNonce = data.nonce as string | undefined;
       const persistedEntryId = data.entryId as string | undefined;
       if (targetNonce && persistedEntryId) {
+        const nonceKey = `nonce:${targetNonce}`;
+        const entryKey = `entry:${persistedEntryId}`;
+        if (next.heldAssistantKey === nonceKey) {
+          next.heldAssistantEntryKey = entryKey;
+        }
+        if (next.timedOutAssistantFallbackKey === nonceKey) {
+          next.timedOutAssistantFallbackEntryKey = entryKey;
+        }
         let mutated = false;
         const updated = next.messages.map((m) => {
           if (!m.entryId && m.nonce === targetNonce) {
@@ -2198,6 +2207,17 @@ export function reduceEvent(state: SessionState, event: DashboardEvent): Session
     }
 
     default: {
+      // Any unknown event correlated with ask/push is status telemetry, not an
+      // operator-prose surface. Suppress it even when the name is omitted and
+      // only the already-seen toolCallId identifies the protected lifecycle.
+      const rawToolCallId = typeof data.toolCallId === "string" ? data.toolCallId : undefined;
+      const rawKnownName = rawToolCallId
+        ? next.toolCalls.get(rawToolCallId)?.toolName ??
+          next.messages.findLast((message) => message.toolCallId === rawToolCallId)?.toolName
+        : undefined;
+      if (isOperatorProseTool(data.toolName) || isOperatorProseTool(rawKnownName)) {
+        break;
+      }
       // Delegate flow events to flow reducer
       if (isFlowEvent(event.eventType)) {
         next.flowState = reduceFlowEvent(next.flowState, event);

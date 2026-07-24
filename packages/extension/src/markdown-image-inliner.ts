@@ -17,6 +17,13 @@
  */
 import { createHash } from "node:crypto";
 import path from "node:path";
+import {
+  PERSISTED_DASHBOARD_ASSETS_FIELD,
+  readPersistedDashboardAssets,
+} from "@blackbelt-technology/pi-dashboard-shared/state-replay.js";
+import {
+  isValidOperatorDeliveryPresentation,
+} from "@blackbelt-technology/pi-dashboard-shared/operator-delivery.js";
 
 /** Per-image hard cap (decision D8). */
 export const MAX_PER_IMAGE_BYTES = 5 * 1024 * 1024;
@@ -116,6 +123,11 @@ export function hashBytes(buf: Buffer): string {
   return createHash("sha256").update(buf).digest("hex").slice(0, 16);
 }
 
+/** Full lowercase SHA-256 used by the finalized operatorDelivery binding. */
+export function sha256Text(text: string): string {
+  return createHash("sha256").update(text, "utf8").digest("hex");
+}
+
 /** Format a byte count to a one-decimal MB string for placeholder text. */
 function formatMB(bytes: number): string {
   return (bytes / (1024 * 1024)).toFixed(1);
@@ -144,10 +156,14 @@ export interface InlineOptions {
    * multiple message events within the same session.
    */
   alreadyEmitted: Set<string>;
+  /** Full bytes retained so later messages can persist reused asset referents. */
+  knownAssets?: Map<string, AssetToEmit>;
   /** Override the per-image cap. Default `MAX_PER_IMAGE_BYTES`. */
   maxPerImageBytes?: number;
   /** Override the per-message cap. Default `MAX_PER_MESSAGE_BYTES`. */
   maxPerMessageBytes?: number;
+  /** Keep failed local-image tokens byte-identical (certified presentation path). */
+  preserveFailedTokens?: boolean;
 }
 
 export interface AssetToEmit {
@@ -216,6 +232,10 @@ export function inlineMessageText(text: string, opts: InlineOptions): InlineResu
     //   4. Per-image cap and per-message budget gate ONLY new emissions.
     const outcome = opts.readFile(absPath);
     if (!outcome.ok) {
+      if (opts.preserveFailedTokens) {
+        out.push(tok.token);
+        continue;
+      }
       // EACCES is folded into ENOENT placeholder to avoid leaking permission
       // existence. EISDIR / EOTHER use the generic "read failed" wording.
       if (outcome.kind === "ENOENT" || outcome.kind === "EACCES") {
@@ -228,7 +248,7 @@ export function inlineMessageText(text: string, opts: InlineOptions): InlineResu
 
     const mime = mimeFromExtension(absPath);
     if (!mime) {
-      out.push(`[unsupported image type: ${tok.src}]`);
+      out.push(opts.preserveFailedTokens ? tok.token : `[unsupported image type: ${tok.src}]`);
       continue;
     }
 
@@ -237,32 +257,171 @@ export function inlineMessageText(text: string, opts: InlineOptions): InlineResu
     if (opts.alreadyEmitted.has(hash)) {
       // Bytes already shipped earlier in the session — only the token rewrites.
       // Caps are bypassed: dedup means no new bytes go on the wire.
+      opts.knownAssets?.set(hash, {
+        hash,
+        mimeType: mime,
+        data: outcome.bytes.toString("base64"),
+      });
       out.push(`![${tok.alt}](pi-asset:${hash})`);
       continue;
     }
 
     const size = outcome.bytes.length;
     if (size > maxPerImage) {
-      out.push(`[image too large: ${tok.src} (${formatMB(size)} MB)]`);
+      out.push(opts.preserveFailedTokens
+        ? tok.token
+        : `[image too large: ${tok.src} (${formatMB(size)} MB)]`);
       continue;
     }
 
     // New asset. Check the per-message budget before committing.
     if (bytesInThisMessage + size > maxPerMessage) {
-      out.push(`[message asset budget exhausted: ${tok.src}]`);
+      out.push(opts.preserveFailedTokens
+        ? tok.token
+        : `[message asset budget exhausted: ${tok.src}]`);
       continue;
     }
 
     bytesInThisMessage += size;
     opts.alreadyEmitted.add(hash);
-    assetsToEmit.push({
+    const asset = {
       hash,
       mimeType: mime,
       data: outcome.bytes.toString("base64"),
-    });
+    };
+    assetsToEmit.push(asset);
+    opts.knownAssets?.set(hash, asset);
     out.push(`![${tok.alt}](pi-asset:${hash})`);
   }
 
   out.push(text.slice(cursor));
   return { rewritten: out.join(""), assetsToEmit };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
+  const actual = Object.keys(value).sort();
+  const expected = [...keys].sort();
+  return actual.length === expected.length && actual.every((key, index) => key === expected[index]);
+}
+
+function assistantSourceText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .filter((block): block is { type: "text"; text: string } => (
+      isRecord(block) && block.type === "text" && typeof block.text === "string"
+    ))
+    .map((block) => block.text)
+    .join("");
+}
+
+function validBoundOperatorDelivery(
+  value: unknown,
+  source: string,
+): value is Record<string, unknown> & { status: "ready" | "failed" | "agent" } {
+  if (!isRecord(value) || value.version !== 1) return false;
+  if (typeof value.sourceSha256 !== "string" || !/^[a-f0-9]{64}$/.test(value.sourceSha256)) return false;
+  if (value.sourceSha256 !== sha256Text(source)) return false;
+  if (value.status === "ready") {
+    if (!hasExactKeys(value, ["version", "sourceSha256", "status", "text", "checks"])) return false;
+    if (typeof value.text !== "string" || value.text.trim().length === 0 || value.text.length > 64_000) return false;
+    if (!isRecord(value.checks) || !hasExactKeys(value.checks, ["plain", "anchorsPreserved"])) return false;
+    return value.checks.plain === true && value.checks.anchorsPreserved === true;
+  }
+  if (value.status === "failed") {
+    return hasExactKeys(value, ["version", "sourceSha256", "status", "code"]) &&
+      typeof value.code === "string" && value.code.length > 0;
+  }
+  if (value.status === "agent") {
+    return hasExactKeys(value, ["version", "sourceSha256", "status"]);
+  }
+  return false;
+}
+
+/**
+ * Inline local Markdown images without invalidating a finalized delivery's
+ * source binding. A valid bound envelope freezes both source and certified
+ * delivery bytes. The bridge writes any image-only rewrite into a separately
+ * digest-bound presentation sidecar. Legacy/no-envelope finalized messages keep
+ * the original source-content rewrite behavior; partials are always held.
+ */
+export function inlineAssistantMessageImages(
+  message: unknown,
+  opts: InlineOptions,
+  phase: "update" | "end" = "end",
+): AssetToEmit[] {
+  if (!isRecord(message) || message.role !== "assistant") return [];
+  const assets: AssetToEmit[] = [];
+  const rewrite = (text: string, preserveFailedTokens = false): string => {
+    const result = inlineMessageText(text, { ...opts, preserveFailedTokens });
+    assets.push(...result.assetsToEmit);
+    return result.rewritten;
+  };
+
+  const persistReferencedAssets = (rewrittenText: string): void => {
+    const available = new Map<string, AssetToEmit>();
+    for (const asset of readPersistedDashboardAssets(message)) available.set(asset.hash, asset);
+    for (const asset of opts.knownAssets?.values() ?? []) available.set(asset.hash, asset);
+    for (const asset of assets) available.set(asset.hash, asset);
+    const referenced = new Set<string>();
+    for (const match of rewrittenText.matchAll(/\bpi-asset:([a-f0-9]{16})\b/g)) {
+      referenced.add(match[1]);
+    }
+    const sidecar = [...referenced]
+      .map((hash) => available.get(hash))
+      .filter((asset): asset is AssetToEmit => asset !== undefined);
+    if (sidecar.length > 0) {
+      message[PERSISTED_DASHBOARD_ASSETS_FIELD] = sidecar;
+    }
+  };
+
+  const source = assistantSourceText(message.content);
+  const delivery = message.operatorDelivery;
+  if (validBoundOperatorDelivery(delivery, source)) {
+    delete message.operatorDeliveryPresentation;
+    const displayBase = delivery.status === "ready"
+      ? delivery.text as string
+      : delivery.status === "agent"
+      ? source
+      : undefined;
+    if (displayBase !== undefined) {
+      const presented = rewrite(displayBase, true);
+      if (presented !== displayBase) {
+        const presentation = {
+          version: 1,
+          deliverySha256: sha256Text(displayBase),
+          text: presented,
+        };
+        if (isValidOperatorDeliveryPresentation(displayBase, presentation)) {
+          message.operatorDeliveryPresentation = presentation;
+          persistReferencedAssets(presented);
+        }
+      }
+    }
+    return assets;
+  }
+
+  // Partial messages shallow-share content blocks with the eventual finalized
+  // message in pi core. Rewriting an unstamped update would alter the producer's
+  // later digest domain. Agent-only proof is materialized at message_end too,
+  // so no audience string authorizes mutation of a partial.
+  if (phase === "update") return assets;
+
+  if (typeof message.content === "string") {
+    const rewritten = rewrite(message.content);
+    message.content = rewritten;
+    persistReferencedAssets(rewritten);
+  } else if (Array.isArray(message.content)) {
+    for (const block of message.content) {
+      if (isRecord(block) && block.type === "text" && typeof block.text === "string") {
+        block.text = rewrite(block.text);
+      }
+    }
+    persistReferencedAssets(assistantSourceText(message.content));
+  }
+  return assets;
 }

@@ -1,7 +1,8 @@
 import { describe, it, expect } from "vitest";
 import { findRetriedErrorIds, findActiveInteractiveToolResultIds } from "../collapse-retried-errors.js";
-import { createInitialState, reduceEvent, type ChatMessage } from "../event-reducer.js";
+import { createInitialState, reduceEvent, type ChatMessage, type SessionState } from "../event-reducer.js";
 import type { DashboardEvent } from "@blackbelt-technology/pi-dashboard-shared/types.js";
+import { sha256Hex } from "../operator-delivery.js";
 
 let _counter = 0;
 function nextId() {
@@ -176,20 +177,20 @@ describe("retried-error pill survives [text, toolCall] reorder (fix-text-tool-re
     // must still pair it with the successful retry.
     const events: DashboardEvent[] = [
       // Message A: ask_user fails with empty args
-      { eventType: "message_start", timestamp: 1000, data: { message: { role: "assistant", content: [] } } },
-      { eventType: "message_update", timestamp: 1001, data: { message: { role: "assistant", content: [{ type: "text", text: "Asking the user:" }] } } },
+      { eventType: "message_start", timestamp: 1000, data: { message: { role: "assistant", audience: "agent", content: [] } } },
+      { eventType: "message_update", timestamp: 1001, data: { message: { role: "assistant", audience: "agent", content: [{ type: "text", text: "Asking the user:" }] } } },
       { eventType: "tool_execution_start", timestamp: 1002, data: { toolCallId: "tA", toolName: "ask_user", args: {} } },
       { eventType: "tool_execution_end", timestamp: 1003, data: { toolCallId: "tA", toolName: "ask_user", result: "Validation: missing method", isError: true } },
-      { eventType: "message_end", timestamp: 1004, data: { message: { role: "assistant", content: [{ type: "text", text: "Asking the user:" }, { type: "toolCall", id: "tA", name: "ask_user" }] } } },
+      { eventType: "message_end", timestamp: 1004, data: { message: { role: "assistant", audience: "agent", content: [{ type: "text", text: "Asking the user:" }, { type: "toolCall", id: "tA", name: "ask_user" }], operatorDelivery: { version: 1, sourceSha256: sha256Hex("Asking the user:"), status: "agent" } } } },
       // Intervening assistant thinking + retry message
-      { eventType: "message_start", timestamp: 2000, data: { message: { role: "assistant", content: [] } } },
-      { eventType: "message_update", timestamp: 2001, data: { message: { role: "assistant", content: [{ type: "text", text: "Retrying with proper args:" }] } } },
+      { eventType: "message_start", timestamp: 2000, data: { message: { role: "assistant", audience: "agent", content: [] } } },
+      { eventType: "message_update", timestamp: 2001, data: { message: { role: "assistant", audience: "agent", content: [{ type: "text", text: "Retrying with proper args:" }] } } },
       { eventType: "tool_execution_start", timestamp: 2002, data: { toolCallId: "tB", toolName: "ask_user", args: { method: "input", title: "Name?" } } },
       { eventType: "tool_execution_end", timestamp: 2003, data: { toolCallId: "tB", toolName: "ask_user", result: "ok", isError: false } },
-      { eventType: "message_end", timestamp: 2004, data: { message: { role: "assistant", content: [{ type: "text", text: "Retrying with proper args:" }, { type: "toolCall", id: "tB", name: "ask_user" }] } } },
+      { eventType: "message_end", timestamp: 2004, data: { message: { role: "assistant", audience: "agent", content: [{ type: "text", text: "Retrying with proper args:" }, { type: "toolCall", id: "tB", name: "ask_user" }], operatorDelivery: { version: 1, sourceSha256: sha256Hex("Retrying with proper args:"), status: "agent" } } } },
     ];
 
-    let state = createInitialState();
+    let state: SessionState = { ...createInitialState(), audience: "agent" as const };
     for (const ev of events) state = reduceEvent(state, ev);
 
     // Confirm reorder placed assistant text before its tool card for both messages

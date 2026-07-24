@@ -121,6 +121,21 @@ describe("groupConsecutiveToolCalls", () => {
     expect((result[0] as ToolCallGroup).messages).toHaveLength(3);
   });
 
+  it("treats nonempty assistant delivery prose as a hard group boundary", () => {
+    const plain: ChatMessage = {
+      id: "plain-delivery",
+      role: "assistant",
+      content: "The release remains blocked until delivery is verified.",
+      timestamp: Date.now(),
+    };
+    const msgs = [toolMsg(), toolMsg(), toolMsg(), plain, toolMsg(), toolMsg(), toolMsg()];
+    const result = groupConsecutiveToolCalls(msgs);
+    expect(result).toHaveLength(3);
+    expect(isGroup(result[0])).toBe(true);
+    expect(result[1]).toBe(plain);
+    expect(isGroup(result[2])).toBe(true);
+  });
+
   it("does NOT group across a user message (user breaks the run)", () => {
     const msgs = [toolMsg(), toolMsg(), toolMsg(), userMsg(), toolMsg(), toolMsg(), toolMsg()];
     const result = groupConsecutiveToolCalls(msgs);
