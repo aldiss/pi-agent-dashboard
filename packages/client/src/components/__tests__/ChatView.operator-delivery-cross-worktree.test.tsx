@@ -3,7 +3,9 @@ import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { cleanup, render } from "@testing-library/react";
 import { createElement } from "react";
 import path from "node:path";
+import { existsSync, readFileSync } from "node:fs";
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import { promisify } from "node:util";
 import { ChatView } from "../ChatView.js";
@@ -21,6 +23,51 @@ const toolContext: ToolContext = { editors: [] };
 const producerWorktree = process.env.OPERATOR_VOICE_WORKTREE;
 const execFileAsync = promisify(execFile);
 
+function sha256File(filePath: string): string {
+  return createHash("sha256").update(readFileSync(filePath)).digest("hex");
+}
+
+function resolveProducerModule(): string {
+  if (!producerWorktree) {
+    throw new Error("OPERATOR_VOICE_WORKTREE must be set by the client Vitest config");
+  }
+  const sourceModule = path.join(
+    producerWorktree,
+    "pi-extensions/pi-operator-voice/src/operator-delivery.ts",
+  );
+  const fixtureModule = path.join(
+    producerWorktree,
+    "pi-extensions/pi-operator-voice/src/operator-delivery.mjs",
+  );
+  const modulePath = existsSync(sourceModule)
+    ? sourceModule
+    : existsSync(fixtureModule)
+    ? fixtureModule
+    : undefined;
+  if (!modulePath) {
+    throw new Error(`Operator-voice producer module is missing under ${producerWorktree}`);
+  }
+  return modulePath;
+}
+
+function verifyFixtureIntegrity(modulePath: string): void {
+  if (!modulePath.endsWith(".mjs")) return;
+  const manifestPath = path.join(producerWorktree!, "fixture-manifest.json");
+  if (!existsSync(manifestPath)) {
+    throw new Error(`Operator-voice fixture manifest is missing: ${manifestPath}`);
+  }
+  const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as {
+    bundleSha256?: string;
+    lexiconSha256?: string;
+  };
+  const lexiconPath = path.join(
+    producerWorktree!,
+    "pi-extensions/pi-operator-voice/operator-lexicon.json",
+  );
+  expect(sha256File(modulePath)).toBe(manifest.bundleSha256);
+  expect(sha256File(lexiconPath)).toBe(manifest.lexiconSha256);
+}
+
 beforeAll(() => {
   Element.prototype.scrollTo = () => {};
   Object.defineProperty(window, "matchMedia", {
@@ -37,13 +84,9 @@ beforeAll(() => {
 afterEach(cleanup);
 
 describe("real producer to dashboard DOM proof", () => {
-  const crossWorktreeIt = producerWorktree ? it : it.skip;
-
-  crossWorktreeIt("renders the real producer envelope after dashboard storage without source jargon", async () => {
-    const modulePath = path.join(
-      producerWorktree!,
-      "pi-extensions/pi-operator-voice/src/operator-delivery.ts",
-    );
+  it("renders the real producer envelope after dashboard storage without source jargon", async () => {
+    const modulePath = resolveProducerModule();
+    verifyFixtureIntegrity(modulePath);
     const tsxLoader = createRequire(path.join(process.cwd(), "package.json")).resolve("tsx");
     const materializeScript = [
       "import { pathToFileURL } from 'node:url';",

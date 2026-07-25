@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "sourceRepository": "pi-config",
+  "sourceCommit": "6ba787837d29275ab431db710f768f2a5ebacbfd",
+  "sourceTreeObject": "9135a6be4b3aa1858833b0bd81ba3d1557adb1a1",
+  "sourcePath": "pi-extensions/pi-operator-voice/src/operator-delivery.ts",
+  "sourceSha256": "c5951c235be595da40239c3262185ec1d457eeb4456bbc050f955aae357093cd",
+  "lexiconPath": "pi-extensions/pi-operator-voice/operator-lexicon.json",
+  "lexiconSha256": "65f3a4db8c153d8d4980b56b4baa89af7f3117777a58bde01dcbfe1b93bdad27",
+  "bundlePath": "pi-extensions/pi-operator-voice/src/operator-delivery.mjs",
+  "bundleSha256": "fa5f57184fe1a05bc10083b2fd77e7c367491347089401ec450c610824b029b0",
+  "bundledExport": "materializeOperatorDelivery",
+  "providerBinding": "excluded as unused by the materialize-only entry",
+  "generatorPath": "scripts/generate-operator-voice-test-fixture.mjs",
+  "esbuildVersion": "0.27.7"
+}

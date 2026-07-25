@@ -1,0 +1,212 @@
+{
+  "_meta": {
+    "schema_version": 1,
+    "source": "Diagnostic operator-language seed retained from the pre-redesign baseline; delivery does not branch on its verdict.",
+    "entry_schema": {
+      "id": "stable kebab-case identifier",
+      "pattern": "JS RegExp source (matched with the flags in `flags`, default 'iu')",
+      "flags": "optional RegExp flags override; default 'iu'",
+      "mode": "enforce | observe",
+      "category": "grouping tag for audit/retune",
+      "note": "human rationale"
+    },
+    "growth_contract": "This is the DAY-ONE seed, NOT a frozen closed set. New tics are added as they surface in live use (same schema). §1.5 = what ships day-one.",
+    "canonical_9_allow_list_note": "The canonical-9 standing-crew names are NEVER linted (they are legitimate operator-language). Only TRANSIENT themed-names (the -N-suffixed *-wright etc.) lint. The allow-list is consumed by the transient-themed-name rule, not encoded as match entries.",
+    "enforce_definition": "high-confidence diagnostic match; independently materialized delivery never blocks on or delegates repair from this verdict.",
+    "observe_definition": "lower-confidence diagnostic match; logged only and never a delivery decision.",
+    "out_of_door_exclusions": [
+      {
+        "id": "morning-mirror",
+        "ruling": "Peggy 2026-07-19 — OPTION 2: OUT-OF-DOOR. Ship NO morning-mirror lexicon entry (see PEGGY-MM-RULING.md).",
+        "path": "~/bin/operator-morning-mirror — direct urllib post at operator-morning-mirror:1067-1074",
+        "rationale": "LLM-generated via composer writer-cards; posts via urllib bypassing herald; #6's route per §1.3; guarded at the composer-template self-ban, NOT lint-able by a verbatim door. A verbatim-phrase ban structurally cannot target generated prose — the correct enforcement layer for generated prose is the GENERATOR (the composer-template CONSTRAINT lines that already self-ban praise + jargon at the prompt level).",
+        "not_banned": "the writer-name pool labels + the 2 attribution suffixes are legitimate operator-opted-in content (the operator chose the literary bingo-rotation) — never linted.",
+        "follow_up": "whether the composer self-ban is itself strong is a separate anti-theater concern for a later pass (Commwright flags to Peggy); NOT this build."
+      }
+    ]
+  },
+
+  "canonical_9_allow_list": [
+    "Bert", "Joan", "Peggy", "Faye", "Lane", "Pete", "Don", "Alice", "Harry"
+  ],
+
+  "entries": [
+    {
+      "id": "ledger-id-dl-n",
+      "pattern": "\\bdl-\\d+\\b",
+      "mode": "enforce",
+      "category": "internal-id",
+      "note": "ledger ids never belong in operator text — name the thing. Enforces uniformly on EVERY occurrence; there is NO citation-slot exception (Ruling #2: no v9 semantic rule survives)."
+    },
+    {
+      "id": "tenure-id-tenure-n",
+      "pattern": "\\btenure-\\d+\\b",
+      "mode": "enforce",
+      "category": "internal-id",
+      "note": "internal-mesh-only per §1."
+    },
+    {
+      "id": "section-cite",
+      "pattern": "§\\s?\\d+(\\.\\d+)*",
+      "mode": "enforce",
+      "category": "internal-cite",
+      "note": "cite the rule by name, not a §-fragment."
+    },
+    {
+      "id": "theater-praise-excellent",
+      "pattern": "\\bexcellent\\b",
+      "mode": "enforce",
+      "category": "theater-praise",
+      "note": "§20 pure praise-noise (verbatim, word-boundary, case-insensitive)."
+    },
+    {
+      "id": "theater-praise-superb",
+      "pattern": "\\bsuperb\\b",
+      "mode": "enforce",
+      "category": "theater-praise",
+      "note": "§20 pure praise-noise."
+    },
+    {
+      "id": "theater-praise-textbook",
+      "pattern": "\\btextbook\\b",
+      "mode": "enforce",
+      "category": "theater-praise",
+      "note": "§20 pure praise-noise."
+    },
+    {
+      "id": "theater-praise-spot-on",
+      "pattern": "\\bspot-on\\b",
+      "mode": "enforce",
+      "category": "theater-praise",
+      "note": "§20 pure praise-noise."
+    },
+    {
+      "id": "theater-praise-good-catch",
+      "pattern": "\\bgood catch\\b",
+      "mode": "enforce",
+      "category": "theater-praise",
+      "note": "§20 pure praise-noise."
+    },
+    {
+      "id": "theater-praise-good-point",
+      "pattern": "\\bgood point\\b",
+      "mode": "enforce",
+      "category": "theater-praise",
+      "note": "§20 pure praise-noise."
+    },
+    {
+      "id": "theater-praise-sharp-find",
+      "pattern": "\\bsharp find\\b",
+      "mode": "enforce",
+      "category": "theater-praise",
+      "note": "§20 pure praise-noise."
+    },
+    {
+      "id": "theater-praise-sharp-correction",
+      "pattern": "\\bsharp correction\\b",
+      "mode": "enforce",
+      "category": "theater-praise",
+      "note": "§20 pure praise-noise."
+    },
+    {
+      "id": "theater-praise-perfect",
+      "pattern": "\\bperfect\\b",
+      "mode": "enforce",
+      "category": "theater-praise",
+      "note": "§1.5 explicit enforce member of the verbatim theater-praise set."
+    },
+    {
+      "id": "theater-praise-model-executor",
+      "pattern": "\\bmodel executor\\b",
+      "mode": "enforce",
+      "category": "theater-praise",
+      "note": "§20 pure praise-noise (role-praise theater)."
+    },
+    {
+      "id": "theater-praise-model-rotation",
+      "pattern": "\\bmodel rotation\\b",
+      "mode": "enforce",
+      "category": "theater-praise",
+      "note": "§20 pure praise-noise (role-praise theater)."
+    },
+    {
+      "id": "theater-praise-exactly-right",
+      "pattern": "\\bexactly right\\b",
+      "mode": "enforce",
+      "category": "theater-praise",
+      "note": "§1.5 verbatim theater-praise. NOTE: distinct from the sentence-initial concession 'you're right' (which is permanent-observe, rule 6e) — 'exactly right' as praise-noise is enforce."
+    },
+
+    {
+      "id": "version-tag",
+      "pattern": "\\bv\\d+(\\.\\d+)*\\b",
+      "mode": "observe",
+      "category": "mention-risky",
+      "note": "'v3 spec' is legit operator usage — start observe, promote by proceed-rate."
+    },
+    {
+      "id": "w-step",
+      "pattern": "\\bW\\d+\\b",
+      "mode": "observe",
+      "category": "mention-risky",
+      "note": "FP risk (dimensions / names). Observe."
+    },
+    {
+      "id": "cell-id",
+      "pattern": "\\b[a-z][a-z0-9-]+/v\\d+\\b",
+      "mode": "observe",
+      "category": "mention-risky",
+      "note": "slug/vN; observe until precision proven."
+    },
+    {
+      "id": "internal-noun-substrate",
+      "pattern": "\\bsubstrate\\b",
+      "mode": "observe",
+      "category": "internal-noun",
+      "note": "operator uses this by name (v3 call). Observe."
+    },
+    {
+      "id": "internal-noun-canonical",
+      "pattern": "\\bcanonical\\b",
+      "mode": "observe",
+      "category": "internal-noun",
+      "note": "operator uses this by name. Observe."
+    },
+    {
+      "id": "internal-noun-capsule",
+      "pattern": "\\bcapsule\\b",
+      "mode": "observe",
+      "category": "internal-noun",
+      "note": "operator uses this by name. Observe."
+    },
+    {
+      "id": "filler-jargon-load-bearing",
+      "pattern": "\\bload-bearing\\b",
+      "mode": "observe",
+      "category": "filler-jargon",
+      "note": "drained intensifier (seed 81c613e0). Candidate observe→enforce by proceed-rate."
+    },
+    {
+      "id": "filler-jargon-sister-shape",
+      "pattern": "\\bsister-shape\\b",
+      "mode": "observe",
+      "category": "filler-jargon",
+      "note": "drained intensifier. Observe."
+    }
+  ],
+
+  "shape_rule_modes": {
+    "_note": "The MODE (enforce | observe) of each §1.6 shape-rule + the transient-name / concession sub-modes, made DATA-DRIVEN + AUDITABLE here (Sol fix-cycle-2 M5). The computable predicate (regex) stays in shape-rules.ts (a falsifiable proxy can't live in JSON), but its enforce/observe mode is retunable from this seed. shape-rules.ts reads these at compile-time and falls back to the documented default if a key is absent.",
+    "shape-a-legible-opening": { "mode": "observe", "note": "dl-id/§-cite/version-tag/transient-name in sentence one" },
+    "shape-b-no-set-count-lede": { "mode": "enforce", "note": "leading metrics enumeration" },
+    "shape-c-length-title": { "mode": "enforce", "note": "ask_user title > cap (structural)" },
+    "shape-c-length-option": { "mode": "enforce", "note": "ask_user option-label > cap (structural)" },
+    "shape-c-length-herald": { "mode": "enforce", "note": "herald body > cap" },
+    "shape-c-length-reply": { "mode": "observe", "note": "operator-addressed reply soft-bound (substantive replies run long)" },
+    "shape-d-claim-needs-proof": { "mode": "observe", "note": "claim-word without a same-clause proof token; diagnostic only because honest status summaries can match this proxy." },
+    "shape-e-affirmation-padding": { "mode": "enforce", "note": "sentence-initial pure praise (theater-praise set)" },
+    "shape-e-restatement-praise": { "mode": "enforce", "note": "restating the operator's point back as praise" },
+    "shape-e-concession-standalone": { "mode": "observe", "note": "standalone concession (no substantive correction) — permanent observe; §20 keeps honest corrections" },
+    "shape-transient-themed-name": { "mode": "observe", "note": "whole-body transient *-wright/registry themed-name; opening occurrence enforces via shape-a" }
+  }
+}

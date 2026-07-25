@@ -334,42 +334,62 @@ prose and are not counted as the outcome mechanism.
 
 ## Proof strategy and executed results
 
-The cross-worktree proof imports the real producer TypeScript in a child
-process, uses fake rewrite/verifier functions, builds a persisted entry, then
-runs real `replayEntriesAsEvents -> MemoryEventStore -> reduceEvent -> ChatView`
-and asserts facts/decision present and source-only jargon absent
-(`pi-agent-dashboard: packages/client/src/components/__tests__/ChatView.operator-delivery-cross-worktree.test.tsx:39-108`).
-It does **not** call a real language provider or exercise the complete live
-bridge lifecycle. Producer ExtensionRunner tests and dashboard append-forwarder
-tests cover those seams separately; this distinction is intentional.
+The anti-build-1 proof loads a committed, hash-checked bundle generated from the
+real amended producer source in a child process. It injects deterministic
+rewrite/verifier functions for that transport/render proof, builds a persisted
+entry, then runs real
+`replayEntriesAsEvents -> MemoryEventStore -> reduceEvent -> ChatView` and
+asserts facts/decision present and source-only jargon absent
+(`pi-agent-dashboard: packages/client/src/components/__tests__/ChatView.operator-delivery-cross-worktree.test.tsx`).
+The default client Vitest config points at the repository fixture, so a clean
+checkout executes the test without an adjacent worktree or machine-specific
+path. An explicit `OPERATOR_VOICE_WORKTREE` can still select a full producer
+checkout. Missing fixture input fails the test rather than skipping it.
+
+A separate opt-in provider proof calls the production
+`createContextRewriteProvider` on both legs with no mock or stub. For each of 10
+messages it obtains an actual rewrite, asserts the material facts and absence of
+case-specific fabrication, asks the actual semantic verifier to accept that
+rewrite, then asks the same verifier to reject an independently constructed
+candidate with a dropped or altered material fact. This separation keeps the
+default deterministic DOM proof portable while measuring the real provider
+boundary directly
+(`pi-config: pi-extensions/pi-operator-voice/test/real-provider-semantic-e2e.test.ts`).
 
 Executed own-hand on the settled worktrees:
 
 - Producer: `npm run build && npm run typecheck && npm run typecheck:core && npm test && git diff --check`
-  passed. Vitest: 32/32 files, 377/377 tests, 8.98 seconds.
-- Dashboard focused safety set: the 12 explicit operator-delivery, reducer,
-  presentation, timeout, tool-wire, replay, push, and thinking test files passed
-  12/12 files and 254/254 tests in 7.12 seconds.
-- Cross-worktree command:
-  `OPERATOR_VOICE_WORKTREE=/private/tmp/codex-comms-2026-07-24/operator-voice npm test -- packages/client/src/components/__tests__/ChatView.operator-delivery-cross-worktree.test.tsx`
-  passed 1/1.
+  passed. Default Vitest: 32 files and 385 tests passed; the opt-in real-provider
+  file/test skipped, as intended, in 9.83 seconds.
+- Real provider: `copilot-api/claude-sonnet-4.6` through the
+  `anthropic-messages` adapter passed the complete 10-case corpus three times:
+  30 actual rewrites, 30/30 faithful candidates accepted, and 30/30 controlled
+  corruptions rejected. The 90 calls took 184.970 seconds; the recorded estimate
+  is 32,666 input tokens, 1,945 observable output tokens, and $0 at the registry's
+  configured rates. Full results are in
+  `pi-extensions/pi-operator-voice/test/real-provider-semantic-e2e.results.md`.
+- Dashboard focused safety set: 9/9 files and 146/146 tests passed in 4.69
+  seconds after every revert-to-red proof was restored.
+- Clean-checkout-portable M3 command with `OPERATOR_VOICE_WORKTREE` unset passed
+  1/1 and printed the test as executed, not skipped. The fixture reproducibility
+  check matched producer `6ba787837d29275ab431db710f768f2a5ebacbfd`.
 - Dashboard: `npm run build` passed with 4,046 modules. Its CSS, mixed-import,
   and chunk-size warnings were nonfatal. `git diff --check` passed.
-- Dashboard full `npm test`: 627 files and 6,585 tests passed; 3 files and 18
-  tests skipped; one file/test failed in 359.27 seconds. The sole failure is the
+- Dashboard full `npm test`: 629 files and 6,594 tests passed; 2 files and 17
+  tests skipped; one file/test failed in 342.27 seconds. The sole failure is the
   baseline policy test `packages/shared/src/__tests__/no-direct-process-kill.test.ts`,
   which flags unchanged baseline `packages/server/src/driver-liveness.ts:65`.
 - Dashboard `npm run lint` reports nine existing errors in five unchanged
   baseline files: `App.tsx` (3), `CommandInput.tsx` (1),
   `MobileComposer.tsx` (2), `useImagePaste.test.ts` (1), and `server.ts` (2).
-  `git diff --quiet 846e787f6f5a1b5a3aa38c6726c3ed54538a84b0 -- <those paths>` returned 0.
+  `git diff --quiet f61b175dfedc131d052812f3c449069fda963721 -- <those paths>` returned 0.
 
 The suite and typecheck caveats are reported rather than described as green.
 No deployment, live-tree write, enablement change, or publication was performed.
 
-The producer freeze is baseline
-`96d7a16b73708799b0c7867fac4a12328341eeb8` to
-`a5f06faff07446aeb4e16ef60faaac19c78bbdae`.
+The amended producer freeze is
+`a5f06faff07446aeb4e16ef60faaac19c78bbdae` to
+`6ba787837d29275ab431db710f768f2a5ebacbfd`.
 
 ## Honest risks and uncertainties
 
@@ -425,5 +445,7 @@ The producer freeze is baseline
   able to rewrite both source and envelope inside that boundary could forge a
   matching delivery, so this design is not a cryptographic defense against a
   compromised transport or event store.
-- `PI_OPERATOR_VOICE_ENABLED=false` is an explicit operational bypass; the
-  guarantees above do not apply while it is disabled.
+- `PI_OPERATOR_VOICE_ENABLED=0`, `false`, `no`, or `off` is an explicit
+  operational bypass for production materialization. The herald bridge posts
+  the fixed failure notice rather than source under those values, but the
+  broader plain-delivery guarantees do not apply while the extension is disabled.
