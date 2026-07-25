@@ -66,6 +66,8 @@ describe("operator delivery validation", () => {
     ["non-RFC uuid", ready("Keep 00000000-0000-0000-0000-000000000000 undeployed.")],
     ["hex hash", ready("Keep revision 65ab66f01234567 undeployed.")],
     ["all-letter hex hash", ready("Keep revision abcdefabcdef undeployed.")],
+    ["bare long decimal id", ready("Completed 1234567890 successfully.")],
+    ["65-character hex hash", ready(`Keep revision ${"a".repeat(65)} undeployed.`)],
     ["internal marker", ready("[[operator update]] Keep the release undeployed.")],
     ["ticket code", ready("Keep CODENAME-47 undeployed.")],
     ["known code-name", ready("CommsReset keeps the release undeployed.")],
@@ -137,6 +139,12 @@ describe("operator delivery validation", () => {
     expect(presented).toContain("![[attached image]](pi-asset:abc12345def67890)");
     expect(presented.match(/pi-asset:/gi)).toHaveLength(1);
     expect(presented).not.toMatch(/0123456789abcdef|not-a-hash|fedcba9876543210|1111222233334444/i);
+  });
+
+  it("restores protected images literally when alt text contains replacement tokens or marker text", () => {
+    const markerText = "\uE000operator-image-0\uE001";
+    const text = `Before ${markerText} ![cost $& $' $1](pi-asset:abc12345def67890) after`;
+    expect(operatorDeliveryTextForChat(text)).toBe(text);
   });
 
   it("removes transport-only asset ids from previews and copied prose", () => {

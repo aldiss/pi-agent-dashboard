@@ -60,14 +60,15 @@ function containsResidualAssetTransportId(text: string): boolean {
 
 function containsStandaloneHexHash(text: string): boolean {
   const withoutTrustedAssets = withoutTrustedAssetDestinations(text);
-  const tokens = withoutTrustedAssets.match(/\b[a-f0-9]{7,64}\b/gi) ?? [];
-  return tokens.some((token) => /[a-f]/i.test(token));
+  const tokens = withoutTrustedAssets.match(/\b[a-f0-9]{7,}\b/gi) ?? [];
+  return tokens.some((token) => token.length >= 16 || /[a-f]/i.test(token));
 }
 
 /** Defense-in-depth only; the producer's checks remain the primary proof. */
 export function hasObviousInternalJargon(text: string): boolean {
   if (containsResidualAssetTransportId(text)) return true;
   if (/\b(?:dl|id|vm|run|job|tenure|cell|task|ticket|issue|message|msg|commit|sha|t)[-_:#]?\d+[A-Za-z0-9._-]*\b/i.test(text)) return true;
+  if (/\b\d{10,}\b/.test(withoutTrustedAssetDestinations(text))) return true;
   if (text.includes("§")) return true;
   if (/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/i.test(text)) return true;
   if (containsStandaloneHexHash(text)) return true;
@@ -259,18 +260,26 @@ export function operatorDeliveryTextForPresentation(text: string): string {
 
 /** Keep renderable Markdown images, but neutralize transport ids everywhere else. */
 export function operatorDeliveryTextForChat(text: string): string {
-  const images: string[] = [];
+  const images: Array<{ marker: string; markdown: string }> = [];
+  let markerSequence = 0;
   const protectedImages = text.replace(
     TRUSTED_MARKDOWN_ASSET_IMAGE_RE,
     (_imageMarkdown, alt: string, destination: string) => {
-      const marker = `\uE000operator-image-${images.length}\uE001`;
-      images.push(`![${scrubAssetTransportIds(alt)}](${destination})`);
+      let marker: string;
+      do {
+        marker = `\uE000operator-image-${markerSequence++}\uE001`;
+      } while (text.includes(marker));
+      images.push({
+        marker,
+        markdown: `![${scrubAssetTransportIds(alt)}](${destination})`,
+      });
       return marker;
     },
   );
   let safe = scrubAssetTransportIds(protectedImages);
-  images.forEach((imageMarkdown, index) => {
-    safe = safe.replace(`\uE000operator-image-${index}\uE001`, imageMarkdown);
-  });
+  for (const image of images) {
+    // A replacement callback keeps `$&`, `$'`, and `$1` in alt text literal.
+    safe = safe.replace(image.marker, () => image.markdown);
+  }
   return safe;
 }

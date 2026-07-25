@@ -24,6 +24,7 @@ export interface PreparedAppend {
 }
 
 export const MESSAGE_END_CORRELATION_FIELD = "__piDashboardMessageEndToken";
+export const MAX_PENDING_MESSAGE_ENDS = 256;
 
 /** Pi persists these message roles through sessionManager.appendMessage. */
 export function isAppendMessageRole(message: unknown): message is object {
@@ -41,7 +42,7 @@ export function createAppendBoundMessageEndForwarder<EventPayload>(
   options: AppendBoundMessageEndForwarderOptions<EventPayload>,
 ) {
   const pending = new Map<string, PendingMessageEnd<EventPayload>>();
-  const preparedAppendMessages = new WeakMap<object, string>();
+  let preparedAppendMessages = new WeakMap<object, string>();
   let tokenCounter = 0;
 
   const prepare = (record: PendingMessageEnd<EventPayload>, message: object): void => {
@@ -53,6 +54,14 @@ export function createAppendBoundMessageEndForwarder<EventPayload>(
 
   const clearMarker = (message: object): void => {
     try { delete (message as Record<string, unknown>)[MESSAGE_END_CORRELATION_FIELD]; } catch { /* best effort */ }
+  };
+
+  const discard = (token: string): void => {
+    const record = pending.get(token);
+    if (!record) return;
+    pending.delete(token);
+    clearMarker(record.markedMessage);
+    if (record.authoritativeMessage) clearMarker(record.authoritativeMessage);
   };
 
   const flush = (token: string, message: object, entryId?: string): boolean => {
@@ -92,6 +101,11 @@ export function createAppendBoundMessageEndForwarder<EventPayload>(
         writable: true,
       });
       pending.set(token, record);
+      while (pending.size > MAX_PENDING_MESSAGE_ENDS) {
+        const oldestToken = pending.keys().next().value;
+        if (typeof oldestToken !== "string") break;
+        discard(oldestToken);
+      }
     },
 
     /** Invoke immediately before the wrapped original appendMessage. */
@@ -118,6 +132,12 @@ export function createAppendBoundMessageEndForwarder<EventPayload>(
     has(message: object): boolean {
       const token = (message as Record<string, unknown>)[MESSAGE_END_CORRELATION_FIELD];
       return typeof token === "string" && pending.has(token);
+    },
+
+    /** Drop abandoned records when the bridge switches session identity. */
+    clear(): void {
+      for (const token of [...pending.keys()]) discard(token);
+      preparedAppendMessages = new WeakMap<object, string>();
     },
   };
 }

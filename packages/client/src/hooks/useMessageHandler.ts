@@ -182,7 +182,10 @@ export function useMessageHandler(
         setSessionStates((prev) => {
           const s = prev.get(sessionId);
           if (!s || s.heldBufferLastActivityAt === undefined) return prev;
-          const released = releaseAssistantBufferAsFallback(s, Date.now());
+          const released = releaseAssistantBufferAsFallback(
+            s,
+            s.heldBufferLastActivityAt + OPERATOR_BUFFER_TIMEOUT_MS,
+          );
           if (released === s) return prev;
           const next = new Map(prev);
           next.set(sessionId, released);
@@ -517,9 +520,9 @@ export function useMessageHandler(
         // See change: fix-replay-duplicates-tool-and-flushed-rows.
         const maxSeq = maxSeqMapRef.current.get(msg.sessionId) ?? 0;
         const shouldReset = firstSeq != null && (firstSeq === 1 || firstSeq <= maxSeq);
-        // Replay pages are historical batches, not live activity. Never arm a
-        // per-page timer: a nonterminal page can split update/end and its old
-        // timestamp would fire immediately before the next page arrives.
+        // A nonterminal replay page may split update/end. Clear the prior page's
+        // watchdog here; after reduction, a still-open hold gets a fresh bound
+        // based on page receipt time rather than its historical event timestamp.
         if (shouldReset || msg.isLast === false) clearBufferTimeout(msg.sessionId);
         setSessionStates((prev) => {
           const next = new Map(prev);
@@ -534,7 +537,8 @@ export function useMessageHandler(
           const carrySuperseded = shouldReset ? prior?.supersededNonces : undefined;
           let current = shouldReset ? createInitialState() : (next.get(msg.sessionId) ?? createInitialState());
           let pinnedFallback: SessionState["messages"][number] | undefined;
-          if (!shouldReset && current.timedOutAssistantFallbackId) {
+          if (!shouldReset && current.timedOutAssistantFallbackId &&
+              !replayHasMatchingAssistantEnd(current, msg.events)) {
             const pinnedIndex = current.messages.findIndex(
               (message) => message.id === current.timedOutAssistantFallbackId,
             );
@@ -582,16 +586,17 @@ export function useMessageHandler(
           next.set(msg.sessionId, current);
           return next;
         });
-        if (msg.isLast === true) {
+        if (msg.isLast === true || msg.isLast === false) {
           // Functional updater ordering guarantees this observes the fully
-          // reduced terminal replay state. Arm only when that complete sweep
-          // genuinely ends with an unmatched assistant partial.
+          // reduced replay state. A terminal page retains the normal inactivity
+          // deadline. A nonterminal page gets a receipt-time watchdog so a
+          // stalled paginator cannot leave an unmatched hold indefinitely.
           setSessionStates((prev) => {
             const current = prev.get(msg.sessionId);
             if (current?.heldBufferLastActivityAt !== undefined) {
               armBufferTimeout(
                 msg.sessionId,
-                current.heldBufferLastActivityAt,
+                msg.isLast === true ? current.heldBufferLastActivityAt : Date.now(),
                 current.heldAssistantKey,
               );
             } else {

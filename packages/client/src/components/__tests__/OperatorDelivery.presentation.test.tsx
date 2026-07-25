@@ -72,6 +72,26 @@ describe("operator delivery presentation", () => {
     expect(writeText).not.toHaveBeenCalledWith(expect.stringContaining("pi-asset:"));
   });
 
+  it("copies plain text without exposing the transport asset id", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    const state = createInitialState();
+    state.messages = [message];
+    const { container } = render(createElement(
+      ThemeProvider,
+      null,
+      createElement(ChatView, { state, toolContext }),
+    ));
+    const copyPlain = container.querySelector('button[title="Copy as plain text"]');
+    expect(copyPlain).not.toBeNull();
+    fireEvent.click(copyPlain!);
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(PRESENTED));
+    expect(writeText).not.toHaveBeenCalledWith(expect.stringContaining("pi-asset:"));
+  });
+
   it("uses a fixed loading title without exposing an unresolved asset hash", () => {
     const unresolved: ChatMessage = {
       ...message,

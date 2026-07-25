@@ -388,4 +388,42 @@ describe("message_end operator delivery selection", () => {
     expect(state.heldOperatorText).toBe("");
     expect(state.heldBufferLastActivityAt).toBeUndefined();
   });
+
+  it("replaces a boundary fallback when its late final arrives after the next assistant", () => {
+    let state = reduceEvent(createInitialState(), start(1000, undefined, "nonce-1"));
+    state = reduceEvent(state, update(SOURCE, 1001, undefined, "nonce-1"));
+
+    const nextSource = "Decision: keep the release undeployed until delivery is verified.";
+    const nextPlain = "Keep the release undeployed until plain delivery is verified.";
+    state = reduceEvent(state, start(2000, undefined, "nonce-2"));
+    expect(state.timedOutAssistantFallbackKey).toBe("nonce:nonce-1");
+    state = reduceEvent(state, update(nextSource, 2001, undefined, "nonce-2"));
+    state = reduceEvent(state, end({
+      timestamp: 2002,
+      audience: "operator",
+      content: nextSource,
+      nonce: "nonce-2",
+      entryId: "entry-2",
+      operatorDelivery: {
+        version: 1,
+        sourceSha256: sha256Hex(nextSource),
+        status: "ready",
+        text: nextPlain,
+        checks: { plain: true, anchorsPreserved: true },
+      },
+    }));
+
+    state = reduceEvent(state, end({
+      timestamp: 2003,
+      audience: "operator",
+      operatorDelivery: delivery,
+      nonce: "nonce-1",
+      entryId: "entry-1",
+    }));
+
+    expect(assistantRows(state).map((message) => message.content)).toEqual([
+      PLAIN,
+      nextPlain,
+    ]);
+  });
 });

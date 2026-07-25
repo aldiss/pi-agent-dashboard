@@ -156,7 +156,9 @@ const MessageBubble = React.memo(function MessageBubble({ content, className, ti
     : content;
 
   const getPlainText = useCallback(() => {
-    return contentRef.current?.innerText ?? displayContent;
+    return operatorDeliveryTextForPresentation(
+      contentRef.current?.innerText ?? displayContent,
+    );
   }, [displayContent]);
 
   return (

@@ -1,5 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
-import { createAppendBoundMessageEndForwarder, isAppendMessageRole, MESSAGE_END_CORRELATION_FIELD } from "../message-end-forwarder.js";
+import {
+  createAppendBoundMessageEndForwarder,
+  isAppendMessageRole,
+  MAX_PENDING_MESSAGE_ENDS,
+  MESSAGE_END_CORRELATION_FIELD,
+} from "../message-end-forwarder.js";
 
 interface Message {
   role: "assistant";
@@ -112,5 +117,51 @@ describe("append-bound message_end forwarding", () => {
     expect(sent).toHaveLength(1);
     expect(sent[0]).toEqual({ message, entryId: "entry-slow" });
     vi.useRealTimers();
+  });
+
+  it("clears abandoned pending records and markers on a session reset", () => {
+    const message: Message = { role: "assistant", content: "source" };
+    const send = vi.fn();
+    const forwarder = createAppendBoundMessageEndForwarder({
+      prepare: () => {},
+      resolveFallbackEntryId: () => undefined,
+      send,
+    });
+    forwarder.hold(message, { message }, "nonce-1");
+    expect(forwarder.has(message)).toBe(true);
+
+    forwarder.clear();
+
+    expect(forwarder.has(message)).toBe(false);
+    expect(message).not.toHaveProperty(MESSAGE_END_CORRELATION_FIELD);
+    expect(forwarder.beforeAppend(message)).toBeUndefined();
+    expect(forwarder.afterAppend(message)).toBe(false);
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("bounds abandoned records within a session", () => {
+    const send = vi.fn();
+    const forwarder = createAppendBoundMessageEndForwarder({
+      prepare: () => {},
+      resolveFallbackEntryId: () => undefined,
+      send,
+    });
+    const messages = Array.from({ length: MAX_PENDING_MESSAGE_ENDS + 1 }, (_, index): Message => ({
+      role: "assistant",
+      content: `source-${index}`,
+    }));
+    messages.forEach((message, index) => {
+      forwarder.hold(message, { message }, `nonce-${index}`);
+    });
+
+    expect(forwarder.has(messages[0])).toBe(false);
+    expect(messages[0]).not.toHaveProperty(MESSAGE_END_CORRELATION_FIELD);
+    expect(forwarder.has(messages[1])).toBe(true);
+    expect(forwarder.has(messages.at(-1)!)).toBe(true);
+
+    const latest = messages.at(-1)!;
+    expect(forwarder.beforeAppend(latest)).toEqual({ nonce: `nonce-${MAX_PENDING_MESSAGE_ENDS}` });
+    expect(forwarder.afterAppend(latest, "entry-latest")).toBe(true);
+    expect(send).toHaveBeenCalledTimes(1);
   });
 });

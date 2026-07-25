@@ -439,19 +439,36 @@ export function releaseAssistantBufferAsFallback(state: SessionState, nowMs: num
   if (nowMs - state.heldBufferLastActivityAt < OPERATOR_BUFFER_TIMEOUT_MS) return state;
   const next: SessionState = { ...state, toolCalls: new Map(state.toolCalls) };
   const fallbackId = `delivery-timeout-${nowMs}`;
-  next.messages = [
-    ...next.messages,
-    {
-      id: fallbackId,
-      role: "assistant",
-      content: OPERATOR_DELIVERY_FALLBACK,
-      timestamp: nowMs,
-      // message_end never arrived, so the per-message audience is unproven.
-      // Explicit unknown keeps this degradation visible even when the
-      // surrounding session is an agent/relay pane with mesh chatter hidden.
-      audience: "unknown",
-    },
-  ];
+  const fallbackNonce = state.heldAssistantKey?.startsWith("nonce:")
+    ? state.heldAssistantKey.slice("nonce:".length)
+    : undefined;
+  const fallbackEntryId = state.heldAssistantEntryKey?.startsWith("entry:")
+    ? state.heldAssistantEntryKey.slice("entry:".length)
+    : undefined;
+  const fallback: ChatMessage = {
+    id: fallbackId,
+    role: "assistant",
+    content: OPERATOR_DELIVERY_FALLBACK,
+    timestamp: nowMs,
+    // message_end never arrived, so the per-message audience is unproven.
+    // Explicit unknown keeps this degradation visible even when the
+    // surrounding session is an agent/relay pane with mesh chatter hidden.
+    audience: "unknown",
+    ...(fallbackNonce ? { nonce: fallbackNonce } : {}),
+    ...(fallbackEntryId ? { entryId: fallbackEntryId } : {}),
+  };
+  const priorFallbackIndex = state.timedOutAssistantFallbackId
+    ? next.messages.findIndex((message) => message.id === state.timedOutAssistantFallbackId)
+    : -1;
+  if (priorFallbackIndex >= 0 && next.messages[priorFallbackIndex].timestamp > nowMs) {
+    next.messages = [
+      ...next.messages.slice(0, priorFallbackIndex),
+      fallback,
+      ...next.messages.slice(priorFallbackIndex),
+    ];
+  } else {
+    next.messages = [...next.messages, fallback];
+  }
   next.heldOperatorText = "";
   next.heldAssistantKey = undefined;
   next.heldAssistantEntryKey = undefined;
@@ -1233,21 +1250,35 @@ export function reduceEvent(state: SessionState, event: DashboardEvent): Session
 
     case "message_start": {
       const msg = data.message as any;
+      let releasedBoundaryFallback = false;
       if ((msg?.role === "assistant" || msg?.role === "user") && next.heldBufferLastActivityAt !== undefined) {
         // A new message is a hard boundary. If the prior assistant end was
         // dropped before its timer elapsed, surface one honest fallback now;
         // otherwise clearing the timer and overwriting the hold would silently
         // erase that prior update.
+        const boundaryFallbackId = `delivery-boundary-${event.timestamp}`;
+        const boundaryNonce = next.heldAssistantKey?.startsWith("nonce:")
+          ? next.heldAssistantKey.slice("nonce:".length)
+          : undefined;
+        const boundaryEntryId = next.heldAssistantEntryKey?.startsWith("entry:")
+          ? next.heldAssistantEntryKey.slice("entry:".length)
+          : undefined;
         next.messages = [
           ...next.messages,
           {
-            id: `delivery-boundary-${event.timestamp}`,
+            id: boundaryFallbackId,
             role: "assistant",
             content: OPERATOR_DELIVERY_FALLBACK,
             timestamp: event.timestamp,
             audience: "unknown",
+            ...(boundaryNonce ? { nonce: boundaryNonce } : {}),
+            ...(boundaryEntryId ? { entryId: boundaryEntryId } : {}),
           },
         ];
+        next.timedOutAssistantFallbackId = boundaryFallbackId;
+        next.timedOutAssistantFallbackKey = next.heldAssistantKey;
+        next.timedOutAssistantFallbackEntryKey = next.heldAssistantEntryKey;
+        releasedBoundaryFallback = true;
         next.heldOperatorText = "";
         next.heldAssistantKey = undefined;
         next.heldAssistantEntryKey = undefined;
@@ -1256,13 +1287,10 @@ export function reduceEvent(state: SessionState, event: DashboardEvent): Session
         next.streamingThinking = "";
         next.thinkingStartedAt = undefined;
         next.streamingTextFlushed = false;
-        next.timedOutAssistantFallbackId = undefined;
-        next.timedOutAssistantFallbackKey = undefined;
-        next.timedOutAssistantFallbackEntryKey = undefined;
       }
       if (msg?.role === "assistant") {
         const startKey = assistantCorrelationKey(data);
-        if (next.timedOutAssistantFallbackId &&
+        if (!releasedBoundaryFallback && next.timedOutAssistantFallbackId &&
             !matchesAssistantKey(
               startKey,
               next.timedOutAssistantFallbackKey,
@@ -1283,9 +1311,11 @@ export function reduceEvent(state: SessionState, event: DashboardEvent): Session
       if (msg?.role === "user") {
         next.heldAssistantKey = undefined;
         next.heldAssistantEntryKey = undefined;
-        next.timedOutAssistantFallbackId = undefined;
-        next.timedOutAssistantFallbackKey = undefined;
-        next.timedOutAssistantFallbackEntryKey = undefined;
+        if (!releasedBoundaryFallback) {
+          next.timedOutAssistantFallbackId = undefined;
+          next.timedOutAssistantFallbackKey = undefined;
+          next.timedOutAssistantFallbackEntryKey = undefined;
+        }
         next.pendingPrompt = undefined;
         // Message-queue dispatch→work edge (dashboard-message-queue/v1): when
         // this user message_start carries a `queueNonce`, the queued follow-up
@@ -1501,9 +1531,13 @@ export function reduceEvent(state: SessionState, event: DashboardEvent): Session
           ? next.messages.findIndex((message) => message.id === next.timedOutAssistantFallbackId)
           : -1;
         const finalizedEntryId = data.entryId as string | undefined;
-        const existingFinalIdx = finalizedEntryId
+        const finalizedNonce = data.nonce as string | undefined;
+        const existingFinalIdx = finalizedEntryId || finalizedNonce
           ? next.messages.findLastIndex(
-              (message) => message.role === "assistant" && message.entryId === finalizedEntryId,
+              (message) => message.role === "assistant" && (
+                (finalizedEntryId !== undefined && message.entryId === finalizedEntryId) ||
+                (finalizedNonce !== undefined && message.nonce === finalizedNonce)
+              ),
             )
           : -1;
         const flushedIdx = timeoutIdx >= 0

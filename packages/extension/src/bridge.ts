@@ -1278,6 +1278,7 @@ function initBridge(pi: ExtensionAPI) {
     appendMessageWrapped = false;
     lastWrappedSm = null;
     activeAssistantNonce = undefined;
+    messageEndForwarder.clear();
     operatorToolWireTracker.clear();
     wrapAppendMessageForCtx(ctx);
 

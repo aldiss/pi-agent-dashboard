@@ -373,6 +373,18 @@ The producer freeze is baseline
 
 ## Honest risks and uncertainties
 
+- Enablement parsing is a security boundary shared by the TypeScript config,
+  herald CLI, and generated shell bridge. The frozen implementation treated
+  `0` as disabled in config while the bridge recognized only `false`. The
+  amendment pins one `0`/`false`/`no`/`off` grammar across the
+  boundary. Future implementations must change that grammar and its tests
+  together or they can reactivate a supposedly disabled side channel.
+- The frozen herald CLI wrote its raw input to the success channel when
+  disabled. That made a configuration disagreement, or an executable override
+  such as `/bin/cat`, a source-disclosure path. The amended CLI always emits a
+  fixed failure sentence when disabled, and the bridge accepts successful
+  output only with validator provenance. The bridge remains a security boundary:
+  losing either property would reopen the raw-source path.
 - Arbitrary natural-language equivalence is not mathematically provable. Exact
   anchors, names, relations, action signatures, source binding, validator
   execution, transport preservation, and DOM selection are mechanically
@@ -380,6 +392,15 @@ The producer freeze is baseline
   The rewrite and verifier currently use the configured provider, so correlated
   model error remains possible. Uncertainty is intended to fail closed, but a
   false semantic approval is the principal residual outcome risk.
+- The deterministic jargon net is deliberately finite. Long decimal ids and
+  hexadecimal blobs of any length are now rejected mechanically, but novel id
+  prefixes, previously unseen internal phrases, and natural-language code-names
+  can still reach the semantic verifier. The net is a hard backstop, not a
+  complete vocabulary proof.
+- The live name registry closes the start-up interval for the current process's
+  own name only. A sibling process created inside the registry cache interval
+  can have a code-name that is not yet in the deterministic set, leaving the
+  semantic verifier as the remaining protection until the cache refreshes.
 - Provider calls add latency, cost, and rate-limit exposure. The chain is bounded
   and fields run concurrently, but a dashboard inactivity fallback may appear
   before a late final; correlation replaces it when the final arrives.
@@ -390,8 +411,19 @@ The producer freeze is baseline
 - Protected tool ids are retained for the session lifetime so a late name-less
   frame cannot leak after eviction. This is fail-closed but memory grows with
   the number of protected calls until session switch.
+- Choice restoration depends on retaining the source-to-presentation mapping
+  across both identified and id-less exact-object tool-call paths. The frozen
+  id-less path could discard that proof and change the machine choice after two
+  labels were rewritten. The amended path and regression test pin this seam;
+  future tool-call normalization still requires re-verification.
 - The pre-tool-start mutation and append wrapper are verified against pinned
   core behavior. Unsupported core versions fail startup, but future core event
   ordering requires re-verification.
+- Source hashes and exact-key validation bind an envelope to bytes; they do not
+  authenticate an adversarial transport. The dashboard assumes its extension,
+  persistence, and replay channel are trusted application components. A party
+  able to rewrite both source and envelope inside that boundary could forge a
+  matching delivery, so this design is not a cryptographic defense against a
+  compromised transport or event store.
 - `PI_OPERATOR_VOICE_ENABLED=false` is an explicit operational bypass; the
   guarantees above do not apply while it is disabled.

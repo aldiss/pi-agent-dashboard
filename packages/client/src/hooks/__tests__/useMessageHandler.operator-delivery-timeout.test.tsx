@@ -391,7 +391,7 @@ describe("useMessageHandler operator delivery timeout", () => {
     ]);
   });
 
-  it("does not arm an old-timestamp timer when replay splits update and end across pages", () => {
+  it("uses a receipt-time watchdog when replay splits update and end across pages", () => {
     vi.useFakeTimers();
     const startedAt = 1_800_000_850_000;
     vi.setSystemTime(startedAt);
@@ -429,10 +429,13 @@ describe("useMessageHandler operator delivery timeout", () => {
       }],
       isLast: false,
     } as ServerToBrowserMessage);
-    expect(vi.getTimerCount()).toBe(0);
-    act(() => vi.advanceTimersByTime(OPERATOR_BUFFER_TIMEOUT_MS * 2));
+    expect(vi.getTimerCount()).toBe(1);
+    act(() => vi.advanceTimersByTime(OPERATOR_BUFFER_TIMEOUT_MS - 1));
     expect(hook.result.current.states.get(sid)?.messages
       .filter((message) => message.content === OPERATOR_DELIVERY_FALLBACK)).toHaveLength(1);
+    act(() => vi.advanceTimersByTime(1));
+    expect(hook.result.current.states.get(sid)?.messages
+      .filter((message) => message.content === OPERATOR_DELIVERY_FALLBACK)).toHaveLength(2);
 
     hook.dispatch({
       type: "event_replay",
