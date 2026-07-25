@@ -2,7 +2,11 @@
  * State replay — synthesizes dashboard events from pi session entries
  * so the browser can rebuild the chat view after a reconnect or DB reset.
  */
-import type { EventForwardMessage } from "./protocol.js";
+import type {
+  EventForwardMessage,
+  OperatorDeliveryEventData,
+  OperatorDeliveryWireMessage,
+} from "./protocol.js";
 import {
   isOperatorProseTool,
   sanitizeOperatorProseToolArgs,
@@ -200,8 +204,9 @@ export function replayEntriesAsEvents(
           }
         }
         // Emit message_update (sets streamingText) then message_end (finalizes)
-        messages.push(makeEvent(sessionId, "message_update", ts, { message: msg, entryId: entry.id }));
-        messages.push(makeEvent(sessionId, "message_end", ts, { message: msg, entryId: entry.id }));
+        const wireMessage = msg as OperatorDeliveryWireMessage;
+        messages.push(makeEvent(sessionId, "message_update", ts, { message: wireMessage, entryId: entry.id }));
+        messages.push(makeEvent(sessionId, "message_end", ts, { message: wireMessage, entryId: entry.id }));
 
         // Emit stats_update if usage data is present
         const usage = msg.usage as Record<string, unknown> | undefined;
@@ -292,7 +297,7 @@ function makeEvent(
   sessionId: string,
   eventType: string,
   timestamp: number,
-  data: Record<string, unknown>,
+  data: OperatorDeliveryEventData,
 ): EventForwardMessage {
   return {
     type: "event_forward",

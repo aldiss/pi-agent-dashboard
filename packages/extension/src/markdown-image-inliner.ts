@@ -24,6 +24,11 @@ import {
 import {
   isValidOperatorDeliveryPresentation,
 } from "@blackbelt-technology/pi-dashboard-shared/operator-delivery.js";
+import type {
+  OperatorDelivery,
+  OperatorDeliveryFailureCode,
+  OperatorDeliveryPresentation,
+} from "@blackbelt-technology/pi-dashboard-shared/protocol.js";
 
 /** Per-image hard cap (decision D8). */
 export const MAX_PER_IMAGE_BYTES = 5 * 1024 * 1024;
@@ -322,7 +327,7 @@ function assistantSourceText(content: unknown): string {
 function validBoundOperatorDelivery(
   value: unknown,
   source: string,
-): value is Record<string, unknown> & { status: "ready" | "failed" | "agent" } {
+): value is OperatorDelivery {
   if (!isRecord(value) || value.version !== 1) return false;
   if (typeof value.sourceSha256 !== "string" || !/^[a-f0-9]{64}$/.test(value.sourceSha256)) return false;
   if (value.sourceSha256 !== sha256Text(source)) return false;
@@ -333,8 +338,15 @@ function validBoundOperatorDelivery(
     return value.checks.plain === true && value.checks.anchorsPreserved === true;
   }
   if (value.status === "failed") {
+    const failureCodes: ReadonlySet<OperatorDeliveryFailureCode> = new Set([
+      "provider-unavailable",
+      "timed-out",
+      "provider-error",
+      "invalid-rewrite",
+    ]);
     return hasExactKeys(value, ["version", "sourceSha256", "status", "code"]) &&
-      typeof value.code === "string" && value.code.length > 0;
+      typeof value.code === "string" &&
+      failureCodes.has(value.code as OperatorDeliveryFailureCode);
   }
   if (value.status === "agent") {
     return hasExactKeys(value, ["version", "sourceSha256", "status"]);
@@ -391,7 +403,7 @@ export function inlineAssistantMessageImages(
     if (displayBase !== undefined) {
       const presented = rewrite(displayBase, true);
       if (presented !== displayBase) {
-        const presentation = {
+        const presentation: OperatorDeliveryPresentation = {
           version: 1,
           deliverySha256: sha256Text(displayBase),
           text: presented,

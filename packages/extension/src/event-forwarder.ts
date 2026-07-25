@@ -1,11 +1,14 @@
-import type { EventForwardMessage } from "@blackbelt-technology/pi-dashboard-shared/protocol.js";
+import type {
+  EventForwardMessage,
+  OperatorDeliveryEventData,
+} from "@blackbelt-technology/pi-dashboard-shared/protocol.js";
 
 /**
  * Extract only JSON-serializable fields from an event object.
  * Strips functions, AbortSignals, and other non-serializable values.
  */
-function extractSerializable(obj: Record<string, unknown>): Record<string, unknown> {
-  const result: Record<string, unknown> = {};
+function extractSerializable(obj: Record<string, unknown>): OperatorDeliveryEventData {
+  const result: OperatorDeliveryEventData = {};
   for (const [key, value] of Object.entries(obj)) {
     if (value === undefined || value === null) {
       result[key] = value;
@@ -26,7 +29,7 @@ export function mapEventToProtocol(
   sessionId: string,
   piEvent: Record<string, unknown>,
 ): EventForwardMessage {
-  const serializable = extractSerializable(piEvent);
+  const serializable: OperatorDeliveryEventData = extractSerializable(piEvent);
 
   return {
     type: "event_forward",

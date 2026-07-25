@@ -3,6 +3,7 @@
  * (state, event) → new state
  */
 import type { DashboardEvent, FlowState, ArchitectState, MessageAuthor } from "@blackbelt-technology/pi-dashboard-shared/types.js";
+import type { OperatorDeliveryWireMessage } from "@blackbelt-technology/pi-dashboard-shared/protocol.js";
 import { isFlowEvent, reduceFlowEvent } from "@blackbelt-technology/pi-dashboard-flows-plugin/reducer";
 import { isArchitectEvent, reduceArchitectEvent } from "@blackbelt-technology/pi-dashboard-flows-plugin/reducer";
 import { parseSkillBlock, type SkillBlock } from "@blackbelt-technology/pi-dashboard-shared/skill-block-parser.js";
@@ -1484,7 +1485,11 @@ export function reduceEvent(state: SessionState, event: DashboardEvent): Session
     }
 
     case "message_end": {
-      const msg = data.message as any;
+      const msg = data.message as (OperatorDeliveryWireMessage & {
+        role?: unknown;
+        audience?: unknown;
+        content?: unknown;
+      }) | undefined;
       if (msg?.role === "assistant") {
         const endStampAudience = asAudience(msg.audience);
         const endKey = assistantCorrelationKey(data);

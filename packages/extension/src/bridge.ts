@@ -23,7 +23,10 @@ import { isDashboardRunning } from "@blackbelt-technology/pi-dashboard-shared/se
 import { discoverDashboard } from "@blackbelt-technology/pi-dashboard-shared/mdns-discovery.js";
 import { launchServer } from "./server-launcher.js";
 import { autoStartServer } from "./server-auto-start.js";
-import type { ServerToExtensionMessage } from "@blackbelt-technology/pi-dashboard-shared/protocol.js";
+import type {
+  OperatorDeliveryWireMessage,
+  ServerToExtensionMessage,
+} from "@blackbelt-technology/pi-dashboard-shared/protocol.js";
 import {
   withoutPersistedDashboardAssets,
 } from "@blackbelt-technology/pi-dashboard-shared/state-replay.js";
@@ -386,9 +389,9 @@ function initBridge(pi: ExtensionAPI) {
 
   function sendFinalMessageEnd(event: any, message: object, entryId: string | undefined, nonce: string): void {
     if (!isActive() || !sessionReady) return;
-    const wireMessage = operatorToolWireTracker.sanitizeMessage(
+    const wireMessage: OperatorDeliveryWireMessage = operatorToolWireTracker.sanitizeMessage(
       withoutPersistedDashboardAssets(message),
-    );
+    ) as OperatorDeliveryWireMessage;
     connection.send(mapEventToProtocol(sessionId, { ...event, message: wireMessage, entryId, nonce }));
     const synthetic = retryTracker.observeMessageEnd(sessionId, message as any);
     if (synthetic) {

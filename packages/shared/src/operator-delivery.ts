@@ -1,5 +1,10 @@
 import { sha256 } from "@noble/hashes/sha2.js";
 import type { Audience } from "./vendor/operator-voice-audience/audience-core.js";
+import type {
+  AgentOperatorDelivery,
+  OperatorDeliveryPresentation,
+  ReadyOperatorDelivery,
+} from "./protocol.js";
 
 export const MAX_OPERATOR_DELIVERY_TEXT_CHARS = 64_000;
 
@@ -7,10 +12,10 @@ export const OPERATOR_DELIVERY_FALLBACK =
   "I couldn't translate this update into plain language, so the original message is hidden.";
 
 const SHA256_HEX = /^[a-f0-9]{64}$/;
-const READY_KEYS = ["version", "sourceSha256", "status", "text", "checks"] as const;
-const AGENT_KEYS = ["version", "sourceSha256", "status"] as const;
-const PRESENTATION_KEYS = ["version", "deliverySha256", "text"] as const;
-const CHECK_KEYS = ["plain", "anchorsPreserved"] as const;
+const READY_KEYS = ["version", "sourceSha256", "status", "text", "checks"] as const satisfies readonly (keyof ReadyOperatorDelivery)[];
+const AGENT_KEYS = ["version", "sourceSha256", "status"] as const satisfies readonly (keyof AgentOperatorDelivery)[];
+const PRESENTATION_KEYS = ["version", "deliverySha256", "text"] as const satisfies readonly (keyof OperatorDeliveryPresentation)[];
+const CHECK_KEYS = ["plain", "anchorsPreserved"] as const satisfies readonly (keyof ReadyOperatorDelivery["checks"])[];
 const TRUSTED_ASSET_DESTINATION = /^pi-asset:[a-f0-9]{16}$/;
 const MARKDOWN_IMAGE_RE = /!\[([^\]\n]*)\]\(([^)\n\s]+)\)/g;
 const TRUSTED_MARKDOWN_ASSET_IMAGE_RE = /!\[([^\]\n]*)\]\((pi-asset:[a-f0-9]{16})\)/g;
@@ -88,13 +93,7 @@ export function hasObviousInternalJargon(text: string): boolean {
   return false;
 }
 
-export function isValidReadyDelivery(source: string, value: unknown): value is {
-  version: 1;
-  sourceSha256: string;
-  status: "ready";
-  text: string;
-  checks: { plain: true; anchorsPreserved: true };
-} {
+export function isValidReadyDelivery(source: string, value: unknown): value is ReadyOperatorDelivery {
   if (!isRecord(value) || !hasExactKeys(value, READY_KEYS)) return false;
   if (value.version !== 1 || value.status !== "ready") return false;
   if (typeof value.sourceSha256 !== "string" || !SHA256_HEX.test(value.sourceSha256)) return false;
@@ -107,11 +106,7 @@ export function isValidReadyDelivery(source: string, value: unknown): value is {
 }
 
 /** Source-bound proof that finalized prose is intentionally agent-only. */
-export function isValidAgentDelivery(source: string, value: unknown): value is {
-  version: 1;
-  sourceSha256: string;
-  status: "agent";
-} {
+export function isValidAgentDelivery(source: string, value: unknown): value is AgentOperatorDelivery {
   if (!isRecord(value) || !hasExactKeys(value, AGENT_KEYS)) return false;
   return value.version === 1 &&
     value.status === "agent" &&
@@ -192,7 +187,7 @@ function isImageDestinationOnlyRewrite(source: string, presented: string): boole
 export function isValidOperatorDeliveryPresentation(
   deliveryText: string,
   value: unknown,
-): value is { version: 1; deliverySha256: string; text: string } {
+): value is OperatorDeliveryPresentation {
   if (!isRecord(value) || !hasExactKeys(value, PRESENTATION_KEYS)) return false;
   if (value.version !== 1) return false;
   if (typeof value.deliverySha256 !== "string" || !SHA256_HEX.test(value.deliverySha256)) return false;

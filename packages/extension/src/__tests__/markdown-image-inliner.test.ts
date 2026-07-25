@@ -78,7 +78,7 @@ describe("operator delivery image inlining", () => {
         version: 1,
         sourceSha256: sha256Text(source),
         status: "failed",
-        code: "provider-timeout",
+        code: "timed-out",
       },
     };
     const assets = inlineAssistantMessageImages(message, {

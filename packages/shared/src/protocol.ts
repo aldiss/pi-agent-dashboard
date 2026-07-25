@@ -5,6 +5,64 @@ import type { DashboardEvent, CommandInfo, FlowInfo, SessionSource, ImageContent
 
 // ── Extension → Server ──────────────────────────────────────────────
 
+/** Source-bound assistant-delivery contract carried on message events. */
+export type OperatorDeliveryFailureCode =
+  | "provider-unavailable"
+  | "timed-out"
+  | "provider-error"
+  | "invalid-rewrite";
+
+export interface ReadyOperatorDelivery {
+  version: 1;
+  sourceSha256: string;
+  status: "ready";
+  text: string;
+  checks: {
+    plain: true;
+    anchorsPreserved: true;
+  };
+}
+
+export interface FailedOperatorDelivery {
+  version: 1;
+  sourceSha256: string;
+  status: "failed";
+  code: OperatorDeliveryFailureCode;
+}
+
+export interface AgentOperatorDelivery {
+  version: 1;
+  sourceSha256: string;
+  status: "agent";
+}
+
+export type OperatorDelivery =
+  | ReadyOperatorDelivery
+  | FailedOperatorDelivery
+  | AgentOperatorDelivery;
+
+/** Bridge-owned, digest-bound image-only presentation sidecar. */
+export interface OperatorDeliveryPresentation {
+  version: 1;
+  deliverySha256: string;
+  text: string;
+}
+
+/** Intended wire fields; receivers still runtime-validate untrusted JSON. */
+export interface OperatorDeliveryWireMessage extends Record<string, unknown> {
+  operatorDelivery?: OperatorDelivery;
+  operatorDeliveryPresentation?: OperatorDeliveryPresentation;
+}
+
+export interface OperatorDeliveryEventData extends Record<string, unknown> {
+  /** Some non-chat telemetry uses a plain status string in this legacy slot. */
+  message?: OperatorDeliveryWireMessage | string;
+}
+
+export type OperatorDeliveryDashboardEvent = Omit<DashboardEvent, "data"> & {
+  data: OperatorDeliveryEventData;
+};
+
 export interface SessionRegisterMessage {
   type: "session_register";
   sessionId: string;
@@ -74,7 +132,7 @@ export interface SessionHeartbeatMessage {
 export interface EventForwardMessage {
   type: "event_forward";
   sessionId: string;
-  event: DashboardEvent;
+  event: OperatorDeliveryDashboardEvent;
 }
 
 /**
