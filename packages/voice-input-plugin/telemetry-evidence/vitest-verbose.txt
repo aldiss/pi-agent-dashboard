@@ -1,0 +1,53 @@
+
+ RUN  v4.1.5 /private/tmp/voice-telemetry-dashboard-daywright-20260726/packages/voice-input-plugin
+
+[test-isolation] HOME=/var/folders/sh/rtc7_3wd27q_jffxy54dt44m0000gn/T/tmp.eb3FpJdiCX (real=/Users/vdrobkov)
+ ✓ src/__tests__/PushToTalkButton.test.tsx > PushToTalkButton — click-to-toggle (Option B, 2026-05-14) > idle aria-pressed is false and title carries click-language by default 32ms
+ ✓ src/__tests__/PushToTalkButton.test.tsx > PushToTalkButton — click-to-toggle (Option B, 2026-05-14) > first click transitions idle → recording (data-phase + aria-pressed flip) 23ms
+ ✓ src/__tests__/PushToTalkButton.test.tsx > PushToTalkButton — click-to-toggle (Option B, 2026-05-14) > second click transitions recording → uploading (and onTranscript fires on success) 13ms
+ ✓ src/__tests__/PushToTalkButton.test.tsx > PushToTalkButton — click-to-toggle (Option B, 2026-05-14) > 10min safety-net auto-stops recording when no second click arrives 9ms
+ ✓ src/__tests__/PushToTalkButton.test.tsx > PushToTalkButton — click-to-toggle (Option B, 2026-05-14) > button has no pointer-event handlers (click-to-toggle, not press-and-hold) 3ms
+ ✓ src/__tests__/PushToTalkButton.test.tsx > PushToTalkButton — click-to-toggle (Option B, 2026-05-14) > idle renders a vector SVG glyph (not emoji) that inherits currentColor 2ms
+ ✓ src/__tests__/PushToTalkButton.test.tsx > PushToTalkButton — click-to-toggle (Option B, 2026-05-14) > recording paints the calm accent token and shows the vector pulse ring (no red emoji) 6ms
+ ✓ src/__tests__/client-telemetry.test.ts > client telemetry — local-first, ack-on-body-only, overflow-visible > PERSIST-BEFORE-SEND: emit writes to the buffer synchronously 2ms
+ ✓ src/__tests__/client-telemetry.test.ts > client telemetry — local-first, ack-on-body-only, overflow-visible > OFFLINE: with no fetch available, the record persists and drain is a no-op 0ms
+ ✓ src/__tests__/client-telemetry.test.ts > client telemetry — local-first, ack-on-body-only, overflow-visible > blob<1024 zero-POST path writes a local record (the operator's case) 0ms
+ ✓ src/__tests__/client-telemetry.test.ts > client telemetry — local-first, ack-on-body-only, overflow-visible > NETWORK-FAILURE: a throwing fetch retains the record 1ms
+ ✓ src/__tests__/client-telemetry.test.ts > client telemetry — local-first, ack-on-body-only, overflow-visible > AUTH-FAILURE: a 401 (non-2xx) retains the record 1ms
+ ✓ src/__tests__/client-telemetry.test.ts > client telemetry — local-first, ack-on-body-only, overflow-visible > DELIVERED ONLY ON 2xx BODY-ACK: an acking drain clears the record 1ms
+ ✓ src/__tests__/client-telemetry.test.ts > client telemetry — local-first, ack-on-body-only, overflow-visible > MANUFACTURED 200 (acks nothing) marks NOTHING delivered — SW/intermediary defense 0ms
+ ✓ src/__tests__/client-telemetry.test.ts > client telemetry — local-first, ack-on-body-only, overflow-visible > RED control — treating bare HTTP 200 as delivery is rejected 1ms
+ ✓ src/__tests__/client-telemetry.test.ts > client telemetry — local-first, ack-on-body-only, overflow-visible > 2xx that acks a DIFFERENT id does not clear our record 1ms
+ ✓ src/__tests__/client-telemetry.test.ts > client telemetry — local-first, ack-on-body-only, overflow-visible > RELOAD: a later session drains what an earlier one persisted 0ms
+ ✓ src/__tests__/client-telemetry.test.ts > client telemetry — local-first, ack-on-body-only, overflow-visible > FAILED DRAIN then SUCCESS: record retained across the failure, delivered after 0ms
+ ✓ src/__tests__/client-telemetry.test.ts > client telemetry — local-first, ack-on-body-only, overflow-visible > COUNT BOUND: buffer never exceeds BUFFER_MAX_COUNT; overflow is counted 5ms
+ ✓ src/__tests__/client-telemetry.test.ts > client telemetry — local-first, ack-on-body-only, overflow-visible > STORAGE QUOTA EXCEEDED: no crash, overflow visible (degrade, don't die) 1ms
+ ✓ src/__tests__/client-telemetry.test.ts > client telemetry — local-first, ack-on-body-only, overflow-visible > STORAGE UNAVAILABLE: emit degrades to memory, still records, no crash 0ms
+ ✓ src/__tests__/client-telemetry.test.ts > client telemetry — local-first, ack-on-body-only, overflow-visible > PRIVACY: emit drops content — sentinel transcript/audio never persisted 0ms
+ ✓ src/__tests__/client-telemetry.test.ts > client telemetry — local-first, ack-on-body-only, overflow-visible > PRIVACY RED control — a non-sanitising persist leaks the sentinel 0ms
+ ✓ src/__tests__/client-telemetry.test.ts > client telemetry — local-first, ack-on-body-only, overflow-visible > sanitize allowlist is exactly the declared fields (guards accidental additions) 1ms
+ ✓ src/__tests__/client-telemetry.test.ts > client telemetry — local-first, ack-on-body-only, overflow-visible > beaconUnload NEVER marks delivered (best-effort only) 0ms
+ ✓ src/__tests__/client-telemetry.test.ts > client telemetry — local-first, ack-on-body-only, overflow-visible > beaconUnload RED control — treating its boolean as delivery is rejected 0ms
+ ✓ src/__tests__/client-telemetry.test.ts > client telemetry — local-first, ack-on-body-only, overflow-visible > DEGRADED SIGNAL: storage-unavailable emit fires an immediate degraded beacon 0ms
+ ✓ src/__tests__/client-telemetry.test.ts > client telemetry — local-first, ack-on-body-only, overflow-visible > DEGRADED SIGNAL: falls back to keepalive fetch when sendBeacon is absent 0ms
+ ✓ src/__tests__/client-telemetry.test.ts > client telemetry — local-first, ack-on-body-only, overflow-visible > DEGRADED SIGNAL carries NO records/content — it is a notice, not a delivery 0ms
+ ✓ src/__tests__/client-telemetry.test.ts > client telemetry — local-first, ack-on-body-only, overflow-visible > DEGRADED RED control — an in-memory-only flag that a reload would lose is rejected 0ms
+ ✓ src/__tests__/telemetry-sink.test.ts > TelemetrySink — idempotent, ack-after-side-effect, privacy-safe > (1) first delivery is logged AND acked 2ms
+ ✓ src/__tests__/telemetry-sink.test.ts > TelemetrySink — idempotent, ack-after-side-effect, privacy-safe > (1) RED control — a sink that acks without logging is rejected 1ms
+ ✓ src/__tests__/telemetry-sink.test.ts > TelemetrySink — idempotent, ack-after-side-effect, privacy-safe > (2) a lost-ack retry is re-acked WITHOUT a duplicate side effect 0ms
+ ✓ src/__tests__/telemetry-sink.test.ts > TelemetrySink — idempotent, ack-after-side-effect, privacy-safe > (2) RED control — a sink that re-logs on retry is rejected 0ms
+ ✓ src/__tests__/telemetry-sink.test.ts > TelemetrySink — idempotent, ack-after-side-effect, privacy-safe > (3) malformed records are rejected + counted and NOT acked 0ms
+ ✓ src/__tests__/telemetry-sink.test.ts > TelemetrySink — idempotent, ack-after-side-effect, privacy-safe > (3) RED control — a sink that acks malformed records is rejected 0ms
+ ✓ src/__tests__/telemetry-sink.test.ts > TelemetrySink — idempotent, ack-after-side-effect, privacy-safe > (4) ACK ONLY AFTER SIDE EFFECT — a throwing log neither remembers nor acks 0ms
+ ✓ src/__tests__/telemetry-sink.test.ts > TelemetrySink — idempotent, ack-after-side-effect, privacy-safe > (4) RED control — ack-before-side-effect is rejected by the same assertion 0ms
+ ✓ src/__tests__/telemetry-sink.test.ts > TelemetrySink — idempotent, ack-after-side-effect, privacy-safe > (5) privacy — sentinel transcript/audio fields never reach the log 1ms
+ ✓ src/__tests__/telemetry-sink.test.ts > TelemetrySink — idempotent, ack-after-side-effect, privacy-safe > (5) RED control — a passthrough (non-sanitising) sink is rejected 0ms
+ ✓ src/__tests__/telemetry-sink.test.ts > TelemetrySink — idempotent, ack-after-side-effect, privacy-safe > sanitizeRecord drops unknown keys and coerces scalars (unit) 0ms
+ ✓ src/__tests__/telemetry-sink.test.ts > TelemetrySink — idempotent, ack-after-side-effect, privacy-safe > DISCLOSED: bounded seen-set eviction can produce ONE duplicate log on late retry 0ms
+ ✓ src/__tests__/telemetry-sink.test.ts > TelemetrySink — idempotent, ack-after-side-effect, privacy-safe > empty batch acks nothing, logs nothing, rejects nothing (degraded-notice shape) 0ms
+
+ Test Files  3 passed (3)
+      Tests  43 passed (43)
+   Start at  01:05:18
+   Duration  2.21s (transform 64ms, setup 0ms, import 169ms, tests 113ms, environment 1.47s)
+

@@ -30,6 +30,10 @@
  * stay `engine: "parakeet"` for ~5s typical latency on Apple Silicon.
  */
 import type { FastifyInstance, FastifyRequest } from "fastify";
+import { TelemetrySink, type SanitizedRecord } from "./telemetry-sink.js";
+
+/** Correlation-id header, shared across client → dashboard → sidecar. */
+const REQUEST_ID_HEADER = "x-voice-request-id";
 
 interface PluginConfig {
   /** URL of the running voice-input sidecar. Defaults to `http://127.0.0.1:8765`. */
@@ -79,6 +83,24 @@ async function probeSidecar(state: PluginState): Promise<void> {
   }
 }
 
+/**
+ * Resolve the correlation id for a request. Prefer the client-supplied
+ * `X-Voice-Request-Id` (so all three layers share ONE id); if absent, mint a
+ * random one and flag `client_id_absent` — itself a diagnostic signal that the
+ * client-side layer did not run or could not set the header. The id is random
+ * and carries no audio/transcript content.
+ */
+function resolveRequestId(request: FastifyRequest): { id: string; clientAbsent: boolean } {
+  const raw = request.headers[REQUEST_ID_HEADER];
+  const supplied = Array.isArray(raw) ? raw[0] : raw;
+  if (typeof supplied === "string" && supplied.length > 0) {
+    return { id: supplied.slice(0, 128), clientAbsent: false };
+  }
+  const g = globalThis as unknown as { crypto?: { randomUUID?: () => string } };
+  const id = g.crypto?.randomUUID ? g.crypto.randomUUID() : `srv-${Date.now()}-${Math.round(Math.random() * 1e9)}`;
+  return { id, clientAbsent: true };
+}
+
 export async function register(
   fastify: FastifyInstance,
   opts: Partial<PluginConfig> = {}
@@ -87,6 +109,17 @@ export async function register(
     cfg: { ...DEFAULTS, ...opts },
     sidecarHealthy: false,
   };
+
+  // Telemetry sink (Layer 2). Logs sanitised client records via the Fastify
+  // logger (pino) and dedupes retries so a re-drained record is acked without
+  // being double-logged. `fastify.log` is always present on a real instance;
+  // fall back to a no-op only for bare mocks in tests.
+  const logFn =
+    fastify.log && typeof fastify.log.info === "function"
+      ? (rec: SanitizedRecord & { layer: "client" }) =>
+          fastify.log.info({ voiceTelemetry: rec }, "voice-input telemetry (client)")
+      : () => undefined;
+  const sink = new TelemetrySink(logFn);
 
   // Initial probe + background poll. Polling here is best-effort; the
   // PushToTalkButton client also polls health directly.
@@ -119,7 +152,62 @@ export async function register(
     return reply.code(200).send({ healthy: true, engine: state.cfg.engine });
   });
 
+  // Telemetry sink (Layer 2 ingress for the CLIENT layer). The client POSTs its
+  // local-first ring-buffer records here during drain. We sanitise + log +
+  // dedupe, then ACK the exact (request_id, seq) pairs we accepted. The client
+  // marks a record delivered ONLY on this body-level ack — so a manufactured
+  // 200 (service worker, proxy) that carries no ack list releases nothing.
+  fastify.post("/api/plugins/voice-input/telemetry", async (request, reply) => {
+    const body = (request.body ?? {}) as {
+      records?: unknown;
+      degraded?: unknown;
+      overflow?: unknown;
+    };
+    const records = Array.isArray(body.records) ? body.records : [];
+    const result = sink.ingest(records);
+    // Envelope-level degradation/overflow is logged INDEPENDENTLY of the
+    // records — a client whose storage was unavailable sends a degraded notice
+    // with an EMPTY records array (see telemetry.ts signalDegradedOnce), and
+    // that fact must be server-observable even though there is nothing to ack.
+    // Also surfaces overflow (records lost to eviction/quota) so buffer loss is
+    // visible rather than silent.
+    if (body.degraded === true || (typeof body.overflow === "number" && body.overflow > 0)) {
+      if (fastify.log && typeof fastify.log.info === "function") {
+        fastify.log.info(
+          {
+            voiceTelemetry: {
+              layer: "client",
+              event: "buffer_degraded",
+              degraded: body.degraded === true,
+              overflow: typeof body.overflow === "number" ? body.overflow : 0,
+            },
+          },
+          "voice-input telemetry (client buffer degraded/overflow)"
+        );
+      }
+    }
+    // 200 with an explicit ack list naming each accepted (request_id, seq).
+    return reply.code(200).send({ ok: true, acked: result.acked });
+  });
+
   fastify.post("/api/plugins/voice-input/transcribe", async (request, reply) => {
+    // Resolve the correlation id up front so EVERY exit path (incl. the
+    // unhealthy-sidecar 503) carries it and is echoed to the client. This is
+    // the dashboard-ingress record of Layer 2: its presence proves the POST
+    // reached the proxy — which is exactly what a zero-POST failure lacks.
+    const { id: requestId, clientAbsent } = resolveRequestId(request);
+    const startedAt = Date.now();
+    reply.header("X-Voice-Request-Id", requestId);
+
+    const logEvent = (rec: Record<string, unknown>) => {
+      if (fastify.log && typeof fastify.log.info === "function") {
+        fastify.log.info(
+          { voiceTelemetry: { layer: "dashboard", request_id: requestId, ...rec } },
+          "voice-input telemetry (dashboard)"
+        );
+      }
+    };
+
     // The dashboard's Fastify instance is constructed with
     // `connectionTimeout: 10_000` (server.ts ~line 610), which closes the
     // socket if no inbound activity occurs for 10s. Voice transcription via
@@ -133,16 +221,35 @@ export async function register(
       /* defensive; older Node versions / mocked requests */
     }
 
+    const reqCtype =
+      (request.headers["content-type"] as string) || "application/octet-stream";
+    // Size for the ingress log comes from the PRE-PARSED buffer only (Fastify's
+    // content-type parser already buffered it — reading it consumes nothing).
+    // We deliberately do NOT call readRawBody here: that must stay on the
+    // healthy path so the sidecar-down early return keeps its exact prior
+    // stream behaviour (no extra drain) and a byte-identical 503 response.
+    const preParsed = request.body as Buffer | undefined;
+    const reqBytes = Buffer.isBuffer(preParsed) ? preParsed.length : undefined;
+
+    // ingress: the POST reached the dashboard. Sizes/types only — never body.
+    logEvent({
+      event: "ingress",
+      blob_bytes: reqBytes,
+      mime: reqCtype,
+      client_id_absent: clientAbsent,
+    });
+
     if (!state.sidecarHealthy) {
       void probeSidecar(state);
+      logEvent({ event: "egress", http_status: 503, total_ms: Date.now() - startedAt, reason: "sidecar_unhealthy" });
       return reply.code(503).send({ error: "Voice sidecar unavailable" });
     }
 
     try {
-      // request.body is the Buffer parsed by addContentTypeParser above;
-      // fall back to readRawBody for legacy content-types not matched by the
-      // parser regex (defense-in-depth).
-      const body = (request.body as Buffer | undefined) ?? (await readRawBody(request));
+      // request.body is the Buffer parsed by addContentTypeParser above; fall
+      // back to readRawBody for legacy content-types not matched by the parser
+      // regex (defense-in-depth). Unchanged from the pre-instrumentation path.
+      const body = preParsed ?? (await readRawBody(request));
       const controller = new AbortController();
       const timer = setTimeout(
         () => controller.abort(),
@@ -154,9 +261,10 @@ export async function register(
           {
             method: "POST",
             headers: {
-              "content-type":
-                (request.headers["content-type"] as string) ||
-                "application/octet-stream",
+              "content-type": reqCtype,
+              // Forward the SAME correlation id to the sidecar so Layer 3 lines
+              // up with Layers 1 + 2 under one id.
+              "X-Voice-Request-Id": requestId,
             },
             // Node 20+ undici accepts Buffer; cast as BodyInit-compatible via unknown
             // (Buffer is a Uint8Array subclass; DOM lib's BodyInit doesn't include
@@ -167,6 +275,8 @@ export async function register(
         );
         clearTimeout(timer);
         const respBody = await upstream.text();
+        // egress: the sidecar answered. Status + timing only.
+        logEvent({ event: "egress", http_status: upstream.status, total_ms: Date.now() - startedAt });
         reply.code(upstream.status);
         const ct = upstream.headers.get("content-type");
         if (ct) reply.header("content-type", ct);
@@ -176,6 +286,14 @@ export async function register(
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
+      // egress failure: proxy could not reach / read the sidecar. Error CLASS
+      // only in structured telemetry; the human message stays in the response.
+      logEvent({
+        event: "egress",
+        http_status: 502,
+        total_ms: Date.now() - startedAt,
+        net_error: e instanceof Error ? e.name : "unknown",
+      });
       return reply.code(502).send({ error: `Sidecar proxy failed: ${msg}` });
     }
   });

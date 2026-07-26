@@ -64,11 +64,28 @@ import React, {
   useState,
   type CSSProperties,
 } from "react";
+import {
+  emit as telemetryEmit,
+  drain as telemetryDrain,
+  beaconUnload as telemetryBeacon,
+  configureTelemetry,
+  newRequestId,
+  type NoPostReason,
+} from "./telemetry.js";
 
 /* eslint-disable react-hooks/exhaustive-deps */
 
 const DEFAULT_ENDPOINT = "/api/plugins/voice-input/transcribe";
 const DEFAULT_HEALTH = "/api/plugins/voice-input/health";
+const DEFAULT_TELEMETRY = "/api/plugins/voice-input/telemetry";
+
+/**
+ * Correlation-id header forwarded with the transcribe POST. The dashboard
+ * proxy reads it (or mints one, flagged client_id_absent) and forwards it to
+ * the sidecar, so one capture is traceable across all three layers without the
+ * id carrying any audio or transcript content. See client/telemetry.ts.
+ */
+const REQUEST_ID_HEADER = "X-Voice-Request-Id";
 
 /**
  * 10min safety-net auto-stop (Risk #12 per voice-input-substrate-r1 ship). This
@@ -149,6 +166,14 @@ export interface PushToTalkButtonProps {
    * while the user is recording.
    */
   onStreamChange?: (stream: MediaStream | null) => void;
+  /**
+   * Same-origin endpoint the client POSTs local-first telemetry to. Optional;
+   * defaults to "/api/plugins/voice-input/telemetry". Telemetry is written to a
+   * bounded local ring buffer FIRST and only marked delivered on a 2xx ack that
+   * names its request id — so an unreachable dashboard becomes recoverable
+   * evidence rather than a blind spot. Never carries audio or transcript.
+   */
+  telemetryEndpoint?: string;
 }
 
 function deriveLabel(
@@ -189,6 +214,7 @@ export function PushToTalkButton({
   className,
   idleTitle = "Click to record voice (click again to stop)",
   onStreamChange,
+  telemetryEndpoint = DEFAULT_TELEMETRY,
 }: PushToTalkButtonProps) {
   const [phase, setPhase] = useState<ButtonPhase>("idle");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -209,6 +235,38 @@ export function PushToTalkButton({
   // queued-stop flush mechanism is preserved.
   const inFlightStartRef = useRef<boolean>(false);
   const pendingStopRef = useRef<boolean>(false);
+
+  // Telemetry correlation state. `requestIdRef` holds the id minted at capture
+  // intent so every event of one capture — and the transcribe POST header —
+  // shares it. `recordStartMsRef` stamps recorder-start so capture_ms is a real
+  // recording duration, not wall-clock-since-click.
+  const requestIdRef = useRef<string | null>(null);
+  const recordStartMsRef = useRef<number | null>(null);
+  const telemetryEndpointRef = useRef<string>(telemetryEndpoint);
+  useEffect(() => {
+    telemetryEndpointRef.current = telemetryEndpoint;
+  }, [telemetryEndpoint]);
+
+  /**
+   * Persist-first telemetry: write to the local ring buffer synchronously, then
+   * best-effort attempt an acknowledged drain (which alone can mark delivered).
+   * Wrapped so a telemetry failure can NEVER perturb the recording/upload path.
+   */
+  const emitTel = useCallback(
+    (event: Parameters<typeof telemetryEmit>[1], fields?: Parameters<typeof telemetryEmit>[2]) => {
+      const id = requestIdRef.current;
+      if (!id) return;
+      try {
+        telemetryEmit(id, event, fields);
+        // Fire-and-forget: the drain is the ONLY thing that can mark delivered,
+        // and it does so only on a 2xx that names this exact (request_id, seq).
+        void telemetryDrain(telemetryEndpointRef.current).catch(() => undefined);
+      } catch {
+        /* telemetry must never break the voice path */
+      }
+    },
+    []
+  );
 
   // Latest-ref for stopRecording so the safety-net timer + queued-stop
   // flush can invoke the current callback without TDZ forward-ref issues.
@@ -244,6 +302,51 @@ export function PushToTalkButton({
       clearInterval(id);
     };
   }, [healthEndpoint]);
+
+  // Drain-on-mount: a fresh session attempts to ship records that a PRIOR
+  // session persisted but could not deliver (dashboard was unreachable, tab
+  // closed before ack, etc.). This is what turns "unreachable server" from a
+  // blind spot into recoverable evidence. Best-effort; never throws. Also
+  // register the endpoint so the module can fire an immediate degraded signal
+  // if storage turns out to be unavailable (see telemetry.ts residual note).
+  useEffect(() => {
+    configureTelemetry(telemetryEndpointRef.current);
+    void telemetryDrain(telemetryEndpointRef.current).catch(() => undefined);
+  }, []);
+
+  // Unload / tab-hide backstop: best-effort sendBeacon flush of anything still
+  // undelivered. This does NOT mark records delivered (sendBeacon cannot
+  // acknowledge); the acknowledged drain on a later session remains the sole
+  // authority for delivery. Guarded so it is inert where the APIs are absent.
+  useEffect(() => {
+    if (typeof document === "undefined" && typeof window === "undefined") return;
+    const flush = () => {
+      try {
+        telemetryBeacon(telemetryEndpointRef.current);
+      } catch {
+        /* best-effort */
+      }
+    };
+    const onHide = () => {
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") {
+        flush();
+      }
+    };
+    if (typeof document !== "undefined") {
+      document.addEventListener("visibilitychange", onHide);
+    }
+    if (typeof window !== "undefined") {
+      window.addEventListener("pagehide", flush);
+    }
+    return () => {
+      if (typeof document !== "undefined") {
+        document.removeEventListener("visibilitychange", onHide);
+      }
+      if (typeof window !== "undefined") {
+        window.removeEventListener("pagehide", flush);
+      }
+    };
+  }, []);
 
   // Error auto-clear after 6s.
   useEffect(() => {
@@ -304,10 +407,38 @@ export function PushToTalkButton({
 
   const uploadBlob = useCallback(async (blob: Blob) => {
     setPhase("uploading");
+    const requestId = requestIdRef.current;
     try {
       const form = new FormData();
       form.append("audio", blob, "recording.webm");
-      const res = await fetch(endpoint, { method: "POST", body: form });
+
+      // pre_post: we are about to issue the transcribe fetch. If the dashboard
+      // is unreachable, THIS record still persists locally and drains later —
+      // the difference between "died before the POST" and "POST reached the
+      // proxy" is exactly what the three-layer correlation resolves.
+      emitTel("pre_post");
+
+      let res: Response;
+      try {
+        res = await fetch(endpoint, {
+          method: "POST",
+          body: form,
+          // Correlation id header — same value the local telemetry carries, so
+          // the proxy + sidecar can line up their records with the client's.
+          headers: requestId ? { [REQUEST_ID_HEADER]: requestId } : undefined,
+        });
+      } catch (netErr) {
+        // Network / abort BEFORE any HTTP status — a strong zero-server-contact
+        // signal. Record the error CLASS only (never a message).
+        emitTel("post_error", {
+          net_error: netErr instanceof Error ? netErr.name : "unknown",
+        });
+        throw netErr;
+      }
+
+      // We have a status. Record it (2xx or not) before interpreting the body.
+      emitTel("post_result", { http_status: res.status });
+
       if (!res.ok) {
         const body = await res.text();
         throw new Error(`HTTP ${res.status}: ${body || res.statusText}`);
@@ -324,7 +455,7 @@ export function PushToTalkButton({
       setErrorMessage(msg);
       setPhase("error");
     }
-  }, [endpoint, onTranscript]);
+  }, [endpoint, onTranscript, emitTel]);
 
   const startRecording = useCallback(async () => {
     if (disabled) return;
@@ -333,7 +464,15 @@ export function PushToTalkButton({
     inFlightStartRef.current = true;
     pendingStopRef.current = false;
 
+    // Mint the correlation id at capture INTENT — before getUserMedia — so even
+    // a permission denial or missing-navigator dead-end leaves a local record
+    // with an id. capture_start is the earliest possible client-side signal.
+    requestIdRef.current = newRequestId();
+    recordStartMsRef.current = null;
+    emitTel("capture_start");
+
     if (typeof navigator === "undefined") {
+      emitTel("no_post", { reason: "no_navigator" });
       setErrorMessage("Browser context unavailable");
       setPhase("error");
       inFlightStartRef.current = false;
@@ -350,6 +489,8 @@ export function PushToTalkButton({
       if (pendingStopRef.current) {
         pendingStopRef.current = false;
         inFlightStartRef.current = false;
+        // Zero-POST: the capture was cancelled before a recorder ever started.
+        emitTel("no_post", { reason: "queued_stop_cancel" });
         try {
           stream.getTracks().forEach((t) => t.stop());
         } catch {
@@ -376,9 +517,16 @@ export function PushToTalkButton({
         // recorder.mimeType returns the actual format MediaRecorder negotiated with the
         // browser engine (e.g., "audio/mp4" on iOS Safari, "audio/webm;codecs=opus" on
         // Chrome). Empirical root-cause traced via ~/.pi/logs/voice-sidecar.err 2026-05-30.
+        const mime = recorder.mimeType || "audio/webm";
         const blob = new Blob(chunksRef.current, {
-          type: recorder.mimeType || "audio/webm",
+          type: mime,
         });
+        // Real recording duration (recorder-start → stop), not wall-clock since
+        // click. A "type", a "size" and a "duration" — never content.
+        const captureMs =
+          recordStartMsRef.current != null
+            ? Math.max(0, Date.now() - recordStartMsRef.current)
+            : undefined;
         if (streamRef.current) {
           try {
             streamRef.current.getTracks().forEach((t) => t.stop());
@@ -394,13 +542,30 @@ export function PushToTalkButton({
           safetyNetRef.current = null;
         }
         if (blob.size < 1024) {
+          // THE zero-POST case the operator hit: a sub-1KB blob never POSTs.
+          // Before this instrumentation it left no trace anywhere. Now it
+          // writes a local record (persist-first) that survives an unreachable
+          // dashboard and drains on a later session.
+          emitTel("no_post", {
+            reason: "too_short",
+            blob_bytes: blob.size,
+            mime,
+            capture_ms: captureMs,
+          });
           setErrorMessage("Recording too short (click and wait longer)");
           setPhase("error");
         } else {
+          // capture_end: a POST-able blob exists. uploadBlob emits pre_post next.
+          emitTel("capture_end", {
+            blob_bytes: blob.size,
+            mime,
+            capture_ms: captureMs,
+          });
           void uploadBlob(blob);
         }
       };
       recorder.start();
+      recordStartMsRef.current = Date.now();
       setPhase("recording");
 
       // 10min safety-net.
@@ -409,8 +574,15 @@ export function PushToTalkButton({
         if (fn) fn(false);
       }, MAX_RECORDING_MS);
     } catch (e) {
+      const denied = e instanceof Error && e.name === "NotAllowedError";
+      // Zero-POST: capture never produced a blob. Split permission-denied from
+      // other mic failures so the two are distinguishable in the record.
+      emitTel("no_post", {
+        reason: denied ? "permission_denied" : "mic_error",
+        net_error: e instanceof Error ? e.name : "unknown",
+      });
       const msg =
-        e instanceof Error && e.name === "NotAllowedError"
+        denied
           ? "Microphone permission denied"
           : e instanceof Error
           ? e.message
@@ -420,7 +592,7 @@ export function PushToTalkButton({
     } finally {
       inFlightStartRef.current = false;
     }
-  }, [disabled, phase, uploadBlob]);
+  }, [disabled, phase, uploadBlob, emitTel]);
 
   const onClick = useCallback(
     (event: React.MouseEvent<HTMLButtonElement>) => {

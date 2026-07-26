@@ -1,0 +1,19 @@
+{
+  "pass": true,
+  "verdict": {
+    "the_id": "e2e-shared-id-abc123def456",
+    "proxy_status": 200,
+    "echoed_id_matches": true,
+    "client_sink_acked_id": true,
+    "dashboard_client_layer_has_id": true,
+    "dashboard_proxy_layer_has_id": true,
+    "sidecar_transcribe_carries_the_id": true,
+    "sidecar_health_probe_ids_distinct": true,
+    "distinct_ids_in_sidecar_file": 2,
+    "sidecar_events": [
+      "receipt",
+      "transcribe"
+    ],
+    "sidecar_telemetry_has_no_transcript": true
+  }
+}
