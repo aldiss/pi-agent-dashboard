@@ -98,6 +98,12 @@ export interface ParsedArgs {
   flags: Partial<ServerConfig>;
   /** Positional session id for `resurrect <id>`. Undefined for other subcommands. */
   resurrectId?: string;
+  /**
+   * `--help` / `-h` was requested. When set, main() prints help and returns
+   * WITHOUT any side effect (no ensureConfig, server start, port reclaim,
+   * bridge/settings registration, PID write, home-lock, or crash-log mutation).
+   */
+  help?: boolean;
 }
 
 /**
@@ -108,10 +114,18 @@ export function parseArgs(args: string[]): ParsedArgs {
   const flags: Partial<ServerConfig> = {};
   let subcommand: Subcommand | null = null;
   let resurrectId: string | undefined;
+  let help = false;
 
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     const next = args[i + 1];
+
+    // `-h` / `--help` anywhere requests help. main() prints it and returns with
+    // zero side effects — it never falls through to a foreground server start.
+    if (arg === "--help" || arg === "-h") {
+      help = true;
+      continue;
+    }
 
     // Check for subcommand (first positional arg)
     if (!subcommand && SUBCOMMANDS.includes(arg as Subcommand)) {
@@ -142,7 +156,7 @@ export function parseArgs(args: string[]): ParsedArgs {
     }
   }
 
-  return { subcommand, flags, ...(resurrectId !== undefined ? { resurrectId } : {}) };
+  return { subcommand, flags, ...(resurrectId !== undefined ? { resurrectId } : {}), ...(help ? { help: true } : {}) };
 }
 
 /**
@@ -785,10 +799,45 @@ async function cmdStatus(port: number): Promise<void> {
  * saw a crash and never restarted (the silent-zombie root of Fault B).
  */
 
+function printHelp(): void {
+  console.log(`pi-dashboard — local dashboard server for pi agent sessions
+
+Usage:
+  pi-dashboard [subcommand] [options]
+
+Subcommands:
+  start            Start the dashboard server
+  stop             Stop the running dashboard server
+  restart          Restart the dashboard server
+  status           Print the dashboard server status
+  upgrade-pi       Upgrade the pi binary the dashboard uses
+  resurrect <id>   Resurrect a specific session by id
+  (no subcommand)  Run the server in the foreground
+
+Options:
+  --port <n>       HTTP port (default: 8000)
+  --pi-port <n>    Pi gateway port (default: 9999)
+  --dev            Development mode
+  --no-tunnel      Disable the tunnel
+  --fixture        Deterministic fixture mode (e2e / visual testing)
+  -h, --help       Print this help and exit`);
+}
+
 async function main() {
+  // dl-11991 regression fix: parse args and handle `--help` / `-h` BEFORE any
+  // side effect. `ensureConfig()` writes a default config, and everything below
+  // (server start, port reclaim, bridge/settings registration, PID write,
+  // home-lock, crash-log) mutates real state. `pi-dashboard --help` previously
+  // fell through to a foreground server start (dl-11984 production outage).
+  const parsed = parseArgs(process.argv.slice(2));
+  if (parsed.help) {
+    printHelp();
+    return;
+  }
+
   ensureConfig();
 
-  const { subcommand, flags, resurrectId } = parseArgs(process.argv.slice(2));
+  const { subcommand, flags, resurrectId } = parsed;
   // PUSHBACK-3 FIX-P3-6: fail-CLOSED-REFUSE on a malformed auth config ONLY for
   // the SERVER-STARTING verbs (`start` / `restart` / foreground = no subcommand).
   // The availability verbs (`stop` / `status` / `upgrade-pi` / `resurrect`) build

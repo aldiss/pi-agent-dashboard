@@ -214,3 +214,29 @@ describe("buildConfig — {startup} scope (FIX-P3-6: malformed auth config brick
     expect(() => buildConfig({}, { startup: false })).not.toThrow();
   });
 });
+
+describe("parseArgs --help (dl-11991 regression guard)", () => {
+  it("sets help=true for --help and does not treat it as a subcommand", () => {
+    const result = parseArgs(["--help"]);
+    expect(result.help).toBe(true);
+    expect(result.subcommand).toBeNull();
+  });
+  it("sets help=true for the -h alias", () => {
+    expect(parseArgs(["-h"]).help).toBe(true);
+  });
+  it("does not set help for a normal invocation", () => {
+    expect(parseArgs([]).help).toBeFalsy();
+    expect(parseArgs(["start"]).help).toBeFalsy();
+    expect(parseArgs(["status", "--port", "9090"]).help).toBeFalsy();
+  });
+  it("help wins even when combined with flags (never a silent fall-through to start)", () => {
+    const result = parseArgs(["--help", "--port", "9090"]);
+    expect(result.help).toBe(true);
+    expect(result.subcommand).toBeNull();
+  });
+  it("recognizes -h after a subcommand too", () => {
+    const result = parseArgs(["start", "-h"]);
+    expect(result.help).toBe(true);
+    expect(result.subcommand).toBe("start");
+  });
+});
