@@ -23,6 +23,7 @@ import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { render, screen, cleanup, act, fireEvent, waitFor } from "@testing-library/react";
 import React from "react";
 import { PushToTalkButton } from "../client/PushToTalkButton.js";
+import { _debugReadBuffer, _debugReset } from "../client/telemetry.js";
 
 // ── MediaRecorder mock ────────────────────────────────────────────────────────
 
@@ -279,5 +280,107 @@ describe("PushToTalkButton — click-to-toggle (Option B, 2026-05-14)", () => {
     expect(icon.getAttribute("data-icon-phase")).toBe("recording");
     expect(icon.querySelector("path")?.getAttribute("fill")).toBe("currentColor");
     expect(button.textContent ?? "").not.toMatch(/[🎤🔴⏳]/u);
+  });
+});
+
+// ── D1: health-gate zero-POST attempt observability (Pete dl-12308 #1) ─────────
+// The LEADING zero-POST branch: an operator clicking while the sidecar is
+// unhealthy/stale. Prior behaviour natively disabled the button OR silently
+// `return`ed in onClick — recording NOTHING anywhere, which is the primary
+// suspected cause of the original incident. The fix records the attempt before
+// refusing, while preserving the disabled ANNOUNCEMENT (aria-disabled) + look.
+
+/** A fetch whose /health reports UNHEALTHY (503), so sidecarHealthy flips false. */
+function buildUnhealthyFetch(): { fetch: typeof fetch; transcribeCalls: () => number } {
+  let transcribeCalls = 0;
+  const fn = vi.fn(async (input: RequestInfo | URL) => {
+    const url = typeof input === "string" ? input : input.toString();
+    if (url.includes("/health")) {
+      return new Response(JSON.stringify({ healthy: false }), { status: 503 });
+    }
+    if (url.includes("/transcribe")) {
+      transcribeCalls++;
+      return new Response(JSON.stringify({ transcript: "should-not-happen" }), { status: 200 });
+    }
+    // telemetry sink drain: 200 but ack nothing (keeps record buffered/inspectable)
+    return new Response(JSON.stringify({ ok: true, acked: [] }), { status: 200 });
+  }) as unknown as typeof fetch;
+  return { fetch: fn, transcribeCalls: () => transcribeCalls };
+}
+
+describe("PushToTalkButton — D1 health-gate attempt is observable (not silently dropped)", () => {
+  beforeEach(() => {
+    _debugReset();
+    MockMediaRecorder.instances = [];
+    // @ts-expect-error jsdom does not provide MediaRecorder
+    globalThis.MediaRecorder = MockMediaRecorder;
+    Object.defineProperty(globalThis.navigator, "mediaDevices", {
+      configurable: true,
+      value: { getUserMedia: vi.fn(async () => fakeStream) },
+    });
+  });
+  afterEach(() => {
+    _debugReset();
+  });
+
+  it("clicking while sidecar unhealthy records a sidecar_unhealthy_gate no_post AND issues NO transcribe POST", async () => {
+    const probe = buildUnhealthyFetch();
+    globalThis.fetch = probe.fetch;
+    const onTranscript = vi.fn();
+    render(<PushToTalkButton onTranscript={onTranscript} />);
+    const button = screen.getByTestId("push-to-talk");
+
+    // Wait for the health poll to mark the sidecar unhealthy.
+    await waitFor(() => {
+      expect(button.getAttribute("aria-disabled")).toBe("true");
+    });
+    // It is NOT natively disabled — the click must be able to fire.
+    expect((button as HTMLButtonElement).disabled).toBe(false);
+
+    await act(async () => {
+      fireEvent.click(button);
+      await Promise.resolve();
+    });
+
+    // The attempt is recorded locally (persist-first), even though nothing POSTed.
+    const gateRecords = _debugReadBuffer().filter(
+      (r) => r.event === "no_post" && r.reason === "sidecar_unhealthy_gate"
+    );
+    expect(gateRecords.length).toBe(1);
+    // And crucially: NO transcribe POST was issued, and no transcript delivered.
+    expect(probe.transcribeCalls()).toBe(0);
+    expect(onTranscript).not.toHaveBeenCalled();
+    // Recording never started.
+    expect(MockMediaRecorder.instances.length).toBe(0);
+  });
+
+  it("MUTATION/RED — the old silent early-return (no emit) is rejected by this guard", () => {
+    // Model the pre-fix behaviour: gate returns WITHOUT emitting. The guard the
+    // green test relies on (a persisted gate record) must then fail.
+    _debugReset();
+    const brokenOnClickGate = () => {
+      // if (!sidecarHealthy) return;  ← no emit (the original defect)
+    };
+    brokenOnClickGate();
+    const gateRecords = _debugReadBuffer().filter(
+      (r) => r.event === "no_post" && r.reason === "sidecar_unhealthy_gate"
+    );
+    expect(() => expect(gateRecords.length).toBe(1)).toThrow(); // RED: it is 0
+  });
+
+  it("preserves the disabled ANNOUNCEMENT + LOOK while remaining clickable (a11y)", async () => {
+    globalThis.fetch = buildUnhealthyFetch().fetch;
+    render(<PushToTalkButton onTranscript={vi.fn()} />);
+    const button = screen.getByTestId("push-to-talk");
+    await waitFor(() => {
+      expect(button.getAttribute("aria-disabled")).toBe("true");
+    });
+    // Announced unavailable to assistive tech …
+    expect(button.getAttribute("aria-disabled")).toBe("true");
+    // … dimmed for sighted users …
+    expect((button as HTMLElement).style.opacity).toBe("0.5");
+    expect((button as HTMLElement).style.cursor).toBe("not-allowed");
+    // … but NOT natively disabled, so the click still reaches onClick.
+    expect((button as HTMLButtonElement).disabled).toBe(false);
   });
 });

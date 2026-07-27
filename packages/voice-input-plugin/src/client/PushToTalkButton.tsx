@@ -612,10 +612,21 @@ export function PushToTalkButton({
         setErrorMessage(null);
         return;
       }
-      if (!sidecarHealthy) return;
+      if (!sidecarHealthy) {
+        // THE LEADING zero-POST branch. The button LOOKS disabled (aria-disabled
+        // + dimmed styling below) but is NOT natively disabled, so this click
+        // still fires — and we record the real attempt BEFORE refusing it.
+        // Under the prior native-disable + silent `return`, an operator clicking
+        // during a stale/unhealthy-sidecar window produced NOTHING anywhere;
+        // this is the primary suspected cause of the original incident. Persist
+        // the attempt first, then refuse.
+        requestIdRef.current = newRequestId();
+        emitTel("no_post", { reason: "sidecar_unhealthy_gate" });
+        return;
+      }
       void startRecording();
     },
-    [phase, sidecarHealthy, startRecording, stopRecording]
+    [phase, sidecarHealthy, startRecording, stopRecording, emitTel]
   );
 
   // Visibility-change auto-stop. Operator-empirical: forgotten recordings
@@ -649,6 +660,16 @@ export function PushToTalkButton({
   );
   const isRecording = phase === "recording";
 
+  // The sidecar-health gate is announced + styled as unavailable, but is NOT
+  // natively disabled — a natively-disabled control suppresses the click event
+  // entirely, so the operator's real attempt during an unhealthy window could
+  // never be observed. We keep the ARIA "disabled" announcement (assistive tech
+  // still hears "unavailable") and the dimmed visual (sighted users see no
+  // behaviour change), while letting onClick fire so it can record the attempt
+  // and then refuse. Native `disabled` is reserved for the consumer's explicit
+  // `disabled` prop (a deliberate inert state, not an incident to observe).
+  const healthGated = phase === "idle" && !sidecarHealthy;
+
   const buttonClass =
     className ??
     "p-2 min-h-[44px] min-w-[44px] flex items-center justify-center bg-[var(--bg-tertiary)] rounded-lg hover:bg-[var(--bg-hover)] transition-colors";
@@ -665,6 +686,11 @@ export function PushToTalkButton({
       : phase === "error"
       ? "var(--accent-red)"
       : "var(--text-secondary)",
+    // Preserve the disabled LOOK for the health gate (and consumer-disabled)
+    // without native disable, so sighted users see no behaviour change.
+    ...(healthGated || disabled
+      ? { opacity: 0.5, cursor: "not-allowed" }
+      : null),
   };
 
   return (
@@ -672,7 +698,8 @@ export function PushToTalkButton({
       <button
         type="button"
         onClick={onClick}
-        disabled={disabled || (phase === "idle" && !sidecarHealthy)}
+        disabled={disabled}
+        aria-disabled={disabled || healthGated}
         className={buttonClass}
         title={title}
         aria-label={ariaLabel}

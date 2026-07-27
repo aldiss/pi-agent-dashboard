@@ -219,4 +219,72 @@ describe("TelemetrySink — idempotent, ack-after-side-effect, privacy-safe", ()
     expect(out.rejected).toBe(0);
     expect(logged.length).toBe(0);
   });
+
+  // ── D3: hostile ingress — validate token/enum/MIME, drop content ─────────────
+
+  it("CONTENT-SMUGGLING: a transcript in request_id is DROPPED, making the record un-ackable", () => {
+    const logged: SanitizedRecord[] = [];
+    const sink = new TelemetrySink((r) => logged.push(r));
+    const smuggled = SENTINEL_TEXT.repeat(10);
+    const out = sink.ingest([{ schema: 1, request_id: smuggled, seq: 1, event: "capture_start" }]);
+    // Invalid id dropped → record has no addressable id → rejected, NOT acked,
+    // NOT logged. The smuggled content never reaches a log line.
+    expect(out.rejected).toBe(1);
+    expect(out.acked).toEqual([]);
+    expect(out.logged).toBe(0);
+    expect(JSON.stringify(logged)).not.toContain(SENTINEL_TEXT);
+  });
+
+  it("CONTENT-SMUGGLING via mime/event/reason: free-text/non-enum values are DROPPED from the log", () => {
+    const logged: SanitizedRecord[] = [];
+    const sink = new TelemetrySink((r) => logged.push(r));
+    sink.ingest([
+      {
+        schema: 1,
+        request_id: "valid-id-1", // token-shaped so the record is addressable
+        seq: 1,
+        event: "evil_event", // non-enum → dropped
+        reason: "evil_reason", // non-enum → dropped
+        mime: `audio/webm ${SENTINEL_TEXT}`, // free text → dropped
+        blob_bytes: 4096, // allowed → kept
+      },
+    ]);
+    const blob = JSON.stringify(logged);
+    expect(blob).not.toContain(SENTINEL_TEXT);
+    expect(logged[0].event).toBeUndefined();
+    expect(logged[0].reason).toBeUndefined();
+    expect(logged[0].mime).toBeUndefined();
+    expect(logged[0].blob_bytes).toBe(4096); // the metadata survived
+  });
+
+  it("RED control — a truncate-only sink would still log 128 content chars", () => {
+    const smuggled = SENTINEL_TEXT.repeat(10);
+    const truncated = String(smuggled).slice(0, 128); // the OLD sanitizeRecord
+    expect(() => expect(truncated).not.toContain(SENTINEL_TEXT)).toThrow();
+  });
+
+  it("sanitizeRecord validates shapes (token/enum/MIME/numeric)", () => {
+    // Valid token/enum/MIME kept; bad ones dropped; negative numeric clamped.
+    const good = sanitizeRecord({
+      request_id: "abc-123_DEF",
+      seq: 2,
+      event: "no_post",
+      reason: "too_short",
+      mime: "audio/mp4",
+      http_status: -1,
+    });
+    expect(good.request_id).toBe("abc-123_DEF");
+    expect(good.event).toBe("no_post");
+    expect(good.reason).toBe("too_short");
+    expect(good.mime).toBe("audio/mp4");
+    expect(good.http_status).toBe(0); // negative clamped
+    const bad = sanitizeRecord({
+      request_id: "has spaces and : colons",
+      event: "not_a_real_event",
+      mime: "not a mime type at all",
+    });
+    expect(bad.request_id).toBeUndefined();
+    expect(bad.event).toBeUndefined();
+    expect(bad.mime).toBeUndefined();
+  });
 });

@@ -50,6 +50,32 @@ const ERROR_NAME_ALLOWLIST = new Set([
   "unknown",
 ]);
 
+// --- Strict validation vocab (D3) — mirrors the client sanitiser -------------
+// The sink treats every incoming record as HOSTILE input. A poisoned client, a
+// tampered buffer, or a smuggling attempt must not get a content-bearing value
+// (transcript/audio/hash/path) into a log line via a scalar slot. Token / enum
+// / MIME shapes are validated (not merely truncated): a non-conforming value is
+// DROPPED so it can never be logged.
+const REQUEST_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+const MIME_RE = /^[A-Za-z0-9!#$&^_.+-]{1,64}\/[A-Za-z0-9!#$&^_.+-]{1,64}(;[A-Za-z0-9=.,"'+ _-]{1,64})?$/;
+const EVENT_SET = new Set([
+  "capture_start",
+  "capture_end",
+  "pre_post",
+  "post_result",
+  "post_error",
+  "no_post",
+]);
+const REASON_SET = new Set([
+  "too_short",
+  "mic_error",
+  "permission_denied",
+  "no_navigator",
+  "queued_stop_cancel",
+  "sidecar_unhealthy_gate",
+  "user_cancel",
+]);
+
 export interface SanitizedRecord {
   schema?: number;
   request_id?: string;
@@ -88,7 +114,7 @@ export function sanitizeRecord(input: unknown): SanitizedRecord {
       case "http_status":
       case "overflow": {
         const n = Number(v);
-        if (Number.isFinite(n)) out[key] = n;
+        if (Number.isFinite(n)) out[key] = n < 0 ? 0 : n; // finite, non-negative
         break;
       }
       case "degraded":
@@ -99,12 +125,26 @@ export function sanitizeRecord(input: unknown): SanitizedRecord {
         out[key] = ERROR_NAME_ALLOWLIST.has(s) ? s : "unknown";
         break;
       }
-      case "request_id":
-      case "event":
-      case "reason":
-      case "mime":
-        out[key] = String(v).slice(0, 128);
+      case "request_id": {
+        const s = String(v);
+        if (REQUEST_ID_RE.test(s)) out[key] = s; // token-shaped only, else dropped
         break;
+      }
+      case "event": {
+        const s = String(v);
+        if (EVENT_SET.has(s)) out[key] = s; // enum only, else dropped
+        break;
+      }
+      case "reason": {
+        const s = String(v);
+        if (REASON_SET.has(s)) out[key] = s; // enum only, else dropped
+        break;
+      }
+      case "mime": {
+        const s = String(v);
+        if (MIME_RE.test(s)) out[key] = s; // container type only, else dropped
+        break;
+      }
     }
   }
   return out;

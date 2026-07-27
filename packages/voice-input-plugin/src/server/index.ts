@@ -35,6 +35,14 @@ import { TelemetrySink, type SanitizedRecord } from "./telemetry-sink.js";
 /** Correlation-id header, shared across client → dashboard → sidecar. */
 const REQUEST_ID_HEADER = "x-voice-request-id";
 
+/**
+ * Valid correlation-id token shape: URL-safe base64 / UUID / dash / underscore,
+ * 1..64 chars. A supplied header that does not match is treated as HOSTILE (it
+ * could be a transcript smuggled into the id) — we mint a fresh id instead of
+ * echoing/forwarding/logging the poisoned value.
+ */
+const REQUEST_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+
 interface PluginConfig {
   /** URL of the running voice-input sidecar. Defaults to `http://127.0.0.1:8765`. */
   sidecarUrl: string;
@@ -85,16 +93,18 @@ async function probeSidecar(state: PluginState): Promise<void> {
 
 /**
  * Resolve the correlation id for a request. Prefer the client-supplied
- * `X-Voice-Request-Id` (so all three layers share ONE id); if absent, mint a
+ * `X-Voice-Request-Id` ONLY when it is a valid token (so all three layers share
+ * ONE id); if it is absent OR malformed (a poisoned/smuggled value), mint a
  * random one and flag `client_id_absent` — itself a diagnostic signal that the
- * client-side layer did not run or could not set the header. The id is random
- * and carries no audio/transcript content.
+ * client-side layer did not run or sent an invalid header. The id is random and
+ * carries no audio/transcript content, and a rejected header value is never
+ * echoed, forwarded, or logged.
  */
 function resolveRequestId(request: FastifyRequest): { id: string; clientAbsent: boolean } {
   const raw = request.headers[REQUEST_ID_HEADER];
   const supplied = Array.isArray(raw) ? raw[0] : raw;
-  if (typeof supplied === "string" && supplied.length > 0) {
-    return { id: supplied.slice(0, 128), clientAbsent: false };
+  if (typeof supplied === "string" && REQUEST_ID_RE.test(supplied)) {
+    return { id: supplied, clientAbsent: false };
   }
   const g = globalThis as unknown as { crypto?: { randomUUID?: () => string } };
   const id = g.crypto?.randomUUID ? g.crypto.randomUUID() : `srv-${Date.now()}-${Math.round(Math.random() * 1e9)}`;

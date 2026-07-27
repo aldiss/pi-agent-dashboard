@@ -54,8 +54,12 @@ export const BUFFER_MAX_COUNT = 100;
 /** Records older than this are evicted on the next persist/drain. 24h. */
 export const BUFFER_TTL_MS = 24 * 60 * 60 * 1000;
 
-const BUFFER_KEY = "voiceInputTelemetry.buffer.v1";
-const META_KEY = "voiceInputTelemetry.meta.v1";
+// ONE atomic storage key. seq, overflow, degraded AND the entries live together
+// in a single JSON blob written with a single setItem — so a partial write can
+// never let the seq counter drift out of sync with the entries it numbers (the
+// prior two-key buffer/meta split could diverge if one write succeeded and the
+// other failed). v2 supersedes the v1 buffer/meta keys.
+const STATE_KEY = "voiceInputTelemetry.state.v2";
 
 /**
  * The ONLY fields that may ever be written to storage or sent on the wire.
@@ -93,6 +97,7 @@ export type NoPostReason =
   | "permission_denied" // getUserMedia NotAllowedError
   | "no_navigator" // navigator/mediaDevices unavailable
   | "queued_stop_cancel" // second click before getUserMedia resolved → torn down
+  | "sidecar_unhealthy_gate" // clicked while the sidecar-health gate refused the attempt
   | "user_cancel"; // explicit force-cancel / visibility-hidden discard
 
 /** Error-name allowlist — keeps `net_error` a class label, never a free message. */
@@ -105,6 +110,34 @@ const ERROR_NAME_ALLOWLIST = new Set([
   "TypeError",
   "NetworkError",
   "TimeoutError",
+]);
+
+// --- Strict validation vocab (D3) ------------------------------------------
+// The request id is a random, non-content-derived correlation TOKEN. Constrain
+// it to token characters so a poisoned id (e.g. a transcript smuggled into the
+// id field) is rejected rather than merely truncated: URL-safe base64 / UUID /
+// dash / underscore, 1..64 chars. Anything else is dropped (and the caller
+// mints a fresh one at emit, so correlation is never lost).
+const REQUEST_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+// MIME: type/subtype with an optional `;codecs=...` parameter, bounded length.
+// Rejects free text (spaces, punctuation, newlines) that could carry content.
+const MIME_RE = /^[A-Za-z0-9!#$&^_.+-]{1,64}\/[A-Za-z0-9!#$&^_.+-]{1,64}(;[A-Za-z0-9=.,"'+ _-]{1,64})?$/;
+const EVENT_SET = new Set<TelemetryEvent>([
+  "capture_start",
+  "capture_end",
+  "pre_post",
+  "post_result",
+  "post_error",
+  "no_post",
+]);
+const REASON_SET = new Set<NoPostReason>([
+  "too_short",
+  "mic_error",
+  "permission_denied",
+  "no_navigator",
+  "queued_stop_cancel",
+  "sidecar_unhealthy_gate",
+  "user_cancel",
 ]);
 
 export interface TelemetryFields {
@@ -140,6 +173,21 @@ interface StoredEntry extends TelemetryRecord {
   delivered: boolean;
 }
 
+/**
+ * The whole telemetry state as ONE atomic unit. Persisted as a single JSON blob
+ * under STATE_KEY so `seq` (the monotonic counter) and `entries` (the records it
+ * numbers) are written together and can never diverge. `degraded` is STICKY:
+ * once memory-fallback happens it stays true for the session (a later successful
+ * localStorage write does not silently imply the earlier loss did not occur).
+ */
+interface State {
+  seq: number;
+  overflow: number;
+  degraded: boolean;
+  entries: StoredEntry[];
+}
+
+/** Back-compat inspection shape for tests (`_debugReadMeta`). */
 interface Meta {
   seq: number;
   overflow: number;
@@ -194,9 +242,20 @@ function storage(): LS | null {
   }
 }
 
-/** In-memory fallback buffer used only when localStorage is unavailable. */
-let memoryBuffer: StoredEntry[] | null = null;
-let memoryMeta: Meta = { seq: 0, overflow: 0, degraded: true };
+/**
+ * In-memory mirror of the last state we tried to persist. This is the
+ * AUTHORITATIVE copy once storage becomes unavailable / write-failing: readState
+ * returns it whenever localStorage is absent or `stickyDegraded` is set, so a
+ * failed write never reverts us to a stale on-disk blob (the double-quota
+ * failure mode).
+ */
+let memoryState: State = { seq: 0, overflow: 0, degraded: true, entries: [] };
+
+/** Once true, stays true for the session: degraded is STICKY, never reverts. */
+let stickyDegraded = false;
+
+/** Serialises drains so two concurrent drains cannot double-POST / double-count. */
+let drainChain: Promise<number> = Promise.resolve(0);
 
 // ---------------------------------------------------------------------------
 // Degraded-mode disclosure (STEER — storage-degraded residual).
@@ -241,13 +300,22 @@ function signalDegradedOnce(): void {
     const envelope = JSON.stringify({
       schema: TELEMETRY_SCHEMA,
       degraded: true,
-      overflow: memoryMeta.overflow,
+      overflow: memoryState.overflow,
       // No records, no content — this is a degradation NOTICE, not a delivery.
       records: [],
     });
+    // sendBeacon is best-effort. Its boolean is "queued by the UA", not
+    // "received" — but a FALSE return means it was NOT even queued (payload too
+    // large, disabled, etc.), so we must FALL THROUGH to fetch rather than treat
+    // the signal as handled.
     if (nav && typeof nav.sendBeacon === "function") {
-      nav.sendBeacon(endpoint, new Blob([envelope], { type: "application/json" }));
-      return;
+      let queued = false;
+      try {
+        queued = nav.sendBeacon(endpoint, new Blob([envelope], { type: "application/json" }));
+      } catch {
+        queued = false;
+      }
+      if (queued) return;
     }
     const fetchFn = (globalThis as unknown as { fetch?: typeof fetch }).fetch;
     if (typeof fetchFn === "function") {
@@ -289,74 +357,80 @@ export function sanitize(input: Record<string, unknown>): TelemetryRecord {
       case "capture_ms":
       case "http_status":
       case "overflow": {
+        // Numerics: finite only, and clamped non-negative (these are sizes,
+        // counts, durations, status, a monotonic seq, a timestamp — none can be
+        // meaningfully negative, and NaN/Infinity are dropped).
         const n = Number(v);
-        if (Number.isFinite(n)) out[key] = n;
+        if (Number.isFinite(n)) out[key] = n < 0 ? 0 : n;
         break;
       }
       case "degraded":
         out[key] = Boolean(v);
         break;
       case "net_error": {
+        // Class label from a fixed allowlist, never a free message.
         const s = String(v);
         out[key] = ERROR_NAME_ALLOWLIST.has(s) ? s : "unknown";
         break;
       }
-      case "request_id":
-      case "event":
-      case "reason":
-      case "mime":
-        // Bounded-length string scalars. Truncate defensively so an oversized
-        // value can never balloon the buffer; these carry a token/type/enum,
-        // never free text.
-        out[key] = String(v).slice(0, 128);
+      case "request_id": {
+        // A random correlation TOKEN. Reject anything that is not token-shaped
+        // (drop rather than truncate — a truncated poisoned id would still
+        // transmit up to 128 chars of content). A dropped id is re-minted at
+        // emit, so correlation is preserved without trusting the input.
+        const s = String(v);
+        if (REQUEST_ID_RE.test(s)) out[key] = s;
         break;
+      }
+      case "event": {
+        const s = String(v);
+        if (EVENT_SET.has(s as TelemetryEvent)) out[key] = s;
+        break; // non-enum event → dropped
+      }
+      case "reason": {
+        const s = String(v);
+        if (REASON_SET.has(s as NoPostReason)) out[key] = s;
+        break; // non-enum reason → dropped
+      }
+      case "mime": {
+        // A container type, never free text. Pattern-validate; drop otherwise.
+        const s = String(v);
+        if (MIME_RE.test(s)) out[key] = s;
+        break;
+      }
     }
   }
   return out as unknown as TelemetryRecord;
 }
 
 // ---------------------------------------------------------------------------
-// Buffer read/write with deterministic eviction + visible overflow.
+// Atomic state read/write (single blob) with deterministic eviction.
 // ---------------------------------------------------------------------------
 
-function readMeta(ls: LS | null): Meta {
-  if (!ls) return memoryMeta;
+/**
+ * Read the whole state atomically. Returns the in-memory mirror whenever
+ * localStorage is unavailable OR we have gone sticky-degraded (so a failed write
+ * never resurrects a stale on-disk blob). `degraded` is OR'd with the sticky
+ * flag so it can never read back as false once we have degraded.
+ */
+function readState(ls: LS | null): State {
+  if (!ls || stickyDegraded) {
+    return { ...memoryState, degraded: memoryState.degraded || stickyDegraded };
+  }
   try {
-    const raw = ls.getItem(META_KEY);
-    if (!raw) return { seq: 0, overflow: 0, degraded: false };
-    const m = JSON.parse(raw) as Partial<Meta>;
+    const raw = ls.getItem(STATE_KEY);
+    if (!raw) return { seq: 0, overflow: 0, degraded: stickyDegraded, entries: [] };
+    const s = JSON.parse(raw) as Partial<State>;
     return {
-      seq: Number(m.seq) || 0,
-      overflow: Number(m.overflow) || 0,
-      degraded: Boolean(m.degraded),
+      seq: Number(s.seq) || 0,
+      overflow: Number(s.overflow) || 0,
+      degraded: Boolean(s.degraded) || stickyDegraded,
+      entries: Array.isArray(s.entries) ? (s.entries as StoredEntry[]) : [],
     };
   } catch {
-    return { seq: 0, overflow: 0, degraded: false };
-  }
-}
-
-function writeMeta(ls: LS | null, meta: Meta): void {
-  if (!ls) {
-    memoryMeta = meta;
-    return;
-  }
-  try {
-    ls.setItem(META_KEY, JSON.stringify(meta));
-  } catch {
-    /* meta write failure is non-fatal; overflow is best-effort surfaced */
-  }
-}
-
-function readBuffer(ls: LS | null): StoredEntry[] {
-  if (!ls) return memoryBuffer ?? (memoryBuffer = []);
-  try {
-    const raw = ls.getItem(BUFFER_KEY);
-    if (!raw) return [];
-    const arr = JSON.parse(raw);
-    return Array.isArray(arr) ? (arr as StoredEntry[]) : [];
-  } catch {
-    // Corrupt buffer — reset rather than crash. Loss is surfaced as overflow.
-    return [];
+    // Corrupt blob — reset rather than crash. Loss surfaces via overflow on the
+    // next write; never throws into the caller.
+    return { seq: 0, overflow: 0, degraded: stickyDegraded, entries: [] };
   }
 }
 
@@ -380,32 +454,39 @@ function evict(entries: StoredEntry[]): { kept: StoredEntry[]; evicted: number }
 }
 
 /**
- * Attempt to write the buffer. On quota exhaustion, evict the oldest half and
- * retry once; whatever is dropped is counted into `overflow` so loss is
- * visible, never silent. Returns the meta actually persisted.
+ * Write the whole state atomically (single setItem). The in-memory mirror is
+ * updated FIRST so it is always the freshest copy; on any storage failure we
+ * shed the oldest half once (counting the loss into overflow), and if that still
+ * fails we go sticky-degraded and keep serving from memory — never crashing, and
+ * never reverting to a stale on-disk blob. Returns the state actually retained.
  */
-function writeBuffer(ls: LS | null, entries: StoredEntry[], meta: Meta): Meta {
-  if (!ls) {
-    memoryBuffer = entries;
-    memoryMeta = meta;
-    return meta;
+function writeState(ls: LS | null, state: State): State {
+  // Memory mirror is authoritative; keep it current before touching storage.
+  const withSticky: State = { ...state, degraded: state.degraded || stickyDegraded };
+  memoryState = withSticky;
+  if (!ls || stickyDegraded) {
+    return withSticky;
   }
   try {
-    ls.setItem(BUFFER_KEY, JSON.stringify(entries));
-    return meta;
+    ls.setItem(STATE_KEY, JSON.stringify(withSticky));
+    return withSticky;
   } catch {
     // Quota (or other) failure. Shed oldest half, count the loss, retry once.
-    const shed = Math.ceil(entries.length / 2);
-    const trimmed = entries.slice(shed);
-    const bumped: Meta = { ...meta, overflow: meta.overflow + shed };
+    const shed = Math.ceil(withSticky.entries.length / 2);
+    const trimmed: State = {
+      ...withSticky,
+      overflow: withSticky.overflow + shed,
+      entries: withSticky.entries.slice(shed),
+    };
+    memoryState = trimmed;
     try {
-      ls.setItem(BUFFER_KEY, JSON.stringify(trimmed));
-      return bumped;
+      ls.setItem(STATE_KEY, JSON.stringify(trimmed));
+      return trimmed;
     } catch {
-      // Still failing — mark degraded, keep going in memory, never crash.
-      memoryBuffer = trimmed;
-      const degraded: Meta = { ...bumped, degraded: true };
-      memoryMeta = degraded;
+      // Still failing — go sticky-degraded, keep serving from memory, no crash.
+      stickyDegraded = true;
+      const degraded: State = { ...trimmed, degraded: true };
+      memoryState = degraded;
       return degraded;
     }
   }
@@ -432,10 +513,11 @@ export function emit(
   // externally-observable signal (best-effort, once) so the fact does not die
   // silently with the tab. See signalDegradedOnce + the disclosed residual.
   if (!ls) {
+    stickyDegraded = true; // degraded is sticky — memory is now authoritative
     signalDegradedOnce();
   }
-  const meta = readMeta(ls);
-  const seq = meta.seq + 1;
+  const state = readState(ls);
+  const seq = state.seq + 1;
 
   const record = sanitize({
     ...fields,
@@ -444,21 +526,19 @@ export function emit(
     seq,
     event,
     ts: now(),
-    degraded: ls ? fields.degraded : true,
+    degraded: ls && !stickyDegraded ? fields.degraded : true,
   });
 
   const entry: StoredEntry = { ...record, delivered: false };
 
-  const existing = readBuffer(ls);
-  const { kept, evicted } = evict([...existing, entry]);
-  const nextMeta: Meta = {
+  const { kept, evicted } = evict([...state.entries, entry]);
+  // seq + entries persisted together in ONE atomic write — they cannot diverge.
+  writeState(ls, {
     seq,
-    overflow: meta.overflow + evicted,
-    degraded: !ls || meta.degraded,
-  };
-  const persisted = writeBuffer(ls, kept, nextMeta);
-  // Reflect any overflow the write itself incurred back into the returned meta.
-  writeMeta(ls, persisted);
+    overflow: state.overflow + evicted,
+    degraded: state.degraded || !ls || stickyDegraded,
+    entries: kept,
+  });
   return record;
 }
 
@@ -470,11 +550,17 @@ function undelivered(entries: StoredEntry[]): StoredEntry[] {
   return entries.filter((e) => !e.delivered);
 }
 
-/** Strip local-only bookkeeping before putting a record on the wire. */
+/**
+ * Project a stored record onto the wire. RE-SANITISES on the way OUT — the
+ * stored record is treated as UNTRUSTED input, not just on the way in. This
+ * closes the original D3 hole: a poisoned buffer (localStorage tampering, a
+ * future write bug, a shape from an older/newer client) could carry transcript
+ * or audio fields that persist-time sanitisation never saw. Both transmit paths
+ * (drain and beacon) go through here, so both are covered by one guard. Strips
+ * `delivered` (local bookkeeping) as a side effect of the allowlist projection.
+ */
 function toWire(e: StoredEntry): TelemetryRecord {
-  const { delivered: _delivered, ...wire } = e;
-  void _delivered;
-  return wire;
+  return sanitize(e as unknown as Record<string, unknown>);
 }
 
 /**
@@ -487,10 +573,18 @@ function toWire(e: StoredEntry): TelemetryRecord {
  * and for callers that want to know whether the dashboard was reachable).
  */
 export async function drain(endpoint: string): Promise<number> {
+  // Serialise drains: chain each call after the previous so two concurrent
+  // drains cannot both POST the same pending records (double-send) or both write
+  // back (lost update). Each link is self-contained and never throws.
+  const run = drainChain.then(() => drainOnce(endpoint));
+  drainChain = run.catch(() => 0);
+  return run;
+}
+
+async function drainOnce(endpoint: string): Promise<number> {
   const ls = storage();
-  const meta = readMeta(ls);
-  const entries = readBuffer(ls);
-  const pending = undelivered(entries);
+  const before = readState(ls);
+  const pending = undelivered(before.entries);
   if (pending.length === 0) return 0;
 
   const fetchFn = (globalThis as unknown as { fetch?: typeof fetch }).fetch;
@@ -508,8 +602,8 @@ export async function drain(endpoint: string): Promise<number> {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         schema: TELEMETRY_SCHEMA,
-        overflow: meta.overflow,
-        degraded: meta.degraded,
+        overflow: before.overflow,
+        degraded: before.degraded,
         records: pending.map(toWire),
       }),
     });
@@ -530,18 +624,25 @@ export async function drain(endpoint: string): Promise<number> {
     return 0; // network/abort → retain
   }
 
-  // Remove only records the SERVER acknowledged by exact (request_id, seq).
+  // RE-READ current state after the await and remove ONLY acked keys from the
+  // CURRENT entries. A record emitted DURING the fetch is in `after` but not in
+  // the pre-await snapshot; filtering the snapshot (the prior bug) would drop it.
+  // Key each entry by its SANITISED wire form — the same projection the server
+  // saw and acked — so a valid record matches its ack, and a poisoned record
+  // (whose invalid id was dropped on the way out) simply never matches and is
+  // retained until TTL eviction rather than being force-cleared by a mismatch.
+  const after = readState(ls);
   let confirmed = 0;
-  const remaining = entries.filter((e) => {
-    const key = `${e.request_id}:${e.seq}`;
-    if (acked.has(key)) {
+  const remaining = after.entries.filter((e) => {
+    const wire = toWire(e);
+    const key = `${wire.request_id}:${wire.seq}`;
+    if (typeof wire.request_id === "string" && acked.has(key)) {
       confirmed++;
-      return false; // delivered → drop from buffer
+      return false; // delivered → drop
     }
-    return true; // retained
+    return true; // retained (incl. anything emitted during the fetch)
   });
-  writeBuffer(ls, remaining, meta);
-  writeMeta(ls, meta);
+  writeState(ls, { ...after, entries: remaining });
   return confirmed;
 }
 
@@ -553,54 +654,95 @@ export async function drain(endpoint: string): Promise<number> {
  * NOT a delivery signal.
  */
 export function beaconUnload(endpoint: string): boolean {
-  const nav = (globalThis as unknown as { navigator?: Navigator }).navigator;
-  if (!nav || typeof nav.sendBeacon !== "function") return false;
   const ls = storage();
-  const meta = readMeta(ls);
-  const pending = undelivered(readBuffer(ls));
+  const state = readState(ls);
+  const pending = undelivered(state.entries);
   if (pending.length === 0) return false;
-  try {
-    const body = new Blob(
-      [
-        JSON.stringify({
-          schema: TELEMETRY_SCHEMA,
-          overflow: meta.overflow,
-          degraded: meta.degraded,
-          records: pending.map(toWire),
-        }),
-      ],
-      { type: "application/json" }
-    );
-    // NOTE: return value is "queued by UA", NOT "received by server". We do not
-    // and must not mutate `delivered` here.
-    return nav.sendBeacon(endpoint, body);
-  } catch {
-    return false;
+  const envelope = JSON.stringify({
+    schema: TELEMETRY_SCHEMA,
+    overflow: state.overflow,
+    degraded: state.degraded,
+    records: pending.map(toWire),
+  });
+  const nav = (globalThis as unknown as { navigator?: Navigator }).navigator;
+  // Try sendBeacon first (survives unload). Its boolean is "queued by the UA",
+  // NOT "received by the server" — we never mark delivered here. A FALSE return
+  // means it was not even queued, so FALL THROUGH to a keepalive fetch rather
+  // than treating the flush as handled.
+  if (nav && typeof nav.sendBeacon === "function") {
+    let queued = false;
+    try {
+      queued = nav.sendBeacon(endpoint, new Blob([envelope], { type: "application/json" }));
+    } catch {
+      queued = false;
+    }
+    if (queued) return true;
   }
+  const fetchFn = (globalThis as unknown as { fetch?: typeof fetch }).fetch;
+  if (typeof fetchFn === "function") {
+    // Best-effort keepalive fetch fallback; result ignored (still not a
+    // delivery — an acknowledged drain remains the sole authority for that).
+    try {
+      void fetchFn(endpoint, {
+        method: "POST",
+        credentials: "same-origin",
+        keepalive: true,
+        headers: { "content-type": "application/json" },
+        body: envelope,
+      }).catch(() => undefined);
+    } catch {
+      /* best-effort */
+    }
+  }
+  return false;
 }
 
 /** Test/inspection helper: current buffer snapshot (read-only copy). */
 export function _debugReadBuffer(): TelemetryRecord[] {
-  return readBuffer(storage()).map(toWire);
+  return readState(storage()).entries.map(toWire);
 }
 
 /** Test/inspection helper: current meta (overflow/degraded/seq). */
 export function _debugReadMeta(): Meta {
-  return readMeta(storage());
+  const s = readState(storage());
+  return { seq: s.seq, overflow: s.overflow, degraded: s.degraded };
 }
 
-/** Test helper: clear all telemetry state (buffer + meta + memory fallback). */
+/** Test helper: clear all telemetry state (single blob + memory + sticky). */
 export function _debugReset(): void {
-  memoryBuffer = null;
-  memoryMeta = { seq: 0, overflow: 0, degraded: true };
+  memoryState = { seq: 0, overflow: 0, degraded: true, entries: [] };
+  stickyDegraded = false;
+  drainChain = Promise.resolve(0);
   _degradedSignalSent = false;
   _configuredEndpoint = null;
   const ls = storage();
   if (!ls) return;
   try {
-    ls.removeItem(BUFFER_KEY);
-    ls.removeItem(META_KEY);
+    ls.removeItem(STATE_KEY);
   } catch {
     /* ignore */
+  }
+}
+
+/**
+ * Test helper: inject a RAW (UN-sanitised) entry straight into the persisted
+ * blob, bypassing `emit()`'s sanitisation. Simulates a poisoned buffer —
+ * localStorage tampering, an older/newer client shape, or a future write bug —
+ * so tests can prove `toWire` re-sanitises on the way OUT (the D3 hole). The
+ * raw object may carry content-bearing keys; they must NOT survive to the wire.
+ */
+export function _debugPoisonBuffer(rawEntry: Record<string, unknown>): void {
+  const ls = storage();
+  const state = readState(ls);
+  const poisoned = { ...state, entries: [...state.entries, rawEntry as unknown as StoredEntry] };
+  // Write directly, bypassing sanitisation, to model a hostile on-disk blob.
+  if (!ls || stickyDegraded) {
+    memoryState = poisoned;
+    return;
+  }
+  try {
+    ls.setItem(STATE_KEY, JSON.stringify(poisoned));
+  } catch {
+    memoryState = poisoned;
   }
 }

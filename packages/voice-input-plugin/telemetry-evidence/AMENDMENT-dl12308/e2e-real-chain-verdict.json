@@ -1,0 +1,44 @@
+{
+  "pass": true,
+  "verdict": {
+    "real_client_persist_first": true,
+    "real_client_drain_confirmed_two": true,
+    "real_client_buffer_cleared_on_ack": true,
+    "dashboard_client_layer_has_ID_A": true,
+    "proxy_A_ok": true,
+    "proxy_B_ok": true,
+    "dashboard_proxy_layer_has_ID_A": true,
+    "dashboard_proxy_layer_has_ID_B": true,
+    "sidecar_ID_A_has_receipt_and_transcribe": true,
+    "sidecar_ID_B_has_receipt_and_transcribe": true,
+    "sidecar_ids_are_distinct": true,
+    "sidecar_no_transcript": true
+  },
+  "trace": {
+    "client_buffer_before_drain": 2,
+    "client_drain_confirmed": 2,
+    "client_buffer_after_drain": 0,
+    "dashboard_client_layer_ids": [
+      "e2e-real-id-AAAA1111",
+      "e2e-real-id-AAAA1111"
+    ],
+    "dashboard_proxy_layer_ids": [
+      "e2e-real-id-AAAA1111",
+      "e2e-real-id-AAAA1111",
+      "e2e-real-id-BBBB2222",
+      "e2e-real-id-BBBB2222"
+    ],
+    "sidecar_ID_A_events": [
+      "receipt",
+      "transcribe"
+    ],
+    "sidecar_ID_B_events": [
+      "receipt",
+      "transcribe"
+    ],
+    "sidecar_distinct_ids": [
+      "e2e-real-id-AAAA1111",
+      "e2e-real-id-BBBB2222"
+    ]
+  }
+}

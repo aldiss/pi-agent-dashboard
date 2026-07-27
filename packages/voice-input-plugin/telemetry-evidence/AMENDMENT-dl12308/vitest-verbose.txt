@@ -1,0 +1,80 @@
+
+ RUN  v4.1.5 /private/tmp/voice-telemetry-dashboard-daywright-20260726/packages/voice-input-plugin
+
+[test-isolation] HOME=/var/folders/sh/rtc7_3wd27q_jffxy54dt44m0000gn/T/tmp.D3W8sKWLCM (real=/Users/vdrobkov)
+ ✓ src/__tests__/PushToTalkButton.test.tsx > PushToTalkButton — click-to-toggle (Option B, 2026-05-14) > idle aria-pressed is false and title carries click-language by default 31ms
+ ✓ src/__tests__/PushToTalkButton.test.tsx > PushToTalkButton — click-to-toggle (Option B, 2026-05-14) > first click transitions idle → recording (data-phase + aria-pressed flip) 23ms
+ ✓ src/__tests__/PushToTalkButton.test.tsx > PushToTalkButton — click-to-toggle (Option B, 2026-05-14) > second click transitions recording → uploading (and onTranscript fires on success) 15ms
+ ✓ src/__tests__/PushToTalkButton.test.tsx > PushToTalkButton — click-to-toggle (Option B, 2026-05-14) > 10min safety-net auto-stops recording when no second click arrives 10ms
+ ✓ src/__tests__/PushToTalkButton.test.tsx > PushToTalkButton — click-to-toggle (Option B, 2026-05-14) > button has no pointer-event handlers (click-to-toggle, not press-and-hold) 4ms
+ ✓ src/__tests__/PushToTalkButton.test.tsx > PushToTalkButton — click-to-toggle (Option B, 2026-05-14) > idle renders a vector SVG glyph (not emoji) that inherits currentColor 2ms
+ ✓ src/__tests__/PushToTalkButton.test.tsx > PushToTalkButton — click-to-toggle (Option B, 2026-05-14) > recording paints the calm accent token and shows the vector pulse ring (no red emoji) 7ms
+ ✓ src/__tests__/PushToTalkButton.test.tsx > PushToTalkButton — D1 health-gate attempt is observable (not silently dropped) > clicking while sidecar unhealthy records a sidecar_unhealthy_gate no_post AND issues NO transcribe POST 4ms
+ ✓ src/__tests__/PushToTalkButton.test.tsx > PushToTalkButton — D1 health-gate attempt is observable (not silently dropped) > MUTATION/RED — the old silent early-return (no emit) is rejected by this guard 1ms
+ ✓ src/__tests__/PushToTalkButton.test.tsx > PushToTalkButton — D1 health-gate attempt is observable (not silently dropped) > preserves the disabled ANNOUNCEMENT + LOOK while remaining clickable (a11y) 5ms
+ ✓ src/__tests__/client-telemetry.test.ts > client telemetry — local-first, ack-on-body-only, overflow-visible > PERSIST-BEFORE-SEND: emit writes to the buffer synchronously 2ms
+ ✓ src/__tests__/client-telemetry.test.ts > client telemetry — local-first, ack-on-body-only, overflow-visible > OFFLINE: with no fetch available, the record persists and drain is a no-op 0ms
+ ✓ src/__tests__/client-telemetry.test.ts > client telemetry — local-first, ack-on-body-only, overflow-visible > blob<1024 zero-POST path writes a local record (the operator's case) 0ms
+ ✓ src/__tests__/client-telemetry.test.ts > client telemetry — local-first, ack-on-body-only, overflow-visible > NETWORK-FAILURE: a throwing fetch retains the record 1ms
+ ✓ src/__tests__/client-telemetry.test.ts > client telemetry — local-first, ack-on-body-only, overflow-visible > AUTH-FAILURE: a 401 (non-2xx) retains the record 1ms
+ ✓ src/__tests__/client-telemetry.test.ts > client telemetry — local-first, ack-on-body-only, overflow-visible > DELIVERED ONLY ON 2xx BODY-ACK: an acking drain clears the record 1ms
+ ✓ src/__tests__/client-telemetry.test.ts > client telemetry — local-first, ack-on-body-only, overflow-visible > MANUFACTURED 200 (acks nothing) marks NOTHING delivered — SW/intermediary defense 0ms
+ ✓ src/__tests__/client-telemetry.test.ts > client telemetry — local-first, ack-on-body-only, overflow-visible > RED control — treating bare HTTP 200 as delivery is rejected 1ms
+ ✓ src/__tests__/client-telemetry.test.ts > client telemetry — local-first, ack-on-body-only, overflow-visible > 2xx that acks a DIFFERENT id does not clear our record 1ms
+ ✓ src/__tests__/client-telemetry.test.ts > client telemetry — local-first, ack-on-body-only, overflow-visible > RELOAD: a later session drains what an earlier one persisted 0ms
+ ✓ src/__tests__/client-telemetry.test.ts > client telemetry — local-first, ack-on-body-only, overflow-visible > FAILED DRAIN then SUCCESS: record retained across the failure, delivered after 0ms
+ ✓ src/__tests__/client-telemetry.test.ts > client telemetry — local-first, ack-on-body-only, overflow-visible > COUNT BOUND: buffer never exceeds BUFFER_MAX_COUNT; overflow is counted 5ms
+ ✓ src/__tests__/client-telemetry.test.ts > client telemetry — local-first, ack-on-body-only, overflow-visible > STORAGE QUOTA EXCEEDED: no crash, overflow visible (degrade, don't die) 1ms
+ ✓ src/__tests__/client-telemetry.test.ts > client telemetry — local-first, ack-on-body-only, overflow-visible > STORAGE UNAVAILABLE: emit degrades to memory, still records, no crash 0ms
+ ✓ src/__tests__/client-telemetry.test.ts > client telemetry — local-first, ack-on-body-only, overflow-visible > PRIVACY: emit drops content — sentinel transcript/audio never persisted 0ms
+ ✓ src/__tests__/client-telemetry.test.ts > client telemetry — local-first, ack-on-body-only, overflow-visible > PRIVACY RED control — a non-sanitising persist leaks the sentinel 0ms
+ ✓ src/__tests__/client-telemetry.test.ts > client telemetry — local-first, ack-on-body-only, overflow-visible > sanitize allowlist is exactly the declared fields (guards accidental additions) 1ms
+ ✓ src/__tests__/client-telemetry.test.ts > client telemetry — local-first, ack-on-body-only, overflow-visible > beaconUnload NEVER marks delivered (best-effort only) 0ms
+ ✓ src/__tests__/client-telemetry.test.ts > client telemetry — local-first, ack-on-body-only, overflow-visible > beaconUnload RED control — treating its boolean as delivery is rejected 0ms
+ ✓ src/__tests__/client-telemetry.test.ts > client telemetry — local-first, ack-on-body-only, overflow-visible > DEGRADED SIGNAL: storage-unavailable emit fires an immediate degraded beacon 0ms
+ ✓ src/__tests__/client-telemetry.test.ts > client telemetry — local-first, ack-on-body-only, overflow-visible > DEGRADED SIGNAL: falls back to keepalive fetch when sendBeacon is absent 0ms
+ ✓ src/__tests__/client-telemetry.test.ts > client telemetry — local-first, ack-on-body-only, overflow-visible > DEGRADED SIGNAL carries NO records/content — it is a notice, not a delivery 0ms
+ ✓ src/__tests__/client-telemetry.test.ts > client telemetry — local-first, ack-on-body-only, overflow-visible > DEGRADED RED control — an in-memory-only flag that a reload would lose is rejected 0ms
+ ✓ src/__tests__/client-telemetry.test.ts > client telemetry — D2 atomic state + drain-race (re-read/merge, serialise, sticky, quota) > RE-READ+MERGE: a record emitted DURING an in-flight drain is NOT stale-overwritten 1ms
+ ✓ src/__tests__/client-telemetry.test.ts > client telemetry — D2 atomic state + drain-race (re-read/merge, serialise, sticky, quota) > RED control — filtering the PRE-await snapshot drops the concurrent emit 0ms
+ ✓ src/__tests__/client-telemetry.test.ts > client telemetry — D2 atomic state + drain-race (re-read/merge, serialise, sticky, quota) > SERIALISED DRAINS: two concurrent drains do not double-POST the same record 1ms
+ ✓ src/__tests__/client-telemetry.test.ts > client telemetry — D2 atomic state + drain-race (re-read/merge, serialise, sticky, quota) > RED control — unserialised concurrent drains double-POST 0ms
+ ✓ src/__tests__/client-telemetry.test.ts > client telemetry — D2 atomic state + drain-race (re-read/merge, serialise, sticky, quota) > ATOMIC seq: buffer and seq advance together; seq never drifts 0ms
+ ✓ src/__tests__/client-telemetry.test.ts > client telemetry — D2 atomic state + drain-race (re-read/merge, serialise, sticky, quota) > STICKY DEGRADED: once memory-fallback happens, degraded never reverts 0ms
+ ✓ src/__tests__/client-telemetry.test.ts > client telemetry — D2 atomic state + drain-race (re-read/merge, serialise, sticky, quota) > RED control — non-sticky degraded reverts on the next healthy read 0ms
+ ✓ src/__tests__/client-telemetry.test.ts > client telemetry — D2 atomic state + drain-race (re-read/merge, serialise, sticky, quota) > DOUBLE-QUOTA: two consecutive quota failures do not crash and count overflow/degrade 0ms
+ ✓ src/__tests__/client-telemetry.test.ts > client telemetry — D2 atomic state + drain-race (re-read/merge, serialise, sticky, quota) > META-WRITE-FAILURE atomicity: seq and entries are ONE blob — they cannot desync 1ms
+ ✓ src/__tests__/client-telemetry.test.ts > client telemetry — D2 atomic state + drain-race (re-read/merge, serialise, sticky, quota) > sendBeacon=false FALLS THROUGH to a keepalive fetch (beaconUnload) 0ms
+ ✓ src/__tests__/client-telemetry.test.ts > client telemetry — D2 atomic state + drain-race (re-read/merge, serialise, sticky, quota) > RED control — treating sendBeacon=false as handled skips the fetch fallback 0ms
+ ✓ src/__tests__/client-telemetry.test.ts > client telemetry — D2 atomic state + drain-race (re-read/merge, serialise, sticky, quota) > sendBeacon=true does NOT mark delivered (record retained; only drain acks) 0ms
+ ✓ src/__tests__/client-telemetry.test.ts > client telemetry — D3 poisoned-buffer never transmits content (re-sanitise on the way OUT) > POISONED STORAGE: a tampered buffer entry does NOT put transcript/audio on the DRAIN wire 0ms
+ ✓ src/__tests__/client-telemetry.test.ts > client telemetry — D3 poisoned-buffer never transmits content (re-sanitise on the way OUT) > POISONED STORAGE: a tampered entry does NOT put content on the BEACON wire either 0ms
+ ✓ src/__tests__/client-telemetry.test.ts > client telemetry — D3 poisoned-buffer never transmits content (re-sanitise on the way OUT) > RED control — a non-re-sanitising toWire (strip-only) leaks the poisoned content 0ms
+ ✓ src/__tests__/client-telemetry.test.ts > client telemetry — D3 poisoned-buffer never transmits content (re-sanitise on the way OUT) > CONTENT-SMUGGLING via request_id: a transcript-shaped id is DROPPED (not truncated) 0ms
+ ✓ src/__tests__/client-telemetry.test.ts > client telemetry — D3 poisoned-buffer never transmits content (re-sanitise on the way OUT) > CONTENT-SMUGGLING via mime: free text in the mime slot is DROPPED 0ms
+ ✓ src/__tests__/client-telemetry.test.ts > client telemetry — D3 poisoned-buffer never transmits content (re-sanitise on the way OUT) > non-enum event/reason are DROPPED; valid ones pass 0ms
+ ✓ src/__tests__/client-telemetry.test.ts > client telemetry — D3 poisoned-buffer never transmits content (re-sanitise on the way OUT) > RED control — truncate-only (the old behaviour) would still transmit 128 content chars 0ms
+ ✓ src/__tests__/client-telemetry.test.ts > client telemetry — D3 poisoned-buffer never transmits content (re-sanitise on the way OUT) > numeric fields: NaN/Infinity dropped, negatives clamped to 0 0ms
+ ✓ src/__tests__/telemetry-sink.test.ts > TelemetrySink — idempotent, ack-after-side-effect, privacy-safe > (1) first delivery is logged AND acked 2ms
+ ✓ src/__tests__/telemetry-sink.test.ts > TelemetrySink — idempotent, ack-after-side-effect, privacy-safe > (1) RED control — a sink that acks without logging is rejected 1ms
+ ✓ src/__tests__/telemetry-sink.test.ts > TelemetrySink — idempotent, ack-after-side-effect, privacy-safe > (2) a lost-ack retry is re-acked WITHOUT a duplicate side effect 0ms
+ ✓ src/__tests__/telemetry-sink.test.ts > TelemetrySink — idempotent, ack-after-side-effect, privacy-safe > (2) RED control — a sink that re-logs on retry is rejected 0ms
+ ✓ src/__tests__/telemetry-sink.test.ts > TelemetrySink — idempotent, ack-after-side-effect, privacy-safe > (3) malformed records are rejected + counted and NOT acked 0ms
+ ✓ src/__tests__/telemetry-sink.test.ts > TelemetrySink — idempotent, ack-after-side-effect, privacy-safe > (3) RED control — a sink that acks malformed records is rejected 0ms
+ ✓ src/__tests__/telemetry-sink.test.ts > TelemetrySink — idempotent, ack-after-side-effect, privacy-safe > (4) ACK ONLY AFTER SIDE EFFECT — a throwing log neither remembers nor acks 0ms
+ ✓ src/__tests__/telemetry-sink.test.ts > TelemetrySink — idempotent, ack-after-side-effect, privacy-safe > (4) RED control — ack-before-side-effect is rejected by the same assertion 0ms
+ ✓ src/__tests__/telemetry-sink.test.ts > TelemetrySink — idempotent, ack-after-side-effect, privacy-safe > (5) privacy — sentinel transcript/audio fields never reach the log 0ms
+ ✓ src/__tests__/telemetry-sink.test.ts > TelemetrySink — idempotent, ack-after-side-effect, privacy-safe > (5) RED control — a passthrough (non-sanitising) sink is rejected 0ms
+ ✓ src/__tests__/telemetry-sink.test.ts > TelemetrySink — idempotent, ack-after-side-effect, privacy-safe > sanitizeRecord drops unknown keys and coerces scalars (unit) 0ms
+ ✓ src/__tests__/telemetry-sink.test.ts > TelemetrySink — idempotent, ack-after-side-effect, privacy-safe > DISCLOSED: bounded seen-set eviction can produce ONE duplicate log on late retry 0ms
+ ✓ src/__tests__/telemetry-sink.test.ts > TelemetrySink — idempotent, ack-after-side-effect, privacy-safe > empty batch acks nothing, logs nothing, rejects nothing (degraded-notice shape) 0ms
+ ✓ src/__tests__/telemetry-sink.test.ts > TelemetrySink — idempotent, ack-after-side-effect, privacy-safe > CONTENT-SMUGGLING: a transcript in request_id is DROPPED, making the record un-ackable 0ms
+ ✓ src/__tests__/telemetry-sink.test.ts > TelemetrySink — idempotent, ack-after-side-effect, privacy-safe > CONTENT-SMUGGLING via mime/event/reason: free-text/non-enum values are DROPPED from the log 0ms
+ ✓ src/__tests__/telemetry-sink.test.ts > TelemetrySink — idempotent, ack-after-side-effect, privacy-safe > RED control — a truncate-only sink would still log 128 content chars 0ms
+ ✓ src/__tests__/telemetry-sink.test.ts > TelemetrySink — idempotent, ack-after-side-effect, privacy-safe > sanitizeRecord validates shapes (token/enum/MIME/numeric) 0ms
+
+ Test Files  3 passed (3)
+      Tests  70 passed (70)
+   Start at  02:18:10
+   Duration  2.51s (transform 88ms, setup 0ms, import 256ms, tests 135ms, environment 1.64s)
+
