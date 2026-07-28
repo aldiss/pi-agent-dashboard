@@ -100,6 +100,14 @@ describe("registerAskUserTool", () => {
       );
     });
 
+    it("fails loud instead of reporting an undefined select result as an operator response", async () => {
+      const { tool, ctx } = getToolAndMockCtx();
+      ctx.ui.select.mockResolvedValueOnce(undefined);
+      await expect(
+        tool.execute("id", { method: "select", title: "Pick", options: ["A", "B"] }, undefined, undefined, ctx),
+      ).rejects.toThrow(/cancelled, timed out, or undelivered.*No operator choice was recorded/u);
+    });
+
     it("dispatches multiselect through the polyfill via ctx.ui.custom", async () => {
       const { tool, ctx } = getToolAndMockCtx();
       const result = await tool.execute(

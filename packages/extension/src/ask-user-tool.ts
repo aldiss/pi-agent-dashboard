@@ -443,6 +443,11 @@ export function registerAskUserTool(pi: ExtensionAPI): void {
           break;
         case "select":
           result = await ctx.ui.select(title, options, msgOpts);
+          if (result === undefined) {
+            throw new Error(
+              "ask_user: no selection was returned; the prompt was cancelled, timed out, or undelivered. No operator choice was recorded.",
+            );
+          }
           break;
         case "multiselect":
           result = await polyfillMultiselect(ctx, title, options, msgOpts);
