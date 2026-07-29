@@ -4,6 +4,10 @@ dist/
 *.db-journal
 .env
 .DS_Store
+
+# macOS metadata at every directory depth
+**/._*
+**/__MACOSX/
 packages/electron/resources/server
 packages/electron/resources/node
 packages/electron/resources/icons

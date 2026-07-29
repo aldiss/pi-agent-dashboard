@@ -1,0 +1,9 @@
+# Keep macOS metadata out of git-archive release packages at every depth.
+.DS_Store export-ignore
+**/.DS_Store export-ignore
+._* export-ignore
+**/._* export-ignore
+__MACOSX export-ignore
+__MACOSX/** export-ignore
+**/__MACOSX export-ignore
+**/__MACOSX/** export-ignore
