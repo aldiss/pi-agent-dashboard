@@ -64,6 +64,99 @@ interface PluginState {
   sidecarHealthy: boolean;
 }
 
+// ---------------------------------------------------------------------------
+// Privacy-safe telemetry + defense-in-depth helpers (pure; unit-tested).
+//
+// Criterion 3: record phase / outcome / size-class / status — NEVER payload.
+// Criterion 10: record which client bundle executed + the SW registration
+// state, identity-only, so "which code ran on the device" (dl-12467 open
+// observable) stops being unanswerable. No audio, no transcript, no content.
+// ---------------------------------------------------------------------------
+
+/** Coarse, non-reversible byte-size bucket (mirrors the sidecar's `_size_class`). */
+export function sizeClass(n: number): string {
+  if (!Number.isFinite(n) || n <= 0) return "0";
+  if (n < 1024) return "<1KiB";
+  if (n < 16 * 1024) return "1-16KiB";
+  if (n < 256 * 1024) return "16-256KiB";
+  if (n < 4 * 1024 * 1024) return "256KiB-4MiB";
+  return ">=4MiB";
+}
+
+/**
+ * Sanitise a client-supplied identity header before it reaches a log line.
+ * The build id / SW-state headers are attacker-influenced, so we strip
+ * control chars + whitespace (log-injection / newline-splitting defence) and
+ * cap the length. Returns "unknown" for missing/empty input. This is IDENTITY
+ * ONLY — the headers never carry transcript or audio content by construction.
+ */
+export function sanitizeIdentity(raw: unknown): string {
+  if (typeof raw !== "string") return "unknown";
+  const cleaned = raw.replace(/[^\x20-\x7E]/g, "").replace(/\s+/g, "").slice(0, 80);
+  return cleaned.length > 0 ? cleaned : "unknown";
+}
+
+const STOP_REASONS = new Set([
+  "manual-stop",
+  "visibility-auto-stop",
+  "safety-net-auto-stop",
+]);
+const REQUEST_ID_V4 =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+type StopMetadata = {
+  stopReason: string;
+  correlationId: string;
+};
+
+/**
+ * Classify optional client metadata into fixed privacy-safe tokens. This
+ * function deliberately has no acceptance result: observability metadata is
+ * never allowed to gate the transcription path.
+ */
+function transcribeStopMetadata(request: FastifyRequest): StopMetadata {
+  const rawReason = request.headers["x-voice-stop-reason"];
+  const rawId = request.headers["x-voice-request-id"];
+  const reasonMissing = rawReason === undefined;
+  const idMissing = rawId === undefined;
+  const reasonValid = typeof rawReason === "string" && STOP_REASONS.has(rawReason);
+  const idValid = typeof rawId === "string" && REQUEST_ID_V4.test(rawId);
+  return {
+    stopReason: reasonMissing ? "unknown" : reasonValid ? rawReason as string : "invalid",
+    correlationId: idMissing ? "unknown" : idValid ? rawId as string : "invalid",
+  };
+}
+
+/**
+ * Defense-in-depth for criterion 9 AT THE PROXY. The sidecar now guarantees
+ * 200 ⟹ non-empty, but dl-12467 leaves "which sidecar actually ran" an open
+ * observable — a stale sidecar could still emit a 200-empty. Inspect a 2xx
+ * body and report whether it is a schema-valid non-empty transcript WITHOUT
+ * mutating it. Returns:
+ *   - {ok:true}  → forward the ORIGINAL bytes byte-identically.
+ *   - {ok:false} → the proxy must NOT forward a 200-empty; synthesize a typed
+ *                  non-2xx instead. `reason` classifies why (telemetry only).
+ * Non-2xx bodies are never inspected here (they are already typed failures).
+ */
+export function inspectTranscriptEmptiness(
+  body: string
+): { ok: true } | { ok: false; reason: "non-json" | "missing-field" | "empty-field" } {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return { ok: false, reason: "non-json" };
+  }
+  if (typeof parsed !== "object" || parsed === null || !("transcript" in parsed)) {
+    return { ok: false, reason: "missing-field" };
+  }
+  const t = (parsed as { transcript?: unknown }).transcript;
+  if (typeof t !== "string" || t.trim().length === 0) {
+    return { ok: false, reason: "empty-field" };
+  }
+  return { ok: true };
+}
+
 async function probeSidecar(state: PluginState): Promise<void> {
   try {
     const controller = new AbortController();
@@ -98,6 +191,91 @@ export async function register(
     clearInterval(pollTimer);
   });
 
+  /**
+   * Emit ONE privacy-safe phase/outcome telemetry line. Prefers Fastify's
+   * structured logger; falls back to console. Fields are a fixed identity +
+   * phase set — never payload. `clientBuild` / `swState` come from request
+   * headers the client stamps (criterion 10) and are sanitised at the call
+   * site so a stale/forged header can't inject into the log.
+   */
+  type TelemetryLogger = {
+    child?: (
+      bindings: Record<string, string>,
+      options?: { level?: string },
+    ) => TelemetryLogger;
+    info?: (message: string) => void;
+    isLevelEnabled?: (level: string) => boolean;
+  };
+
+  // A dedicated child pins this one privacy-safe channel to info while still
+  // using the host's configured Pino destination/transport. Pino child levels
+  // are independent of a warn/silent parent. Fastify's logger:false abstract
+  // logger has no effective isLevelEnabled capability, so that case falls back
+  // to stdout. Exactly one branch emits each line.
+  const rootLogger = (fastify as unknown as { log?: TelemetryLogger }).log;
+  let telemetryLogger = rootLogger;
+  try {
+    if (rootLogger && typeof rootLogger.child === "function") {
+      telemetryLogger = rootLogger.child(
+        { component: "voice-telemetry" },
+        { level: "info" },
+      );
+    }
+  } catch {
+    telemetryLogger = rootLogger;
+  }
+
+  const logPhase = (f: Record<string, string | number>): void => {
+    const line = Object.entries(f)
+      .map(([k, v]) => `${k}=${v}`)
+      .join(" ");
+    const message = `voice.telemetry ${line}`;
+    if (
+      telemetryLogger
+      && typeof telemetryLogger.info === "function"
+      && typeof telemetryLogger.isLevelEnabled === "function"
+      && telemetryLogger.isLevelEnabled("info")
+    ) {
+      telemetryLogger.info(message);
+    } else {
+      console.info(message);
+    }
+  };
+
+  // One identity line per request. The same latch is shared by handler outcome
+  // logs and the lifecycle fallback, so a handler-produced 404 cannot be
+  // doubled by onResponse.
+  const identityLogged = new WeakSet<FastifyRequest>();
+  const logIdentity = (
+    request: FastifyRequest,
+    fields: Record<string, string | number>,
+  ): void => {
+    if (identityLogged.has(request)) return;
+    identityLogged.add(request);
+    logPhase(fields);
+  };
+
+  const LIFECYCLE_OUTCOMES: Record<number, string> = {
+    404: "route-not-found",
+    413: "body-too-large",
+    415: "unsupported-media-type",
+  };
+  fastify.addHook("onResponse", async (request, reply) => {
+    const outcome = LIFECYCLE_OUTCOMES[reply.statusCode];
+    if (!outcome || !request.url.startsWith("/api/plugins/voice-input/")) return;
+    const metadata = transcribeStopMetadata(request);
+    logIdentity(request, {
+      phase: "proxy-lifecycle",
+      outcome,
+      status: reply.statusCode,
+      engine: state.cfg.engine,
+      clientBuild: sanitizeIdentity(request.headers["x-voice-client-build"]),
+      swState: sanitizeIdentity(request.headers["x-voice-sw-state"]),
+      stopReason: metadata.stopReason,
+      correlationId: metadata.correlationId,
+    });
+  });
+
   // Register a content-type parser for multipart/form-data + audio/* binary
   // bodies. Without this, Fastify 5.x rejects with HTTP 415
   // FST_ERR_CTP_INVALID_MEDIA_TYPE before the route handler runs, which
@@ -119,6 +297,62 @@ export async function register(
     return reply.code(200).send({ healthy: true, engine: state.cfg.engine });
   });
 
+  // Privacy-safe client PHASE telemetry (T2/T3). The pre-POST short-blob path
+  // NEVER reaches /transcribe (nothing is sent), so without this endpoint the
+  // operator's actual failure mode — a sub-1KiB blob — emits nothing at all.
+  // The client posts a tiny fixed-shape JSON here for phases that don't (or
+  // don't yet) carry a transcribe request. Body is validated against fixed
+  // ENUM allowlists so it can only ever carry phase/outcome/size-CLASS —
+  // never a transcript, audio, or an exact byte count (dl-12467: exact size
+  // is itself a content side-channel; only coarse `sizeClass` buckets allowed).
+  const TELEMETRY_PHASES = new Set(["pre-post", "client"]);
+  const TELEMETRY_OUTCOMES = new Set([
+    "short-blob",       // sub-1KiB blob, nothing sent
+    "no-speech",        // client saw a typed 422 no-speech
+    "empty-response",   // client saw a 200-empty / 502 empty-upstream
+    "recording-stopped", // stop reason + request correlation, no payload
+  ]);
+  const TELEMETRY_SIZE_CLASSES = new Set([
+    "0", "<1KiB", "1-16KiB", "16-256KiB", "256KiB-4MiB", ">=4MiB",
+  ]);
+  fastify.post("/api/plugins/voice-input/telemetry", async (request, reply) => {
+    const body = (request.body ?? {}) as Record<string, unknown>;
+    const phase = typeof body.phase === "string" ? body.phase : "";
+    const outcome = typeof body.outcome === "string" ? body.outcome : "";
+    const sizeClass =
+      typeof body.sizeClass === "string" ? body.sizeClass : "";
+    const stopReason =
+      typeof body.stopReason === "string" ? body.stopReason : "";
+    const correlationId =
+      typeof body.requestId === "string" ? body.requestId : "";
+    const isRecordingStopped = outcome === "recording-stopped";
+    const validStopFields = isRecordingStopped
+      ? phase === "client" && STOP_REASONS.has(stopReason) && REQUEST_ID_V4.test(correlationId)
+      : body.stopReason === undefined && body.requestId === undefined;
+    // Reject anything not on the allowlist — a client cannot smuggle content
+    // through a free-form field because every accepted value is a fixed token.
+    if (
+      !TELEMETRY_PHASES.has(phase) ||
+      !TELEMETRY_OUTCOMES.has(outcome) ||
+      !TELEMETRY_SIZE_CLASSES.has(sizeClass) ||
+      !validStopFields
+    ) {
+      return reply.code(400).send({ error: "invalid telemetry envelope" });
+    }
+    logIdentity(request, {
+      phase: `client-${phase}`,
+      outcome,
+      status: 204,
+      engine: state.cfg.engine,
+      bodySizeClass: sizeClass,
+      clientBuild: sanitizeIdentity(request.headers["x-voice-client-build"]),
+      swState: sanitizeIdentity(request.headers["x-voice-sw-state"]),
+      stopReason: isRecordingStopped ? stopReason : "unknown",
+      correlationId: isRecordingStopped ? correlationId : "unknown",
+    });
+    return reply.code(204).send();
+  });
+
   fastify.post("/api/plugins/voice-input/transcribe", async (request, reply) => {
     // The dashboard's Fastify instance is constructed with
     // `connectionTimeout: 10_000` (server.ts ~line 610), which closes the
@@ -133,8 +367,28 @@ export async function register(
       /* defensive; older Node versions / mocked requests */
     }
 
+    // Criterion 10: which client bundle executed + SW state, identity-only,
+    // sanitised before it can reach a log line. Stamped by the client on
+    // every transcribe POST (see PushToTalkButton.uploadBlob).
+    const clientBuild = sanitizeIdentity(request.headers["x-voice-client-build"]);
+    const swState = sanitizeIdentity(request.headers["x-voice-sw-state"]);
+    const stopMetadata = transcribeStopMetadata(request);
+    const proxyLogIdentity = {
+      engine: state.cfg.engine,
+      clientBuild,
+      swState,
+      stopReason: stopMetadata.stopReason,
+      correlationId: stopMetadata.correlationId,
+    };
+
     if (!state.sidecarHealthy) {
       void probeSidecar(state);
+      logIdentity(request, {
+        phase: "proxy-health-gate",
+        outcome: "sidecar-unhealthy",
+        status: 503,
+        ...proxyLogIdentity,
+      });
       return reply.code(503).send({ error: "Voice sidecar unavailable" });
     }
 
@@ -167,8 +421,56 @@ export async function register(
         );
         clearTimeout(timer);
         const respBody = await upstream.text();
-        reply.code(upstream.status);
         const ct = upstream.headers.get("content-type");
+
+        // DEFENSE-IN-DEPTH (criterion 9 at the proxy). The fixed sidecar
+        // guarantees 200 ⟹ non-empty, but dl-12467 leaves "which sidecar ran"
+        // an open observable — a stale sidecar could still emit a 200-empty.
+        // On any 2xx, inspect (never mutate) the body: a schema-valid
+        // non-empty transcript forwards BYTE-IDENTICALLY; a 2xx-empty is
+        // converted to a typed 502 so the client never sees an empty 200.
+        // Non-2xx bodies (the sidecar's own 422/500/503) pass through as-is.
+        if (upstream.status >= 200 && upstream.status < 300) {
+          const verdict = inspectTranscriptEmptiness(respBody);
+          if (!verdict.ok) {
+            logIdentity(request, {
+              phase: "proxy-forward",
+              outcome: `upstream-2xx-empty:${verdict.reason}`,
+              status: 502,
+              ...proxyLogIdentity,
+              upstreamStatus: upstream.status,
+              bodySizeClass: sizeClass(respBody.length),
+            });
+            return reply.code(502).send({
+              error:
+                "Voice sidecar returned an empty transcript on a 200 response " +
+                "(upstream contract violation)",
+              type: "EmptyUpstreamTranscript",
+            });
+          }
+          // Valid non-empty transcript — forward the ORIGINAL bytes unchanged.
+          logIdentity(request, {
+            phase: "proxy-forward",
+            outcome: "ok",
+            status: upstream.status,
+            ...proxyLogIdentity,
+            bodySizeClass: sizeClass(respBody.length),
+          });
+          reply.code(upstream.status);
+          if (ct) reply.header("content-type", ct);
+          return reply.send(respBody);
+        }
+
+        // Non-2xx: a typed upstream failure (422 no-speech, 500, 503).
+        // Forward verbatim so the client can render a DISTINCT state.
+        logIdentity(request, {
+          phase: "proxy-forward",
+          outcome: "upstream-non-2xx",
+          status: upstream.status,
+          ...proxyLogIdentity,
+          bodySizeClass: sizeClass(respBody.length),
+        });
+        reply.code(upstream.status);
         if (ct) reply.header("content-type", ct);
         return reply.send(respBody);
       } finally {
@@ -176,6 +478,12 @@ export async function register(
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
+      logIdentity(request, {
+        phase: "proxy-forward",
+        outcome: "proxy-exception",
+        status: 502,
+        ...proxyLogIdentity,
+      });
       return reply.code(502).send({ error: `Sidecar proxy failed: ${msg}` });
     }
   });
