@@ -29,6 +29,7 @@
  * `parakeet-tdt-0.6b-v3` is English-only was empirically wrong; defaults
  * stay `engine: "parakeet"` for ~5s typical latency on Apple Silicon.
  */
+import { emitSpoolEntry, wakeEngine, spoolConfigFromEnv } from "./spool-emit.js";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 
 interface PluginConfig {
@@ -448,6 +449,20 @@ export async function register(
               type: "EmptyUpstreamTranscript",
             });
           }
+          // PRODUCER HOP (obsidian-daily-voice-record). The transcript is now
+          // schema-valid and non-empty, so this is the single point at which a
+          // real dictation is known good. Emission is non-regressive: any
+          // failure is swallowed and the operator still receives their
+          // transcript. Nothing is written outside the engine's spool contract.
+          try {
+            const spoolCfg = spoolConfigFromEnv();
+            if (emitSpoolEntry(respBody, body, spoolCfg) !== null) {
+              wakeEngine(spoolCfg);
+            }
+          } catch {
+            /* never let the producer hop affect the transcription result */
+          }
+
           // Valid non-empty transcript — forward the ORIGINAL bytes unchanged.
           logIdentity(request, {
             phase: "proxy-forward",
