@@ -190,7 +190,7 @@ describe("PushToTalkButton — click-to-toggle (Option B, 2026-05-14)", () => {
     expect(button.getAttribute("aria-pressed")).toBe("true");
 
     // Phase 2: advance past 10min safety-net cap. The fired callback invokes
-    // stopRecordingRef.current(false) synchronously; the rest of the
+    // stopRecordingRef.current(SafetyNetAutoStop) synchronously; the rest of the
     // stopRecording chain (recorder.stop → chunks → fetch → setPhase) drains
     // via microtasks.
     await act(async () => {
@@ -201,9 +201,9 @@ describe("PushToTalkButton — click-to-toggle (Option B, 2026-05-14)", () => {
     vi.useRealTimers();
 
     await waitFor(() => {
-      const phase = button.getAttribute("data-phase");
-      expect(phase === "uploading" || phase === "idle").toBe(true);
+      expect(button.getAttribute("data-phase")).toBe("interrupted");
     });
+    expect(button.getAttribute("data-stop-reason")).toBe("safety-net-auto-stop");
     expect(button.getAttribute("aria-pressed")).toBe("false");
   });
 
