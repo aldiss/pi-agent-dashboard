@@ -126,6 +126,11 @@ export function wakeEngine(cfg: SpoolEmitConfig): boolean {
       detached: true,
       stdio: "ignore",
     });
+    // spawn reports a bad executable ASYNCHRONOUSLY on a later tick, so it
+    // escapes the try/catch around this call and would reach the server's
+    // fail-loud net as an uncaughtException. Swallow it here: a misconfigured
+    // engine must never affect the operator's transcription.
+    child.on("error", () => {});
     child.unref();
     return true;
   } catch {
