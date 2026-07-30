@@ -41,6 +41,8 @@ interface Props {
   onCancelPending?: () => void;
   /** Current session id — used to reset history-navigation state on switch. */
   sessionId?: string;
+  /** Canonical agent name from the dashboard session model. */
+  sessionName?: string;
   /** Controlled draft text. When provided, the textarea is controlled by the parent. */
   draft?: string;
   /** Parent callback for every text change (controlled mode). */
@@ -123,7 +125,43 @@ function extractAtQuery(text: string): string | null {
 
 type StopState = "idle" | "aborting" | "killing";
 
-export function CommandInput({ commands: externalCommands, onSend, onListFiles, fileResults, disabled, sessionStatus, retrying, onAbort, onForceKill, pendingPrompt, onCancelPending, sessionId, draft, onDraftChange, history, images, onImagesChange, queuedCount }: Props) {
+const DAWN_SESSION_NAME = "Dawn";
+const DAWN_SPOOL_ENDPOINT = "/api/plugins/voice-input/spool";
+
+async function audioBase64(blob: Blob): Promise<string> {
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  let binary = "";
+  for (let offset = 0; offset < bytes.length; offset += 32_768) {
+    binary += String.fromCharCode(...bytes.subarray(offset, offset + 32_768));
+  }
+  return btoa(binary);
+}
+
+async function spoolDawnDictation(
+  sessionId: string,
+  transcript: string,
+  audio: Blob,
+): Promise<string> {
+  const response = await fetch(
+    `${DAWN_SPOOL_ENDPOINT}?sessionId=${encodeURIComponent(sessionId)}`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        transcript,
+        audioBase64: await audioBase64(audio),
+      }),
+    },
+  );
+  if (!response.ok) throw new Error(`Dawn spool failed (${response.status})`);
+  const result = await response.json() as { ok?: unknown; spoolDir?: unknown; id?: unknown };
+  if (result.ok !== true || typeof result.spoolDir !== "string" || typeof result.id !== "string") {
+    throw new Error("Dawn spool returned an invalid path");
+  }
+  return `process this dictation path: ${result.spoolDir}`;
+}
+
+export function CommandInput({ commands: externalCommands, onSend, onListFiles, fileResults, disabled, sessionStatus, retrying, onAbort, onForceKill, pendingPrompt, onCancelPending, sessionId, sessionName, draft, onDraftChange, history, images, onImagesChange, queuedCount }: Props) {
   // Treat retry-sleep as "still working" for Stop/Force-Stop visibility.
   const isWorking = sessionStatus === "streaming" || retrying === true;
   // Merge server commands with built-in commands, avoiding duplicates
@@ -194,6 +232,99 @@ export function CommandInput({ commands: externalCommands, onSend, onListFiles, 
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastFileQueryRef = useRef<string | null>(null);
+  const textRef = useRef(text);
+  textRef.current = text;
+  const dawnAudioPromiseRef = useRef<Promise<Blob | null>>(Promise.resolve(null));
+  const dawnAudioRecorderRef = useRef<MediaRecorder | null>(null);
+  const dawnAudioChunksRef = useRef<Blob[]>([]);
+  const resolveDawnAudioRef = useRef<((audio: Blob | null) => void) | null>(null);
+
+  const appendVoiceText = useCallback((value: string) => {
+    const current = textRef.current;
+    const separator = current && !current.endsWith(" ") && !current.endsWith("\n") ? " " : "";
+    const next = current + separator + value;
+    textRef.current = next;
+    setText(next);
+    requestAnimationFrame(() => {
+      const textarea = inputRef.current;
+      if (textarea) {
+        textarea.style.height = "40px";
+        textarea.style.height = Math.min(textarea.scrollHeight, 120) + "px";
+        textarea.focus();
+      }
+    });
+  }, [setText]);
+
+  const handleDawnStreamChange = useCallback((stream: MediaStream | null) => {
+    if (stream) {
+      resolveDawnAudioRef.current?.(null);
+      dawnAudioChunksRef.current = [];
+      dawnAudioPromiseRef.current = new Promise((resolve) => {
+        resolveDawnAudioRef.current = resolve;
+      });
+      try {
+        const recorder = new MediaRecorder(stream);
+        dawnAudioRecorderRef.current = recorder;
+        recorder.ondataavailable = (event) => {
+          if (event.data && event.data.size > 0) dawnAudioChunksRef.current.push(event.data);
+        };
+        recorder.onstop = () => {
+          resolveDawnAudioRef.current?.(new Blob(dawnAudioChunksRef.current, {
+            type: recorder.mimeType || "audio/webm",
+          }));
+          resolveDawnAudioRef.current = null;
+          dawnAudioRecorderRef.current = null;
+        };
+        recorder.start();
+      } catch {
+        resolveDawnAudioRef.current?.(null);
+        resolveDawnAudioRef.current = null;
+        dawnAudioRecorderRef.current = null;
+      }
+      return;
+    }
+
+    const recorder = dawnAudioRecorderRef.current;
+    if (recorder && recorder.state !== "inactive") {
+      try {
+        recorder.stop();
+      } catch {
+        resolveDawnAudioRef.current?.(null);
+        resolveDawnAudioRef.current = null;
+        dawnAudioRecorderRef.current = null;
+      }
+    }
+  }, []);
+
+  useEffect(() => () => {
+    resolveDawnAudioRef.current?.(null);
+    resolveDawnAudioRef.current = null;
+    const recorder = dawnAudioRecorderRef.current;
+    if (recorder && recorder.state !== "inactive") {
+      try {
+        recorder.stop();
+      } catch {
+        /* already stopped */
+      }
+    }
+    dawnAudioRecorderRef.current = null;
+  }, []);
+
+  const handleVoiceTranscript = useCallback((transcript: string) => {
+    if (sessionName !== DAWN_SESSION_NAME || !sessionId) {
+      appendVoiceText(transcript);
+      return;
+    }
+
+    const audioPromise = dawnAudioPromiseRef.current;
+    void (async () => {
+      const audio = await audioPromise;
+      if (!audio || audio.size === 0) throw new Error("Dawn audio capture unavailable");
+      appendVoiceText(await spoolDawnDictation(sessionId, transcript, audio));
+    })().catch(() => {
+      appendVoiceText("Voice spool failed; dictation was not delivered.");
+    });
+  }, [appendVoiceText, sessionId, sessionName]);
 
   // VOICE-INPUT-LOCAL-PATCH-START (W5-impl auto-grow bugfix per operator iPhone test 2026-05-15 ~22 CEST;
   //   voice-transcript multi-line was hidden because PushToTalkButton's onTranscript fires from
@@ -595,19 +726,8 @@ export function CommandInput({ commands: externalCommands, onSend, onListFiles, 
         {!pendingPrompt && (
           <PushToTalkButton
             disabled={disabled}
-            onTranscript={(transcript) => {
-              const sep = text && !text.endsWith(" ") && !text.endsWith("\n") ? " " : "";
-              setText(text + sep + transcript);
-              // Re-run the auto-resize logic so the (possibly multi-line) transcript shows fully.
-              requestAnimationFrame(() => {
-                const ta = inputRef.current;
-                if (ta) {
-                  ta.style.height = "40px";
-                  ta.style.height = Math.min(ta.scrollHeight, 120) + "px";
-                  ta.focus();
-                }
-              });
-            }}
+            onStreamChange={sessionName === DAWN_SESSION_NAME && sessionId ? handleDawnStreamChange : undefined}
+            onTranscript={handleVoiceTranscript}
           />
         )}
         {/* VOICE-INPUT-LOCAL-PATCH-END */}

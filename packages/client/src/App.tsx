@@ -1431,6 +1431,7 @@ export default function App() {
             onCancelPending={handleCancelPending}
             queuedCount={selectedState.queue.length}
             sessionId={selectedId}
+            sessionName={selectedSession?.name}
             draft={selectedDraft}
             onDraftChange={setDraftForSelected}
             history={selectedHistory}

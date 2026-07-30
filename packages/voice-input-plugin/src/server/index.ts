@@ -67,6 +67,13 @@ interface PluginState {
   sidecarHealthy: boolean;
 }
 
+export type SessionNameResolver = (sessionId: string) => string | undefined;
+
+interface RegisterOptions extends Partial<PluginConfig> {
+  /** Resolve a target session through the dashboard's server-owned session model. */
+  resolveSessionName?: SessionNameResolver;
+}
+
 // ---------------------------------------------------------------------------
 // Privacy-safe telemetry + defense-in-depth helpers (pure; unit-tested).
 //
@@ -177,10 +184,11 @@ async function probeSidecar(state: PluginState): Promise<void> {
 
 export async function register(
   fastify: FastifyInstance,
-  opts: Partial<PluginConfig> = {}
+  opts: RegisterOptions = {}
 ): Promise<void> {
+  const { resolveSessionName, ...configOverrides } = opts;
   const state: PluginState = {
-    cfg: { ...DEFAULTS, ...opts },
+    cfg: { ...DEFAULTS, ...configOverrides },
     sidecarHealthy: false,
   };
 
@@ -499,48 +507,69 @@ export async function register(
     }
   });
 
-  // DAWN-ONLY note-spool route. The client calls this EXCLUSIVELY for the Dawn
-  // recorder pane; no other pane ever calls it, so note production is
-  // Dawn-addressed by construction and every non-Dawn pane emits zero spool.
+  // DAWN-ONLY note-spool route. The client routes only the Dawn recorder pane
+  // here, and the server independently resolves its target id through the
+  // trusted session manager before accepting the body or emitting any files.
   // It writes the transcript + audio to a PRIVATE spool atomically and returns
   // only a PATH reference. The transcript bytes never travel onward to Dawn —
   // she receives the reference and invokes the installed engine/gateway, which
   // reads + hashes + appends. Path-only preserves the C15 identity chain.
-  fastify.post("/api/plugins/voice-input/spool", async (request, reply) => {
-    try {
-      const body = (request.body ?? {}) as {
-        transcript?: unknown;
-        audioBase64?: unknown;
-      };
-      const transcript =
-        typeof body.transcript === "string" ? body.transcript : "";
-      if (transcript.trim().length === 0) {
-        return reply
-          .code(422)
-          .send({ error: "empty transcript", type: "EmptySpoolTranscript" });
+  fastify.post<{ Querystring: { sessionId?: string } }>(
+    "/api/plugins/voice-input/spool",
+    {
+      // Base64 expands the same 50 MB audio ceiling accepted by /transcribe.
+      bodyLimit: 70_000_000,
+      // Runs before Fastify parses the request body. A forged client claim is
+      // irrelevant: only the server-owned session name returned for the target
+      // session id can authorize this route.
+      onRequest: async (request, reply) => {
+        const sessionId = request.query.sessionId;
+        if (!sessionId || resolveSessionName?.(sessionId) !== "Dawn") {
+          return reply.code(403).send({ error: "Forbidden" });
+        }
+      },
+    },
+    async (request, reply) => {
+      try {
+        // Close the rename race between onRequest and emission. The first
+        // check still guarantees non-Dawn bodies are rejected before parsing.
+        if (resolveSessionName?.(request.query.sessionId ?? "") !== "Dawn") {
+          return reply.code(403).send({ error: "Forbidden" });
+        }
+        const body = (request.body ?? {}) as {
+          transcript?: unknown;
+          audioBase64?: unknown;
+        };
+        const transcript =
+          typeof body.transcript === "string" ? body.transcript : "";
+        if (transcript.trim().length === 0) {
+          return reply
+            .code(422)
+            .send({ error: "empty transcript", type: "EmptySpoolTranscript" });
+        }
+        const audio =
+          typeof body.audioBase64 === "string"
+            ? Buffer.from(body.audioBase64, "base64")
+            : Buffer.alloc(0);
+        const spoolDir =
+          process.env.OBSIDIAN_VOICE_SPOOL_DIR ??
+          join(homedir(), ".pi", "orchestration-state", "dawn-spool");
+        const id = emitSpoolEntry(JSON.stringify({ transcript }), audio, {
+          spoolDir,
+        });
+        if (id === null) {
+          return reply
+            .code(500)
+            .send({ error: "spool write failed", type: "SpoolWriteFailed" });
+        }
+        // PATH-ONLY: return the reference, never echo the transcript back.
+        return reply.code(200).send({ ok: true, spoolDir, id });
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        return reply.code(500).send({ error: `spool failed: ${msg}` });
       }
-      const audio =
-        typeof body.audioBase64 === "string"
-          ? Buffer.from(body.audioBase64, "base64")
-          : Buffer.alloc(0);
-      const spoolDir =
-        process.env.OBSIDIAN_VOICE_SPOOL_DIR ??
-        join(homedir(), ".pi", "orchestration-state", "dawn-spool");
-      const id = emitSpoolEntry(JSON.stringify({ transcript }), audio, {
-        spoolDir,
-      });
-      if (id === null) {
-        return reply
-          .code(500)
-          .send({ error: "spool write failed", type: "SpoolWriteFailed" });
-      }
-      // PATH-ONLY: return the reference, never echo the transcript back.
-      return reply.code(200).send({ ok: true, spoolDir, id });
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      return reply.code(500).send({ error: `spool failed: ${msg}` });
-    }
-  });
+    },
+  );
 }
 
 async function readRawBody(request: FastifyRequest): Promise<Buffer> {
@@ -552,9 +581,27 @@ async function readRawBody(request: FastifyRequest): Promise<Buffer> {
   });
 }
 
-// Plugin-runtime calls default(ctx) where ctx = { fastify, sessionManager, logger, ... }.
-// register() expects raw Fastify instance. Unwrap here.
-export default function(ctx: any) {
-  const fastify = ctx && ctx.fastify ? ctx.fastify : ctx;
-  return register(fastify);
+type PluginRuntimeContext = {
+  fastify: FastifyInstance;
+  sessionManager?: {
+    getSession?: (id: string) => unknown;
+  };
 };
+
+function resolvedSessionName(ctx: PluginRuntimeContext, sessionId: string): string | undefined {
+  const session = ctx.sessionManager?.getSession?.(sessionId);
+  if (typeof session !== "object" || session === null || !("name" in session)) return undefined;
+  const name = (session as { name?: unknown }).name;
+  return typeof name === "string" ? name : undefined;
+}
+
+// Plugin-runtime calls default(ctx) where ctx = { fastify, sessionManager, logger, ... }.
+// Thread its trusted session lookup into the raw Fastify registrar.
+export default function(ctx: FastifyInstance | PluginRuntimeContext) {
+  if ("fastify" in ctx) {
+    return register(ctx.fastify, {
+      resolveSessionName: (sessionId) => resolvedSessionName(ctx, sessionId),
+    });
+  }
+  return register(ctx);
+}
