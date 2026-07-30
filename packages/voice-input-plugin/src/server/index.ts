@@ -29,7 +29,9 @@
  * `parakeet-tdt-0.6b-v3` is English-only was empirically wrong; defaults
  * stay `engine: "parakeet"` for ~5s typical latency on Apple Silicon.
  */
-import { emitSpoolEntry, wakeEngine, spoolConfigFromEnv } from "./spool-emit.js";
+import { join } from "node:path";
+import { homedir } from "node:os";
+import { emitSpoolEntry } from "./spool-emit.js";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 
 interface PluginConfig {
@@ -449,19 +451,13 @@ export async function register(
               type: "EmptyUpstreamTranscript",
             });
           }
-          // PRODUCER HOP (obsidian-daily-voice-record). The transcript is now
-          // schema-valid and non-empty, so this is the single point at which a
-          // real dictation is known good. Emission is non-regressive: any
-          // failure is swallowed and the operator still receives their
-          // transcript. Nothing is written outside the engine's spool contract.
-          try {
-            const spoolCfg = spoolConfigFromEnv();
-            if (emitSpoolEntry(respBody, body, spoolCfg) !== null) {
-              wakeEngine(spoolCfg);
-            }
-          } catch {
-            /* never let the producer hop affect the transcription result */
-          }
+          // NOTE: /transcribe is PANE-BLIND — it cannot know which pane a
+          // dictation targets, so it MUST NOT emit a note spool here. Doing so
+          // (the withdrawn G3 producer hop) turned every dictation, in every
+          // pane, into a daily-note entry. Note production is Dawn-addressed
+          // ONLY and lives on the dedicated /spool route below, which the client
+          // calls exclusively for the Dawn recorder pane. Every non-Dawn pane
+          // reaches this branch and produces ZERO spool by construction.
 
           // Valid non-empty transcript — forward the ORIGINAL bytes unchanged.
           logIdentity(request, {
@@ -500,6 +496,49 @@ export async function register(
         ...proxyLogIdentity,
       });
       return reply.code(502).send({ error: `Sidecar proxy failed: ${msg}` });
+    }
+  });
+
+  // DAWN-ONLY note-spool route. The client calls this EXCLUSIVELY for the Dawn
+  // recorder pane; no other pane ever calls it, so note production is
+  // Dawn-addressed by construction and every non-Dawn pane emits zero spool.
+  // It writes the transcript + audio to a PRIVATE spool atomically and returns
+  // only a PATH reference. The transcript bytes never travel onward to Dawn —
+  // she receives the reference and invokes the installed engine/gateway, which
+  // reads + hashes + appends. Path-only preserves the C15 identity chain.
+  fastify.post("/api/plugins/voice-input/spool", async (request, reply) => {
+    try {
+      const body = (request.body ?? {}) as {
+        transcript?: unknown;
+        audioBase64?: unknown;
+      };
+      const transcript =
+        typeof body.transcript === "string" ? body.transcript : "";
+      if (transcript.trim().length === 0) {
+        return reply
+          .code(422)
+          .send({ error: "empty transcript", type: "EmptySpoolTranscript" });
+      }
+      const audio =
+        typeof body.audioBase64 === "string"
+          ? Buffer.from(body.audioBase64, "base64")
+          : Buffer.alloc(0);
+      const spoolDir =
+        process.env.OBSIDIAN_VOICE_SPOOL_DIR ??
+        join(homedir(), ".pi", "orchestration-state", "dawn-spool");
+      const id = emitSpoolEntry(JSON.stringify({ transcript }), audio, {
+        spoolDir,
+      });
+      if (id === null) {
+        return reply
+          .code(500)
+          .send({ error: "spool write failed", type: "SpoolWriteFailed" });
+      }
+      // PATH-ONLY: return the reference, never echo the transcript back.
+      return reply.code(200).send({ ok: true, spoolDir, id });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      return reply.code(500).send({ error: `spool failed: ${msg}` });
     }
   });
 }
