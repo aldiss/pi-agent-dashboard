@@ -1,0 +1,14 @@
+P3-2e8df4c AFTER ISOLATION PROOF — 2026-07-31T08:43:55Z
+== scratch 8153/8154 FREE (teardown) ==
+8153/8154 FREE
+== zero residual temp-HOME pi procs ==
+zero residual
+== prod STILL owns :9999/:8000 (untouched) ==
+COMMAND   PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+node    66306 vdrobkov   17u  IPv6 0x641ce0d72f3d0269      0t0  TCP *:9999 (LISTEN)
+node    66306 vdrobkov   19u  IPv4 0xb32aaabbb9cbc736      0t0  TCP *:8000 (LISTEN)
+== prod deployCommit still 28bfcbc7 ==
+deployCommit= ? version= 0.5.1 mode= production
+== worktree HEAD ==
+2e8df4c
+== prod commit (authoritative field) = 28bfcbc7879c51f412414e28221965a3bcae7267 — UNTOUCHED before+after ==

@@ -1,0 +1,39 @@
+{
+  "arm": "malformed-invalid-nondecision",
+  "staged": "2e8df4c",
+  "session": "019fb754-36e7-7a0f-bca2-636e0be69e83",
+  "promptId": "28902032-4f35-4707-9f53-5e0fa1bb9c9f",
+  "socket": {
+    "has9999": false,
+    "has8000": false,
+    "nonLoop": 0
+  },
+  "details": {
+    "method": "select",
+    "receipt": {
+      "delivered": false,
+      "rendered": false,
+      "answered": false,
+      "dismissed": false,
+      "timedOut": false,
+      "invalid": true,
+      "source": "dashboard-default"
+    }
+  },
+  "receipt": {
+    "delivered": false,
+    "rendered": false,
+    "answered": false,
+    "dismissed": false,
+    "timedOut": false,
+    "invalid": true,
+    "source": "dashboard-default"
+  },
+  "jsonl_has_undefined_decision": false,
+  "assert_invalid": true,
+  "assert_not_answered": true,
+  "assert_no_undefined_decision": true,
+  "assert_zero_9999": true,
+  "assert_zero_8000": true,
+  "PASS": true
+}
