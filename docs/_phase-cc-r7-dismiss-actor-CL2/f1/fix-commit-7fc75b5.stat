@@ -1,0 +1,40 @@
+commit 7fc75b566ef51a70825cf429ffee433498961f06
+Author: aldiss <v.drobkov@gmail.com>
+Date:   Fri Jul 31 20:22:07 2026 +0200
+
+    ask_user receipt: preserve authenticated-dismiss actor (dl-13527)
+    
+    deriveReceipt gated the responder author on answer-presence
+    (`answerPresent && response.author`), so an authenticated dashboard DISMISS —
+    which the browser gateway server-stamps with the operator author but carries no
+    answer — had its dismisser identity DROPPED. A dismiss is a real operator action;
+    losing WHO dismissed is the bug.
+    
+    Redefine `author` = the RESPONDER actor: whoever ANSWERED **or**
+    authenticated-DISMISSED. Preserve the responder-stamped author whenever present
+    (`if (response.author)`), independent of answer-presence. `renderedBy` stays
+    separate (the RENDERER). The render identity still never leaks into `author`:
+    respond() sets `author: response.author` (responder-only), cancel() sets none, and
+    the render author lives in entry.renderedAuthor → renderedBy — so
+    operator-render→TUI-answer/cancel still yields no author (regression-guarded).
+    
+    `answered` is unchanged (`!cancelled && answerPresent`), so a dismiss with an
+    author is still `answered:false`; an operator ANSWER remains
+    `answered && author.isOperator`, and ask-user-tool still gates "User responded" on
+    `receipt.answered` — a dismiss never reads as a response.
+    
+    Also correct two stale doc-comments (code was already right): the render-ACK
+    author threads into receipt.renderedBy, not receipt.author
+    (protocol.ts PromptRenderedServerMessage, browser-gateway.ts prompt_rendered).
+    
+    Adds RED→GREEN tests: authenticated dashboard dismiss preserves author (+ distinct
+    dismisser vs renderer), TUI cancel authorless, bus timeout authorless + renderedBy,
+    operator-render→TUI-answer regression guard, and the full PromptBus.respond()
+    cancelled+authored path.
+
+ .../extension/src/__tests__/prompt-bus.test.ts     | 40 +++++++++++++++++
+ .../extension/src/__tests__/prompt-receipt.test.ts | 52 +++++++++++++++++++++-
+ packages/extension/src/prompt-receipt.ts           | 36 +++++++++------
+ packages/server/src/browser-gateway.ts             |  3 +-
+ packages/shared/src/protocol.ts                    |  3 +-
+ 5 files changed, 117 insertions(+), 17 deletions(-)

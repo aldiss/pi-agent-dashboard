@@ -1,0 +1,11 @@
+ts=2026-07-31T18:41:01Z
+iso_dash_pid=47159
+== iso dashboard TCP ==
+COMMAND   PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+node    47159 vdrobkov   16u  IPv4 0x29fd3c5c471a4818      0t0  TCP 127.0.0.1:8156 (LISTEN)
+node    47159 vdrobkov   17u  IPv4 0x9275785abb4bacfa      0t0  TCP 127.0.0.1:8156->127.0.0.1:62420 (ESTABLISHED)
+node    47159 vdrobkov   19u  IPv4 0xa4380ced66e6ebea      0t0  TCP 127.0.0.1:8155 (LISTEN)
+node    47159 vdrobkov   23u  IPv4 0xc651069a4bf5758f      0t0  TCP 127.0.0.1:8156->127.0.0.1:60732 (ESTABLISHED)
+node    47159 vdrobkov   24u  IPv4 0x7c1c7119d988c5d9      0t0  TCP 127.0.0.1:64559->127.0.0.1:8765 (ESTABLISHED)
+node    47159 vdrobkov   25u  IPv4 0x975286f28cc6ca85      0t0  TCP 127.0.0.1:8156->127.0.0.1:61375 (ESTABLISHED)
+has9999=0 has8000=0 non_loopback=0

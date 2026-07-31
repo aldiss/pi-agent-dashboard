@@ -1,0 +1,111 @@
+
+ RUN  v4.1.5 /Users/vdrobkov/build1-picker-cand-e0-wt
+
+[test-isolation] HOME=/var/folders/sh/rtc7_3wd27q_jffxy54dt44m0000gn/T/pi-f1r-XXXXXX.mC62ggmt0l (real=/Users/vdrobkov)
+ ❯ |@blackbelt-technology/pi-dashboard-extension| src/__tests__/prompt-bus.test.ts (47 tests | 2 failed) 31ms
+       × [#5 able-to-fail] operator RENDERED, then authenticated DISMISS (author) → receipt.author=operator (dismisser), answered:false 4ms
+       × [#5b] distinct dismisser vs renderer through respond() stays split 1ms
+ ❯ |@blackbelt-technology/pi-dashboard-extension| src/__tests__/prompt-receipt.test.ts (30 tests | 2 failed) 11ms
+         × [dl-13527 able-to-fail] authenticated dashboard DISMISS preserves the dismisser as receipt.author 4ms
+         × [dl-13527] a distinct dismisser vs renderer stays split (author=dismisser, renderedBy=renderer) 1ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 4 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  |@blackbelt-technology/pi-dashboard-extension| src/__tests__/prompt-bus.test.ts > PromptBus > responder-attribution split (D1 / dl-13383) > [#5 able-to-fail] operator RENDERED, then authenticated DISMISS (author) → receipt.author=operator (dismisser), answered:false
+AssertionError: expected undefined to deeply equal { sub: 'op-1', …(2) }
+
+- Expected:
+{
+  "display": "Operator One",
+  "isOperator": true,
+  "sub": "op-1",
+}
+
++ Received:
+undefined
+
+ ❯ src/__tests__/prompt-bus.test.ts:774:30
+    772|       const receipt = deriveReceipt(resolved);
+    773|       expect(receipt.dismissed).toBe(true);
+    774|       expect(receipt.author).toEqual(OP);        // RED pre-fix (answe…
+       |                              ^
+    775|       expect(receipt.renderedBy).toEqual(OP);
+    776|       expect(receipt.answered).toBe(false);      // a dismiss is NOT a…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/4]⎯
+
+ FAIL  |@blackbelt-technology/pi-dashboard-extension| src/__tests__/prompt-bus.test.ts > PromptBus > responder-attribution split (D1 / dl-13383) > [#5b] distinct dismisser vs renderer through respond() stays split
+AssertionError: expected undefined to deeply equal { sub: 'op-2', …(2) }
+
+- Expected:
+{
+  "display": "Operator Two",
+  "isOperator": true,
+  "sub": "op-2",
+}
+
++ Received:
+undefined
+
+ ❯ src/__tests__/prompt-bus.test.ts:790:30
+    788|       const receipt = deriveReceipt(await promise);
+    789|       expect(receipt.dismissed).toBe(true);
+    790|       expect(receipt.author).toEqual(OP2);   // the dismisser
+       |                              ^
+    791|       expect(receipt.renderedBy).toEqual(OP); // the renderer
+    792|     });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/4]⎯
+
+ FAIL  |@blackbelt-technology/pi-dashboard-extension| src/__tests__/prompt-receipt.test.ts > deriveReceipt > author (B2 operator identity) + renderedBy split (dl-13383) > dismiss-actor preserve (dl-13527) > [dl-13527 able-to-fail] authenticated dashboard DISMISS preserves the dismisser as receipt.author
+AssertionError: expected undefined to deeply equal { sub: 'op-1', …(2) }
+
+- Expected:
+{
+  "display": "Operator One",
+  "isOperator": true,
+  "sub": "op-1",
+}
+
++ Received:
+undefined
+
+ ❯ src/__tests__/prompt-receipt.test.ts:202:26
+    200|         const r = deriveReceipt({ cancelled: true, source: "dashboard"…
+    201|         expect(r.dismissed).toBe(true);
+    202|         expect(r.author).toEqual(OP);     // RED pre-fix (answerPresen…
+       |                          ^
+    203|         expect(r.renderedBy).toEqual(OP);
+    204|         expect(r.answered).toBe(false);   // a dismiss is NOT an answer
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/4]⎯
+
+ FAIL  |@blackbelt-technology/pi-dashboard-extension| src/__tests__/prompt-receipt.test.ts > deriveReceipt > author (B2 operator identity) + renderedBy split (dl-13383) > dismiss-actor preserve (dl-13527) > [dl-13527] a distinct dismisser vs renderer stays split (author=dismisser, renderedBy=renderer)
+AssertionError: expected undefined to deeply equal { sub: 'op-2', …(2) }
+
+- Expected:
+{
+  "display": "Operator Two",
+  "isOperator": true,
+  "sub": "op-2",
+}
+
++ Received:
+undefined
+
+ ❯ src/__tests__/prompt-receipt.test.ts:210:26
+    208|         const r = deriveReceipt({ cancelled: true, source: "dashboard"…
+    209|         expect(r.dismissed).toBe(true);
+    210|         expect(r.author).toEqual(OP2);
+       |                          ^
+    211|         expect(r.renderedBy).toEqual(OP);
+    212|         expect(r.answered).toBe(false);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/4]⎯
+
+
+ Test Files  2 failed (2)
+      Tests  4 failed | 73 passed (77)
+   Start at  20:20:10
+   Duration  390ms (transform 45ms, setup 0ms, import 63ms, tests 41ms, environment 0ms)
+

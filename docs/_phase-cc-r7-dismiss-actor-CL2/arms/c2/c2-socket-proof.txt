@@ -1,0 +1,10 @@
+ts=2026-07-31T18:29:08.202Z
+has9999=false has8000=false
+non_loopback=0
+
+--- pid 63450 ---
+COMMAND   PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+node    63450 vdrobkov   12u  IPv4 0x62221e95d3888088      0t0  TCP 127.0.0.1:60371->127.0.0.1:8155 (ESTABLISHED)
+node    63450 vdrobkov   13u  IPv4 0xbd9946b2ba4fb0dd      0t0  TCP 127.0.0.1:60374->127.0.0.1:8155 (ESTABLISHED)
+--- pid 75955 ---
+(no TCP)

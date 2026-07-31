@@ -1,0 +1,83 @@
+{
+  "arm": "C2-multiop-jwt-live-auth (dl-13383 split intact)",
+  "staged_head": "7fc75b566ef51a70825cf429ffee433498961f06",
+  "config": {
+    "requireBrowserAuth": true,
+    "operatorUsers": [
+      "operator"
+    ]
+  },
+  "no_principal": {
+    "ws_upgrade_allowed": false,
+    "upgrade_status": 401,
+    "assert_denied": true
+  },
+  "guest": {
+    "ws_upgrade_allowed": true,
+    "forged_answer": "GUEST-FORGED-ANSWER-Cancel and hold",
+    "result_after_guest": null,
+    "assert_guest_answer_did_not_win": true,
+    "assert_no_guest_answer": true
+  },
+  "session": "019fb96f-7ffd-7407-b3ea-1198cc86bde7",
+  "operator": {
+    "ws_upgrade_allowed": true,
+    "details": {
+      "method": "select",
+      "result": "Run one more validation pass first",
+      "receipt": {
+        "delivered": true,
+        "rendered": true,
+        "answered": true,
+        "dismissed": false,
+        "timedOut": false,
+        "invalid": false,
+        "source": "dashboard-default",
+        "author": {
+          "sub": "operator@op",
+          "display": "Operator One",
+          "isOperator": true
+        },
+        "renderedBy": {
+          "sub": "operator@op",
+          "display": "Operator One",
+          "isOperator": true
+        }
+      },
+      "selectedIndex": 1
+    },
+    "receipt": {
+      "delivered": true,
+      "rendered": true,
+      "answered": true,
+      "dismissed": false,
+      "timedOut": false,
+      "invalid": false,
+      "source": "dashboard-default",
+      "author": {
+        "sub": "operator@op",
+        "display": "Operator One",
+        "isOperator": true
+      },
+      "renderedBy": {
+        "sub": "operator@op",
+        "display": "Operator One",
+        "isOperator": true
+      }
+    },
+    "result": "Run one more validation pass first",
+    "assert_answered": true,
+    "assert_result_is_operator_value": true,
+    "assert_author_is_operator": true,
+    "assert_renderedBy_is_operator": true
+  },
+  "promptId": "e3bdb367-cc1b-4ff3-9d56-895941399e2d",
+  "socket": {
+    "has9999": false,
+    "has8000": false,
+    "nonLoop": 0
+  },
+  "assert_zero_9999": true,
+  "assert_zero_8000": true,
+  "C2_PROVEN": true
+}

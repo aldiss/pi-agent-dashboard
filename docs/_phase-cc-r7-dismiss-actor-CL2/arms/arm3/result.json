@@ -1,0 +1,52 @@
+{
+  "arm": "malformed-invalid-nondecision",
+  "staged_head": "7fc75b566ef51a70825cf429ffee433498961f06",
+  "session": "019fb977-3237-7301-aa47-0985e362ddbf",
+  "ws_upgrade_allowed": true,
+  "promptId": "0e5b4435-18fa-4b45-8850-00692b5c09ad",
+  "socket": {
+    "has9999": false,
+    "has8000": false,
+    "nonLoop": 0
+  },
+  "details": {
+    "method": "select",
+    "receipt": {
+      "delivered": false,
+      "rendered": false,
+      "answered": false,
+      "dismissed": false,
+      "timedOut": false,
+      "invalid": true,
+      "source": "dashboard-default",
+      "author": {
+        "sub": "operator@op",
+        "display": "Operator One",
+        "isOperator": true
+      }
+    }
+  },
+  "receipt": {
+    "delivered": false,
+    "rendered": false,
+    "answered": false,
+    "dismissed": false,
+    "timedOut": false,
+    "invalid": true,
+    "source": "dashboard-default",
+    "author": {
+      "sub": "operator@op",
+      "display": "Operator One",
+      "isOperator": true
+    }
+  },
+  "jsonl_has_undefined_decision": false,
+  "assert_invalid": true,
+  "assert_not_answered": true,
+  "assert_no_undefined_decision": true,
+  "assert_author_is_operator_responder": true,
+  "assert_invalid_not_answered": true,
+  "assert_zero_9999": true,
+  "assert_zero_8000": true,
+  "PASS": true
+}

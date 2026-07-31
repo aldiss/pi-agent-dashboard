@@ -1,0 +1,94 @@
+{
+  "arm": "A1-live-rendered-vs-never REAL-DOM (D1 renderedBy split)",
+  "staged_head": "7fc75b566ef51a70825cf429ffee433498961f06",
+  "chromium": "/Users/vdrobkov/Library/Caches/ms-playwright/chromium-1217/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing",
+  "rendered": {
+    "session": "019fb978-20a8-715f-bd1b-a8a3bc1d88c8",
+    "dialog_mounted": true,
+    "visible_labels": [
+      "Deploy to production now",
+      "Run one more validation pass first",
+      "Cancel and hold"
+    ],
+    "screenshot": "rendered-mounted.png",
+    "socket": {
+      "has9999": false,
+      "has8000": false,
+      "nonLoop": 0
+    },
+    "details": {
+      "method": "select",
+      "receipt": {
+        "delivered": true,
+        "rendered": true,
+        "answered": false,
+        "dismissed": false,
+        "timedOut": true,
+        "invalid": false,
+        "source": "__bus__",
+        "renderedBy": {
+          "sub": "operator@op",
+          "display": "Operator One",
+          "isOperator": true
+        }
+      }
+    },
+    "receipt": {
+      "delivered": true,
+      "rendered": true,
+      "answered": false,
+      "dismissed": false,
+      "timedOut": true,
+      "invalid": false,
+      "source": "__bus__",
+      "renderedBy": {
+        "sub": "operator@op",
+        "display": "Operator One",
+        "isOperator": true
+      }
+    },
+    "assert_timedOut": true,
+    "assert_delivered_true": true,
+    "assert_rendered_true": true,
+    "assert_not_answered": true,
+    "assert_renderedBy_operator": true,
+    "assert_author_absent": true
+  },
+  "never": {
+    "session": "019fb978-cde0-7f37-b431-4cc450f850ae",
+    "socket": {
+      "has9999": false,
+      "has8000": false,
+      "nonLoop": 0
+    },
+    "details": {
+      "method": "select",
+      "receipt": {
+        "delivered": false,
+        "rendered": false,
+        "answered": false,
+        "dismissed": false,
+        "timedOut": true,
+        "invalid": false,
+        "source": "__bus__"
+      }
+    },
+    "receipt": {
+      "delivered": false,
+      "rendered": false,
+      "answered": false,
+      "dismissed": false,
+      "timedOut": true,
+      "invalid": false,
+      "source": "__bus__"
+    },
+    "assert_timedOut": true,
+    "assert_delivered_false": true,
+    "assert_rendered_false": true,
+    "assert_no_renderedBy": true,
+    "assert_no_author": true
+  },
+  "A1_LIVE_CONTRAST_PROVEN": true,
+  "rendered_socket_clean": true,
+  "never_socket_clean": true
+}

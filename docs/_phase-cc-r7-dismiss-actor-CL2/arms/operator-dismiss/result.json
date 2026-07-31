@@ -1,0 +1,66 @@
+{
+  "arm": "operator-dismiss-preserve (dl-13527)",
+  "staged_head": "7fc75b566ef51a70825cf429ffee433498961f06",
+  "config": {
+    "requireBrowserAuth": true,
+    "operatorUsers": [
+      "operator"
+    ]
+  },
+  "session": "019fb96e-8b24-7535-882e-d3085b13ea07",
+  "ws_upgrade_allowed": true,
+  "promptId": "ae8856aa-2972-432d-ab9f-73be353bf5cc",
+  "socket": {
+    "has9999": false,
+    "has8000": false,
+    "nonLoop": 0
+  },
+  "details": {
+    "method": "select",
+    "receipt": {
+      "delivered": true,
+      "rendered": true,
+      "answered": false,
+      "dismissed": true,
+      "timedOut": false,
+      "invalid": false,
+      "source": "dashboard-default",
+      "author": {
+        "sub": "operator@op",
+        "display": "Operator One",
+        "isOperator": true
+      },
+      "renderedBy": {
+        "sub": "operator@op",
+        "display": "Operator One",
+        "isOperator": true
+      }
+    }
+  },
+  "receipt": {
+    "delivered": true,
+    "rendered": true,
+    "answered": false,
+    "dismissed": true,
+    "timedOut": false,
+    "invalid": false,
+    "source": "dashboard-default",
+    "author": {
+      "sub": "operator@op",
+      "display": "Operator One",
+      "isOperator": true
+    },
+    "renderedBy": {
+      "sub": "operator@op",
+      "display": "Operator One",
+      "isOperator": true
+    }
+  },
+  "assert_dismissed": true,
+  "assert_not_answered": true,
+  "assert_author_is_operator": true,
+  "assert_renderedBy_is_operator": true,
+  "assert_zero_9999": true,
+  "assert_zero_8000": true,
+  "PASS": true
+}

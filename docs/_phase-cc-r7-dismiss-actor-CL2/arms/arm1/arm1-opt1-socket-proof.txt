@@ -1,0 +1,9 @@
+ts=2026-07-31T18:31:01.635Z
+has9999=false has8000=false
+non_loopback=0
+
+--- pid 13094 ---
+COMMAND   PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+node    13094 vdrobkov   13u  IPv4 0xf6829aed000ee365      0t0  TCP 127.0.0.1:60735->127.0.0.1:8155 (ESTABLISHED)
+--- pid 40574 ---
+(no TCP)

@@ -1,0 +1,10 @@
+packages/client/src/App.tsx(671,33): error TS2322: Type 'string | undefined' is not assignable to type 'string'.
+packages/client/src/App.tsx(676,40): error TS2322: Type 'string | undefined' is not assignable to type 'string'.
+packages/client/src/App.tsx(683,36): error TS2322: Type 'string | undefined' is not assignable to type 'string'.
+packages/client/src/components/CommandInput.tsx(691,9): error TS2322: Type '((query: string) => void) | undefined' is not assignable to type '((query: string) => Promise<FileEntry[]>) | undefined'.
+packages/client/src/components/MobileComposer/MobileComposer.tsx(203,5): error TS2554: Expected 0-1 arguments, but got 2.
+packages/client/src/components/MobileComposer/MobileComposer.tsx(376,10): error TS2741: Property 'error' is missing in type '{ images: ImageContent[]; onRemove: (index: number) => void; }' but required in type 'Props'.
+packages/client/src/components/__tests__/dawn-composer-parity.test.tsx(121,16): error TS2493: Tuple type '[]' of length '0' has no element at index '0'.
+packages/client/src/hooks/__tests__/useImagePaste.test.ts(99,4): error TS2783: 'length' is specified more than once, so this usage will be overwritten.
+packages/server/src/server.ts(127,3): error TS2300: Duplicate identifier 'resurrectionSweepMs'.
+packages/server/src/server.ts(157,3): error TS2300: Duplicate identifier 'resurrectionSweepMs'.

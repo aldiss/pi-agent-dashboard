@@ -1,0 +1,6 @@
+ts=2026-07-31T18:36:18.592Z
+has9999=false has8000=false
+non_loopback=0
+
+--- pid 52214 ---
+(no TCP)
