@@ -392,10 +392,15 @@ describe("Build 1b PUSHBACK-1 FOLD-A — the WS gate is default-DENY on unmapped
     expect(d.allowed).toBe(true);
   });
 
-  it("an allowlisted read/co-drive passthrough is allowed when the flag is ON (ping/subscribe/fetch_content/prompt_response)", () => {
+  it("an allowlisted read/co-drive passthrough is allowed when the flag is ON (ping/subscribe/fetch_content)", () => {
     // NOTE: ui_management is NO LONGER a blanket passthrough (PUSHBACK-2
     // FIX-P2-1 — it is action-gated; see build1b-fix2-ui-management.test.ts).
-    for (const type of ["ping", "subscribe", "fetch_content", "prompt_response"]) {
+    // NOTE: prompt_response + prompt_rendered are NO LONGER passthrough (Pete
+    // dl-13358 B2 — they are operator-only gated; the guest-denied /
+    // operator-accepted / no-principal proofs live in cell-access-authz.test.ts,
+    // which supplies the full session-resolving ctx the gate now needs for a
+    // session-scoped operator-only action).
+    for (const type of ["ping", "subscribe", "fetch_content"]) {
       const d = authorizeWsMessage({ type, sessionId: "s" } as any, ctx(true));
       expect(d.passThrough, `${type} must pass through`).toBe(true);
       expect(d.allowed, `${type} must be allowed`).toBe(true);

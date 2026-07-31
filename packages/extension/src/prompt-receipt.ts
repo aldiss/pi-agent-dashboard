@@ -33,6 +33,18 @@
 /** Sentinel `source` the PromptBus stamps on a timeout/never-rendered cancel. */
 export const BUS_TIMEOUT_SOURCE = "__bus__";
 
+/**
+ * Server-stamped authenticated operator identity (Pete dl-13358 B2). Mirrors
+ * `MessageAuthor` from the shared types, kept structural here so prompt-receipt
+ * has no cross-package import. Derived server-side from the connection-bound
+ * principal — NEVER the client body.
+ */
+export interface ReceiptAuthor {
+  sub: string;
+  display: string;
+  isOperator?: boolean;
+}
+
 /** Minimal structural shape of a PromptBus response needed to build a receipt. */
 export interface ReceiptSource {
   answer?: string | null;
@@ -44,6 +56,12 @@ export interface ReceiptSource {
    * or an operator dismiss also proves a render (see `deriveReceipt`).
    */
   rendered?: boolean;
+  /**
+   * B2 authenticated operator author of the answer/ACK (server-stamped from the
+   * connection-bound principal, never the body). A receipt with no author is
+   * not proven to be an operator decision.
+   */
+  author?: ReceiptAuthor;
 }
 
 export interface PromptReceipt {
@@ -61,6 +79,12 @@ export interface PromptReceipt {
   invalid: boolean;
   /** The response source: the answering/dismissing adapter, or "__bus__" on timeout. */
   source: string;
+  /**
+   * B2 authenticated operator identity that answered/ACKed (server-stamped,
+   * never the body). Absent single-operator (flag OFF) or when no operator
+   * principal was bound — a receipt with no author is not an operator decision.
+   */
+  author?: ReceiptAuthor;
 }
 
 /**
@@ -93,7 +117,11 @@ export function deriveReceipt(response: ReceiptSource): PromptReceipt {
   const invalid = !cancelled && !answerPresent;
   const timedOut = cancelled && source === BUS_TIMEOUT_SOURCE;
 
-  return { delivered, rendered, answered, dismissed, timedOut, invalid, source };
+  // B2: thread the server-stamped operator author when present. Omit the key
+  // entirely single-operator (author absent) so the receipt stays byte-unchanged.
+  const base: PromptReceipt = { delivered, rendered, answered, dismissed, timedOut, invalid, source };
+  if (response.author) base.author = response.author;
+  return base;
 }
 
 /**

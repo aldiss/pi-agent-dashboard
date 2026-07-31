@@ -788,15 +788,20 @@ export function createBrowserGateway(
           }
 
           case "prompt_rendered": {
-            // A1 render-lifecycle ACK browser→extension. Field-by-field static
-            // forward (no answer, no author — a pure lifecycle signal, not a
-            // response), so the WS-coverage AST classifies it by its static
-            // channel. The bridge calls PromptBus.markRendered(promptId).
+            // A1 render-lifecycle ACK browser→extension (Pete dl-13358 B2).
+            // Operator-only: the central gate above already refused a guest /
+            // no-principal, so reaching here means an authenticated operator.
+            // Field-by-field static forward (static `type` for the WS-coverage
+            // AST) + the SERVER-STAMPED operator author (from ctx.principal,
+            // NEVER the message body). The bridge calls markRendered only for an
+            // authored ACK and threads the author into receipt.author.
             const rr = msg as import("@blackbelt-technology/pi-dashboard-shared/browser-protocol.js").PromptRenderedBrowserMessage;
+            const renderedAuthor = deriveAuthor(principals.get(ws) ?? null, operatorUsers);
             ctx.piGateway.sendToSession(rr.sessionId, {
               type: "prompt_rendered",
               sessionId: rr.sessionId,
               promptId: rr.promptId,
+              ...(renderedAuthor ? { author: renderedAuthor } : {}),
             });
             break;
           }

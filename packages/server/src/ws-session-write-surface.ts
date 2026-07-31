@@ -166,8 +166,11 @@ export const WS_PASSTHROUGH_TYPES: ReadonlyMap<string, string> = new Map([
   ["request_installed_packages", "READ: lists installed packages (no handler today)"],
   // ── co-drive INTERACTIVE round-trips (answering a prompt / UI request) ─────
   ["extension_ui_response", "co-drive: answers an extension-UI request (interactive round-trip)"],
-  ["prompt_response", "co-drive: answers a PromptBus prompt (interactive, parallel to send_prompt)"],
-  ["prompt_rendered", "co-drive: A1 render-lifecycle ACK (read-only lifecycle signal; no answer, no operator-level mutation)"],
+  // NOTE: `prompt_response` + `prompt_rendered` are NOT here — Pete dl-13358 B2
+  // reclassified them OPERATOR-ONLY (SESSION_WRITE_ACTION_CLASS +
+  // WS_SESSION_WRITE_MESSAGE_ACTION). They route through the central gate
+  // (authorizeSessionAction), not the co-drive passthrough surface; an
+  // operator-only action must not also be pass-allowed.
   ["architect_prompt_response", "legacy no-op (superseded by prompt_response)"],
   // NOTE: `ui_management` is NOT here — it is ACTION-GATED (WS_ACTION_GATED_TYPES,
   // FIX-P2-1). A caller-supplied `event` reaches an arbitrary extension emit, so

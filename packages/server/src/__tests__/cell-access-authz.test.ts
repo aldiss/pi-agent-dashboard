@@ -118,3 +118,62 @@ describe("cell boundary composes before D admission/action authorization", () =>
     expect(decision).toEqual({ allowed: false, reason: "operator-only" });
   });
 });
+
+// ── B2 (Pete dl-13358): prompt_response + prompt_rendered are OPERATOR-ONLY ──
+// The PromptBus round-trip (answer + render ACK) requires the authenticated
+// signed-in operator. A guest / no-principal is DENIED (no mark, no respond, no
+// action fired). Single-operator (requireBrowserAuth=false) is inert (allowed).
+describe("B2 — prompt_response + prompt_rendered are operator-only", () => {
+  for (const action of ["prompt_response", "prompt_rendered"] as const) {
+    it(`[B2 able-to-fail] guest → DENIED operator-only for ${action}`, () => {
+      const decision = authorizeSessionAction({
+        actor: { kind: "human", principal: GUEST },
+        action, sessionId: A.id, session: A,
+        requireBrowserAuth: true,
+        operatorUsers: config.operatorUsers,
+        operatorSet: createOperatorSetTracker(),
+        cellAccess: access,
+      });
+      // RED pre-B2: prompt_* were co-drive/guest-allowlisted → allowed:true.
+      // (Guest reaches session A via its cell-a grant, so the reason is the
+      // action class, not a cell-boundary refusal.)
+      expect(decision).toEqual({ allowed: false, reason: "operator-only" });
+    });
+
+    it(`operator → ACCEPTED for ${action}`, () => {
+      const decision = authorizeSessionAction({
+        actor: { kind: "human", principal: OP },
+        action, sessionId: A.id, session: A,
+        requireBrowserAuth: true,
+        operatorUsers: config.operatorUsers,
+        operatorSet: createOperatorSetTracker(),
+        cellAccess: access,
+      });
+      expect(decision.allowed).toBe(true);
+    });
+
+    it(`no-principal → DENIED for ${action}`, () => {
+      const decision = authorizeSessionAction({
+        actor: { kind: "human", principal: null },
+        action, sessionId: A.id, session: A,
+        requireBrowserAuth: true,
+        operatorUsers: config.operatorUsers,
+        operatorSet: createOperatorSetTracker(),
+        cellAccess: access,
+      });
+      expect(decision).toEqual({ allowed: false, reason: "no-principal" });
+    });
+
+    it(`single-operator (requireBrowserAuth=false) → inert ALLOW for ${action}`, () => {
+      const decision = authorizeSessionAction({
+        actor: { kind: "human", principal: null },
+        action, sessionId: A.id, session: A,
+        requireBrowserAuth: false,
+        operatorUsers: [],
+        operatorSet: createOperatorSetTracker(),
+        cellAccess: access,
+      });
+      expect(decision.allowed).toBe(true);
+    });
+  }
+});

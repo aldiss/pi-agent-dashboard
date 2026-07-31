@@ -385,8 +385,21 @@ export function useSessionActions(deps: SessionActionDeps) {
     if (selectedId) send({ type: "list_files", sessionId: selectedId, query });
   }, [selectedId, send]);
 
+  /**
+   * A1 render-lifecycle ACK (Pete dl-13358 B1). Sends `prompt_rendered` for a
+   * promptId when its interactive dialog card actually mounts. Idempotency
+   * (exactly once per promptId across remount / reconnect) is enforced upstream
+   * by the module-level ledger in `usePromptRenderedAck`; this handler is a thin
+   * server-bound sender. Carries no answer — a pure lifecycle signal.
+   */
+  const handleRenderedAck = useCallback((requestId: string) => {
+    if (selectedId) {
+      send({ type: "prompt_rendered", sessionId: selectedId, promptId: requestId } as any);
+    }
+  }, [selectedId, send]);
+
   return {
-    handleAbort, handleForceKill, handleCancelPending, handleRespondToUi, handleFlowAction, handleSend,
+    handleAbort, handleForceKill, handleCancelPending, handleRespondToUi, handleRenderedAck, handleFlowAction, handleSend,
     handleSelect, handleRenameSession, handleShutdownSession, handleKillProcess,
     handleRetryQueued, handleDismissQueued,
     handleSendPromptToSession, handleResumeSession, handleResumeSessionKeepPosition, handleSpawnSession,
