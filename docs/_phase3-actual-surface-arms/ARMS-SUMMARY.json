@@ -1,0 +1,142 @@
+{
+  "phase": "actual-surface arms (round 2, on B1/B2-fixed identity)",
+  "staged_build": "2e8df4c",
+  "isolated_dashboard": "loopback 127.0.0.1:8153 / 8154, temp HOME, forced-loopback guard, 8s ask_user timeout, single-operator",
+  "bridge_extension": "/Users/vdrobkov/build1-comms-prod-wt/packages/extension (2e8df4c \u2014 markRendered + author)",
+  "arm1_opt1_bijection": {
+    "returned_value": "Run one more validation pass first",
+    "receipt": {
+      "delivered": true,
+      "rendered": true,
+      "answered": true,
+      "dismissed": false,
+      "timedOut": false,
+      "invalid": false,
+      "source": "dashboard-default"
+    },
+    "selectedIndex": 1,
+    "assert_bijection": true,
+    "assert_selectedIndex": true,
+    "assert_answered": true,
+    "assert_source_dashboard": true,
+    "assert_question_visible": true,
+    "assert_labels_distinct": true,
+    "assert_no_placeholder": true,
+    "assert_zero_9999": true,
+    "assert_zero_8000": true,
+    "assert_loopback_only": true,
+    "PASS": true
+  },
+  "arm2_A1_live": {
+    "rendered": {
+      "session": "019fb751-079a-7106-8633-4d0b0412d767",
+      "dialog_mounted": true,
+      "visible_labels": [
+        "Deploy to production now",
+        "Run one more validation pass first",
+        "Cancel and hold"
+      ],
+      "socket": {
+        "has9999": false,
+        "has8000": false,
+        "nonLoop": 0
+      },
+      "details": {
+        "method": "select",
+        "receipt": {
+          "delivered": true,
+          "rendered": true,
+          "answered": false,
+          "dismissed": false,
+          "timedOut": true,
+          "invalid": false,
+          "source": "__bus__"
+        }
+      },
+      "receipt": {
+        "delivered": true,
+        "rendered": true,
+        "answered": false,
+        "dismissed": false,
+        "timedOut": true,
+        "invalid": false,
+        "source": "__bus__"
+      },
+      "assert_timedOut": true,
+      "assert_delivered_true": true,
+      "assert_rendered_true": true,
+      "assert_not_answered": true,
+      "assert_author_present": false
+    },
+    "never": {
+      "session": "019fb751-d20b-70b8-81f8-0753574b6fbc",
+      "socket": {
+        "has9999": false,
+        "has8000": false,
+        "nonLoop": 0
+      },
+      "details": {
+        "method": "select",
+        "receipt": {
+          "delivered": false,
+          "rendered": false,
+          "answered": false,
+          "dismissed": false,
+          "timedOut": true,
+          "invalid": false,
+          "source": "__bus__"
+        }
+      },
+      "receipt": {
+        "delivered": false,
+        "rendered": false,
+        "answered": false,
+        "dismissed": false,
+        "timedOut": true,
+        "invalid": false,
+        "source": "__bus__"
+      },
+      "assert_timedOut": true,
+      "assert_delivered_false": true,
+      "assert_rendered_false": true,
+      "assert_no_author": true
+    },
+    "A1_LIVE_CONTRAST_PROVEN": true,
+    "rendered_socket_clean": true,
+    "never_socket_clean": true
+  },
+  "arm3_malformed": {
+    "receipt": {
+      "delivered": false,
+      "rendered": false,
+      "answered": false,
+      "dismissed": false,
+      "timedOut": false,
+      "invalid": true,
+      "source": "dashboard-default"
+    },
+    "jsonl_has_undefined_decision": false,
+    "assert_invalid": true,
+    "assert_not_answered": true,
+    "assert_no_undefined_decision": true,
+    "assert_zero_9999": true,
+    "assert_zero_8000": true,
+    "PASS": true
+  },
+  "arm4_raw_fallback": {
+    "scope_note": "render-failure fallback (unknown component) \u2014 the translate/lint door is not staged on this dashboard surface (documented boundary)",
+    "assert_raw_question_visible": true,
+    "assert_no_user_responded": true,
+    "assert_no_decision_receipt": true,
+    "assert_no_page_crash": true,
+    "assert_zero_9999": true,
+    "assert_zero_8000": true,
+    "PASS": true
+  },
+  "ALL_FOUR_ARMS_PASS": true,
+  "notes": [
+    "arm2 rendered-case author absent = correct single-operator inert behavior (deriveAuthor undefined without operatorUsers); B2 author threading proven at unit level (flag ON).",
+    "arm4 scope: render-failure fallback proven readable+no-action; the translate/lint door (operator-voice) is NOT staged on this dashboard surface \u2014 documented boundary.",
+    "guest-denied control: proven comprehensively at UNIT level (cell-access-authz guest\u2192denied/operator\u2192accepted/no-principal); a LIVE guest-denied needs a full multi-operator auth harness (JWT principals) not staged here \u2014 documented residual."
+  ]
+}

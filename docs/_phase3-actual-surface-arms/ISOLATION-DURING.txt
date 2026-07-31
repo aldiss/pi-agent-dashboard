@@ -1,0 +1,12 @@
+P3-2e8df4c ISOLATION-DURING 2026-07-31T08:33:09Z
+staged build: 2e8df4c
+bridge ext: "/Users/vdrobkov/build1-comms-prod-wt/packages/extension"
+
+== iso PID 7824 sockets ==
+COMMAND  PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+node    7824 vdrobkov   16u  IPv4 0x27975752e198e242      0t0  TCP 127.0.0.1:8154 (LISTEN)
+node    7824 vdrobkov   17u  IPv4 0xa68b0102f35bd6ae      0t0  TCP 127.0.0.1:58282->127.0.0.1:8765 (ESTABLISHED)
+node    7824 vdrobkov   19u  IPv4 0x27c7e7ec8d78b372      0t0  TCP 127.0.0.1:8153 (LISTEN)
+
+== zero prod ports in my tree ==
+NONE
