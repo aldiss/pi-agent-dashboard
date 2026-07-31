@@ -1,0 +1,1 @@
+packages/server/src/__tests__/empty-bridge-replay-terminal.test.ts :: loading ≠ empty — empty-bridge terminal-after-reset transition (MAJOR 2, pinned) the 5s no-completion fallback emits the terminal isLast:true AFTER the reset (fallback arm)

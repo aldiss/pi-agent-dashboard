@@ -1,0 +1,231 @@
+
+ RUN  v4.1.5 /Users/vdrobkov/build1-picker-cand-e0-wt
+
+[test-isolation] HOME=/var/folders/sh/rtc7_3wd27q_jffxy54dt44m0000gn/T/pi-red-XXXXXX.bWLf9N2k0K (real=/Users/vdrobkov)
+ ❯ |@blackbelt-technology/pi-dashboard-extension| src/__tests__/prompt-bus.test.ts (45 tests | 5 failed) 29ms
+       × [#1a able-to-fail] operator RENDERED, TUI ANSWERED first (no author) → resolved.author ABSENT (pre-fix: =operator), renderedBy=operator 4ms
+       × [#1b able-to-fail] operator RENDERED, TUI CANCELLED (dismiss, no author) → author ABSENT (pre-fix: =operator), renderedBy=operator 1ms
+       × [#2] operator RENDERED and ANSWERED → receipt.author=operator (the answerer) 1ms
+       × [#2-split] renderer and answerer are DISTINCT operators — kept separate end-to-end 1ms
+       × [#3] operator RENDERED, NO answer, bus TIMEOUT → renderedBy=operator, author ABSENT, timedOut=true 1ms
+ ❯ |@blackbelt-technology/pi-dashboard-extension| src/__tests__/prompt-receipt.test.ts (25 tests | 4 failed) 9ms
+       × [dl-13383 able-to-fail] a rendered-then-timed-out response carries WHO RENDERED it in renderedBy, and author is ABSENT (nobody answered) 3ms
+       × [dl-13383 able-to-fail] operator RENDERED, TUI ANSWERED (no author) → author ABSENT, renderedBy=operator, answered=true 1ms
+       × [dl-13383] distinct answerer vs renderer: author=answerer, renderedBy=renderer (kept separate) 0ms
+       × [dl-13383] a dismiss (no answer) carries renderedBy but NO author (nobody answered) 0ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 9 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  |@blackbelt-technology/pi-dashboard-extension| src/__tests__/prompt-bus.test.ts > PromptBus > responder-attribution split (D1 / dl-13383) > [#1a able-to-fail] operator RENDERED, TUI ANSWERED first (no author) → resolved.author ABSENT (pre-fix: =operator), renderedBy=operator
+AssertionError: expected { sub: 'op-1', …(2) } to be undefined
+
+- Expected:
+undefined
+
++ Received:
+{
+  "display": "Operator One",
+  "isOperator": true,
+  "sub": "op-1",
+}
+
+ ❯ src/__tests__/prompt-bus.test.ts:648:31
+    646|       // Pre-fix (`author: response.author ?? entry.renderedAuthor`) w…
+    647|       // here — a FALSE operator-answer proof. Post-fix it is absent.
+    648|       expect(resolved.author).toBeUndefined();
+       |                               ^
+    649|       expect(resolved.renderedBy).toEqual(OP);
+    650|       expect(resolved.source).toBe("tui");
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/9]⎯
+
+ FAIL  |@blackbelt-technology/pi-dashboard-extension| src/__tests__/prompt-bus.test.ts > PromptBus > responder-attribution split (D1 / dl-13383) > [#1b able-to-fail] operator RENDERED, TUI CANCELLED (dismiss, no author) → author ABSENT (pre-fix: =operator), renderedBy=operator
+AssertionError: expected { sub: 'op-1', …(2) } to be undefined
+
+- Expected:
+undefined
+
++ Received:
+{
+  "display": "Operator One",
+  "isOperator": true,
+  "sub": "op-1",
+}
+
+ ❯ src/__tests__/prompt-bus.test.ts:669:31
+    667|
+    668|       const resolved = await promise;
+    669|       expect(resolved.author).toBeUndefined();                 // pre-…
+       |                               ^
+    670|       expect(resolved.renderedBy).toEqual(OP);
+    671|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/9]⎯
+
+ FAIL  |@blackbelt-technology/pi-dashboard-extension| src/__tests__/prompt-bus.test.ts > PromptBus > responder-attribution split (D1 / dl-13383) > [#2] operator RENDERED and ANSWERED → receipt.author=operator (the answerer)
+AssertionError: expected undefined to deeply equal { sub: 'op-1', …(2) }
+
+- Expected:
+{
+  "display": "Operator One",
+  "isOperator": true,
+  "sub": "op-1",
+}
+
++ Received:
+undefined
+
+ ❯ src/__tests__/prompt-bus.test.ts:690:35
+    688|       const resolved = await promise;
+    689|       expect(resolved.author).toEqual(OP);
+    690|       expect(resolved.renderedBy).toEqual(OP);
+       |                                   ^
+    691|
+    692|       const receipt = deriveReceipt(resolved);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/9]⎯
+
+ FAIL  |@blackbelt-technology/pi-dashboard-extension| src/__tests__/prompt-bus.test.ts > PromptBus > responder-attribution split (D1 / dl-13383) > [#2-split] renderer and answerer are DISTINCT operators — kept separate end-to-end
+AssertionError: expected undefined to deeply equal { sub: 'op-1', …(2) }
+
+- Expected:
+{
+  "display": "Operator One",
+  "isOperator": true,
+  "sub": "op-1",
+}
+
++ Received:
+undefined
+
+ ❯ src/__tests__/prompt-bus.test.ts:709:34
+    707|       const receipt = deriveReceipt(resolved);
+    708|       expect(receipt.author).toEqual(OP2);      // answerer
+    709|       expect(receipt.renderedBy).toEqual(OP);   // renderer
+       |                                  ^
+    710|     });
+    711|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/9]⎯
+
+ FAIL  |@blackbelt-technology/pi-dashboard-extension| src/__tests__/prompt-bus.test.ts > PromptBus > responder-attribution split (D1 / dl-13383) > [#3] operator RENDERED, NO answer, bus TIMEOUT → renderedBy=operator, author ABSENT, timedOut=true
+AssertionError: expected { sub: 'op-1', …(2) } to be undefined
+
+- Expected:
+undefined
+
++ Received:
+{
+  "display": "Operator One",
+  "isOperator": true,
+  "sub": "op-1",
+}
+
+ ❯ src/__tests__/prompt-bus.test.ts:725:31
+    723|       expect(resolved.cancelled).toBe(true);
+    724|       expect(resolved.source).toBe("__bus__");
+    725|       expect(resolved.author).toBeUndefined();     // pre-fix: =operat…
+       |                               ^
+    726|       expect(resolved.renderedBy).toEqual(OP);
+    727|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/9]⎯
+
+ FAIL  |@blackbelt-technology/pi-dashboard-extension| src/__tests__/prompt-receipt.test.ts > deriveReceipt > author (B2 operator identity) + renderedBy split (dl-13383) > [dl-13383 able-to-fail] a rendered-then-timed-out response carries WHO RENDERED it in renderedBy, and author is ABSENT (nobody answered)
+AssertionError: expected undefined to deeply equal { sub: 'op-1', …(2) }
+
+- Expected:
+{
+  "display": "Operator One",
+  "isOperator": true,
+  "sub": "op-1",
+}
+
++ Received:
+undefined
+
+ ❯ src/__tests__/prompt-receipt.test.ts:144:28
+    142|     it("[dl-13383 able-to-fail] a rendered-then-timed-out response car…
+    143|       const r = deriveReceipt({ cancelled: true, source: BUS_TIMEOUT_S…
+    144|       expect(r.renderedBy).toEqual(OP);
+       |                            ^
+    145|       expect("author" in r).toBe(false); // RED pre-split (render iden…
+    146|       expect(r.author).toBeUndefined();
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[6/9]⎯
+
+ FAIL  |@blackbelt-technology/pi-dashboard-extension| src/__tests__/prompt-receipt.test.ts > deriveReceipt > author (B2 operator identity) + renderedBy split (dl-13383) > [dl-13383 able-to-fail] operator RENDERED, TUI ANSWERED (no author) → author ABSENT, renderedBy=operator, answered=true
+AssertionError: expected undefined to deeply equal { sub: 'op-1', …(2) }
+
+- Expected:
+{
+  "display": "Operator One",
+  "isOperator": true,
+  "sub": "op-1",
+}
+
++ Received:
+undefined
+
+ ❯ src/__tests__/prompt-receipt.test.ts:160:28
+    158|       expect("author" in r).toBe(false); // RED if answer-author fell …
+    159|       expect(r.author).toBeUndefined();
+    160|       expect(r.renderedBy).toEqual(OP);
+       |                            ^
+    161|       expect(r.answered).toBe(true);
+    162|       expect(r.source).toBe("tui");
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[7/9]⎯
+
+ FAIL  |@blackbelt-technology/pi-dashboard-extension| src/__tests__/prompt-receipt.test.ts > deriveReceipt > author (B2 operator identity) + renderedBy split (dl-13383) > [dl-13383] distinct answerer vs renderer: author=answerer, renderedBy=renderer (kept separate)
+AssertionError: expected undefined to deeply equal { sub: 'op-1', …(2) }
+
+- Expected:
+{
+  "display": "Operator One",
+  "isOperator": true,
+  "sub": "op-1",
+}
+
++ Received:
+undefined
+
+ ❯ src/__tests__/prompt-receipt.test.ts:168:28
+    166|       const r = deriveReceipt({ answer: "A", cancelled: false, source:…
+    167|       expect(r.author).toEqual(OP2);
+    168|       expect(r.renderedBy).toEqual(OP);
+       |                            ^
+    169|     });
+    170|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[8/9]⎯
+
+ FAIL  |@blackbelt-technology/pi-dashboard-extension| src/__tests__/prompt-receipt.test.ts > deriveReceipt > author (B2 operator identity) + renderedBy split (dl-13383) > [dl-13383] a dismiss (no answer) carries renderedBy but NO author (nobody answered)
+AssertionError: expected undefined to deeply equal { sub: 'op-1', …(2) }
+
+- Expected:
+{
+  "display": "Operator One",
+  "isOperator": true,
+  "sub": "op-1",
+}
+
++ Received:
+undefined
+
+ ❯ src/__tests__/prompt-receipt.test.ts:175:28
+    173|       expect(r.dismissed).toBe(true);
+    174|       expect("author" in r).toBe(false);
+    175|       expect(r.renderedBy).toEqual(OP);
+       |                            ^
+    176|     });
+    177|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[9/9]⎯
+
+
+ Test Files  2 failed (2)
+      Tests  9 failed | 61 passed (70)
+   Start at  19:21:45
+   Duration  391ms (transform 45ms, setup 0ms, import 63ms, tests 38ms, environment 0ms)
+

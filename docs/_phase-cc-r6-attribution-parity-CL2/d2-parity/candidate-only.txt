@@ -1,0 +1,3 @@
+packages/server/src/__tests__/auto-attach-slug-defense.test.ts :: Auto-attach defense-in-depth: rename site rejects non-slug changeName does NOT mutate openspecChange / attachedProposal / name when detector returns a UUID
+packages/server/src/__tests__/headless-shutdown-fallback.test.ts :: Headless shutdown fallback should kill headless process via SIGTERM when bridge is disconnected
+packages/server/src/__tests__/headless-shutdown-fallback.test.ts :: Headless shutdown fallback should not crash when no PID is linked for shutdown

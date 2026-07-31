@@ -1,0 +1,88 @@
+{
+  "arm": "A1-live-rendered-vs-never (D1 renderedBy split)",
+  "staged_head": "3055f8bf90db10f33013e2dfcfd749d8c78bcb12",
+  "rendered": {
+    "session": "019fb94a-332e-7d06-b385-1b829cd87207",
+    "ws_upgrade_allowed": true,
+    "promptId": "477d34f6-e4c9-4fcb-b31e-1f7183db441a",
+    "socket": {
+      "has9999": false,
+      "has8000": false,
+      "nonLoop": 0
+    },
+    "details": {
+      "method": "select",
+      "receipt": {
+        "delivered": true,
+        "rendered": true,
+        "answered": false,
+        "dismissed": false,
+        "timedOut": true,
+        "invalid": false,
+        "source": "__bus__",
+        "renderedBy": {
+          "sub": "operator@op",
+          "display": "Operator One",
+          "isOperator": true
+        }
+      }
+    },
+    "receipt": {
+      "delivered": true,
+      "rendered": true,
+      "answered": false,
+      "dismissed": false,
+      "timedOut": true,
+      "invalid": false,
+      "source": "__bus__",
+      "renderedBy": {
+        "sub": "operator@op",
+        "display": "Operator One",
+        "isOperator": true
+      }
+    },
+    "assert_timedOut": true,
+    "assert_delivered_true": true,
+    "assert_rendered_true": true,
+    "assert_not_answered": true,
+    "assert_renderedBy_operator": true,
+    "assert_author_absent": true
+  },
+  "never": {
+    "session": "019fb94a-d7f1-7f1c-aca9-9f67ff8ad854",
+    "socket": {
+      "has9999": false,
+      "has8000": false,
+      "nonLoop": 0
+    },
+    "details": {
+      "method": "select",
+      "receipt": {
+        "delivered": false,
+        "rendered": false,
+        "answered": false,
+        "dismissed": false,
+        "timedOut": true,
+        "invalid": false,
+        "source": "__bus__"
+      }
+    },
+    "receipt": {
+      "delivered": false,
+      "rendered": false,
+      "answered": false,
+      "dismissed": false,
+      "timedOut": true,
+      "invalid": false,
+      "source": "__bus__"
+    },
+    "assert_timedOut": true,
+    "assert_delivered_false": true,
+    "assert_rendered_false": true,
+    "assert_no_renderedBy": true,
+    "assert_no_author": true
+  },
+  "A1_LIVE_CONTRAST_PROVEN": true,
+  "rendered_socket_clean": true,
+  "never_socket_clean": true
+}

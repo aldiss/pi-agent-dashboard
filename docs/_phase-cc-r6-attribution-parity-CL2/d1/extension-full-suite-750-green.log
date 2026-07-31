@@ -1,0 +1,15 @@
+
+ RUN  v4.1.5 /Users/vdrobkov/build1-picker-cand-e0-wt
+
+[test-isolation] HOME=/var/folders/sh/rtc7_3wd27q_jffxy54dt44m0000gn/T/pi-ext-XXXXXX.gmuxpcVfAU (real=/Users/vdrobkov)
+
+ Test Files  52 passed (52)
+      Tests  750 passed (750)
+   Start at  19:22:12
+   Duration  8.93s (transform 506ms, setup 0ms, import 1.11s, tests 775ms, environment 3ms)
+
+npm notice
+npm notice New major version of npm available! 10.9.7 -> 12.0.1
+npm notice Changelog: https://github.com/npm/cli/releases/tag/v12.0.1
+npm notice To update run: npm install -g npm@12.0.1
+npm notice

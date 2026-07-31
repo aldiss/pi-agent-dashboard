@@ -1,0 +1,9 @@
+packages/client/src/components/__tests__/ChatView.streaming-text-flush.test.tsx :: Task 6.1a: long-running bash — text bubble appears above running tool card assistant text DOM index < running tool card DOM index, no streaming bubble
+packages/client/src/components/__tests__/ChatView.streaming-text-flush.test.tsx :: Task 6.2: non-blocking [text, toolCall] — order unchanged after message_end, assistant text precedes tool card with single assistant row
+packages/client/src/components/__tests__/ChatView.test.tsx :: ChatView renders error tool call with error icon
+packages/client/src/components/__tests__/ChatView.test.tsx :: ChatView renders expandable tool call with args and result
+packages/client/src/components/__tests__/ChatView.test.tsx :: ChatView renders running tool call with spinner icon
+packages/client/src/components/__tests__/ChatView.test.tsx :: ChatView renders tool call step with left accent border
+packages/client/src/components/__tests__/ChatView.test.tsx :: ChatView renders toolResult messages using ToolCallStep
+packages/server/src/__tests__/empty-bridge-replay-terminal.test.ts :: loading ≠ empty — empty-bridge terminal-after-reset transition (MAJOR 2, pinned) the 5s no-completion fallback emits the terminal isLast:true AFTER the reset (fallback arm)
+packages/shared/src/__tests__/no-direct-process-kill.test.ts :: no direct process.kill outside packages/shared/src/platform/ only allowlisted paths call process.kill directly

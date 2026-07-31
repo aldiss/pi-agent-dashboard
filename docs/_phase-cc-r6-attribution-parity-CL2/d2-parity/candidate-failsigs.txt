@@ -1,0 +1,11 @@
+packages/client/src/components/__tests__/ChatView.streaming-text-flush.test.tsx :: Task 6.1a: long-running bash — text bubble appears above running tool card assistant text DOM index < running tool card DOM index, no streaming bubble
+packages/client/src/components/__tests__/ChatView.streaming-text-flush.test.tsx :: Task 6.2: non-blocking [text, toolCall] — order unchanged after message_end, assistant text precedes tool card with single assistant row
+packages/client/src/components/__tests__/ChatView.test.tsx :: ChatView renders error tool call with error icon
+packages/client/src/components/__tests__/ChatView.test.tsx :: ChatView renders expandable tool call with args and result
+packages/client/src/components/__tests__/ChatView.test.tsx :: ChatView renders running tool call with spinner icon
+packages/client/src/components/__tests__/ChatView.test.tsx :: ChatView renders tool call step with left accent border
+packages/client/src/components/__tests__/ChatView.test.tsx :: ChatView renders toolResult messages using ToolCallStep
+packages/server/src/__tests__/auto-attach-slug-defense.test.ts :: Auto-attach defense-in-depth: rename site rejects non-slug changeName does NOT mutate openspecChange / attachedProposal / name when detector returns a UUID
+packages/server/src/__tests__/headless-shutdown-fallback.test.ts :: Headless shutdown fallback should kill headless process via SIGTERM when bridge is disconnected
+packages/server/src/__tests__/headless-shutdown-fallback.test.ts :: Headless shutdown fallback should not crash when no PID is linked for shutdown
+packages/shared/src/__tests__/no-direct-process-kill.test.ts :: no direct process.kill outside packages/shared/src/platform/ only allowlisted paths call process.kill directly

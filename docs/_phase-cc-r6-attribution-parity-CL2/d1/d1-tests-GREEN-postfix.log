@@ -1,0 +1,10 @@
+
+ RUN  v4.1.5 /Users/vdrobkov/build1-picker-cand-e0-wt
+
+[test-isolation] HOME=/var/folders/sh/rtc7_3wd27q_jffxy54dt44m0000gn/T/pi-t-XXXXXX.IBbrLFqEZL (real=/Users/vdrobkov)
+
+ Test Files  2 passed (2)
+      Tests  70 passed (70)
+   Start at  19:21:19
+   Duration  491ms (transform 55ms, setup 0ms, import 76ms, tests 29ms, environment 0ms)
+

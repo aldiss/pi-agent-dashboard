@@ -1,0 +1,11 @@
+ts=2026-07-31T17:50:37Z
+== scratch 8153/8154 ==
+8153 free
+8154 free
+== zero residual ccr6 procs ==
+residual_ccr6_procs=1
+== prod owns :9999/:8000 (untouched) ==
+node    53346 vdrobkov   19u  IPv4 0x24ecf39c74b3c559      0t0  TCP *:8000 (LISTEN)
+node    53346 vdrobkov   17u  IPv6 0xa95412ad7b1f69ed      0t0  TCP *:9999 (LISTEN)
+== prod commit ==
+commit= 113263140666dee39721e2ef17e1db40a366cdc1 pid= 53346

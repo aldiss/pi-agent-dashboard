@@ -1,0 +1,12 @@
+ts=2026-07-31T17:50:17Z
+iso_dash_pid=35239
+== iso dashboard TCP ==
+COMMAND   PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+node    35239 vdrobkov   16u  IPv4  0x9be52b6660b5aea      0t0  TCP 127.0.0.1:8154 (LISTEN)
+node    35239 vdrobkov   17u  IPv4 0x7c1c7119d988c5d9      0t0  TCP 127.0.0.1:62853->127.0.0.1:8765 (ESTABLISHED)
+node    35239 vdrobkov   19u  IPv4 0xe3fdb3bcdc1c9058      0t0  TCP 127.0.0.1:8153 (LISTEN)
+node    35239 vdrobkov   22u  IPv4 0x939648c7c690c71e      0t0  TCP 127.0.0.1:8154->127.0.0.1:62225 (ESTABLISHED)
+node    35239 vdrobkov   23u  IPv4 0x3dc9f1d172d99529      0t0  TCP 127.0.0.1:8154->127.0.0.1:62063 (ESTABLISHED)
+== assertions ==
+has9999=0 has8000=0
+non_loopback_conns=0
