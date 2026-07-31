@@ -794,7 +794,8 @@ export function createBrowserGateway(
             // Field-by-field static forward (static `type` for the WS-coverage
             // AST) + the SERVER-STAMPED operator author (from ctx.principal,
             // NEVER the message body). The bridge calls markRendered only for an
-            // authored ACK and threads the author into receipt.author.
+            // authored ACK and threads the author into receipt.renderedBy (the
+            // RENDERER identity — distinct from receipt.author, the responder).
             const rr = msg as import("@blackbelt-technology/pi-dashboard-shared/browser-protocol.js").PromptRenderedBrowserMessage;
             const renderedAuthor = deriveAuthor(principals.get(ws) ?? null, operatorUsers);
             ctx.piGateway.sendToSession(rr.sessionId, {

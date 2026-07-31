@@ -660,7 +660,8 @@ export interface PromptRenderedServerMessage {
    * SERVER-STAMPED authenticated operator author (Pete dl-13358 B2). Derived
    * server-side from the connection-bound principal at the browser gateway —
    * NEVER from the client message body. Absent single-operator. The bridge only
-   * marks rendered for an authored ACK and threads this into receipt.author.
+   * marks rendered for an authored ACK and threads this into receipt.renderedBy
+   * (the RENDERER identity — distinct from receipt.author, the responder).
    */
   author?: MessageAuthor;
 }

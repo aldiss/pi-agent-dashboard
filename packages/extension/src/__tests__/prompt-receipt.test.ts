@@ -168,7 +168,11 @@ describe("deriveReceipt", () => {
       expect(r.renderedBy).toEqual(OP);
     });
 
-    it("[dl-13383] a dismiss (no answer) carries renderedBy but NO author (nobody answered)", () => {
+    it("[dl-13383] a dismiss with NO responder author carries renderedBy but no author (render-only)", () => {
+      // Input carries renderedBy but NO responder author (a render-only dismiss
+      // where no authenticated responder was stamped) → author absent because the
+      // INPUT has none. Contrast dl-13527 below: an authenticated dismiss DOES
+      // carry a responder author, which is now preserved.
       const r = deriveReceipt({ cancelled: true, source: "dashboard", renderedBy: OP });
       expect(r.dismissed).toBe(true);
       expect("author" in r).toBe(false);
@@ -184,6 +188,52 @@ describe("deriveReceipt", () => {
     it("a no-author receipt is not an operator decision (author undefined)", () => {
       const r = deriveReceipt({ answer: "A", cancelled: false, source: "dashboard" });
       expect(r.author).toBeUndefined();
+    });
+
+    // ── dl-13527: `author` = the RESPONDER actor (answerer OR authenticated
+    //    DISMISSER). The browser gateway server-stamps `author` on an
+    //    authenticated dashboard dismiss too; the r6 gate `answerPresent &&
+    //    response.author` DROPPED that dismisser identity. Now preserved. ──
+    describe("dismiss-actor preserve (dl-13527)", () => {
+      it("[dl-13527 able-to-fail] authenticated dashboard DISMISS preserves the dismisser as receipt.author", () => {
+        // cancelled:true (no answer) + a server-stamped operator author + renderedBy.
+        const r = deriveReceipt({ cancelled: true, source: "dashboard", author: OP, renderedBy: OP });
+        expect(r.dismissed).toBe(true);
+        expect(r.author).toEqual(OP);     // RED pre-fix (answerPresent gate dropped it)
+        expect(r.renderedBy).toEqual(OP);
+        expect(r.answered).toBe(false);   // a dismiss is NOT an answer
+      });
+
+      it("[dl-13527] a distinct dismisser vs renderer stays split (author=dismisser, renderedBy=renderer)", () => {
+        const r = deriveReceipt({ cancelled: true, source: "dashboard", author: OP2, renderedBy: OP });
+        expect(r.dismissed).toBe(true);
+        expect(r.author).toEqual(OP2);
+        expect(r.renderedBy).toEqual(OP);
+        expect(r.answered).toBe(false);
+      });
+
+      it("[dl-13527] TUI cancel (no responder author) → author ABSENT", () => {
+        const r = deriveReceipt({ cancelled: true, source: "tui" });
+        expect(r.dismissed).toBe(true);
+        expect("author" in r).toBe(false);
+        expect(r.author).toBeUndefined();
+      });
+
+      it("[dl-13527] bus timeout with a render-ACK author → author ABSENT, renderedBy preserved", () => {
+        const r = deriveReceipt({ cancelled: true, source: BUS_TIMEOUT_SOURCE, renderedBy: OP });
+        expect(r.timedOut).toBe(true);
+        expect("author" in r).toBe(false);   // a timeout has no RESPONDER author
+        expect(r.renderedBy).toEqual(OP);
+      });
+
+      it("[dl-13527 regression] operator-render → TUI-answer (no responder author) → author still ABSENT", () => {
+        // The responder (TUI) carried no author; only the render ACK was authored.
+        // The fix must NOT let the render identity leak into author.
+        const r = deriveReceipt({ answer: "A", cancelled: false, source: "tui", renderedBy: OP });
+        expect("author" in r).toBe(false);
+        expect(r.renderedBy).toEqual(OP);
+        expect(r.answered).toBe(true);
+      });
     });
   });
 });

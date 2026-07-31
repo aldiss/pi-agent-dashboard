@@ -750,5 +750,45 @@ describe("PromptBus", () => {
       expect(receipt.timedOut).toBe(true);
       expect(receipt.delivered).toBe(false);
     });
+
+    // ── dl-13527: an authenticated dashboard DISMISS (cancelled:true, source:
+    //    dashboard, author=OP) routes through respond() with a responder-stamped
+    //    author. The receipt must PRESERVE that dismisser identity (RED pre-fix:
+    //    the answerPresent gate dropped it because a dismiss has no answer). ──
+    it("[#5 able-to-fail] operator RENDERED, then authenticated DISMISS (author) → receipt.author=operator (dismisser), answered:false", async () => {
+      const adapter = createMockAdapter("a");
+      bus.registerAdapter(adapter);
+      const promise = bus.request({ pipeline: "command", type: "select", question: "Q", options: ["A", "B"] });
+      const id = (adapter.onRequest.mock.calls[0][0] as PromptRequest).id;
+
+      bus.markRendered(id, OP);                                              // operator renders
+      bus.respond({ id, cancelled: true, source: "dashboard-default", author: OP }); // authenticated dismiss (server-stamped author)
+
+      const resolved = await promise;
+      expect(resolved.cancelled).toBe(true);
+      expect(resolved.author).toEqual(OP);       // respond() sets author: response.author
+      expect(resolved.renderedBy).toEqual(OP);
+
+      const receipt = deriveReceipt(resolved);
+      expect(receipt.dismissed).toBe(true);
+      expect(receipt.author).toEqual(OP);        // RED pre-fix (answerPresent gate dropped the dismisser)
+      expect(receipt.renderedBy).toEqual(OP);
+      expect(receipt.answered).toBe(false);      // a dismiss is NOT an answer
+    });
+
+    it("[#5b] distinct dismisser vs renderer through respond() stays split", async () => {
+      const adapter = createMockAdapter("a");
+      bus.registerAdapter(adapter);
+      const promise = bus.request({ pipeline: "command", type: "select", question: "Q", options: ["A", "B"] });
+      const id = (adapter.onRequest.mock.calls[0][0] as PromptRequest).id;
+
+      bus.markRendered(id, OP);                                               // OP renders
+      bus.respond({ id, cancelled: true, source: "dashboard-default", author: OP2 }); // OP2 dismisses
+
+      const receipt = deriveReceipt(await promise);
+      expect(receipt.dismissed).toBe(true);
+      expect(receipt.author).toEqual(OP2);   // the dismisser
+      expect(receipt.renderedBy).toEqual(OP); // the renderer
+    });
   });
 });
