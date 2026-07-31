@@ -1,0 +1,6 @@
+ts=2026-07-31T10:53:11.706Z
+has9999=false has8000=false
+non_loopback=0
+
+--- pid 29513 ---
+(no TCP)

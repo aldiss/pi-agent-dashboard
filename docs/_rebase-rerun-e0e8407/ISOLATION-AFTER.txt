@@ -1,0 +1,13 @@
+REBASE-RERUN e0e8407 AFTER ISOLATION PROOF — 2026-07-31T11:00:46Z
+== scratch 8153/8154 FREE ==
+8153/8154 FREE
+== zero residual temp-HOME pi procs (both workspaces) ==
+zero residual
+== prod owns :9999/:8000 (untouched) ==
+COMMAND   PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+node    53346 vdrobkov   17u  IPv6 0xa95412ad7b1f69ed      0t0  TCP *:9999 (LISTEN)
+node    53346 vdrobkov   19u  IPv4 0x24ecf39c74b3c559      0t0  TCP *:8000 (LISTEN)
+== prod commit still c5=1132631 ==
+commit= 113263140666dee39721e2ef17e1db40a366cdc1 mode= production
+== worktree HEAD ==
+e0e8407

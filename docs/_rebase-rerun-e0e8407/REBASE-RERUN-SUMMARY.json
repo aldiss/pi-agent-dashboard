@@ -1,0 +1,36 @@
+{
+  "identity": "e0e8407 (rebased onto live prod c5=1132631; old-base tag build1-comms-oldbase-6a6bf8a preserved)",
+  "isolation": "loopback 127.0.0.1:8153/8154, temp HOME, forced-loopback guard, zero :9999/:8000, prod c5 untouched",
+  "item1_full_suite": {
+    "tally": "8 failed | 6657 passed | 17 skipped (6682)",
+    "failed_files": [
+      "no-direct-process-kill",
+      "ChatView.test (5)",
+      "ChatView.streaming-text-flush (2)"
+    ],
+    "parity": "all 3 failing test files BYTE-IDENTICAL to pristine c5 \u2192 8 pre-existing, ZERO new; ZERO in my code files",
+    "tsc": "10, delta 0 vs pristine c5, ZERO in my files"
+  },
+  "item2_arms": {
+    "arm1_opt1_bijection": true,
+    "arm2_A1_live": true,
+    "arm3_malformed_invalid": true,
+    "arm4_raw_fallback": true
+  },
+  "item3_c1v2_reconnect": "RED\u2192GREEN proven (round-3 mount-ref code fails 6 tests incl drop-first-ACK\u2192reconnect\u2192resend; fix 15 pass)",
+  "item4_c2_multiop": {
+    "C2_PROVEN": true,
+    "no_principal_401": true,
+    "guest_forged_did_not_win": true,
+    "operator_answered_author": [
+      true,
+      true
+    ],
+    "operator_author": {
+      "sub": "operator@op",
+      "display": "Operator One",
+      "isOperator": true
+    }
+  },
+  "ALL_ITEMS_PASS": true
+}
