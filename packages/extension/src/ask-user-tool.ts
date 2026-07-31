@@ -8,6 +8,8 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { polyfillMultiselect } from "./multiselect-polyfill.js";
+import { deriveReceipt, fallbackReceipt, type PromptReceipt } from "./prompt-receipt.js";
+import { makeCollisionSafeOptions } from "./option-collision.js";
 
 // ──────────────────────────────────────────────────────────────────────────
 // Schema definition
@@ -147,6 +149,51 @@ function normalizeSubQuestion(
 // ──────────────────────────────────────────────────────────────────────────
 // Tool registration
 // ──────────────────────────────────────────────────────────────────────────
+
+// ──────────────────────────────────────────────────────────────────────────
+// Receipt (A6) — read the out-of-band PromptResponse the bridge stashes.
+//
+// The bridge patches ctx.ui.* to Promise<string|undefined> (blast-radius
+// contract preserved) but ALSO stashes the full PromptResponse into
+// `ctx.ui.__promptReceipts` keyed by toolCallId right before collapsing.
+// After each awaited ctx.ui.* call, drainReceipt() reads + removes that
+// entry so `execute` can report whether the operator answered, dismissed,
+// or the prompt timed out / never rendered.
+//
+// Execution is sequential (each ctx.ui.* is awaited before the next), so a
+// single slot per toolCallId is race-free: the stash write and the collapse
+// happen in the same microtask, and `execute` drains it on resume. When the
+// stash is absent (running outside the bridge patch), fall back to a
+// best-effort receipt derived from the collapsed value.
+// ──────────────────────────────────────────────────────────────────────────
+
+function drainReceipt(
+  ctx: any,
+  toolCallId: string | undefined,
+  method: string,
+  hasResult: boolean,
+): PromptReceipt {
+  const store = ctx?.ui?.__promptReceipts;
+  if (toolCallId && store && typeof store.get === "function") {
+    const resp = store.get(toolCallId);
+    if (resp) {
+      if (typeof store.delete === "function") store.delete(toolCallId);
+      return deriveReceipt(resp);
+    }
+  }
+  return fallbackReceipt(method, hasResult);
+}
+
+/** Human-readable non-decision line — never reads as a decision. */
+function noDecisionText(receipt: PromptReceipt): string {
+  if (receipt.timedOut) {
+    return "No response: the question timed out or was never delivered — no decision was made.";
+  }
+  if (receipt.dismissed) {
+    return "No response: the user dismissed the question without answering — no decision was made.";
+  }
+  return "No response — no decision was made.";
+}
 
 export function registerAskUserTool(pi: ExtensionAPI): void {
   pi.registerTool({
@@ -330,6 +377,7 @@ export function registerAskUserTool(pi: ExtensionAPI): void {
       // ── Batch branch ─────────────────────────────────────────────────
       if (params.method === "batch" && Array.isArray(params.questions)) {
         const results: Array<unknown> = [];
+        const receipts: PromptReceipt[] = [];
         let cancelled = false;
 
         for (const sq of params.questions) {
@@ -337,6 +385,8 @@ export function registerAskUserTool(pi: ExtensionAPI): void {
           const subMsg = withTcid(params.message ? { message: params.message } : undefined);
 
           let answer: unknown;
+          // Collision-safe mapping (A4) for this sub-question, when applicable.
+          let safe: ReturnType<typeof makeCollisionSafeOptions> | undefined;
           try {
             switch (sq.method) {
               case "confirm":
@@ -353,7 +403,8 @@ export function registerAskUserTool(pi: ExtensionAPI): void {
                     `ask_user batch: sub-question method "select" requires a non-empty "options" array.`,
                   );
                 }
-                answer = await ctx.ui.select(subTitle, opts, subMsg);
+                safe = makeCollisionSafeOptions(opts);
+                answer = await ctx.ui.select(subTitle, safe.displayOptions, subMsg);
                 break;
               }
               case "multiselect": {
@@ -363,7 +414,8 @@ export function registerAskUserTool(pi: ExtensionAPI): void {
                     `ask_user batch: sub-question method "multiselect" requires a non-empty "options" array.`,
                   );
                 }
-                answer = await polyfillMultiselect(ctx, subTitle, opts, subMsg);
+                safe = makeCollisionSafeOptions(opts);
+                answer = await polyfillMultiselect(ctx, subTitle, safe.displayOptions, subMsg);
                 break;
               }
               case "input":
@@ -375,6 +427,20 @@ export function registerAskUserTool(pi: ExtensionAPI): void {
           } catch (err) {
             // Propagate hard errors (schema/logic bugs); cancellation is signalled by undefined.
             throw err;
+          }
+
+          // Drain the receipt for THIS sub-question (single slot per toolCallId;
+          // execution is sequential so it is unambiguously this call's response).
+          const hadAnswer = answer !== undefined;
+          const receipt = drainReceipt(ctx, toolCallId, sq.method, hadAnswer);
+          receipts.push(receipt);
+
+          // Map a collision-safe display label back to its ORIGINAL option so
+          // the recorded answer is the exact intended one (select only; the
+          // multiselect decode path already returns original-label arrays).
+          if (sq.method === "select" && safe && typeof answer === "string") {
+            const resolved = safe.resolve(answer);
+            if (resolved) answer = resolved.value;
           }
 
           // Treat `undefined` from input/select/multiselect as cancellation.
@@ -391,10 +457,29 @@ export function registerAskUserTool(pi: ExtensionAPI): void {
           results.push(answer);
         }
 
+        // Aggregate receipt: when cancelled, the decisive (last) receipt carries
+        // the reason (dismissed vs timedOut); otherwise all were answered.
+        const decisive = receipts[receipts.length - 1];
+        const aggregate: PromptReceipt = cancelled && decisive
+          ? decisive
+          : {
+              delivered: receipts.every((r) => r.delivered),
+              answered: !cancelled,
+              dismissed: false,
+              timedOut: false,
+              source: receipts.length > 0 ? receipts[0].source : "unknown",
+            };
+
         const warnings: string[] = (params as any).__normalizations ?? [];
         const lines: string[] = [];
         if (cancelled) {
-          lines.push(`User cancelled batch after ${results.filter((r) => r !== null).length} of ${params.questions.length} answers.`);
+          const answeredCount = results.filter((r) => r !== null).length;
+          const reason = decisive?.timedOut
+            ? "timed out or was never delivered"
+            : "was dismissed by the user";
+          lines.push(
+            `Batch not completed: after ${answeredCount} of ${params.questions.length} answers, the next question ${reason} — no decision was made for the remainder.`,
+          );
         } else {
           lines.push(`User completed batch (${results.length} answers).`);
         }
@@ -414,11 +499,13 @@ export function registerAskUserTool(pi: ExtensionAPI): void {
             results,
             cancelled,
             warnings,
+            receipt: aggregate,
+            receipts,
           },
         };
       }
 
-      // ── Single-question branches (unchanged behavior) ────────────────
+      // ── Single-question branches ─────────────────────────────────────
       let result: unknown;
       const msgOpts = withTcid(params.message ? { message: params.message } : undefined);
       const title = params.title || params.message || "Question";
@@ -437,24 +524,55 @@ export function registerAskUserTool(pi: ExtensionAPI): void {
         );
       }
 
+      // Collision-safe option mapping (A4): render distinct display labels and
+      // keep an exact display→original map so a click resolves to the precise
+      // intended option (no-op for already-distinct labels).
+      let safe: ReturnType<typeof makeCollisionSafeOptions> | undefined;
+      let selectedIndex: number | undefined;
+
       switch (params.method) {
         case "confirm":
           result = await ctx.ui.confirm(title, params.message ?? "", withTcid(undefined));
           break;
         case "select":
-          result = await ctx.ui.select(title, options, msgOpts);
+          safe = makeCollisionSafeOptions(options);
+          result = await ctx.ui.select(title, safe.displayOptions, msgOpts);
           break;
         case "multiselect":
-          result = await polyfillMultiselect(ctx, title, options, msgOpts);
+          safe = makeCollisionSafeOptions(options);
+          result = await polyfillMultiselect(ctx, title, safe.displayOptions, msgOpts);
           break;
         case "input":
           result = await ctx.ui.input(title, params.placeholder, msgOpts);
           break;
       }
 
+      // Drain the receipt (A6) for this single prompt.
+      const receipt = drainReceipt(ctx, toolCallId, params.method, result !== undefined);
+
+      // Resolve a collision-safe select answer back to its original option +
+      // record the exact selected index (bijection proof).
+      if (params.method === "select" && safe && typeof result === "string") {
+        const resolved = safe.resolve(result);
+        if (resolved) {
+          result = resolved.value;
+          selectedIndex = resolved.index;
+        }
+      }
+
+      // Never let a no-answer read as a decision. `confirm` collapses a
+      // dismiss/timeout to `false`; the receipt is the authority, so blank the
+      // result and emit a clear non-decision line when not answered.
+      if (!receipt.answered) {
+        return {
+          content: [{ type: "text", text: noDecisionText(receipt) }],
+          details: { method: params.method, result: undefined, receipt, selectedIndex },
+        };
+      }
+
       return {
         content: [{ type: "text", text: `User responded: ${JSON.stringify(result)}` }],
-        details: { method: params.method, result },
+        details: { method: params.method, result, receipt, selectedIndex },
       };
     },
   });

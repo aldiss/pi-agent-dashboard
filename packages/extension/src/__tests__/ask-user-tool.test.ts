@@ -17,6 +17,7 @@ vi.mock("@earendil-works/pi-ai", () => ({
 }));
 
 import { registerAskUserTool } from "../ask-user-tool.js";
+import { decodeMultiselectAnswer } from "../multiselect-decode.js";
 
 function createMockPi() {
   return {
@@ -503,6 +504,315 @@ describe("registerAskUserTool", () => {
           ctx,
         ),
       ).rejects.toThrow(/options/i);
+    });
+  });
+
+  // ────────────────────────────────────────────────────────────────────
+  // Receipt (A6) + collision-safe mapping (A4)
+  //
+  // These exercise execute() as a black box. The mock ctx mirrors the
+  // bridge stash EXACTLY: each ctx.ui.* method stashes the full
+  // PromptResponse into ctx.ui.__promptReceipts keyed by toolCallId, then
+  // collapses to the legacy `string | undefined` contract. The tool reads
+  // the stash out-of-band to build details.receipt.
+  //
+  // Able-to-fail: every assertion on `details.receipt` / `details.selectedIndex`
+  // throws on the pre-fix execute() (which returns only {method, result}).
+  // ────────────────────────────────────────────────────────────────────
+  describe("receipt (A6) + collision-safe mapping (A4)", () => {
+    // Build a ctx whose ctx.ui.* methods behave like the bridge-patched ones:
+    // stash a PromptResponse per toolCallId, then collapse per method.
+    function makeReceiptCtx(responses: Record<string, any>) {
+      const store = new Map<string, any>();
+      const stash = (opts: any, resp: any) => {
+        const tcid = opts?.toolCallId;
+        if (tcid) store.set(tcid, resp);
+      };
+      const ui: any = {
+        __promptReceipts: store,
+        confirm: vi.fn(async (_t: string, _m: string, opts?: any) => {
+          const r = responses.confirm;
+          stash(opts, r);
+          return !r.cancelled && r.answer === "true";
+        }),
+        select: vi.fn(async (_t: string, _options: string[], opts?: any) => {
+          const r = responses.select;
+          stash(opts, r);
+          return r.cancelled ? undefined : r.answer;
+        }),
+        input: vi.fn(async (_t: string, _ph: string | undefined, opts?: any) => {
+          const r = responses.input;
+          stash(opts, r);
+          return r.cancelled ? undefined : r.answer;
+        }),
+        // Bridge-patched multiselect: routes via PromptBus then decodes.
+        multiselect: vi.fn(async (_t: string, _options: string[], opts?: any) => {
+          const r = responses.multiselect;
+          stash(opts, r);
+          return decodeMultiselectAnswer(r);
+        }),
+      };
+      return { ui };
+    }
+
+    function getTool() {
+      const pi = createMockPi();
+      registerAskUserTool(pi as any);
+      return pi.registerTool.mock.calls[0][0];
+    }
+
+    // (i) answered → receipt.answered=true, source=adapter, result=value
+    it("answered select → receipt.answered=true, source=adapter, result=value", async () => {
+      const tool = getTool();
+      const ctx = makeReceiptCtx({ select: { answer: "Ship it", source: "dashboard" } });
+      const result = await tool.execute(
+        "tc-1",
+        { method: "select", title: "Pick", options: ["Ship it", "Hold"] },
+        undefined,
+        undefined,
+        ctx,
+      );
+      expect(result.details.receipt).toEqual({
+        delivered: true,
+        answered: true,
+        dismissed: false,
+        timedOut: false,
+        source: "dashboard",
+      });
+      expect(result.details.result).toBe("Ship it");
+      expect(result.content[0].text).toMatch(/User responded: "Ship it"/);
+    });
+
+    it("answered input → receipt.answered=true with the typed value", async () => {
+      const tool = getTool();
+      const ctx = makeReceiptCtx({ input: { answer: "Priya", source: "dashboard" } });
+      const result = await tool.execute(
+        "tc-in",
+        { method: "input", title: "Name?" },
+        undefined,
+        undefined,
+        ctx,
+      );
+      expect(result.details.receipt.answered).toBe(true);
+      expect(result.details.receipt.source).toBe("dashboard");
+      expect(result.details.result).toBe("Priya");
+    });
+
+    it("answered confirm=false is a real decision (answered=true, result=false)", async () => {
+      const tool = getTool();
+      const ctx = makeReceiptCtx({ confirm: { answer: "false", source: "dashboard" } });
+      const result = await tool.execute(
+        "tc-c",
+        { method: "confirm", title: "Proceed?" },
+        undefined,
+        undefined,
+        ctx,
+      );
+      expect(result.details.receipt.answered).toBe(true);
+      expect(result.details.result).toBe(false);
+      expect(result.content[0].text).toMatch(/User responded: false/);
+    });
+
+    // (ii) dismissed → receipt.dismissed=true, result no-decision
+    it("dismissed select → receipt.dismissed=true, delivered=true, text is a clear non-decision", async () => {
+      const tool = getTool();
+      const ctx = makeReceiptCtx({ select: { cancelled: true, source: "dashboard" } });
+      const result = await tool.execute(
+        "tc-2",
+        { method: "select", title: "Pick", options: ["A", "B"] },
+        undefined,
+        undefined,
+        ctx,
+      );
+      expect(result.details.receipt.dismissed).toBe(true);
+      expect(result.details.receipt.delivered).toBe(true);
+      expect(result.details.receipt.answered).toBe(false);
+      expect(result.details.receipt.timedOut).toBe(false);
+      expect(result.details.result).toBeUndefined();
+      // Never reads as a decision.
+      expect(result.content[0].text).not.toMatch(/User responded/);
+      expect(result.content[0].text).toMatch(/dismiss/i);
+    });
+
+    // (iii) timeout / __bus__ → receipt.timedOut=true, delivered distinguishes never-rendered
+    it("timed-out select (__bus__) → receipt.timedOut=true, delivered=false (never rendered)", async () => {
+      const tool = getTool();
+      const ctx = makeReceiptCtx({ select: { cancelled: true, source: "__bus__" } });
+      const result = await tool.execute(
+        "tc-3",
+        { method: "select", title: "Pick", options: ["A", "B"] },
+        undefined,
+        undefined,
+        ctx,
+      );
+      expect(result.details.receipt.timedOut).toBe(true);
+      expect(result.details.receipt.delivered).toBe(false);
+      expect(result.details.receipt.dismissed).toBe(false);
+      expect(result.details.receipt.answered).toBe(false);
+      expect(result.content[0].text).not.toMatch(/User responded/);
+      expect(result.content[0].text).toMatch(/timed out|never (delivered|rendered)/i);
+    });
+
+    it("dismiss vs timeout are DISTINGUISHABLE from one another (the live n=3 conflation)", async () => {
+      const tool = getTool();
+      const dismissed = await tool.execute(
+        "d",
+        { method: "input", title: "Q" },
+        undefined,
+        undefined,
+        makeReceiptCtx({ input: { cancelled: true, source: "dashboard" } }),
+      );
+      const timedOut = await tool.execute(
+        "t",
+        { method: "input", title: "Q" },
+        undefined,
+        undefined,
+        makeReceiptCtx({ input: { cancelled: true, source: "__bus__" } }),
+      );
+      // Pre-fix, both collapse to `result: undefined` and are indistinguishable.
+      expect(dismissed.details.receipt.dismissed).toBe(true);
+      expect(dismissed.details.receipt.timedOut).toBe(false);
+      expect(timedOut.details.receipt.timedOut).toBe(true);
+      expect(timedOut.details.receipt.dismissed).toBe(false);
+    });
+
+    // (iv) duplicate-label bijection through the tool
+    it("duplicate-label select → click resolves to the EXACT hidden option (bijection)", async () => {
+      const tool = getTool();
+      // Operator clicks the SECOND "Deploy" — the disambiguated display label.
+      const ctx = makeReceiptCtx({ select: { answer: "Deploy (2)", source: "dashboard" } });
+      const result = await tool.execute(
+        "tc-4",
+        { method: "select", title: "Action", options: ["Deploy", "Deploy", "Rollback"] },
+        undefined,
+        undefined,
+        ctx,
+      );
+      // The client was shown DISTINCT labels.
+      const shownOptions = ctx.ui.select.mock.calls[0][1];
+      expect(new Set(shownOptions).size).toBe(3);
+      expect(shownOptions).toEqual(["Deploy", "Deploy (2)", "Rollback"]);
+      // The returned selection maps to index 1 — the second Deploy, NOT the first.
+      expect(result.details.selectedIndex).toBe(1);
+      expect(result.details.result).toBe("Deploy");
+      expect(result.details.receipt.answered).toBe(true);
+    });
+
+    it("distinct-label select is unchanged: same labels shown, index preserved", async () => {
+      const tool = getTool();
+      const ctx = makeReceiptCtx({ select: { answer: "Hold", source: "dashboard" } });
+      const result = await tool.execute(
+        "tc-5",
+        { method: "select", title: "Pick", options: ["Ship", "Hold", "Cancel"] },
+        undefined,
+        undefined,
+        ctx,
+      );
+      expect(ctx.ui.select.mock.calls[0][1]).toEqual(["Ship", "Hold", "Cancel"]);
+      expect(result.details.selectedIndex).toBe(1);
+      expect(result.details.result).toBe("Hold");
+    });
+
+    // Batch receipts — per-question + aggregate
+    it("batch: per-question receipts distinguish answered from the cancelling reason", async () => {
+      const tool = getTool();
+      const store = new Map<string, any>();
+      // Sequential responses per method call; input answers, select times out.
+      const inputResp = { answer: "Alice", source: "dashboard" };
+      const selectResp = { cancelled: true, source: "__bus__" };
+      const ui: any = {
+        __promptReceipts: store,
+        input: vi.fn(async (_t: string, _ph: any, opts?: any) => {
+          if (opts?.toolCallId) store.set(opts.toolCallId, inputResp);
+          return inputResp.answer;
+        }),
+        select: vi.fn(async (_t: string, _o: string[], opts?: any) => {
+          if (opts?.toolCallId) store.set(opts.toolCallId, selectResp);
+          return undefined; // cancelled collapse
+        }),
+        confirm: vi.fn(),
+      };
+      const result = await tool.execute(
+        "tc-batch",
+        {
+          method: "batch",
+          title: "Setup",
+          questions: [
+            { method: "input", title: "Name?" },
+            { method: "select", title: "Lang?", options: ["TS", "Py"] },
+            { method: "confirm", title: "Init?" },
+          ],
+        },
+        undefined,
+        undefined,
+        { ui },
+      );
+      expect(result.details.cancelled).toBe(true);
+      // Third question never asked (batch stopped on the select timeout).
+      expect(ui.confirm).not.toHaveBeenCalled();
+      // Per-question receipts.
+      expect(result.details.receipts).toHaveLength(2);
+      expect(result.details.receipts[0].answered).toBe(true);
+      expect(result.details.receipts[1].timedOut).toBe(true);
+      // Aggregate reflects the decisive (cancelling) receipt.
+      expect(result.details.receipt.answered).toBe(false);
+      expect(result.details.receipt.timedOut).toBe(true);
+      expect(result.details.receipt.dismissed).toBe(false);
+    });
+
+    it("batch: fully answered → aggregate receipt.answered=true", async () => {
+      const tool = getTool();
+      const store = new Map<string, any>();
+      const ui: any = {
+        __promptReceipts: store,
+        input: vi.fn(async (_t: string, _ph: any, opts?: any) => {
+          if (opts?.toolCallId) store.set(opts.toolCallId, { answer: "Alice", source: "dashboard" });
+          return "Alice";
+        }),
+        confirm: vi.fn(async (_t: string, _m: string, opts?: any) => {
+          if (opts?.toolCallId) store.set(opts.toolCallId, { answer: "true", source: "dashboard" });
+          return true;
+        }),
+      };
+      const result = await tool.execute(
+        "tc-batch2",
+        {
+          method: "batch",
+          title: "Setup",
+          questions: [
+            { method: "input", title: "Name?" },
+            { method: "confirm", title: "Init?" },
+          ],
+        },
+        undefined,
+        undefined,
+        { ui },
+      );
+      expect(result.details.cancelled).toBe(false);
+      expect(result.details.receipt.answered).toBe(true);
+      expect(result.details.receipt.delivered).toBe(true);
+      expect(result.details.receipts).toHaveLength(2);
+      expect(result.details.receipts.every((r: any) => r.answered)).toBe(true);
+    });
+
+    // (v) ABLE-TO-FAIL CONTROL: proves the pre-fix collapse can't distinguish
+    // a dismiss from a decision. On the unfixed execute(), details.receipt is
+    // undefined → this throws (RED). After the fix it passes (GREEN).
+    it("[able-to-fail control] pre-fix dismissed confirm cannot be told from a decision", async () => {
+      const tool = getTool();
+      const ctx = makeReceiptCtx({ confirm: { cancelled: true, source: "dashboard" } });
+      const result = await tool.execute(
+        "tc-ctrl",
+        { method: "confirm", title: "Deploy to production now?" },
+        undefined,
+        undefined,
+        ctx,
+      );
+      // The crux: a dismissed confirm must NOT surface as a "no" decision.
+      expect(result.details.receipt).toBeDefined();
+      expect(result.details.receipt.answered).toBe(false);
+      expect(result.details.receipt.dismissed).toBe(true);
+      expect(result.content[0].text).not.toMatch(/User responded/);
     });
   });
 });
