@@ -1,0 +1,80 @@
+{
+  "arm": "A1-live-rendered-vs-never",
+  "staged": "2e8df4c",
+  "rendered": {
+    "session": "019fb78b-e08b-741b-bb26-e8eaed98e2c5",
+    "dialog_mounted": true,
+    "visible_labels": [
+      "Deploy to production now",
+      "Run one more validation pass first",
+      "Cancel and hold"
+    ],
+    "socket": {
+      "has9999": false,
+      "has8000": false,
+      "nonLoop": 0
+    },
+    "details": {
+      "method": "select",
+      "receipt": {
+        "delivered": true,
+        "rendered": true,
+        "answered": false,
+        "dismissed": false,
+        "timedOut": true,
+        "invalid": false,
+        "source": "__bus__"
+      }
+    },
+    "receipt": {
+      "delivered": true,
+      "rendered": true,
+      "answered": false,
+      "dismissed": false,
+      "timedOut": true,
+      "invalid": false,
+      "source": "__bus__"
+    },
+    "assert_timedOut": true,
+    "assert_delivered_true": true,
+    "assert_rendered_true": true,
+    "assert_not_answered": true,
+    "assert_author_present": false
+  },
+  "never": {
+    "session": "019fb78c-aed4-78f5-9ba4-ebb8bbba7a50",
+    "socket": {
+      "has9999": false,
+      "has8000": false,
+      "nonLoop": 0
+    },
+    "details": {
+      "method": "select",
+      "receipt": {
+        "delivered": false,
+        "rendered": false,
+        "answered": false,
+        "dismissed": false,
+        "timedOut": true,
+        "invalid": false,
+        "source": "__bus__"
+      }
+    },
+    "receipt": {
+      "delivered": false,
+      "rendered": false,
+      "answered": false,
+      "dismissed": false,
+      "timedOut": true,
+      "invalid": false,
+      "source": "__bus__"
+    },
+    "assert_timedOut": true,
+    "assert_delivered_false": true,
+    "assert_rendered_false": true,
+    "assert_no_author": true
+  },
+  "A1_LIVE_CONTRAST_PROVEN": true,
+  "rendered_socket_clean": true,
+  "never_socket_clean": true
+}
