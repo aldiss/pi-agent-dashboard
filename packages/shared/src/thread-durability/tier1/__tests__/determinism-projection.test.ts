@@ -9,7 +9,7 @@
  * They assert SHAPE, not mutable values. The fixture is a SHAPE snapshot of 3
  * LIVE ledger threads whose stage/pending WILL diverge over time — that
  * divergence is CORRECT. So we assert: the 5 contract fields present;
- * deterministic/judgment tagging; terminal (empty pending) handling; unmapped
+ * deterministic/judgment tagging; empty-pending (no edges) handling; unmapped
  * (`stage:null` / `degrade:"unmapped"`) handling; and — the load-bearing render
  * invariant — that a sample with two pending edges sharing a `to` but differing
  * on `via_event` keeps BOTH as distinct edges. We do NOT pin any thread to a
@@ -109,17 +109,22 @@ describe("determinism projection — deterministic/judgment tagging", () => {
   });
 });
 
-describe("determinism projection — terminal (empty pending → no edges)", () => {
-  it("a terminal sample renders NO edges (pending is empty)", () => {
-    // Find the terminal sample by its SHAPE (non-null stage, empty pending) —
-    // not by pinning a particular stage string. In the frozen snapshot this is
-    // the `done` sample, but the ASSERTION is the shape invariant: a stage with
-    // no pending transitions has nowhere to go, so the overlay draws no edges.
-    const terminal = loadDeterminismFixture().samples.find(
+describe("determinism projection — empty-pending (no edges represented)", () => {
+  it("an empty-pending sample renders NO edges (pending is empty)", () => {
+    // Find the empty-pending sample by its SHAPE (non-null stage, empty
+    // pending) — not by pinning a particular stage string. In the frozen
+    // snapshot this is the `done` sample, but the ASSERTION is the shape
+    // invariant only: a stage with no represented pending transitions draws no
+    // edges. This is NOT a terminality claim — the sample is degrade:"spine-only"
+    // (a partial fold), so absent edges may be unfolded event-types, not a dead end.
+    const emptyPending = loadDeterminismFixture().samples.find(
       (p) => p.stage !== null && p.degrade !== "unmapped" && p.pending.length === 0,
     );
-    expect(terminal).toBeDefined();
-    expect(terminal!.pending).toHaveLength(0);
+    expect(emptyPending).toBeDefined();
+    expect(emptyPending!.pending).toHaveLength(0);
+    // The snapshot's empty-pending sample is a PARTIAL fold, reinforcing that
+    // empty pending ≠ terminal.
+    expect(emptyPending!.degrade).toBe("spine-only");
   });
 });
 

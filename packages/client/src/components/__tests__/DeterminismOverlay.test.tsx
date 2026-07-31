@@ -7,8 +7,9 @@
  *     2 DISTINCT `reaped` edges (keyed by via_event, never de-duped on `to`),
  *     deterministic→gate label, judgment→who label + dashed line, + a
  *     "partial fold" degrade badge.
- *   • TERMINAL                 — a stage with empty pending → NO edges (the
- *     honest terminal note, not an error).
+ *   • EMPTY-PENDING            — a stage with empty pending → NO edges + the
+ *     projection-scoped "no pending transitions in this projection" copy (NOT a
+ *     terminality claim; the fold is spine-only/partial).
  *   • UNMAPPED                 — stage:null / degrade:"unmapped" → the calm
  *     "not mapped / unknown" state (NOT an error).
  *
@@ -37,12 +38,12 @@ function projection(threadId: string): DeterminismProjection {
   if (!p) throw new Error(`fixture missing ${threadId}`);
   return p;
 }
-/** The frozen terminal + unmapped samples, found by SHAPE (not pinned stage). */
-function terminalProjection(): DeterminismProjection {
+/** The frozen empty-pending + unmapped samples, found by SHAPE (not pinned stage). */
+function emptyPendingProjection(): DeterminismProjection {
   const p = [...loadDeterminismProjectionMap().values()].find(
     (x) => x.stage !== null && x.degrade !== "unmapped" && x.pending.length === 0,
   );
-  if (!p) throw new Error("fixture has no terminal sample");
+  if (!p) throw new Error("fixture has no empty-pending sample");
   return p;
 }
 function unmappedProjection(): DeterminismProjection {
@@ -154,13 +155,16 @@ describe("DeterminismOverlay — multi-edge / spine-only case", () => {
   });
 });
 
-describe("DeterminismOverlay — terminal case (empty pending → no edges)", () => {
-  it("renders NO edges and the honest terminal note", () => {
-    const { queryByTestId, queryAllByTestId } = renderOverlay(terminalProjection());
+describe("DeterminismOverlay — empty-pending case (no edges represented in this projection)", () => {
+  it("renders NO edges and the projection-scoped note, with NO false-terminal copy", () => {
+    const { queryByTestId, queryAllByTestId } = renderOverlay(emptyPendingProjection());
     expect(queryAllByTestId("determinism-edge")).toHaveLength(0);
     expect(queryByTestId("determinism-edges")).toBeNull();
-    expect(queryByTestId("determinism-no-edges")).not.toBeNull();
-    expect(queryByTestId("determinism-no-edges")?.textContent).toContain("terminal");
+    const note = queryByTestId("determinism-no-edges");
+    expect(note).not.toBeNull();
+    // Truthful, projection-scoped copy — never a terminality claim.
+    expect(note?.textContent).toContain("no pending transitions in this projection");
+    expect(note?.textContent).not.toMatch(/terminal|nowhere/i);
   });
 });
 
@@ -224,5 +228,32 @@ describe("ThreadsView — determinism overlay wired additively (fixture-backed)"
     await waitFor(() => expect(queryByTestId("thread-detail")).not.toBeNull());
     // No overlay — the detail pane still renders (additive, no crash).
     expect(queryByTestId("determinism-overlay")).toBeNull();
+  });
+
+  it("BLOCKER-2: with NO injected determinismFetcher, the client makes ZERO network calls and the overlay is inert", async () => {
+    // Spy on the global fetch — the default posture must not touch the network
+    // for determinism (live wiring is a separate Joan gate, not the default).
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response("{}", { status: 200, headers: { "content-type": "application/json" } }),
+    );
+    try {
+      const { queryByTestId } = render(
+        <ThemeProvider>
+          {/* No determinismFetcher prop → inert by default. */}
+          <ThreadsView fetcher={listFetcher} handoffFetcher={async () => ({ events: [], endpointAvailable: true })} />
+        </ThemeProvider>,
+      );
+      // The detail pane still renders (the overlay is additive + optional).
+      await waitFor(() => expect(queryByTestId("thread-detail")).not.toBeNull());
+      // The overlay is inert — nothing rendered.
+      expect(queryByTestId("determinism-overlay")).toBeNull();
+      // And, decisively: ZERO calls to the determinism endpoint.
+      const determinismCalls = fetchSpy.mock.calls.filter(([url]) =>
+        String(url).includes("/determinism"),
+      );
+      expect(determinismCalls).toHaveLength(0);
+    } finally {
+      fetchSpy.mockRestore();
+    }
   });
 });

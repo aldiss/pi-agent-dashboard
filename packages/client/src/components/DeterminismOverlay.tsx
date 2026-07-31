@@ -18,7 +18,11 @@
  *     mapped; the stage + edges are real but incomplete).
  *   • `unmapped`   → a calm "not mapped / unknown" (the thread isn't in the
  *     machine yet) — NOT an error.
- *   • `done` / empty pending → no edges (a terminal stage has nowhere to go).
+ *   • empty pending → no edges represented in THIS projection. This is NOT a
+ *     terminality claim: a partial (`spine-only`) fold with zero represented
+ *     edges does not prove the stage is terminal — the unfolded event-types
+ *     could carry transitions. No terminal/"nowhere-left" copy is emitted
+ *     unless an explicit authoritative terminal carrier exists (none today).
  *
  * READ-ONLY + additive. Theme-safe: CSS-var accent tokens only (the B5 /
  * ThreadStatusBadge discipline) — deterministic uses `--accent-green`, judgment
@@ -34,7 +38,7 @@ import {
   mdiGavel,
   mdiHelpRhombusOutline,
   mdiLayersOutline,
-  mdiFlagCheckered,
+  mdiInformationOutline,
 } from "@mdi/js";
 import {
   pendingKey,
@@ -262,15 +266,18 @@ export function DeterminismOverlay({ projection }: { projection: DeterminismProj
         <>
           <StageHeader projection={projection} />
           {pending.length === 0 ? (
-            // Terminal / done: a stage with no pending transitions has no edges.
+            // No pending transitions represented in THIS projection. NOT a
+            // terminality claim: with degrade:"spine-only" the fold is partial,
+            // so absent edges may just be unfolded event-types, not a dead end.
+            // Neutral (muted) styling — no success/terminal signal.
             <div
               data-testid="determinism-no-edges"
               className="flex items-center gap-2 rounded-md px-2 py-1.5"
-              style={{ background: "color-mix(in srgb, var(--accent-green) 8%, transparent)" }}
+              style={{ background: "color-mix(in srgb, var(--text-muted) 8%, transparent)" }}
             >
-              <Icon path={mdiFlagCheckered} size={0.6} style={{ color: "var(--accent-green)", flexShrink: 0 }} />
+              <Icon path={mdiInformationOutline} size={0.6} style={{ color: "var(--text-muted)", flexShrink: 0 }} />
               <p className="text-[10px] leading-snug" style={{ color: "var(--text-secondary)" }}>
-                no pending transitions — terminal stage (nowhere left to go).
+                no pending transitions in this projection.
               </p>
             </div>
           ) : (

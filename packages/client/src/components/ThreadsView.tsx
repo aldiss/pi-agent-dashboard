@@ -36,8 +36,11 @@ import { buildMessageLaneStateFromManager } from "../lib/thread-message-lane.js"
 import type { ReadonlySessionManagerLike } from "@blackbelt-technology/pi-dashboard-shared/thread-durability/tier1/cloned-session-facade.js";
 import type { HandoffLaneResult } from "../lib/thread-handoff-lane-api.js";
 import { fetchHandoffLane } from "../lib/thread-handoff-lane-api.js";
+// Determinism model: TYPE-ONLY import. The live fetcher (`fetchDeterminism`) is
+// deliberately NOT imported here — wiring it as a default would cross the
+// live-wiring boundary (a separate Joan gate). The overlay stays inert unless a
+// caller explicitly injects a fetcher (fixture in demo/tests; live behind the gate).
 import type { DeterminismFetcher, DeterminismProjection } from "../lib/thread-determinism-api.js";
-import { fetchDeterminism } from "../lib/thread-determinism-api.js";
 
 /**
  * A message-lane provider: threadId → a `ReadonlySessionManagerLike` (or null
@@ -56,10 +59,12 @@ interface Props {
   /** Injectable hand-off lane fetcher (default = live REST). */
   handoffFetcher?: (threadId: string) => Promise<HandoffLaneResult>;
   /**
-   * Injectable determinism-model fetcher (default = live REST; demo/tests feed
-   * the frozen fixture). Same injectable shape as `handoffFetcher`. Resolves a
-   * thread's `project(thread_id)` fold for the determinism overlay; `null` =
-   * no model binding (held activation) → the overlay renders nothing.
+   * Injectable determinism-model fetcher. NO default — when ABSENT the overlay
+   * is INERT (zero network calls, renders nothing). Live wiring is a separate
+   * Joan gate, so the live `fetchDeterminism` is deliberately NOT the default.
+   * Inject a fetcher to opt in: the frozen fixture in demo/tests, or the live
+   * REST fetcher only once the gate opens. A resolved `null` also renders
+   * nothing (bound-but-held-activation).
    */
   determinismFetcher?: DeterminismFetcher;
 }
@@ -137,7 +142,8 @@ function ThreadDetail({
   summary: ThreadSummary;
   messageLaneProvider?: MessageLaneManagerProvider;
   handoffFetcher: (threadId: string) => Promise<HandoffLaneResult>;
-  determinismFetcher: DeterminismFetcher;
+  /** Absent (undefined) = inert: no fetch, overlay renders nothing. */
+  determinismFetcher?: DeterminismFetcher;
 }) {
   // Build the message-lane state THROUGH the P1 facade (the provider yields a
   // ReadonlySessionManagerLike; the builder wraps it in createClonedSessionFacade).
@@ -158,11 +164,15 @@ function ThreadDetail({
     return () => { cancelled = true; };
   }, [handoffFetcher, summary.thread_id]);
 
-  // Determinism overlay — the thread's `project(thread_id)` fold. `null` = no
-  // model binding (held activation) → the overlay renders nothing (same
-  // graceful-degrade posture as the hand-off lane). Fixture-backed in demo/tests.
+  // Determinism overlay — the thread's `project(thread_id)` fold. The fetcher is
+  // OPTIONAL: when ABSENT (undefined) the overlay is INERT — zero network calls,
+  // renders nothing. This is the default posture (live wiring is a separate Joan
+  // gate). A caller opts in by injecting a fetcher (fixture in demo/tests; the
+  // live `fetchDeterminism` only once the gate opens). A resolved `null` from an
+  // injected fetcher also renders nothing (bound-but-held-activation).
   const [determinism, setDeterminism] = useState<DeterminismProjection | null>(null);
   React.useEffect(() => {
+    if (!determinismFetcher) return; // absent → inert, no fetch
     let cancelled = false;
     determinismFetcher(summary.thread_id)
       .then((p) => { if (!cancelled) setDeterminism(p); })
@@ -199,7 +209,7 @@ function ThreadDetail({
   );
 }
 
-export function ThreadsView({ fetcher, messageLaneProvider, handoffFetcher = fetchHandoffLane, determinismFetcher = fetchDeterminism }: Props) {
+export function ThreadsView({ fetcher, messageLaneProvider, handoffFetcher = fetchHandoffLane, determinismFetcher }: Props) {
   const { threads, isLoading, error, endpointAvailable } = useThreadsList(fetcher);
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
