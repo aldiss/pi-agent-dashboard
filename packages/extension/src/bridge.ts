@@ -26,7 +26,7 @@ import { autoStartServer } from "./server-auto-start.js";
 import type { ServerToExtensionMessage } from "@blackbelt-technology/pi-dashboard-shared/protocol.js";
 import { expandPromptTemplateFromDisk } from "./prompt-expander.js";
 
-import { PromptBus } from "./prompt-bus.js";
+import { PromptBus, type PromptResponse } from "./prompt-bus.js";
 import { DashboardDefaultAdapter } from "./dashboard-default-adapter.js";
 import { registerAskUserTool } from "./ask-user-tool.js";
 import { registerPushNotifyUserTool } from "./push-notify-user-tool.js";
@@ -1405,21 +1405,39 @@ function initBridge(pi: ExtensionAPI) {
         return meta;
       };
 
+      // Receipt (A6) side-channel: stash the FULL PromptResponse per
+      // toolCallId right before collapsing to the legacy string|undefined
+      // contract. ask-user-tool drains this to report a verifiable receipt
+      // (answered vs dismissed vs timed-out/never-rendered) without changing
+      // any caller's return type. Keyed by toolCallId so concurrent
+      // free-floating prompts (slash commands, architect) can never clobber a
+      // tool-call's receipt; free-floating callers omit toolCallId and simply
+      // don't stash. Drained by the reader, so the map stays bounded by the
+      // number of in-flight ask_user sub-questions.
+      const promptReceipts = new Map<string, PromptResponse>();
+      (ctx.ui as any).__promptReceipts = promptReceipts;
+      const stashReceipt = (opts: any, response: PromptResponse): void => {
+        const toolCallId = opts?.toolCallId;
+        if (typeof toolCallId === "string" && toolCallId.length > 0) {
+          promptReceipts.set(toolCallId, response);
+        }
+      };
+
       (ctx.ui as any).select = (title: string, options: string[], opts?: any) =>
         bus.request({ pipeline: "command", type: "select", question: title, options, metadata: buildMeta(opts) })
-          .then(r => r.cancelled ? undefined : r.answer);
+          .then(r => { stashReceipt(opts, r); return r.cancelled ? undefined : r.answer; });
 
       (ctx.ui as any).input = (title: string, placeholder?: string, opts?: any) =>
         bus.request({ pipeline: "command", type: "input", question: title, defaultValue: placeholder, metadata: buildMeta(opts) })
-          .then(r => r.cancelled ? undefined : r.answer);
+          .then(r => { stashReceipt(opts, r); return r.cancelled ? undefined : r.answer; });
 
       (ctx.ui as any).confirm = (title: string, message?: string, opts?: any) =>
         bus.request({ pipeline: "command", type: "confirm", question: title, metadata: buildMeta(opts, message) })
-          .then(r => !r.cancelled && r.answer === "true");
+          .then(r => { stashReceipt(opts, r); return !r.cancelled && r.answer === "true"; });
 
       (ctx.ui as any).editor = (title: string, prefill?: string, opts?: any) =>
         bus.request({ pipeline: "command", type: "editor", question: title, defaultValue: prefill, metadata: buildMeta(opts) })
-          .then(r => r.cancelled ? undefined : r.answer);
+          .then(r => { stashReceipt(opts, r); return r.cancelled ? undefined : r.answer; });
 
       // ── Multiselect ──────────────────────────────────────────────
       // ctx.ui.multiselect is NOT a built-in pi method — we attach it here
@@ -1443,8 +1461,8 @@ function initBridge(pi: ExtensionAPI) {
           type: "multiselect",
           question: title,
           options,
-          metadata: opts?.message ? { message: opts.message } : undefined,
-        }).then(decodeMultiselectAnswer);
+          metadata: buildMeta(opts),
+        }).then(r => { stashReceipt(opts, r); return decodeMultiselectAnswer(r); });
 
       // Notify is fire-and-forget: call original + forward to dashboard
       (ctx.ui as any).notify = (message: string, level?: string) => {
