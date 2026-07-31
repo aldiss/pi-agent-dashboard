@@ -13,7 +13,7 @@
  */
 import React from "react";
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { render, cleanup, act } from "@testing-library/react";
+import { render, cleanup, act, fireEvent, waitFor } from "@testing-library/react";
 
 let mobileProps: Record<string, unknown> | null = null;
 let pttProps: Record<string, unknown> | null = null;
@@ -284,5 +284,57 @@ describe("Desktop parity — the same mic-block applies to the desktop button", 
       onTranscript("desktop dictation");
     });
     expect(pttProps?.disabled).toBe(true);
+  });
+});
+
+describe("Dawn Send failure surfaces a READABLE error on both surfaces (dl-13343)", () => {
+  it("passes dawnSendError=true to the mobile composer on failure, and clears it on a new dictation", async () => {
+    vi.stubGlobal("MediaRecorder", FakeMediaRecorder);
+    const fetchSpy = vi.fn(() =>
+      Promise.resolve({ ok: false, status: 500, json: () => Promise.resolve({}) } as unknown as Response),
+    );
+    vi.stubGlobal("fetch", fetchSpy);
+    mockedShouldUseMobile.mockReturnValue(true);
+    renderDawn(() => {});
+    await stageDictation("buy milk");
+    expect(mobileProps?.dawnSendError).toBe(false);
+    const submit = mobileProps?.onSend as (t: string) => Promise<boolean>;
+    await act(async () => { await submit("buy milk"); });
+    // Readable error is surfaced to the composer...
+    expect(mobileProps?.dawnSendError).toBe(true);
+    // ...and clears when the operator records again.
+    await stageDictation("second try");
+    expect(mobileProps?.dawnSendError).toBe(false);
+  });
+
+  it("renders a readable desktop error banner on failure and removes it on a new dictation", async () => {
+    vi.stubGlobal("MediaRecorder", FakeMediaRecorder);
+    const fetchSpy = vi.fn(() =>
+      Promise.resolve({ ok: false, status: 500, json: () => Promise.resolve({}) } as unknown as Response),
+    );
+    vi.stubGlobal("fetch", fetchSpy);
+    mockedShouldUseMobile.mockReturnValue(false); // desktop
+    // Uncontrolled draft so the appended transcript actually populates local
+    // state and enables the send button.
+    const { queryByTestId, getByTestId } = render(
+      <CommandInput commands={[]} onSend={() => {}} sessionId="sess-dawn" sessionName="Dawn" />,
+    );
+    const onDawnStreamChange = pttProps?.onStreamChange as (s: unknown) => void;
+    const onTranscript = pttProps?.onTranscript as (t: string) => void;
+    await act(async () => {
+      onDawnStreamChange({} as MediaStream);
+      onDawnStreamChange(null);
+      onTranscript("desktop dictation");
+    });
+    expect(queryByTestId("dawn-send-error")).toBeNull();
+    await act(async () => { fireEvent.click(getByTestId("send-button")); });
+    await waitFor(() => expect(queryByTestId("dawn-send-error")).not.toBeNull());
+    // A new recording clears the error.
+    await act(async () => {
+      onDawnStreamChange({} as MediaStream);
+      onDawnStreamChange(null);
+      onTranscript("retry dictation");
+    });
+    expect(queryByTestId("dawn-send-error")).toBeNull();
   });
 });

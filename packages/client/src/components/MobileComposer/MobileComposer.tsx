@@ -77,6 +77,9 @@ interface Props {
   /** Fail-closed mic-block: true while a Dawn dictation is pending-unsent, so no
    *  new recording can start until the pending one is sent or explicitly cleared. */
   micBlocked?: boolean;
+  /** True when the last Dawn Send-time spool failed; the visible text was kept.
+   *  Surfaces a readable error so a preserved-but-unsent text is explained. */
+  dawnSendError?: boolean;
 }
 
 export function MobileComposer({
@@ -92,6 +95,7 @@ export function MobileComposer({
   onVoiceTranscript,
   onDawnStreamChange,
   micBlocked = false,
+  dawnSendError = false,
 }: Props) {
   // Text state — controlled or uncontrolled per CommandInput convention
   const isControlled = draft !== undefined;
@@ -353,6 +357,17 @@ export function MobileComposer({
         >
           <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" aria-hidden="true" />
           <span>{queuedCount} queued</span>
+        </div>
+      )}
+
+      {dawnSendError && (
+        <div
+          className="mb-2 text-xs text-red-400 flex items-center gap-1.5 bg-[var(--bg-tertiary)] rounded-full px-2.5 py-1 self-start inline-flex"
+          role="alert"
+          data-testid="mobile-dawn-send-error"
+        >
+          <Icon path={mdiAlert} size={0.55} />
+          <span>Dictation didn’t send — your text was kept. Tap Send to retry.</span>
         </div>
       )}
 

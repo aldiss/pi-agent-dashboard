@@ -108,5 +108,11 @@ describe("voice-transcript surface census", () => {
     // MobileComposer awaits the submit and clears ONLY on non-failure.
     expect(mc).toMatch(/await onSend\(/);
     expect(mc).toMatch(/if \(ok === false\) return/);
+    // A spool failure surfaces a READABLE error on BOTH surfaces (dl-13343).
+    expect(ci).toMatch(/setDawnSendError\(true\)/);
+    expect(ci).toMatch(/data-testid="dawn-send-error"/);
+    expect(ci).toMatch(/dawnSendError=\{dawnSendError\}/);
+    expect(mc).toMatch(/dawnSendError\?:/);
+    expect(mc).toMatch(/data-testid="mobile-dawn-send-error"/);
   });
 });

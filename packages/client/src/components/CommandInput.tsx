@@ -251,6 +251,9 @@ export function CommandInput({ commands: externalCommands, onSend, onListFiles, 
     setDawnPendingState(v);
   }, []);
   const dawnSendInFlightRef = useRef(false);
+  // Readable failure surface (dl-13343): a preserved-but-unsent text does not
+  // explain WHY Send failed, so a spool/audio failure raises this visible error.
+  const [dawnSendError, setDawnSendError] = useState(false);
 
   const appendVoiceText = useCallback((value: string) => {
     const current = textRef.current;
@@ -332,11 +335,13 @@ export function CommandInput({ commands: externalCommands, onSend, onListFiles, 
     appendVoiceText(transcript);
     if (sessionName === DAWN_SESSION_NAME && sessionId) {
       setDawnPending(true);
+      setDawnSendError(false);
     }
   }, [appendVoiceText, sessionId, sessionName, setDawnPending]);
 
   const clearDawnPending = useCallback(() => {
     setDawnPending(false);
+    setDawnSendError(false);
     resolveDawnAudioRef.current?.(null);
     resolveDawnAudioRef.current = null;
     dawnAudioChunksRef.current = [];
@@ -365,15 +370,17 @@ export function CommandInput({ commands: externalCommands, onSend, onListFiles, 
     if (dawnSendInFlightRef.current) return false;   // double/concurrent Send → exactly one spool
     if (trimmed.length === 0) return false;           // never spool empty text
     dawnSendInFlightRef.current = true;
+    setDawnSendError(false);
     try {
       const audio = await dawnAudioPromiseRef.current;
-      if (!audio || audio.size === 0) return false;   // preserve text + pending; send nothing
+      if (!audio || audio.size === 0) { setDawnSendError(true); return false; } // preserve; readable error
       const instruction = await spoolDawnDictation(sessionId, trimmed, audio);
       onSend(instruction, sendImages);                // path-only outbound
       clearDawnPending();
       return true;
     } catch {
-      return false;                                   // preserve text + pending; send nothing
+      setDawnSendError(true);                          // preserve text + pending; readable error
+      return false;
     } finally {
       dawnSendInFlightRef.current = false;
     }
@@ -686,6 +693,7 @@ export function CommandInput({ commands: externalCommands, onSend, onListFiles, 
         onVoiceTranscript={handleVoiceTranscript}
         onDawnStreamChange={sessionName === DAWN_SESSION_NAME && sessionId ? handleDawnStreamChange : undefined}
         micBlocked={sessionName === DAWN_SESSION_NAME && !!sessionId && dawnPending}
+        dawnSendError={dawnSendError}
       />
     );
   }
@@ -706,6 +714,16 @@ export function CommandInput({ commands: externalCommands, onSend, onListFiles, 
         >
           <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" aria-hidden="true" />
           <span>{queuedCount} queued</span>
+        </div>
+      )}
+      {dawnSendError && (
+        <div
+          className="absolute -top-7 left-3 right-3 text-xs text-red-400 flex items-center gap-1.5 bg-[var(--bg-tertiary)] rounded-full px-2.5 py-1 shadow-sm"
+          role="alert"
+          data-testid="dawn-send-error"
+        >
+          <Icon path={mdiAlert} size={0.55} />
+          <span>Dictation didn’t send — your text was kept. Tap Send to retry.</span>
         </div>
       )}
       {/* Autocomplete dropdown */}
