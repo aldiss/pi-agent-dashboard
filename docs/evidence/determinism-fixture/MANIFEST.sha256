@@ -1,0 +1,26 @@
+# MANIFEST.sha256 — frozen render-binding evidence (determinism-fixture)
+#
+# Binds to:
+#   amended code commit : 8c2f649  (fix: 2 seam blockers — false-terminal copy + client live-wiring default)
+#   base code commit    : bcb8731  (feat: fixture-bound determinism render-binding)
+#   frozen bind target  : _fixture/fixture-c23c8d47.json  sha256 c23c8d47… @ frozen 6d4b412c
+#
+# Verify (from this directory):  shasum -c MANIFEST.sha256
+# Regenerate the PNGs/HTML: see the header of render-evidence.mts.
+#
+# Artifacts:
+#   AMEND-BRIEF-1.md               — the amendment brief (3 seam blockers)
+#   CC-BUILD-BRIEF.md              — the original build brief
+#   render-evidence.mts            — the render harness (react-dom/server → Playwright)
+#   mdi-react-shim.mjs             — harness-only @mdi/react CJS→ESM shim
+#   determinism-overlay-render.html— static markup rendered from the real component
+#   determinism-overlay-desktop.png— overlay @1440px, 3 fixture cases (DONE shows corrected copy)
+#   determinism-overlay-mobile.png — overlay @393px, 3 fixture cases (DONE shows corrected copy)
+#
+10a1b0863c02f2d6fafb561d4fadd193d287ee6d65aab2fab7aa68d42377c282  AMEND-BRIEF-1.md
+7fbada060a05faf78295d087671abd1f2aa3380fe9a048dae505a5b3cbebf069  CC-BUILD-BRIEF.md
+601cd9e71b2097a2cd6b673e18087ff5301d64d7ed27953f60f19641e6dffdb0  determinism-overlay-desktop.png
+1f34916b076b99be61497823a47712f1fdb0787a27b7b5f13b049dea1b9072c8  determinism-overlay-mobile.png
+d3d14470e286a7da43b7c024e7574ffab37df69b4a51e05fbcb2d6d5dbd708ca  determinism-overlay-render.html
+c3c36f0b4c68f5c245ef71c323e2f0ce3baa13d6ecabe94138f456936915c370  mdi-react-shim.mjs
+1dc2d09e24d76439c48f2e50341b456f30e5e75d0314610406ed7607653d9fa4  render-evidence.mts
