@@ -61,6 +61,16 @@ interface Props {
    * for queue-while-streaming; this prop just surfaces the count to the badge UI.
    */
   queuedCount?: number;
+  /**
+   * Dawn parity: the parent (CommandInput) owns the Dawn-aware transcript
+   * handler and the Dawn audio capture. MobileComposer reuses them via these
+   * callback props rather than reimplementing the spool call — there is exactly
+   * one spool implementation, in CommandInput. When absent (the isolated e2e
+   * harness), MobileComposer falls back to appending the raw transcript.
+   */
+  onVoiceTranscript?: (transcript: string) => void;
+  /** Dawn audio capture. Receives the same MediaStream the waveform uses. */
+  onDawnStreamChange?: (stream: MediaStream | null) => void;
 }
 
 export function MobileComposer({
@@ -73,6 +83,8 @@ export function MobileComposer({
   images: imagesProp,
   onImagesChange,
   queuedCount = 0,
+  onVoiceTranscript,
+  onDawnStreamChange,
 }: Props) {
   // Text state — controlled or uncontrolled per CommandInput convention
   const isControlled = draft !== undefined;
@@ -223,12 +235,34 @@ export function MobileComposer({
 
   const handleTranscript = useCallback(
     (transcript: string) => {
+      // Reuse the parent's Dawn-aware handler when wired (production path): it
+      // routes a Dawn dictation to /spool and appends the entry path, and a
+      // non-Dawn dictation to a raw append, via the SAME shared draft this
+      // composer reads. Only fall back to a local raw append when the parent
+      // did not wire it (the isolated e2e harness).
+      if (onVoiceTranscript) {
+        onVoiceTranscript(transcript);
+        requestAnimationFrame(() => textareaRef.current?.focus());
+        return;
+      }
       const sep = text && !text.endsWith(" ") && !text.endsWith("\n") ? " " : "";
       setText(text + sep + transcript);
       // Auto-grow handled by useEffect on text change (composes with r11 fix shape)
       requestAnimationFrame(() => textareaRef.current?.focus());
     },
-    [text, setText],
+    [text, setText, onVoiceTranscript],
+  );
+
+  // Stream lifecycle: the waveform AND the parent's Dawn audio capture must
+  // receive the SAME MediaStream. PushToTalkButton fires this once with the
+  // stream (recording starts) and once with null (stops); both consumers see
+  // both edges.
+  const handleStreamChange = useCallback(
+    (stream: MediaStream | null) => {
+      setRecordingStream(stream);
+      onDawnStreamChange?.(stream);
+    },
+    [onDawnStreamChange],
   );
 
   // r27 Phase 1.1.1: canSend NO LONGER blocks on isWorking — user can tap Send while agent is
@@ -407,7 +441,7 @@ export function MobileComposer({
           <PushToTalkButton
             disabled={disabled}
             onTranscript={handleTranscript}
-            onStreamChange={setRecordingStream}
+            onStreamChange={handleStreamChange}
             className="w-10 h-10 rounded-full bg-[var(--bg-tertiary)] hover:bg-[var(--bg-hover)] active:scale-95 transition-all flex items-center justify-center disabled:opacity-50 disabled:cursor-not-allowed"
             idleTitle="Tap to record voice (tap again to stop)"
           />

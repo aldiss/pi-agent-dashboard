@@ -623,6 +623,8 @@ export function CommandInput({ commands: externalCommands, onSend, onListFiles, 
         commands={commands}
         onListFiles={onListFiles}
         queuedCount={queuedCount}
+        onVoiceTranscript={handleVoiceTranscript}
+        onDawnStreamChange={sessionName === DAWN_SESSION_NAME && sessionId ? handleDawnStreamChange : undefined}
       />
     );
   }
