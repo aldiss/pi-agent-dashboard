@@ -20,6 +20,7 @@ import { formatMessageTime } from "../lib/format.js";
 import { useMobile } from "../hooks/useMobile.js";
 import { isDebugTool } from "../hooks/useDebugToolsVisible.js";
 import { getInteractiveRenderer } from "./interactive-renderers/registry.js";
+import { usePromptRenderedAck } from "../hooks/usePromptRenderedAck.js";
 import { groupConsecutiveToolCalls, type ChatItem, type ToolCallGroup } from "../lib/group-tool-calls.js";
 import { CollapsedToolGroup } from "./CollapsedToolGroup.js";
 import { findRetriedErrorIds, findActiveInteractiveToolResultIds } from "../lib/collapse-retried-errors.js";
@@ -89,6 +90,12 @@ interface Props {
   sessionCtx?: AudienceSessionCtx;
   onCancelPending?: () => void;
   onRespondToUi?: (requestId: string, result?: unknown, cancelled?: boolean) => void;
+  /**
+   * A1 render-lifecycle ACK (Pete dl-13358 B1): sends `prompt_rendered` for a
+   * promptId when its interactive dialog card actually mounts (post-DOM-commit),
+   * exactly once. Threaded to InteractiveUiCard → usePromptRenderedAck.
+   */
+  onRendered?: (requestId: string) => void;
   onAbort?: () => void;
   onForceKill?: () => void;
   onForkFromMessage?: (entryId: string) => void;
@@ -276,11 +283,17 @@ const QueuedMessageCard = React.memo(function QueuedMessageCard({
   );
 });
 
-const InteractiveUiCard = React.memo(function InteractiveUiCard({ request, onRespondToUi }: {
+const InteractiveUiCard = React.memo(function InteractiveUiCard({ request, onRespondToUi, onRendered }: {
   request: InteractiveUiRequest;
   onRespondToUi?: (requestId: string, result?: unknown, cancelled?: boolean) => void;
+  onRendered?: (requestId: string) => void;
 }) {
   const Renderer = getInteractiveRenderer(request.method);
+  // A1 render-lifecycle ACK (Pete dl-13358 B1): fires from THIS card's actual
+  // mount (post-DOM-commit), exactly once per promptId. This card is the
+  // per-prompt dialog boundary — a parent container can commit before the
+  // dialog does, so the ACK MUST live here, not upstream.
+  usePromptRenderedAck(request.requestId, onRendered);
   return (
     <Renderer
       requestId={request.requestId}
@@ -316,7 +329,7 @@ export interface ChatViewHandle {
   toggleSearch: () => void;
 }
 
-export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ sessionId, state, toolContext, sessionCtx, onCancelPending, onRespondToUi, onAbort, onForceKill, onForkFromMessage, onDismissError, onRetryAfterError, onRetryQueued, onDismissQueued, showFilterControls, onCloseFilterControls, dataUnavailable }, ref) {
+export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ sessionId, state, toolContext, sessionCtx, onCancelPending, onRespondToUi, onRendered, onAbort, onForceKill, onForkFromMessage, onDismissError, onRetryAfterError, onRetryQueued, onDismissQueued, showFilterControls, onCloseFilterControls, dataUnavailable }, ref) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const isNearBottom = useRef(true);
   const reducedMotion = useReducedMotion() ?? false;
@@ -1031,6 +1044,7 @@ export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ se
               key={msg.id}
               request={request}
               onRespondToUi={onRespondToUi}
+              onRendered={onRendered}
             />
           );
         }

@@ -18,8 +18,10 @@ const GUEST_SESSION_MESSAGE_TYPES = new Set<string>([
   "abort",
   "fetch_content",
   "extension_ui_response",
-  "prompt_response",
-  "prompt_rendered",
+  // prompt_response + prompt_rendered are NOT guest-writable (Pete dl-13358 B2):
+  // they are operator-only (SESSION_WRITE_ACTION_CLASS) — the central gate
+  // enforces the authenticated operator principal. A guest must not mark a
+  // prompt delivered nor answer it.
   "architect_prompt_response",
   "request_commands",
   "request_models",

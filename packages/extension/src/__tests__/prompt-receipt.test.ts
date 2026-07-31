@@ -124,6 +124,36 @@ describe("deriveReceipt", () => {
       expect(trueCount).toBe(1);
     }
   });
+
+  // ── B2 (Pete dl-13358): authenticated operator author threads into the
+  //    receipt so it proves WHO answered/rendered. Single-operator → omitted. ──
+  describe("author (B2 operator identity)", () => {
+    const OP = { sub: "op-1", display: "Operator One", isOperator: true };
+
+    it("[B2 able-to-fail] an answered response carries the operator author into receipt.author", () => {
+      const r = deriveReceipt({ answer: "Ship it", cancelled: false, source: "dashboard", author: OP });
+      expect(r.author).toEqual(OP); // RED pre-B2 (no author threaded)
+      expect(r.answered).toBe(true);
+    });
+
+    it("a rendered-then-timed-out response carries WHO rendered it (author on timeout)", () => {
+      const r = deriveReceipt({ cancelled: true, source: BUS_TIMEOUT_SOURCE, rendered: true, author: OP });
+      expect(r.author).toEqual(OP);
+      expect(r.delivered).toBe(true);
+      expect(r.rendered).toBe(true);
+      expect(r.timedOut).toBe(true);
+    });
+
+    it("single-operator (no author) → receipt has NO author key (byte-unchanged)", () => {
+      const r = deriveReceipt({ answer: "A", cancelled: false, source: "dashboard" });
+      expect("author" in r).toBe(false);
+    });
+
+    it("a no-author receipt is not an operator decision (author undefined)", () => {
+      const r = deriveReceipt({ answer: "A", cancelled: false, source: "dashboard" });
+      expect(r.author).toBeUndefined();
+    });
+  });
 });
 
 describe("answerFieldIsPresent (A2)", () => {

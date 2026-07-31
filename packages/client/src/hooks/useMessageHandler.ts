@@ -663,13 +663,13 @@ export function useMessageHandler(
           next.set(msg.sessionId, updated);
           return next;
         });
-        // A1 render-lifecycle ACK: the client has committed this prompt to
-        // interactive state (the dialog mounts from it synchronously this
-        // tick), so acknowledge the render back to the extension. The bridge
-        // calls PromptBus.markRendered(promptId); a later timeout is then
-        // truthfully delivered:true/rendered:true, not the __bus__
-        // never-rendered heuristic. Fire-and-forget; carries no answer.
-        send({ type: "prompt_rendered", sessionId: msg.sessionId, promptId: msg.promptId } as any);
+        // NOTE: the A1 render-lifecycle ACK is NOT sent here. Sending at
+        // setSessionStates time is a message-received/state-enqueued ACK — it
+        // fires before React commits and the dialog actually mounts, so a
+        // renderer that fails / hides / never mounts would still report
+        // delivered=true (Pete dl-13358 B1). The ACK is now emitted from the
+        // interactive dialog COMPONENT's mount lifecycle (InteractiveUiCard →
+        // usePromptRenderedAck), post-DOM-mount, exactly once per promptId.
         break;
 
       case "prompt_dismiss":

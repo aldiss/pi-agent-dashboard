@@ -104,6 +104,13 @@ const ATTRIBUTION_LEDGER: Record<string, AttributionDisposition> = {
   request_installed_packages: { kind: "exempt", rationale: "READ: installed packages" },
   extension_ui_response: { kind: "exempt", rationale: "co-drive: answers an extension-UI request; NOT a model-text turn (structured UI reply, no <speaker>)" },
   architect_prompt_response: { kind: "exempt", rationale: "legacy no-op (superseded by prompt_response)" },
+  // Pete dl-13358 B2: the PromptBus round-trip is now operator-only GATED (moved
+  // out of co-drive passthrough). `prompt_response` is ALREADY ledgered
+  // `attributed` above (line ~55 — server-stamped author via
+  // buildPromptResponseForward). `prompt_rendered` is the newly-mapped carrier:
+  // it carries NO human text (a lifecycle ACK) → exempt; its author rides on the
+  // receipt for proof but it is not an operator-TEXT turn.
+  prompt_rendered: { kind: "exempt", rationale: "render-lifecycle ACK; no human text at all; author rides on the receipt for proof, not a model-text turn" },
 };
 
 /** Every carrier that appears anywhere in the authoritative co-drive map. */

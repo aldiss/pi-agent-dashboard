@@ -32,6 +32,13 @@ export interface PromptRequest {
   metadata?: Record<string, unknown>;
 }
 
+/** Server-stamped authenticated operator identity (Pete dl-13358 B2). */
+export interface PromptAuthor {
+  sub: string;
+  display: string;
+  isOperator?: boolean;
+}
+
 export interface PromptResponse {
   id: string;
   answer?: string;
@@ -44,6 +51,12 @@ export interface PromptResponse {
    * never-rendered one. Absent/false = no render was acknowledged.
    */
   rendered?: boolean;
+  /**
+   * B2 authenticated operator author (server-stamped, never the body) of the
+   * answer OR the render ACK. Threaded into the resolved response so the receipt
+   * proves WHO answered/rendered. Absent single-operator.
+   */
+  author?: PromptAuthor;
 }
 
 export interface PromptAdapter {
@@ -77,6 +90,13 @@ interface PendingPrompt {
    * never-rendered one.
    */
   rendered: boolean;
+  /**
+   * B2 authenticated operator author of the render ACK (server-stamped, from
+   * `markRendered`). Threaded into the resolved response so even a
+   * rendered-then-timed-out receipt proves WHO rendered it. Undefined until an
+   * authored ACK arrives.
+   */
+  renderedAuthor?: PromptAuthor;
 }
 
 export interface PromptBusOptions {
@@ -198,22 +218,31 @@ export class PromptBus {
       this.options.onDashboardDismiss(response.id);
     }
 
-    // A1: carry the render-lifecycle flag through unless the responder already
-    // set it. An answer/dismiss itself proves a render; the receipt derives
-    // `rendered` accordingly, but preserving the ACK keeps the signal explicit.
-    entry.resolve({ ...response, rendered: response.rendered ?? entry.rendered });
+    // A1/B2: carry the render-lifecycle flag + operator author through. An
+    // answer/dismiss itself proves a render; the responder's own author (the
+    // authenticated answerer) wins, else the render-ACK author is preserved so
+    // the receipt still proves WHO engaged. Single-operator → both undefined.
+    entry.resolve({
+      ...response,
+      rendered: response.rendered ?? entry.rendered,
+      author: response.author ?? entry.renderedAuthor,
+    });
   }
 
   /**
    * A1 render-lifecycle ACK: the client calls this (via the bridge) when it has
-   * displayed the prompt dialog for `id`. Records `rendered=true` on the pending
-   * entry so a later timeout is truthfully `delivered:true, rendered:true`
+   * displayed the prompt dialog for `id`. Records `rendered=true` (+ the B2
+   * server-stamped operator `author`) on the pending entry so a later timeout is
+   * truthfully `delivered:true, rendered:true` and carries WHO rendered it,
    * rather than the old `source==="__bus__"` never-rendered heuristic. No-op for
    * an unknown / already-resolved id.
    */
-  markRendered(id: string): void {
+  markRendered(id: string, author?: PromptAuthor): void {
     const entry = this.pending.get(id);
-    if (entry) entry.rendered = true;
+    if (entry) {
+      entry.rendered = true;
+      if (author) entry.renderedAuthor = author;
+    }
   }
 
   /**
@@ -240,10 +269,11 @@ export class PromptBus {
       this.options.onDashboardCancel(id);
     }
 
-    // A1: a bus-fired cancel (timeout/abort) carries the render flag so the
-    // receipt tells a rendered-then-timed-out prompt (delivered/rendered true)
-    // from a never-rendered one (both false).
-    entry.resolve({ id, cancelled: true, source: "__bus__", rendered: entry.rendered });
+    // A1/B2: a bus-fired cancel (timeout/abort) carries the render flag + the
+    // render-ACK operator author so the receipt tells a rendered-then-timed-out
+    // prompt (delivered/rendered true, author = who rendered it) from a
+    // never-rendered one (both false, no author).
+    entry.resolve({ id, cancelled: true, source: "__bus__", rendered: entry.rendered, author: entry.renderedAuthor });
   }
 
   /** Get pending requests with their resolved dashboard components (for reconnect replay). */

@@ -174,6 +174,15 @@ export const SESSION_WRITE_ACTION_CLASS = {
   // spawn, model-switch), so a co-driver could reach the operator-only/host
   // command surface via prompt TEXT. A raw passthrough prompt stays co-drive.
   "prompt-command": "operator-only",
+  // operator-only — the PromptBus interactive round-trip (Pete dl-13358 B2).
+  // `prompt_response` ANSWERS an ask_user prompt (an operator decision that can
+  // fire an operator-facing action) and `prompt_rendered` marks it delivered —
+  // BOTH require the AUTHENTICATED signed-in operator, not any co-driving
+  // viewer. Reclassified from co-drive/guest-passthrough: a bounded co-driver
+  // or a principal-less viewer must not mark a prompt delivered nor answer it.
+  // Single-operator (flag OFF) → the gate no-ops → byte-unchanged.
+  prompt_response: "operator-only",
+  prompt_rendered: "operator-only",
 } as const satisfies Record<string, SessionWriteActionClass>;
 
 /** The canonical action tokens (keys of {@link SESSION_WRITE_ACTION_CLASS}). */
@@ -232,6 +241,11 @@ export const WS_SESSION_WRITE_MESSAGE_ACTION = {
   role_preset_delete: "role_preset_delete",
   role_preset_load: "role_preset_load",
   request_roles: "request_roles",
+  // Pete dl-13358 B2: the PromptBus round-trip WS types map to their operator-only
+  // action tokens (WS-only, no REST twin) so the central gate refuses a guest /
+  // no-principal BEFORE the forward runs. The WS message-type IS the action token.
+  prompt_response: "prompt_response",
+  prompt_rendered: "prompt_rendered",
 } as const satisfies Record<string, SessionWriteAction>;
 
 /** WS message-types that carry a session-write action (keys of the registry). */

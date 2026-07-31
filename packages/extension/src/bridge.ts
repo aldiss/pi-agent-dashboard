@@ -618,20 +618,27 @@ function initBridge(pi: ExtensionAPI) {
       }
       // Route PromptBus responses from dashboard client
       if (msg.type === "prompt_response" && promptBus) {
+        // B2 (Pete dl-13358): the server-side central gate already refused a
+        // guest / no-principal (prompt_response is operator-only), and the
+        // gateway stamped `author` from the connection-bound principal (NEVER
+        // the client body). Thread that authenticated operator author into the
+        // response so the receipt proves WHO answered. Absent single-operator.
         promptBus.respond({
           id: (msg as any).promptId,
           answer: (msg as any).answer,
           cancelled: (msg as any).cancelled,
           source: (msg as any).source ?? "dashboard-default",
+          author: (msg as any).author,
         });
         return;
       }
-      // A1: render-lifecycle ACK from the dashboard client — the dialog is
-      // displayed. Mark the pending prompt rendered so a later timeout is
-      // truthfully delivered:true/rendered:true (not the __bus__ never-rendered
-      // heuristic). Carries no answer; never resolves the prompt.
+      // A1 render-lifecycle ACK from the dashboard client — the dialog mounted.
+      // B2: operator-only + server-stamped author (gateway refused guests; the
+      // author is from the connection-bound principal, never the body). Mark the
+      // pending prompt rendered WITH the operator author so a later timeout is
+      // truthfully delivered:true/rendered:true and carries WHO rendered it.
       if (msg.type === "prompt_rendered" && promptBus) {
-        promptBus.markRendered((msg as any).promptId);
+        promptBus.markRendered((msg as any).promptId, (msg as any).author);
         return;
       }
       // Legacy architect_prompt_response routing REMOVED.

@@ -95,6 +95,9 @@ describe("Build 1b (d) — session-write action enumeration is mechanically tota
     "role_preset_load", "request_roles",
     "reload", "ui_management",
     "prompt-command",
+    // Pete dl-13358 B2: the PromptBus round-trip (answer + render ACK) is
+    // operator-only (WS-only, no REST twin — the WS message-type IS the token).
+    "prompt_response", "prompt_rendered",
   ].sort();
   // co-drive actions (both op-1 and op-2 may perform): send_prompt + abort (the
   // safety emergency-stop) + request_roles (a READ — lists roles, no mutation,
