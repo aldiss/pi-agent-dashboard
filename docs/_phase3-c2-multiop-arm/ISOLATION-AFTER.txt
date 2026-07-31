@@ -1,0 +1,11 @@
+C2 MULTI-OP AFTER ISOLATION PROOF — 2026-07-31T09:19:44Z
+== scratch 8153/8154 FREE ==
+8153/8154 FREE
+== zero residual temp-HOME pi procs ==
+zero residual
+== prod owns :9999/:8000 (untouched) ==
+COMMAND   PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+node    66306 vdrobkov   17u  IPv6 0x641ce0d72f3d0269      0t0  TCP *:9999 (LISTEN)
+node    66306 vdrobkov   19u  IPv4 0xb32aaabbb9cbc736      0t0  TCP *:8000 (LISTEN)
+== prod commit still 28bfcbc7 ==
+commit= 28bfcbc7 mode= production

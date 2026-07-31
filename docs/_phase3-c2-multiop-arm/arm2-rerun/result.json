@@ -1,0 +1,49 @@
+{
+  "arm": "arm2-A1-live-RERUN-on-multiop",
+  "staged": "worktree(C1+C2)",
+  "rendered": {
+    "session": "019fb775-4d25-7f64-9c97-3305100dfb16",
+    "dialog_mounted": true,
+    "socket": {
+      "has9999": false,
+      "has8000": false
+    },
+    "receipt": {
+      "delivered": true,
+      "rendered": true,
+      "answered": false,
+      "dismissed": false,
+      "timedOut": true,
+      "invalid": false,
+      "source": "__bus__",
+      "author": {
+        "sub": "operator@op",
+        "display": "Operator One",
+        "isOperator": true
+      }
+    },
+    "assert_timedOut": true,
+    "assert_delivered_true": true,
+    "assert_rendered_true": true
+  },
+  "never": {
+    "session": "019fb776-05a9-7dbc-b7db-8fde7476033c",
+    "socket": {
+      "has9999": false,
+      "has8000": false
+    },
+    "receipt": {
+      "delivered": false,
+      "rendered": false,
+      "answered": false,
+      "dismissed": false,
+      "timedOut": true,
+      "invalid": false,
+      "source": "__bus__"
+    },
+    "assert_timedOut": true,
+    "assert_delivered_false": true,
+    "assert_rendered_false": true
+  },
+  "A1_LIVE_STILL_HOLDS": true
+}

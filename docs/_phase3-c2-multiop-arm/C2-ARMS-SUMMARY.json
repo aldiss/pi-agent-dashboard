@@ -1,0 +1,58 @@
+{
+  "phase": "C2 multi-operator JWT live auth arm + Arm2 A1-live regression (on C1+C2 identity)",
+  "isolated_dashboard": "loopback 127.0.0.1:8153/8154, temp HOME, forced-loopback guard, MULTI-OP (requireBrowserAuth:true, operatorUsers:['operator'], secret), 8s ask timeout",
+  "C2_multiop_auth": {
+    "C2_PROVEN": true,
+    "no_principal": {
+      "ws_upgrade_status": 401,
+      "denied": true
+    },
+    "guest": {
+      "ws_connected": true,
+      "forged_answer": "GUEST-FORGED-ANSWER-Cancel and hold",
+      "forged_did_not_win": true,
+      "no_guest_answer": true
+    },
+    "operator": {
+      "answered": true,
+      "receipt_is_operator_value": true,
+      "author_is_operator": true,
+      "receipt_author": {
+        "sub": "operator@op",
+        "display": "Operator One",
+        "isOperator": true
+      }
+    },
+    "socket_zero_9999_8000": [
+      true,
+      true
+    ]
+  },
+  "arm2_A1_live_rerun": {
+    "A1_LIVE_STILL_HOLDS": true,
+    "rendered_receipt": {
+      "delivered": true,
+      "rendered": true,
+      "answered": false,
+      "dismissed": false,
+      "timedOut": true,
+      "invalid": false,
+      "source": "__bus__",
+      "author": {
+        "sub": "operator@op",
+        "display": "Operator One",
+        "isOperator": true
+      }
+    },
+    "never_receipt": {
+      "delivered": false,
+      "rendered": false,
+      "answered": false,
+      "dismissed": false,
+      "timedOut": true,
+      "invalid": false,
+      "source": "__bus__"
+    },
+    "note": "rendered-timeout receipt now carries author:{operator} \u2014 B2 author-on-render-ACK proven LIVE in multi-op (round-2 could not show this in single-op)."
+  }
+}

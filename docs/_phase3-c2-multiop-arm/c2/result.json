@@ -1,0 +1,73 @@
+{
+  "arm": "C2-multiop-jwt-live-auth",
+  "staged_head": "worktree",
+  "config": {
+    "requireBrowserAuth": true,
+    "operatorUsers": [
+      "operator"
+    ]
+  },
+  "no_principal": {
+    "ws_upgrade_allowed": false,
+    "upgrade_status": 401,
+    "assert_denied": true
+  },
+  "guest": {
+    "ws_upgrade_allowed": true,
+    "forged_answer": "GUEST-FORGED-ANSWER-Cancel and hold",
+    "gate_refusals": [],
+    "receipt_after_guest": null,
+    "result_after_guest": null,
+    "assert_guest_answer_did_not_win": true,
+    "assert_no_guest_answer": true
+  },
+  "session": "019fb773-18fb-78dc-b89f-005076b27fb1",
+  "operator": {
+    "ws_upgrade_allowed": true,
+    "details": {
+      "method": "select",
+      "result": "Run one more validation pass first",
+      "receipt": {
+        "delivered": true,
+        "rendered": true,
+        "answered": true,
+        "dismissed": false,
+        "timedOut": false,
+        "invalid": false,
+        "source": "dashboard-default",
+        "author": {
+          "sub": "operator@op",
+          "display": "Operator One",
+          "isOperator": true
+        }
+      },
+      "selectedIndex": 1
+    },
+    "receipt": {
+      "delivered": true,
+      "rendered": true,
+      "answered": true,
+      "dismissed": false,
+      "timedOut": false,
+      "invalid": false,
+      "source": "dashboard-default",
+      "author": {
+        "sub": "operator@op",
+        "display": "Operator One",
+        "isOperator": true
+      }
+    },
+    "result": "Run one more validation pass first",
+    "assert_answered": true,
+    "assert_result_is_operator_value": true,
+    "assert_author_is_operator": true
+  },
+  "promptId": "b9754585-133f-4f97-8e75-ca36450c29f7",
+  "socket": {
+    "has9999": false,
+    "has8000": false
+  },
+  "assert_zero_9999": true,
+  "assert_zero_8000": true,
+  "C2_PROVEN": true
+}
