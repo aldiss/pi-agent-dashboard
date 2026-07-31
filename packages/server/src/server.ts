@@ -296,6 +296,28 @@ export function makeBootstrapTransitionHandler(
   };
 }
 
+/**
+ * Build artifacts are CONTENT-ADDRESSED: the filename carries a hash of the bytes.
+ * A miss therefore never means "unknown client route" — it means the caller is holding
+ * a STALE asset graph (an old app shell, or a service-worker precache from a previous
+ * deploy) and is asking for bytes this release no longer contains.
+ *
+ * Answering those with the SPA shell is actively harmful, not merely wrong:
+ *   1. the browser receives `text/html` where it expects a JS module, so a dynamic
+ *      `import()` rejects with an opaque network-shaped error (WebKit: "Load failed"),
+ *      which is indistinguishable from the server being unreachable; and
+ *   2. the shell is a 200, and a cache-first service worker caches any 2xx — so HTML
+ *      gets stored under a `.js` key and the corruption persists across reloads.
+ *
+ * A real 404 keeps both honest: `import()` fails with a true not-found, and no cache
+ * layer will retain it. SPA routes are unaffected — they are not asset requests.
+ */
+export function isBuildAssetRequest(rawUrl: string): boolean {
+  const pathname = rawUrl.split("?")[0].split("#")[0];
+  if (pathname.startsWith("/assets/")) return true;
+  return /\.(?:js|mjs|cjs|css|map|woff2?|ttf|otf|eot|png|jpe?g|gif|svg|webp|avif|ico|wasm)$/i.test(pathname);
+}
+
 export async function createServer(config: ServerConfig): Promise<DashboardServer> {
   // Fixture mode: skip side effects that would pollute visual baselines.
   // All gating is done here in createServer so no fixture code leaks into
@@ -1569,13 +1591,22 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
       // Fallback: serve production build if available
       if (hasProductionBuild) {
         reply.header("Cache-Control", "no-cache, no-store, must-revalidate");
+        if (isBuildAssetRequest(request.url)) {
+          return reply.code(404).send({ error: "Asset not found" });
+        }
         return reply.sendFile("index.html");
       }
       return reply.code(404).send({ error: "API-only mode: no client build available. Install @blackbelt-technology/pi-dashboard-web or run npm run build." });
     });
   } else if (hasProductionBuild) {
     // Production mode: SPA fallback
-    fastify.setNotFoundHandler(async (_request, reply) => {
+    fastify.setNotFoundHandler(async (request, reply) => {
+      // A stale client asking for a hashed artifact this release does not have must get
+      // a true 404 — never the app shell. See isBuildAssetRequest above.
+      if (isBuildAssetRequest(request.url)) {
+        reply.header("Cache-Control", "no-cache, no-store, must-revalidate");
+        return reply.code(404).send({ error: "Asset not found" });
+      }
       reply.header("Cache-Control", "no-cache, no-store, must-revalidate");
       return reply.sendFile("index.html");
     });
