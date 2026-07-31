@@ -36,8 +36,11 @@ interface Props {
   /** Controlled draft text. When provided, parent controls the textarea via onDraftChange. */
   draft?: string;
   onDraftChange?: (text: string) => void;
-  /** Send the current message + images. */
-  onSend: (text: string, images?: ImageContent[]) => void;
+  /** Send the current message + images. Returns whether the caller should clear
+   *  the draft: the Dawn preview-before-Send flow returns false on spool failure
+   *  so the visible text + pending capture are preserved. void/undefined (e2e
+   *  harness) clears as before. */
+  onSend: (text: string, images?: ImageContent[]) => void | boolean | Promise<void | boolean>;
   /** True while a streaming response is in progress (Send button → Stop button transition). */
   isWorking?: boolean;
   /** Abort the current streaming response. */
@@ -71,6 +74,9 @@ interface Props {
   onVoiceTranscript?: (transcript: string) => void;
   /** Dawn audio capture. Receives the same MediaStream the waveform uses. */
   onDawnStreamChange?: (stream: MediaStream | null) => void;
+  /** Fail-closed mic-block: true while a Dawn dictation is pending-unsent, so no
+   *  new recording can start until the pending one is sent or explicitly cleared. */
+  micBlocked?: boolean;
 }
 
 export function MobileComposer({
@@ -85,6 +91,7 @@ export function MobileComposer({
   queuedCount = 0,
   onVoiceTranscript,
   onDawnStreamChange,
+  micBlocked = false,
 }: Props) {
   // Text state — controlled or uncontrolled per CommandInput convention
   const isControlled = draft !== undefined;
@@ -213,14 +220,20 @@ export function MobileComposer({
     // Safari). The optimistic bubble lift in ChatView is the visual half of the
     // same beat — together they make send feel acknowledged, instantly.
     haptic("success");
-    onSend(trimmed, pendingImages.length > 0 ? pendingImages : undefined);
-    setText("");
-    clearImages();
-    // Reset textarea height after send
-    requestAnimationFrame(() => {
-      const ta = textareaRef.current;
-      if (ta) ta.style.height = "36px";
-    });
+    // Await the parent-owned submit and clear ONLY on success. The Dawn
+    // preview-before-Send flow returns false on spool failure, preserving the
+    // exact visible text + pending audio; void/undefined (harness) clears.
+    void (async () => {
+      const ok = await onSend(trimmed, pendingImages.length > 0 ? pendingImages : undefined);
+      if (ok === false) return;
+      setText("");
+      clearImages();
+      // Reset textarea height after send
+      requestAnimationFrame(() => {
+        const ta = textareaRef.current;
+        if (ta) ta.style.height = "36px";
+      });
+    })();
   }, [text, pendingImages, onSend, setText, clearImages]);
 
   const handleKeyDown = useCallback(
@@ -439,11 +452,11 @@ export function MobileComposer({
               Subscribes via onStreamChange so MobileComposer renders the audio wave during recording.
               Custom className keeps the button at 40x40 ChatGPT-style. */}
           <PushToTalkButton
-            disabled={disabled}
+            disabled={disabled || micBlocked}
             onTranscript={handleTranscript}
             onStreamChange={handleStreamChange}
             className="w-10 h-10 rounded-full bg-[var(--bg-tertiary)] hover:bg-[var(--bg-hover)] active:scale-95 transition-all flex items-center justify-center disabled:opacity-50 disabled:cursor-not-allowed"
-            idleTitle="Tap to record voice (tap again to stop)"
+            idleTitle={micBlocked ? "Send or clear the pending dictation first" : "Tap to record voice (tap again to stop)"}
           />
 
           {/* r27 Phase 1.1.1: Send + Stop render side-by-side when isWorking (vs pre-r27 Stop-only).

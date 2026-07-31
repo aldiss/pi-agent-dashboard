@@ -90,4 +90,23 @@ describe("voice-transcript surface census", () => {
     // And it does NOT define its own spool call.
     expect(src).not.toMatch(/voice-input\/spool/);
   });
+
+  it("BOTH send paths route through the ONE parent-owned submit (preview-before-Send)", () => {
+    const ci = readFileSync(join(CLIENT_SRC, "components/CommandInput.tsx"), "utf8");
+    const mc = readFileSync(join(CLIENT_SRC, "components/MobileComposer/MobileComposer.tsx"), "utf8");
+    // The single submit lives in the parent and is the ONLY spool call site.
+    expect(ci).toMatch(/const dawnSubmit = useCallback/);
+    expect((ci.match(/spoolDawnDictation\(/g) ?? []).length).toBe(2); // definition + the one call in dawnSubmit
+    // Desktop's own send awaits the parent submit (not a bare onSend).
+    expect(ci).toMatch(/await dawnSubmit\(/);
+    // The mobile surface is handed the parent submit as its onSend + the mic-block.
+    expect(ci).toMatch(/onSend=\{dawnSubmit\}/);
+    expect(ci).toMatch(/micBlocked=\{[^}]*dawnPending[^}]*\}/);
+    // Fail-closed mic-block is wired to BOTH buttons.
+    expect(ci).toMatch(/disabled=\{disabled \|\| \([^)]*dawnPending[^)]*\)\}/); // desktop PTT
+    expect(mc).toMatch(/disabled=\{disabled \|\| micBlocked\}/); // mobile PTT
+    // MobileComposer awaits the submit and clears ONLY on non-failure.
+    expect(mc).toMatch(/await onSend\(/);
+    expect(mc).toMatch(/if \(ok === false\) return/);
+  });
 });

@@ -241,6 +241,16 @@ export function CommandInput({ commands: externalCommands, onSend, onListFiles, 
   const dawnAudioRecorderRef = useRef<MediaRecorder | null>(null);
   const dawnAudioChunksRef = useRef<Blob[]>([]);
   const resolveDawnAudioRef = useRef<((audio: Blob | null) => void) | null>(null);
+  // Preview-before-Send pending state (per session). dawnPending = a dictation is
+  // staged (transcript visible/editable, audio held) and not yet sent. It
+  // fail-closed-blocks a new recording until sent or explicitly cleared.
+  const dawnPendingRef = useRef(false);
+  const [dawnPending, setDawnPendingState] = useState(false);
+  const setDawnPending = useCallback((v: boolean) => {
+    dawnPendingRef.current = v;
+    setDawnPendingState(v);
+  }, []);
+  const dawnSendInFlightRef = useRef(false);
 
   const appendVoiceText = useCallback((value: string) => {
     const current = textRef.current;
@@ -313,21 +323,69 @@ export function CommandInput({ commands: externalCommands, onSend, onListFiles, 
     dawnAudioRecorderRef.current = null;
   }, []);
 
+  // Preview-before-Send: show the transcript RAW and EDITABLE; spool NOTHING
+  // here. The audio captured during recording stays pending in
+  // dawnAudioPromiseRef until the operator sends. For Dawn we mark a pending
+  // dictation (fail-closed: a new recording is blocked until this one is sent
+  // or explicitly cleared, so new audio can never bind to stale text).
   const handleVoiceTranscript = useCallback((transcript: string) => {
-    if (sessionName !== DAWN_SESSION_NAME || !sessionId) {
-      appendVoiceText(transcript);
-      return;
+    appendVoiceText(transcript);
+    if (sessionName === DAWN_SESSION_NAME && sessionId) {
+      setDawnPending(true);
     }
+  }, [appendVoiceText, sessionId, sessionName, setDawnPending]);
 
-    const audioPromise = dawnAudioPromiseRef.current;
-    void (async () => {
-      const audio = await audioPromise;
-      if (!audio || audio.size === 0) throw new Error("Dawn audio capture unavailable");
-      appendVoiceText(await spoolDawnDictation(sessionId, transcript, audio));
-    })().catch(() => {
-      appendVoiceText("Voice spool failed; dictation was not delivered.");
-    });
-  }, [appendVoiceText, sessionId, sessionName]);
+  const clearDawnPending = useCallback(() => {
+    setDawnPending(false);
+    resolveDawnAudioRef.current?.(null);
+    resolveDawnAudioRef.current = null;
+    dawnAudioChunksRef.current = [];
+    dawnAudioPromiseRef.current = Promise.resolve(null);
+    const rec = dawnAudioRecorderRef.current;
+    if (rec && rec.state !== "inactive") {
+      try { rec.stop(); } catch { /* already stopped */ }
+    }
+    dawnAudioRecorderRef.current = null;
+  }, [setDawnPending]);
+
+  // The ONE parent-owned submit both composers await. Returns true iff the
+  // caller should clear its draft. Non-Dawn, and Dawn without a pending
+  // dictation, send unchanged. A Dawn dictation spools EXACTLY ONCE at Send
+  // using the final edited text + the pending audio, then sends only the .json
+  // entry path downstream; any failure preserves the exact visible text AND the
+  // pending capture and sends nothing (no raw fallback).
+  const dawnSubmit = useCallback(async (finalText: string, sendImages?: ImageContent[]): Promise<boolean> => {
+    const trimmed = finalText.trim();
+    const hasContent = trimmed.length > 0 || (sendImages !== undefined && sendImages.length > 0);
+    if (sessionName !== DAWN_SESSION_NAME || !sessionId || !dawnPendingRef.current) {
+      if (!hasContent) return false;
+      onSend(trimmed, sendImages);
+      return true;
+    }
+    if (dawnSendInFlightRef.current) return false;   // double/concurrent Send → exactly one spool
+    if (trimmed.length === 0) return false;           // never spool empty text
+    dawnSendInFlightRef.current = true;
+    try {
+      const audio = await dawnAudioPromiseRef.current;
+      if (!audio || audio.size === 0) return false;   // preserve text + pending; send nothing
+      const instruction = await spoolDawnDictation(sessionId, trimmed, audio);
+      onSend(instruction, sendImages);                // path-only outbound
+      clearDawnPending();
+      return true;
+    } catch {
+      return false;                                   // preserve text + pending; send nothing
+    } finally {
+      dawnSendInFlightRef.current = false;
+    }
+  }, [sessionName, sessionId, onSend, clearDawnPending]);
+
+  // Bind pending per session + explicit-clear: a session switch or an emptied
+  // composer safely drops the pending dictation (text + audio) and re-enables
+  // the mic. No spool.
+  useEffect(() => { clearDawnPending(); }, [sessionId, clearDawnPending]);
+  useEffect(() => {
+    if (dawnPendingRef.current && text.trim() === "") clearDawnPending();
+  }, [text, clearDawnPending]);
 
   // VOICE-INPUT-LOCAL-PATCH-START (W5-impl auto-grow bugfix per operator iPhone test 2026-05-15 ~22 CEST;
   //   voice-transcript multi-line was hidden because PushToTalkButton's onTranscript fires from
@@ -444,16 +502,18 @@ export function CommandInput({ commands: externalCommands, onSend, onListFiles, 
   };
 
   const handleSend = useCallback(() => {
-    if (text.trim()) {
-      onSend(text.trim(), pendingImages.length > 0 ? pendingImages : undefined);
-      clearImages();
-      setText("");
-      // Reset textarea height
-      if (inputRef.current) {
-        inputRef.current.style.height = "40px";
+    void (async () => {
+      const ok = await dawnSubmit(text, pendingImages.length > 0 ? pendingImages : undefined);
+      if (ok) {
+        clearImages();
+        setText("");
+        // Reset textarea height
+        if (inputRef.current) {
+          inputRef.current.style.height = "40px";
+        }
       }
-    }
-  }, [text, pendingImages, onSend, clearImages]);
+    })();
+  }, [text, pendingImages, dawnSubmit, clearImages, setText]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -614,7 +674,7 @@ export function CommandInput({ commands: externalCommands, onSend, onListFiles, 
       <MobileComposer
         draft={draft}
         onDraftChange={onDraftChange}
-        onSend={onSend}
+        onSend={dawnSubmit}
         isWorking={sessionStatus === "streaming" || pendingPrompt}
         onAbort={onAbort}
         disabled={disabled}
@@ -625,6 +685,7 @@ export function CommandInput({ commands: externalCommands, onSend, onListFiles, 
         queuedCount={queuedCount}
         onVoiceTranscript={handleVoiceTranscript}
         onDawnStreamChange={sessionName === DAWN_SESSION_NAME && sessionId ? handleDawnStreamChange : undefined}
+        micBlocked={sessionName === DAWN_SESSION_NAME && !!sessionId && dawnPending}
       />
     );
   }
@@ -730,7 +791,7 @@ export function CommandInput({ commands: externalCommands, onSend, onListFiles, 
             slot-claim. Marker block MUST be preserved verbatim — grep-discoverable for migration.) */}
         {!pendingPrompt && (
           <PushToTalkButton
-            disabled={disabled}
+            disabled={disabled || (sessionName === DAWN_SESSION_NAME && !!sessionId && dawnPending)}
             onStreamChange={sessionName === DAWN_SESSION_NAME && sessionId ? handleDawnStreamChange : undefined}
             onTranscript={handleVoiceTranscript}
           />
