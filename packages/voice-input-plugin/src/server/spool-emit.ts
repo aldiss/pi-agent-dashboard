@@ -16,7 +16,6 @@
 import { createHash } from "node:crypto";
 import { mkdirSync, writeFileSync, renameSync } from "node:fs";
 import { join } from "node:path";
-import { spawn } from "node:child_process";
 
 export interface SpoolEmitConfig {
   /** Spool directory the engine drains. Emission is skipped when unset. */
@@ -99,42 +98,6 @@ export function emitSpoolEntry(
     return id;
   } catch {
     return null;
-  }
-}
-
-/** Wake the engine once. Never throws; never blocks the response. */
-export function wakeEngine(cfg: SpoolEmitConfig): boolean {
-  try {
-    if (
-      cfg.enginePath === undefined ||
-      cfg.vaultRoot === undefined ||
-      cfg.spoolDir === undefined ||
-      cfg.guardPath === undefined
-    ) {
-      return false;
-    }
-    const args = [
-      "--vault",
-      cfg.vaultRoot,
-      "--spool",
-      cfg.spoolDir,
-      "--guard",
-      cfg.guardPath,
-    ];
-    if (cfg.allowedRoot !== undefined) args.push("--allowed-root", cfg.allowedRoot);
-    const child = spawn(cfg.enginePath, args, {
-      detached: true,
-      stdio: "ignore",
-    });
-    // spawn reports a bad executable ASYNCHRONOUSLY on a later tick, so it
-    // escapes the try/catch around this call and would reach the server's
-    // fail-loud net as an uncaughtException. Swallow it here: a misconfigured
-    // engine must never affect the operator's transcription.
-    child.on("error", () => {});
-    child.unref();
-    return true;
-  } catch {
-    return false;
   }
 }
 
