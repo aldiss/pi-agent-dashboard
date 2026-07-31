@@ -626,6 +626,14 @@ function initBridge(pi: ExtensionAPI) {
         });
         return;
       }
+      // A1: render-lifecycle ACK from the dashboard client — the dialog is
+      // displayed. Mark the pending prompt rendered so a later timeout is
+      // truthfully delivered:true/rendered:true (not the __bus__ never-rendered
+      // heuristic). Carries no answer; never resolves the prompt.
+      if (msg.type === "prompt_rendered" && promptBus) {
+        promptBus.markRendered((msg as any).promptId);
+        return;
+      }
       // Legacy architect_prompt_response routing REMOVED.
       // Previously routed to flow:prompt-response + cancelAllPending().
       // Now handled by PromptBus: dashboard sends prompt_response,

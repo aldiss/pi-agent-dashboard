@@ -19,6 +19,7 @@ const GUEST_SESSION_MESSAGE_TYPES = new Set<string>([
   "fetch_content",
   "extension_ui_response",
   "prompt_response",
+  "prompt_rendered",
   "architect_prompt_response",
   "request_commands",
   "request_models",

@@ -1,22 +1,30 @@
 /**
  * deriveReceipt — pure helper that turns a PromptBus `PromptResponse`
- * discriminator (`source` + `cancelled` + `answer`) into a verifiable
- * receipt the `ask_user` tool can report to the agent.
+ * discriminator (`source` + `cancelled` + `answer` + `rendered`) into a
+ * verifiable receipt the `ask_user` tool can report to the agent.
  *
  * The bridge collapses `ctx.ui.*` to `Promise<string | undefined>` (a
  * blast-radius constraint — many callers depend on that return type), which
- * DISCARDS the `source` + cancel reason. That collapse makes `undefined`
- * ambiguous: the agent cannot tell a real dismiss from a timeout from a
- * never-rendered prompt. The receipt restores that distinction out-of-band.
+ * DISCARDS the `source` + cancel reason + answer-presence. That collapse makes
+ * `undefined` ambiguous: the agent cannot tell a real dismiss from a timeout
+ * from a never-rendered prompt from a malformed response. The receipt restores
+ * those distinctions out-of-band.
  *
- * Response → receipt partition (mutually exclusive answered/dismissed/timedOut):
- *   • !cancelled                         → answered  (source = adapter, e.g. "dashboard"/"tui")
- *   • cancelled, source ≠ "__bus__"      → dismissed (an adapter cancelled — operator dismissed the UI)
- *   • cancelled, source = "__bus__"      → timedOut  (bus timer fired — never answered / never rendered)
+ * Amendments (Pete dl-13350 + Lane):
+ *   A1 — `delivered`/`rendered` derive from an explicit render-lifecycle ACK
+ *        (the client signals it displayed the dialog), NOT the `source ===
+ *        "__bus__"` heuristic. A prompt that RENDERED then timed out is
+ *        truthfully `delivered:true, rendered:true, timedOut:true`; one that
+ *        never rendered is `delivered:false, rendered:false, timedOut:true`.
+ *   A2 — `answered` derives from actual ANSWER-FIELD PRESENCE, not `!cancelled`.
+ *        Empty string "" and "false" (confirm=No) are VALID answers; only
+ *        undefined / null / absent / malformed is "no answer".
+ *   A3 — a non-cancelled response with no present answer is `invalid` (a
+ *        malformed non-decision), never a false "answered".
  *
- * `delivered` = an adapter engaged (answered OR dismissed) = source ≠ "__bus__".
- * A bus-fired timeout is the only "not delivered" state, so `delivered`
- * distinguishes never-rendered from a real operator interaction.
+ * Receipt states are mutually exclusive: exactly one of
+ *   answered | dismissed | timedOut | invalid
+ * is true for any response.
  *
  * Kept separate from bridge.ts / ask-user-tool.ts so it can be unit-tested
  * without instantiating a live PromptBus or session context.
@@ -27,32 +35,65 @@ export const BUS_TIMEOUT_SOURCE = "__bus__";
 
 /** Minimal structural shape of a PromptBus response needed to build a receipt. */
 export interface ReceiptSource {
-  answer?: string;
+  answer?: string | null;
   cancelled?: boolean;
   source: string;
+  /**
+   * A1 render ACK: true when the client signalled it displayed the dialog for
+   * this prompt id. Absent/false means no render was acknowledged. An answer
+   * or an operator dismiss also proves a render (see `deriveReceipt`).
+   */
+  rendered?: boolean;
 }
 
 export interface PromptReceipt {
-  /** An adapter engaged with the operator (answered or dismissed) — not a bus timeout. */
+  /** The prompt reached AND was displayed to the operator (render ACK or an answer/dismiss proves it). */
   delivered: boolean;
-  /** A real answer came back (distinct from a dismiss or timeout). */
+  /** The prompt dialog was rendered on the operator's surface (A1 lifecycle ACK). */
+  rendered: boolean;
+  /** A real answer came back — the answer field was present (A2: "" and false count). */
   answered: boolean;
   /** The operator dismissed the prompt without answering. */
   dismissed: boolean;
-  /** The bus timer fired — never answered / never rendered. */
+  /** The bus timer fired without an answer. */
   timedOut: boolean;
+  /** A non-cancelled response carried NO present answer — malformed non-decision (A3). */
+  invalid: boolean;
   /** The response source: the answering/dismissing adapter, or "__bus__" on timeout. */
   source: string;
+}
+
+/**
+ * A2 answer-presence predicate: the `answer` field EXISTS and is not
+ * undefined/null. Empty string "" and the string "false" (confirm=No) are
+ * PRESENT — they are valid answers. Only undefined / null / absent is "no
+ * answer". (Malformed non-string payloads are also treated as absent.)
+ */
+export function answerFieldIsPresent(response: ReceiptSource): boolean {
+  const a = response.answer;
+  return typeof a === "string";
 }
 
 export function deriveReceipt(response: ReceiptSource): PromptReceipt {
   const source = response.source;
   const cancelled = response.cancelled === true;
-  const timedOut = cancelled && source === BUS_TIMEOUT_SOURCE;
+  const answerPresent = answerFieldIsPresent(response);
+
+  // A1: a render ACK, an answer, or an operator dismiss (adapter-sourced
+  // cancel) all prove the prompt was displayed. A bus-fired timeout with no
+  // prior ACK is the only never-rendered state.
   const dismissed = cancelled && source !== BUS_TIMEOUT_SOURCE;
-  const answered = !cancelled;
-  const delivered = source !== BUS_TIMEOUT_SOURCE;
-  return { delivered, answered, dismissed, timedOut, source };
+  const rendered =
+    response.rendered === true || answerPresent || dismissed;
+  const delivered = rendered;
+
+  // A2/A3: answered iff not cancelled AND the answer field is present.
+  const answered = !cancelled && answerPresent;
+  // A non-cancelled response with no present answer is malformed → invalid.
+  const invalid = !cancelled && !answerPresent;
+  const timedOut = cancelled && source === BUS_TIMEOUT_SOURCE;
+
+  return { delivered, rendered, answered, dismissed, timedOut, invalid, source };
 }
 
 /**
@@ -63,15 +104,17 @@ export function deriveReceipt(response: ReceiptSource): PromptReceipt {
  *
  * `confirm` has no undefined path (it always resolves to a boolean), so a
  * missing stash there is treated as answered; every other method treats a
- * `undefined` collapsed value as no-answer.
+ * `undefined` collapsed value as no-answer (→ invalid non-decision).
  */
 export function fallbackReceipt(method: string, hasResult: boolean): PromptReceipt {
   const answered = method === "confirm" ? true : hasResult;
   return {
     delivered: answered,
+    rendered: answered,
     answered,
     dismissed: false,
     timedOut: false,
+    invalid: !answered,
     source: "unknown",
   };
 }

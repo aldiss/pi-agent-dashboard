@@ -187,7 +187,8 @@ describe("PromptBus", () => {
       bus.respond({ id, answer: "A", source: "a" });
 
       const result = await promise;
-      expect(result).toEqual({ id, answer: "A", source: "a" });
+      // A1: respond threads the pending render flag (false when no ACK arrived).
+      expect(result).toEqual({ id, answer: "A", source: "a", rendered: false });
     });
 
     it("should ignore second response for same prompt", async () => {
@@ -383,6 +384,67 @@ describe("PromptBus", () => {
       vi.advanceTimersByTime(10 * 60 * 1000);
       expect(adapter.onCancel).not.toHaveBeenCalled();
       expect(infiniteBus.pendingCount).toBe(1);
+    });
+  });
+
+  // ── A1 render-lifecycle ACK (markRendered) ──
+  describe("markRendered (A1 render ACK)", () => {
+    it("a timeout AFTER markRendered resolves with rendered:true (delivered timeout)", async () => {
+      const adapter = createMockAdapter("a");
+      bus.registerAdapter(adapter);
+
+      const promise = bus.request({ pipeline: "command", type: "select", question: "Q", options: ["A"] });
+      const id = (adapter.onRequest.mock.calls[0][0] as PromptRequest).id;
+
+      // Client ACKs the render, THEN the prompt times out.
+      bus.markRendered(id);
+      vi.advanceTimersByTime(5000);
+
+      const result = await promise;
+      expect(result.cancelled).toBe(true);
+      expect(result.source).toBe("__bus__");
+      expect(result.rendered).toBe(true); // RED pre-amendment (no markRendered / field)
+    });
+
+    it("a timeout WITHOUT markRendered resolves with rendered:false (never-rendered)", async () => {
+      const adapter = createMockAdapter("a");
+      bus.registerAdapter(adapter);
+
+      const promise = bus.request({ pipeline: "command", type: "select", question: "Q", options: ["A"] });
+      vi.advanceTimersByTime(5000);
+
+      const result = await promise;
+      expect(result.cancelled).toBe(true);
+      expect(result.rendered).toBe(false);
+    });
+
+    it("an answer after markRendered threads rendered:true", async () => {
+      const adapter = createMockAdapter("a");
+      bus.registerAdapter(adapter);
+
+      const promise = bus.request({ pipeline: "command", type: "select", question: "Q", options: ["A"] });
+      const id = (adapter.onRequest.mock.calls[0][0] as PromptRequest).id;
+
+      bus.markRendered(id);
+      bus.respond({ id, answer: "A", source: "a" });
+
+      const result = await promise;
+      expect(result.answer).toBe("A");
+      expect(result.rendered).toBe(true);
+    });
+
+    it("markRendered on an unknown / already-resolved id is a no-op (no throw)", async () => {
+      const adapter = createMockAdapter("a");
+      bus.registerAdapter(adapter);
+
+      const promise = bus.request({ pipeline: "command", type: "select", question: "Q", options: ["A"] });
+      const id = (adapter.onRequest.mock.calls[0][0] as PromptRequest).id;
+      bus.respond({ id, answer: "A", source: "a" });
+      await promise;
+
+      // Late ACK after resolution — must not throw.
+      expect(() => bus.markRendered(id)).not.toThrow();
+      expect(() => bus.markRendered("nonexistent")).not.toThrow();
     });
   });
 

@@ -37,6 +37,13 @@ export interface PromptResponse {
   answer?: string;
   cancelled?: boolean;
   source: string;
+  /**
+   * A1 render-lifecycle ACK: true when the client acknowledged displaying the
+   * dialog for this prompt id (via `markRendered`). Threaded into the resolved
+   * response so the receipt can tell a rendered-then-timed-out prompt from a
+   * never-rendered one. Absent/false = no render was acknowledged.
+   */
+  rendered?: boolean;
 }
 
 export interface PromptAdapter {
@@ -63,6 +70,13 @@ interface PendingPrompt {
   resolvedComponent: PromptComponent | undefined;
   /** Resolved placement sent to dashboard at request time (for reconnect replay) */
   resolvedPlacement: string | undefined;
+  /**
+   * A1 render-lifecycle ACK: set true by `markRendered` when the client
+   * signals it displayed this prompt's dialog. Threaded into the resolved
+   * response so a rendered-then-timed-out prompt is distinguishable from a
+   * never-rendered one.
+   */
+  rendered: boolean;
 }
 
 export interface PromptBusOptions {
@@ -151,7 +165,7 @@ export class PromptBus {
       }
 
       // Store pending state (with resolved component for reconnect replay)
-      this.pending.set(id, { request, resolve, timer, claims, resolvedComponent, resolvedPlacement });
+      this.pending.set(id, { request, resolve, timer, claims, resolvedComponent, resolvedPlacement, rendered: false });
 
       // Send to dashboard
       if (resolvedComponent && this.options.onDashboardRequest) {
@@ -184,7 +198,22 @@ export class PromptBus {
       this.options.onDashboardDismiss(response.id);
     }
 
-    entry.resolve(response);
+    // A1: carry the render-lifecycle flag through unless the responder already
+    // set it. An answer/dismiss itself proves a render; the receipt derives
+    // `rendered` accordingly, but preserving the ACK keeps the signal explicit.
+    entry.resolve({ ...response, rendered: response.rendered ?? entry.rendered });
+  }
+
+  /**
+   * A1 render-lifecycle ACK: the client calls this (via the bridge) when it has
+   * displayed the prompt dialog for `id`. Records `rendered=true` on the pending
+   * entry so a later timeout is truthfully `delivered:true, rendered:true`
+   * rather than the old `source==="__bus__"` never-rendered heuristic. No-op for
+   * an unknown / already-resolved id.
+   */
+  markRendered(id: string): void {
+    const entry = this.pending.get(id);
+    if (entry) entry.rendered = true;
   }
 
   /**
@@ -211,7 +240,10 @@ export class PromptBus {
       this.options.onDashboardCancel(id);
     }
 
-    entry.resolve({ id, cancelled: true, source: "__bus__" });
+    // A1: a bus-fired cancel (timeout/abort) carries the render flag so the
+    // receipt tells a rendered-then-timed-out prompt (delivered/rendered true)
+    // from a never-rendered one (both false).
+    entry.resolve({ id, cancelled: true, source: "__bus__", rendered: entry.rendered });
   }
 
   /** Get pending requests with their resolved dashboard components (for reconnect replay). */

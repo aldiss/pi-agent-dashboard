@@ -787,6 +787,20 @@ export function createBrowserGateway(
             break;
           }
 
+          case "prompt_rendered": {
+            // A1 render-lifecycle ACK browser→extension. Field-by-field static
+            // forward (no answer, no author — a pure lifecycle signal, not a
+            // response), so the WS-coverage AST classifies it by its static
+            // channel. The bridge calls PromptBus.markRendered(promptId).
+            const rr = msg as import("@blackbelt-technology/pi-dashboard-shared/browser-protocol.js").PromptRenderedBrowserMessage;
+            ctx.piGateway.sendToSession(rr.sessionId, {
+              type: "prompt_rendered",
+              sessionId: rr.sessionId,
+              promptId: rr.promptId,
+            });
+            break;
+          }
+
           case "flow_management": {
             ctx.piGateway.sendToSession(msg.sessionId, {
               type: "flow_management",

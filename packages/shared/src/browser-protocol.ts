@@ -979,6 +979,19 @@ export interface PromptResponseBrowserMessage {
   source: string;
 }
 
+/**
+ * Client → server: A1 render-lifecycle ACK. The client sends this once when it
+ * has displayed the prompt dialog for `promptId` (distinct from
+ * `prompt_response`, which answers). The server forwards it to the extension as
+ * `prompt_rendered` so the bridge marks the PromptBus pending entry rendered.
+ * No answer field — purely a lifecycle signal.
+ */
+export interface PromptRenderedBrowserMessage {
+  type: "prompt_rendered";
+  sessionId: string;
+  promptId: string;
+}
+
 export interface RoleSetBrowserMessage {
   type: "role_set";
   sessionId: string;
@@ -1083,6 +1096,7 @@ export type BrowserToServerMessage =
   | FlowManagementBrowserMessage
   | ArchitectPromptResponseBrowserMessage
   | PromptResponseBrowserMessage
+  | PromptRenderedBrowserMessage
   | RoleSetBrowserMessage
   | RolePresetLoadBrowserMessage
   | RolePresetSaveBrowserMessage

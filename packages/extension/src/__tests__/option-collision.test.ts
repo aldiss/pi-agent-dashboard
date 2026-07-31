@@ -1,72 +1,62 @@
 import { describe, it, expect } from "vitest";
-import { makeCollisionSafeOptions } from "../option-collision.js";
+import { assertDistinctOptions, DuplicateOptionError } from "../option-collision.js";
 
-describe("makeCollisionSafeOptions", () => {
-  describe("no collision (99% case) — zero behavior change", () => {
-    it("leaves distinct labels byte-identical and reports no collision", () => {
-      const safe = makeCollisionSafeOptions(["Ship it", "Hold", "Cancel"]);
-      expect(safe.displayOptions).toEqual(["Ship it", "Hold", "Cancel"]);
-      expect(safe.hadCollision).toBe(false);
+// A4 (Pete dl-13350 + Lane): the display-rename disambiguation approach
+// (makeCollisionSafeOptions) is SUPERSEDED by fail-closed rejection. Duplicate
+// labels (after trimming) are rejected BEFORE render so a click can never
+// resolve to a different hidden option than the one shown.
+
+describe("assertDistinctOptions (A4 fail-closed)", () => {
+  describe("distinct labels — pass through unchanged (99% case)", () => {
+    it("returns the options unchanged when all labels are distinct", () => {
+      const opts = ["Ship it", "Hold", "Cancel"];
+      expect(assertDistinctOptions(opts)).toBe(opts);
     });
 
-    it("resolve is an index-preserving passthrough for distinct labels", () => {
-      const safe = makeCollisionSafeOptions(["Ship it", "Hold", "Cancel"]);
-      expect(safe.resolve("Ship it")).toEqual({ index: 0, value: "Ship it" });
-      expect(safe.resolve("Hold")).toEqual({ index: 1, value: "Hold" });
-      expect(safe.resolve("Cancel")).toEqual({ index: 2, value: "Cancel" });
+    it("does not throw for a two-option distinct list", () => {
+      expect(() => assertDistinctOptions(["Yes", "No"])).not.toThrow();
     });
 
-    it("resolve returns undefined for a label that is not an option", () => {
-      const safe = makeCollisionSafeOptions(["A", "B"]);
-      expect(safe.resolve("Z")).toBeUndefined();
+    it("leading/trailing whitespace that stays distinct after trim is allowed", () => {
+      // "Yes" vs "No " → trimmed "Yes"/"No" are distinct.
+      expect(() => assertDistinctOptions(["Yes", "No "])).not.toThrow();
     });
   });
 
-  describe("duplicate-label bijection (A4 core)", () => {
-    it("disambiguates identical labels and maps each display back to its EXACT original index", () => {
-      // Two options share the label "Deploy" but are the 1st and 2nd distinct
-      // intended actions. A click must resolve to the exact one shown.
-      const safe = makeCollisionSafeOptions(["Deploy", "Deploy", "Rollback"]);
-      expect(safe.hadCollision).toBe(true);
-      expect(safe.displayOptions).toEqual(["Deploy", "Deploy (2)", "Rollback"]);
-
-      // Bijection: each display label round-trips to the precise original slot.
-      expect(safe.resolve("Deploy")).toEqual({ index: 0, value: "Deploy" });
-      expect(safe.resolve("Deploy (2)")).toEqual({ index: 1, value: "Deploy" });
-      expect(safe.resolve("Rollback")).toEqual({ index: 2, value: "Rollback" });
-
-      // The clicked hidden option is NOT confusable: index 0 ≠ index 1 even
-      // though both original labels read "Deploy".
-      expect(safe.resolve("Deploy")!.index).not.toBe(safe.resolve("Deploy (2)")!.index);
+  describe("duplicate labels — REJECT before render", () => {
+    it("throws DuplicateOptionError on an exact duplicate label", () => {
+      expect(() => assertDistinctOptions(["Deploy", "Deploy", "Rollback"])).toThrow(DuplicateOptionError);
     });
 
-    it("treats labels identical only after trimming as a collision", () => {
-      const safe = makeCollisionSafeOptions(["Yes", "Yes "]);
-      expect(safe.hadCollision).toBe(true);
-      // First occurrence keeps its bytes; the trimmed-duplicate is suffixed.
-      expect(safe.displayOptions[0]).toBe("Yes");
-      expect(safe.displayOptions[1]).not.toBe(safe.displayOptions[0].trim());
-      expect(safe.resolve(safe.displayOptions[0])).toEqual({ index: 0, value: "Yes" });
-      expect(safe.resolve(safe.displayOptions[1])).toEqual({ index: 1, value: "Yes " });
+    it("rejects labels identical only AFTER trimming (the trimmed-duplicate case)", () => {
+      // "Deploy" and "Deploy " collide after trim — must reject.
+      let err: unknown;
+      try { assertDistinctOptions(["Deploy", "Deploy ", "Rollback"]); } catch (e) { err = e; }
+      expect(err).toBeInstanceOf(DuplicateOptionError);
+      expect((err as DuplicateOptionError).label).toBe("Deploy");
+      expect((err as DuplicateOptionError).indices).toEqual([0, 1]);
     });
 
-    it("handles triple duplicates with ascending unique suffixes", () => {
-      const safe = makeCollisionSafeOptions(["Opt", "Opt", "Opt"]);
-      expect(safe.displayOptions).toEqual(["Opt", "Opt (2)", "Opt (3)"]);
-      expect(safe.resolve("Opt (3)")).toEqual({ index: 2, value: "Opt" });
-      // All three display labels are unique.
-      expect(new Set(safe.displayOptions).size).toBe(3);
+    it("error names the colliding label + indices, and reads clearly", () => {
+      let err: DuplicateOptionError | undefined;
+      try { assertDistinctOptions(["A", "B", "A"]); } catch (e) { err = e as DuplicateOptionError; }
+      expect(err).toBeInstanceOf(DuplicateOptionError);
+      expect(err!.label).toBe("A");
+      expect(err!.indices).toEqual([0, 2]);
+      expect(err!.message).toMatch(/distinct/i);
+      expect(err!.message).toMatch(/"A"/);
     });
 
-    it("skips a suffix that would itself collide with a literal option", () => {
-      // "X (2)" already exists literally, so the 2nd "X" must not reuse it.
-      const safe = makeCollisionSafeOptions(["X", "X (2)", "X"]);
-      expect(new Set(safe.displayOptions).size).toBe(3);
-      // The disambiguated third element must round-trip to index 2.
-      const third = safe.displayOptions[2];
-      expect(safe.resolve(third)).toEqual({ index: 2, value: "X" });
-      // And the literal "X (2)" still maps to its own index 1.
-      expect(safe.resolve("X (2)")).toEqual({ index: 1, value: "X (2)" });
+    it("prefixes the error with a context (batch sub-question / multiselect locator)", () => {
+      let err: DuplicateOptionError | undefined;
+      try { assertDistinctOptions(["X", "X"], 'ask_user batch sub-question "Pick"'); } catch (e) { err = e as DuplicateOptionError; }
+      expect(err!.message).toMatch(/^ask_user batch sub-question "Pick":/);
+    });
+
+    it("rejects triple duplicates (all colliding indices reported)", () => {
+      let err: DuplicateOptionError | undefined;
+      try { assertDistinctOptions(["Opt", "Opt", "Opt"]); } catch (e) { err = e as DuplicateOptionError; }
+      expect(err!.indices).toEqual([0, 1, 2]);
     });
   });
 });

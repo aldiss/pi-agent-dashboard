@@ -663,6 +663,13 @@ export function useMessageHandler(
           next.set(msg.sessionId, updated);
           return next;
         });
+        // A1 render-lifecycle ACK: the client has committed this prompt to
+        // interactive state (the dialog mounts from it synchronously this
+        // tick), so acknowledge the render back to the extension. The bridge
+        // calls PromptBus.markRendered(promptId); a later timeout is then
+        // truthfully delivered:true/rendered:true, not the __bus__
+        // never-rendered heuristic. Fire-and-forget; carries no answer.
+        send({ type: "prompt_rendered", sessionId: msg.sessionId, promptId: msg.promptId } as any);
         break;
 
       case "prompt_dismiss":
