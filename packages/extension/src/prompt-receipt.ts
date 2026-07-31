@@ -57,11 +57,19 @@ export interface ReceiptSource {
    */
   rendered?: boolean;
   /**
-   * B2 authenticated operator author of the answer/ACK (server-stamped from the
+   * B2 authenticated operator author of the ANSWER (server-stamped from the
    * connection-bound principal, never the body). A receipt with no author is
-   * not proven to be an operator decision.
+   * not proven to be an operator ANSWER. NEVER the render identity — see
+   * `renderedBy` (Pete dl-13383 responder-attribution split).
    */
   author?: ReceiptAuthor;
+  /**
+   * B2 authenticated operator author of the RENDER ACK — WHO RENDERED the
+   * dialog, distinct from WHO ANSWERED (`author`). Present on a
+   * rendered-then-timed-out response even though nobody answered. Absent when no
+   * authored render ACK arrived.
+   */
+  renderedBy?: ReceiptAuthor;
 }
 
 export interface PromptReceipt {
@@ -80,11 +88,19 @@ export interface PromptReceipt {
   /** The response source: the answering/dismissing adapter, or "__bus__" on timeout. */
   source: string;
   /**
-   * B2 authenticated operator identity that answered/ACKed (server-stamped,
-   * never the body). Absent single-operator (flag OFF) or when no operator
-   * principal was bound — a receipt with no author is not an operator decision.
+   * B2 authenticated operator identity that ANSWERED (server-stamped, never the
+   * body). Absent single-operator (flag OFF), when no operator principal was
+   * bound, OR when nobody answered (dismiss/timeout) — a receipt with no author
+   * is not an operator ANSWER. NEVER the render identity — see `renderedBy`.
    */
   author?: ReceiptAuthor;
+  /**
+   * B2 authenticated operator identity that RENDERED the dialog (server-stamped,
+   * never the body), distinct from `author`. Present on a rendered-then-timed-out
+   * receipt (proves WHO rendered even though nobody answered). Absent when no
+   * authored render ACK arrived (Pete dl-13383 responder-attribution split).
+   */
+  renderedBy?: ReceiptAuthor;
 }
 
 /**
@@ -117,10 +133,17 @@ export function deriveReceipt(response: ReceiptSource): PromptReceipt {
   const invalid = !cancelled && !answerPresent;
   const timedOut = cancelled && source === BUS_TIMEOUT_SOURCE;
 
-  // B2: thread the server-stamped operator author when present. Omit the key
-  // entirely single-operator (author absent) so the receipt stays byte-unchanged.
+  // B2 (Pete dl-13383 responder-attribution split): thread the server-stamped
+  // operator identities, keeping WHO-ANSWERED separate from WHO-RENDERED.
+  //   • `author` = the ANSWERER — surfaced ONLY when a real answer is present.
+  //     A dismiss/timeout carries no answer, so it carries no `author`, and the
+  //     render identity NEVER leaks into `author`.
+  //   • `renderedBy` = the RENDERER — surfaced whenever an authored render ACK
+  //     was carried through, including on a rendered-then-timed-out response.
+  // Both keys omitted when absent so a single-operator receipt stays byte-unchanged.
   const base: PromptReceipt = { delivered, rendered, answered, dismissed, timedOut, invalid, source };
-  if (response.author) base.author = response.author;
+  if (answerPresent && response.author) base.author = response.author;
+  if (response.renderedBy) base.renderedBy = response.renderedBy;
   return base;
 }
 

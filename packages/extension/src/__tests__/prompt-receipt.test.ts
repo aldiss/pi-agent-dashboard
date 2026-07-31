@@ -125,10 +125,13 @@ describe("deriveReceipt", () => {
     }
   });
 
-  // ── B2 (Pete dl-13358): authenticated operator author threads into the
-  //    receipt so it proves WHO answered/rendered. Single-operator → omitted. ──
-  describe("author (B2 operator identity)", () => {
+  // ── B2 (Pete dl-13358) + responder-attribution split (Pete dl-13383): the
+  //    ANSWERER's authenticated author threads into receipt.author (present-answer
+  //    ONLY); the RENDERER's author threads into the SEPARATE receipt.renderedBy.
+  //    A no-answer response (dismiss/timeout) carries NO `author`. ──
+  describe("author (B2 operator identity) + renderedBy split (dl-13383)", () => {
     const OP = { sub: "op-1", display: "Operator One", isOperator: true };
+    const OP2 = { sub: "op-2", display: "Operator Two", isOperator: true };
 
     it("[B2 able-to-fail] an answered response carries the operator author into receipt.author", () => {
       const r = deriveReceipt({ answer: "Ship it", cancelled: false, source: "dashboard", author: OP });
@@ -136,17 +139,46 @@ describe("deriveReceipt", () => {
       expect(r.answered).toBe(true);
     });
 
-    it("a rendered-then-timed-out response carries WHO rendered it (author on timeout)", () => {
-      const r = deriveReceipt({ cancelled: true, source: BUS_TIMEOUT_SOURCE, rendered: true, author: OP });
-      expect(r.author).toEqual(OP);
+    it("[dl-13383 able-to-fail] a rendered-then-timed-out response carries WHO RENDERED it in renderedBy, and author is ABSENT (nobody answered)", () => {
+      const r = deriveReceipt({ cancelled: true, source: BUS_TIMEOUT_SOURCE, rendered: true, renderedBy: OP });
+      expect(r.renderedBy).toEqual(OP);
+      expect("author" in r).toBe(false); // RED pre-split (render identity leaked into author)
+      expect(r.author).toBeUndefined();
       expect(r.delivered).toBe(true);
       expect(r.rendered).toBe(true);
       expect(r.timedOut).toBe(true);
+      expect(r.answered).toBe(false);
+    });
+
+    it("[dl-13383 able-to-fail] operator RENDERED, TUI ANSWERED (no author) → author ABSENT, renderedBy=operator, answered=true", () => {
+      // The responder (TUI) answered with NO author; the render ACK was the
+      // operator. The answer-author must be the responder's (absent), NEVER the
+      // render identity.
+      const r = deriveReceipt({ answer: "A", cancelled: false, source: "tui", renderedBy: OP });
+      expect("author" in r).toBe(false); // RED if answer-author fell back to renderedBy
+      expect(r.author).toBeUndefined();
+      expect(r.renderedBy).toEqual(OP);
+      expect(r.answered).toBe(true);
+      expect(r.source).toBe("tui");
+    });
+
+    it("[dl-13383] distinct answerer vs renderer: author=answerer, renderedBy=renderer (kept separate)", () => {
+      const r = deriveReceipt({ answer: "A", cancelled: false, source: "dashboard", author: OP2, renderedBy: OP });
+      expect(r.author).toEqual(OP2);
+      expect(r.renderedBy).toEqual(OP);
+    });
+
+    it("[dl-13383] a dismiss (no answer) carries renderedBy but NO author (nobody answered)", () => {
+      const r = deriveReceipt({ cancelled: true, source: "dashboard", renderedBy: OP });
+      expect(r.dismissed).toBe(true);
+      expect("author" in r).toBe(false);
+      expect(r.renderedBy).toEqual(OP);
     });
 
     it("single-operator (no author) → receipt has NO author key (byte-unchanged)", () => {
       const r = deriveReceipt({ answer: "A", cancelled: false, source: "dashboard" });
       expect("author" in r).toBe(false);
+      expect("renderedBy" in r).toBe(false);
     });
 
     it("a no-author receipt is not an operator decision (author undefined)", () => {

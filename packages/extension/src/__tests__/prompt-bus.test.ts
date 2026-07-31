@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { PromptBus, type PromptAdapter, type PromptRequest, type PromptResponse } from "../prompt-bus.js";
+import { PromptBus, type PromptAdapter, type PromptRequest, type PromptResponse, type PromptAuthor } from "../prompt-bus.js";
+import { deriveReceipt } from "../prompt-receipt.js";
 
 function createMockAdapter(name: string, claim: any = {}) {
   return {
@@ -617,6 +618,137 @@ describe("PromptBus", () => {
       bus.request({ pipeline: "command", type: "input", question: "Q2" });
 
       expect(bus.getPendingRequests()).toHaveLength(2);
+    });
+  });
+
+  // ── D1 (Pete BLOCK dl-13383): responder-attribution split — WHO ANSWERED
+  //    (`author`) must be the responder's own author ONLY; WHO RENDERED rides on
+  //    the SEPARATE `renderedBy`. The answer-author must NEVER fall back to the
+  //    render-ACK author, else a TUI answer after an operator render falsely
+  //    proves the operator answered. Full pipeline: request → markRendered(op) →
+  //    respond/timeout → resolved response → deriveReceipt. ──
+  describe("responder-attribution split (D1 / dl-13383)", () => {
+    const OP: PromptAuthor = { sub: "op-1", display: "Operator One", isOperator: true };
+    const OP2: PromptAuthor = { sub: "op-2", display: "Operator Two", isOperator: true };
+
+    // Test #1 — operator-render → TUI-answer: the answer-author is the
+    // responder's (ABSENT for the TUI), never the render identity.
+    it("[#1a able-to-fail] operator RENDERED, TUI ANSWERED first (no author) → resolved.author ABSENT (pre-fix: =operator), renderedBy=operator", async () => {
+      const adapter = createMockAdapter("a");
+      bus.registerAdapter(adapter);
+      const promise = bus.request({ pipeline: "command", type: "select", question: "Q", options: ["A", "B"] });
+      const id = (adapter.onRequest.mock.calls[0][0] as PromptRequest).id;
+
+      bus.markRendered(id, OP);                          // operator renders
+      bus.respond({ id, answer: "A", source: "tui" });   // TUI answers, NO author
+
+      const resolved = await promise;
+      // Pre-fix (`author: response.author ?? entry.renderedAuthor`) would put OP
+      // here — a FALSE operator-answer proof. Post-fix it is absent.
+      expect(resolved.author).toBeUndefined();
+      expect(resolved.renderedBy).toEqual(OP);
+      expect(resolved.source).toBe("tui");
+
+      const receipt = deriveReceipt(resolved);
+      expect("author" in receipt).toBe(false);           // NOT an authenticated-operator answer
+      expect(receipt.renderedBy).toEqual(OP);
+      expect(receipt.answered).toBe(true);
+      expect(receipt.source).toBe("tui");
+    });
+
+    it("[#1b able-to-fail] operator RENDERED, TUI CANCELLED (dismiss, no author) → author ABSENT (pre-fix: =operator), renderedBy=operator", async () => {
+      const adapter = createMockAdapter("a");
+      bus.registerAdapter(adapter);
+      const promise = bus.request({ pipeline: "command", type: "select", question: "Q", options: ["A", "B"] });
+      const id = (adapter.onRequest.mock.calls[0][0] as PromptRequest).id;
+
+      bus.markRendered(id, OP);                                 // operator renders
+      bus.respond({ id, cancelled: true, source: "tui" });      // TUI dismiss, NO author
+
+      const resolved = await promise;
+      expect(resolved.author).toBeUndefined();                 // pre-fix: =operator (FALSE)
+      expect(resolved.renderedBy).toEqual(OP);
+
+      const receipt = deriveReceipt(resolved);
+      expect("author" in receipt).toBe(false);
+      expect(receipt.dismissed).toBe(true);
+      expect(receipt.renderedBy).toEqual(OP);
+    });
+
+    // Test #2 — dashboard-answer: operator renders AND answers → author=operator.
+    it("[#2] operator RENDERED and ANSWERED → receipt.author=operator (the answerer)", async () => {
+      const adapter = createMockAdapter("a");
+      bus.registerAdapter(adapter);
+      const promise = bus.request({ pipeline: "command", type: "select", question: "Q", options: ["A", "B"] });
+      const id = (adapter.onRequest.mock.calls[0][0] as PromptRequest).id;
+
+      bus.markRendered(id, OP);
+      bus.respond({ id, answer: "A", source: "dashboard-default", author: OP }); // operator answers
+
+      const resolved = await promise;
+      expect(resolved.author).toEqual(OP);
+      expect(resolved.renderedBy).toEqual(OP);
+
+      const receipt = deriveReceipt(resolved);
+      expect(receipt.author).toEqual(OP);   // the ANSWERER
+      expect(receipt.answered).toBe(true);
+    });
+
+    it("[#2-split] renderer and answerer are DISTINCT operators — kept separate end-to-end", async () => {
+      const adapter = createMockAdapter("a");
+      bus.registerAdapter(adapter);
+      const promise = bus.request({ pipeline: "command", type: "select", question: "Q", options: ["A", "B"] });
+      const id = (adapter.onRequest.mock.calls[0][0] as PromptRequest).id;
+
+      bus.markRendered(id, OP);                                              // OP renders
+      bus.respond({ id, answer: "A", source: "dashboard-default", author: OP2 }); // OP2 answers
+
+      const resolved = await promise;
+      const receipt = deriveReceipt(resolved);
+      expect(receipt.author).toEqual(OP2);      // answerer
+      expect(receipt.renderedBy).toEqual(OP);   // renderer
+    });
+
+    // Test #3 — rendered-timeout: operator renders, nobody answers, bus timeout.
+    it("[#3] operator RENDERED, NO answer, bus TIMEOUT → renderedBy=operator, author ABSENT, timedOut=true", async () => {
+      const adapter = createMockAdapter("a");
+      bus.registerAdapter(adapter);
+      const promise = bus.request({ pipeline: "command", type: "select", question: "Q", options: ["A", "B"] });
+      const id = (adapter.onRequest.mock.calls[0][0] as PromptRequest).id;
+
+      bus.markRendered(id, OP);          // operator renders
+      vi.advanceTimersByTime(5000);      // bus timeout fires (no answer)
+
+      const resolved = await promise;
+      expect(resolved.cancelled).toBe(true);
+      expect(resolved.source).toBe("__bus__");
+      expect(resolved.author).toBeUndefined();     // pre-fix: =operator (FALSE — nobody answered)
+      expect(resolved.renderedBy).toEqual(OP);
+
+      const receipt = deriveReceipt(resolved);
+      expect("author" in receipt).toBe(false);
+      expect(receipt.renderedBy).toEqual(OP);
+      expect(receipt.timedOut).toBe(true);
+      expect(receipt.delivered).toBe(true);
+      expect(receipt.rendered).toBe(true);
+      expect(receipt.answered).toBe(false);
+    });
+
+    it("[#3-never] never-rendered (no ACK), bus TIMEOUT → neither author nor renderedBy", async () => {
+      const adapter = createMockAdapter("a");
+      bus.registerAdapter(adapter);
+      const promise = bus.request({ pipeline: "command", type: "select", question: "Q", options: ["A", "B"] });
+      vi.advanceTimersByTime(5000);
+
+      const resolved = await promise;
+      expect(resolved.author).toBeUndefined();
+      expect(resolved.renderedBy).toBeUndefined();
+
+      const receipt = deriveReceipt(resolved);
+      expect("author" in receipt).toBe(false);
+      expect("renderedBy" in receipt).toBe(false);
+      expect(receipt.timedOut).toBe(true);
+      expect(receipt.delivered).toBe(false);
     });
   });
 });
