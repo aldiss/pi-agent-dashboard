@@ -10,6 +10,7 @@ import { HamburgerButton, MobileOverlay } from "./components/MobileOverlay.js";
 import { MobileShell } from "./components/MobileShell.js";
 import { useMobile } from "./hooks/useMobile.js";
 import { getMobileDepth } from "./lib/mobile-depth.js";
+import { resendAllRenderedAcks } from "./lib/prompt-rendered-ack.js";
 import { getSessionDisplayName } from "./lib/session-display-name.js";
 import { ChatView, type ChatViewHandle } from "./components/ChatView.js";
 import { ConfirmDialog } from "./components/ConfirmDialog.js";
@@ -416,6 +417,13 @@ export default function App() {
       // authorize a false calm-zero. The flag is set in the `sessions_snapshot`
       // message handler (useMessageHandler) on the real frame.
       subscribedRef.current.clear();
+      // A1 render-ACK resend-on-reconnect (Pete dl-r4 C1-v2): the interactive
+      // dialog cards stay MOUNTED across a WS reconnect (addInteractiveRequest
+      // dedups the replay → same state → no remount), and `useWebSocket.send`
+      // silently drops a send while the socket is down. So a first ACK that
+      // dropped during the outage is re-sent HERE for every still-mounted
+      // pending prompt. Server `markRendered` is idempotent → safe.
+      resendAllRenderedAcks();
       // sessionOrderMap is replaced atomically by the on-connect
       // `sessions_snapshot` message — no pre-reset needed.
       // See change: fix-stale-sessions-on-reconnect.

@@ -1,0 +1,12 @@
+2026-07-31T09:39:32.720Z loopback-listen-guard active (p3 8153/8154)
+2026-07-31T09:39:32.790Z loopback-listen-guard active (p3 8153/8154)
+2026-07-31T09:39:32.816Z loopback-listen-guard active (p3 8153/8154)
+2026-07-31T09:39:34.687Z loopback-listen-guard active (p3 8153/8154)
+2026-07-31T09:39:34.714Z loopback-listen-guard active (p3 8153/8154)
+2026-07-31T09:39:36.778Z loopback-listen-guard active (p3 8153/8154)
+2026-07-31T09:39:37.081Z FORCE port=8154 host=(absent) -> 127.0.0.1
+2026-07-31T09:39:38.180Z FORCE port=8153 host=0.0.0.0 -> 127.0.0.1
+2026-07-31T09:40:10.455Z loopback-listen-guard active (p3 8153/8154)
+2026-07-31T09:40:24.828Z loopback-listen-guard active (p3 8153/8154)
+2026-07-31T09:41:01.051Z loopback-listen-guard active (p3 8153/8154)
+2026-07-31T09:41:17.259Z loopback-listen-guard active (p3 8153/8154)

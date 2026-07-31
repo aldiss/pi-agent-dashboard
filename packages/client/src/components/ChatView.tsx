@@ -293,7 +293,13 @@ const InteractiveUiCard = React.memo(function InteractiveUiCard({ request, onRes
   // mount (post-DOM-commit), exactly once per promptId. This card is the
   // per-prompt dialog boundary — a parent container can commit before the
   // dialog does, so the ACK MUST live here, not upstream.
-  usePromptRenderedAck(request.requestId, onRendered);
+  // A1 render-lifecycle ACK (Pete dl-13358 B1; reconnect-resend dl-r4 C1-v2):
+  // fires from THIS card's actual mount (post-DOM-commit), and registers a
+  // resend so a WS reconnect re-sends the ACK while the card stays mounted-and-
+  // pending (the card persists across reconnect because addInteractiveRequest
+  // dedups the replay). `request.status` lets the hook drop the registry entry
+  // on resolve so a reconnect never resends a decided prompt.
+  usePromptRenderedAck(request.requestId, onRendered, request.status);
   return (
     <Renderer
       requestId={request.requestId}

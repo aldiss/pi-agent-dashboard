@@ -1,50 +1,65 @@
 import { useEffect, useRef } from "react";
+import { registerRenderedAck, unregisterRenderedAck } from "../lib/prompt-rendered-ack.js";
 
 /**
- * A1 render-lifecycle ACK hook (Pete dl-13358 B1; reliability fix dl-r3 C1).
+ * A1 render-lifecycle ACK hook (Pete dl-13358 B1; reliability fix dl-r4 C1-v2).
  * Emits the `prompt_rendered` ACK from the interactive dialog component's ACTUAL
- * mount — a `useEffect` (runs AFTER React commit / DOM mount), keyed by
- * `requestId`.
+ * mount, AND registers a RESEND callback so a WS reconnect re-sends the ACK for
+ * a still-mounted pending prompt.
  *
- * AT-LEAST-ONCE on mount/reconnect (NOT exactly-once-forever). The prior fix
- * used a permanent module-global Set that suppressed the ACK forever after the
- * first claim. If the WS send was dropped / the socket was disconnected at send
- * time, reconnect-replay remounts the visible card but the permanent Set
- * SUPPRESSED the retry → the server receipt stayed `delivered=false` despite an
- * actual render (a false never-delivered). Since `PromptBus.markRendered` is
- * ALREADY idempotent (server-side dedup), client exactly-once is the wrong
- * guarantee.
+ * Why resend-on-reconnect (not mount-scoped only): the real architecture keeps
+ * the card MOUNTED across a WS reconnect. `event-reducer.addInteractiveRequest`
+ * DEDUPLICATES a replayed same-`requestId` prompt → returns the SAME state → the
+ * card never remounts. `useWebSocket.send` silently drops a send while the
+ * socket is down. So if the first ACK send dropped, a mount-scoped guard would
+ * never retry → `delivered=false` forever. The App-level WS reconnect handler
+ * calls `resendAllRenderedAcks()` when the socket returns to "connected",
+ * re-sending the ACK for every still-mounted pending prompt. Server
+ * `markRendered` is idempotent → resends/duplicates are absorbed (no
+ * double-effect).
  *
- * New contract:
- *   - a REAL mount fires the ACK once for THIS mount;
- *   - a remount / reconnect-replay of the card RE-SENDS the ACK (retry) — the
- *     server's idempotent `markRendered` absorbs the duplicate (no false
- *     double-effect: that is the real meaning of "no false duplicate");
- *   - a component that never mounts (renderer fails / hidden branch) never runs
- *     this effect → no ACK → the extension records delivered=false.
+ * Registry lifecycle (BOUNDED, no leak):
+ *   - mount + pending → register the resend callback + send the ACK once;
+ *   - unmount → unregister (cleanup);
+ *   - resolve/answer (status leaves "pending") → unregister (no resend after
+ *     resolve).
  *
- * The only guard is a BOUNDED per-mount ref (cleared on unmount by React
- * discarding the ref) that suppresses a same-mount double-invoke (React
- * StrictMode's development double-effect), never a permanent global.
+ * The mount-scoped `useRef` guards only a same-mount StrictMode double-invoke of
+ * the INITIAL send; it is not the reconnect mechanism.
  *
  * Mount it inside the per-prompt dialog card (InteractiveUiCard), NOT a parent
  * container (a parent can commit before the dialog does).
  *
  * @param requestId the promptId of the interactive prompt being rendered
  * @param onRendered callback that sends `prompt_rendered` for this promptId
+ * @param status the prompt's lifecycle status; registry entry is dropped when it
+ *   leaves "pending" (resolve/answer) so a reconnect never resends a decided prompt
  */
 export function usePromptRenderedAck(
   requestId: string,
   onRendered: ((requestId: string) => void) | undefined,
+  status?: "pending" | "resolved" | "cancelled" | "dismissed",
 ): void {
-  // Per-MOUNT guard (bounded): the ref is created fresh on each mount and
-  // discarded on unmount, so it only dedups a same-mount double-invoke
-  // (StrictMode). A genuine remount gets a fresh ref → re-sends (at-least-once).
   const sentThisMount = useRef(false);
+  const isPending = status === undefined || status === "pending";
+
   useEffect(() => {
     if (!onRendered) return;
-    if (sentThisMount.current) return; // same-mount double-invoke (StrictMode)
-    sentThisMount.current = true;
-    onRendered(requestId);
-  }, [requestId, onRendered]);
+    // Resolved/answered on (re)render: ensure no lingering registry entry — a
+    // reconnect must NOT resend a decided prompt.
+    if (!isPending) {
+      unregisterRenderedAck(requestId);
+      return;
+    }
+    // Register the resend callback so a WS reconnect re-sends this ACK while the
+    // card stays mounted-and-pending. Idempotent per id.
+    registerRenderedAck(requestId, () => onRendered(requestId));
+    // Initial send once per mount (StrictMode double-invoke guarded by the ref).
+    if (!sentThisMount.current) {
+      sentThisMount.current = true;
+      onRendered(requestId);
+    }
+    // Cleanup on unmount: drop the registry entry (no leak, no post-unmount resend).
+    return () => { unregisterRenderedAck(requestId); };
+  }, [requestId, onRendered, isPending]);
 }
