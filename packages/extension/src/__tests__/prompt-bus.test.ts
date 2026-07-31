@@ -446,6 +446,53 @@ describe("PromptBus", () => {
       expect(() => bus.markRendered(id)).not.toThrow();
       expect(() => bus.markRendered("nonexistent")).not.toThrow();
     });
+
+    // ── C1 (dl-r3): markRendered is idempotent — the AT-LEAST-ONCE client can
+    //    re-send the ACK on every remount/reconnect; the server dedups so there
+    //    is NO false double-effect. This SERVER idempotency is what now
+    //    guarantees "no false duplicate" (superseding client exactly-once). ──
+    it("[C1] duplicate markRendered (at-least-once client retries) marks once — no double-effect", async () => {
+      const adapter = createMockAdapter("a");
+      bus.registerAdapter(adapter);
+
+      const promise = bus.request({ pipeline: "command", type: "select", question: "Q", options: ["A"] });
+      const id = (adapter.onRequest.mock.calls[0][0] as PromptRequest).id;
+
+      // The client re-sends the ACK on each remount/reconnect (at-least-once).
+      bus.markRendered(id);
+      bus.markRendered(id);
+      bus.markRendered(id);
+
+      // Timeout → the receipt carries rendered:true ONCE; duplicates are a no-op
+      // (the pending flag is simply set; no cumulative/side effect).
+      vi.advanceTimersByTime(5000);
+      const result = await promise;
+      expect(result.cancelled).toBe(true);
+      expect(result.rendered).toBe(true);
+      // onCancel fired exactly once — the duplicate ACKs never re-triggered
+      // adapter callbacks or resolved the prompt more than once.
+      expect(adapter.onCancel).toHaveBeenCalledTimes(1);
+    });
+
+    it("[C1] a DROPPED first ACK is recovered by a later markRendered (at-least-once)", async () => {
+      // Model transport: the client's first ACK send never reached the server
+      // (dropped), so markRendered was NOT called at send time. On reconnect the
+      // client re-sends and markRendered runs BEFORE the timeout → delivered.
+      const adapter = createMockAdapter("a");
+      bus.registerAdapter(adapter);
+
+      const promise = bus.request({ pipeline: "command", type: "select", question: "Q", options: ["A"] });
+      const id = (adapter.onRequest.mock.calls[0][0] as PromptRequest).id;
+
+      // (first ACK dropped — no markRendered here)
+      vi.advanceTimersByTime(2000);
+      // reconnect remount re-sends → reaches the server this time
+      bus.markRendered(id);
+      vi.advanceTimersByTime(5000);
+
+      const result = await promise;
+      expect(result.rendered).toBe(true); // recovered (pre-fix perma-Set: false forever)
+    });
   });
 
   describe("concurrent prompts", () => {

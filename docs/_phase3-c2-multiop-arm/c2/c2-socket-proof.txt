@@ -1,0 +1,5 @@
+ts=2026-07-31T09:13:52.574Z
+has9999=false has8000=false
+
+--- pid 17880 ---
+(no TCP)
