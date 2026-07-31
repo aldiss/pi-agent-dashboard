@@ -1,0 +1,75 @@
+{
+  "_artifact": "SAMPLE projections from project() — the frozen wire contract (dl-13481). Threadwright binds determinismFetcher against these; no live coupling to start.",
+  "_machine": "cell-lifecycle (spine-fold; degrade:spine-only until the §16 canon-touch adds the 14/19 absent event-types)",
+  "_generated": "2026-07-31T18:03:12Z",
+  "samples": [
+{
+  "thread_id": "peggy+attention-app",
+  "machine": "cell-lifecycle",
+  "stage": "running",
+  "stage_meaning": "steady-state; W-steps progressing; runs ON the driver's agent-session",
+  "pending": [
+    {
+      "to": "running",
+      "kind": "deterministic",
+      "via_event": "w-step-status-transition",
+      "gate": "(TS gate)"
+    },
+    {
+      "to": "blocked",
+      "kind": "deterministic",
+      "via_event": "cell-blocked",
+      "gate": "(TS gate)"
+    },
+    {
+      "to": "blocked",
+      "kind": "deterministic",
+      "via_event": "driver-dead-reap-eligible",
+      "gate": "(TS gate)"
+    },
+    {
+      "to": "reviewing",
+      "kind": "deterministic",
+      "via_event": "work-item-gated",
+      "gate": "pete-QA + pi-cell-done-gate"
+    },
+    {
+      "to": "reaped",
+      "kind": "judgment",
+      "via_event": "operator-reap",
+      "who": "operator"
+    },
+    {
+      "to": "reaped",
+      "kind": "judgment",
+      "via_event": "sweep-reap",
+      "who": "operator"
+    },
+    {
+      "to": "demoted",
+      "kind": "judgment",
+      "via_event": "demote",
+      "who": "cell-executor"
+    }
+  ],
+  "degrade": "spine-only"
+}
+  ,
+{
+  "thread_id": "nos-durable-event-log/v1",
+  "machine": "cell-lifecycle",
+  "stage": "done",
+  "stage_meaning": "operator accepted; ratified; substrate archived; bound-repo PERSISTS",
+  "pending": [],
+  "degrade": "spine-only"
+}
+  ,
+{
+  "thread_id": "pete+lane+resourcewright+g1-rehearsal-admission",
+  "machine": "cell-lifecycle",
+  "stage": null,
+  "pending": [],
+  "degrade": "unmapped"
+}
+  ]
+}

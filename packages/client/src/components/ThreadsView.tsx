@@ -29,12 +29,15 @@ import { Icon } from "@mdi/react";
 import { mdiSourceBranch, mdiChevronRight, mdiTrayFull, mdiFolderNetworkOutline } from "@mdi/js";
 import { ThreadStatusBadge } from "./ThreadStatusBadge.js";
 import { ThreadHistoryLanes } from "./ThreadHistoryLanes.js";
+import { DeterminismOverlay } from "./DeterminismOverlay.js";
 import { useThreadsList, type ThreadsListFetcher } from "../hooks/useThreadsList.js";
 import { buildThreadTree, type ThreadNode, type ThreadSummary } from "../lib/tier1-threads-api.js";
 import { buildMessageLaneStateFromManager } from "../lib/thread-message-lane.js";
 import type { ReadonlySessionManagerLike } from "@blackbelt-technology/pi-dashboard-shared/thread-durability/tier1/cloned-session-facade.js";
 import type { HandoffLaneResult } from "../lib/thread-handoff-lane-api.js";
 import { fetchHandoffLane } from "../lib/thread-handoff-lane-api.js";
+import type { DeterminismFetcher, DeterminismProjection } from "../lib/thread-determinism-api.js";
+import { fetchDeterminism } from "../lib/thread-determinism-api.js";
 
 /**
  * A message-lane provider: threadId → a `ReadonlySessionManagerLike` (or null
@@ -52,6 +55,13 @@ interface Props {
   messageLaneProvider?: MessageLaneManagerProvider;
   /** Injectable hand-off lane fetcher (default = live REST). */
   handoffFetcher?: (threadId: string) => Promise<HandoffLaneResult>;
+  /**
+   * Injectable determinism-model fetcher (default = live REST; demo/tests feed
+   * the frozen fixture). Same injectable shape as `handoffFetcher`. Resolves a
+   * thread's `project(thread_id)` fold for the determinism overlay; `null` =
+   * no model binding (held activation) → the overlay renders nothing.
+   */
+  determinismFetcher?: DeterminismFetcher;
 }
 
 /** One selectable row in the thread list (indented by tree depth). */
@@ -122,10 +132,12 @@ function ThreadDetail({
   summary,
   messageLaneProvider,
   handoffFetcher,
+  determinismFetcher,
 }: {
   summary: ThreadSummary;
   messageLaneProvider?: MessageLaneManagerProvider;
   handoffFetcher: (threadId: string) => Promise<HandoffLaneResult>;
+  determinismFetcher: DeterminismFetcher;
 }) {
   // Build the message-lane state THROUGH the P1 facade (the provider yields a
   // ReadonlySessionManagerLike; the builder wraps it in createClonedSessionFacade).
@@ -146,6 +158,18 @@ function ThreadDetail({
     return () => { cancelled = true; };
   }, [handoffFetcher, summary.thread_id]);
 
+  // Determinism overlay — the thread's `project(thread_id)` fold. `null` = no
+  // model binding (held activation) → the overlay renders nothing (same
+  // graceful-degrade posture as the hand-off lane). Fixture-backed in demo/tests.
+  const [determinism, setDeterminism] = useState<DeterminismProjection | null>(null);
+  React.useEffect(() => {
+    let cancelled = false;
+    determinismFetcher(summary.thread_id)
+      .then((p) => { if (!cancelled) setDeterminism(p); })
+      .catch(() => { if (!cancelled) setDeterminism(null); });
+    return () => { cancelled = true; };
+  }, [determinismFetcher, summary.thread_id]);
+
   return (
     <div className="flex flex-col gap-3 min-h-0" data-testid="thread-detail" data-thread-id={summary.thread_id}>
       <div
@@ -163,6 +187,9 @@ function ThreadDetail({
         </div>
         <ThreadStatusBadge status={summary.status} variant="full" />
       </div>
+      {/* Determinism model overlay — the "other half": stage + pending edges
+          (deterministic/gate vs judgment/who). Renders nothing when unbound. */}
+      <DeterminismOverlay projection={determinism} />
       <ThreadHistoryLanes
         messageLaneState={messageLaneState}
         handoffEvents={handoff.events}
@@ -172,7 +199,7 @@ function ThreadDetail({
   );
 }
 
-export function ThreadsView({ fetcher, messageLaneProvider, handoffFetcher = fetchHandoffLane }: Props) {
+export function ThreadsView({ fetcher, messageLaneProvider, handoffFetcher = fetchHandoffLane, determinismFetcher = fetchDeterminism }: Props) {
   const { threads, isLoading, error, endpointAvailable } = useThreadsList(fetcher);
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
@@ -255,6 +282,7 @@ export function ThreadsView({ fetcher, messageLaneProvider, handoffFetcher = fet
                   summary={selected}
                   messageLaneProvider={messageLaneProvider}
                   handoffFetcher={handoffFetcher}
+                  determinismFetcher={determinismFetcher}
                 />
               ) : (
                 <p className="text-xs py-8 text-center" style={{ color: "var(--text-muted)" }}>
