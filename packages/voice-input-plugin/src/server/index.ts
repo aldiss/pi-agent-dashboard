@@ -563,7 +563,14 @@ export async function register(
             .send({ error: "spool write failed", type: "SpoolWriteFailed" });
         }
         // PATH-ONLY: return the reference, never echo the transcript back.
-        return reply.code(200).send({ ok: true, spoolDir, id });
+        // Dawn's contract is the exact spool ENTRY identity — the `.json`
+        // sidecar, which IS the entry record the engine consumes via --entry.
+        // Not the `.txt` (that is one field INSIDE the entry) and not the
+        // directory (naming an entry but handing over a directory lets the
+        // engine sweep siblings the caller never named). Derived here from
+        // spoolDir + id so there is one tested source of truth.
+        const entryPath = join(spoolDir, `${id}.json`);
+        return reply.code(200).send({ ok: true, spoolDir, id, entryPath });
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         return reply.code(500).send({ error: `spool failed: ${msg}` });

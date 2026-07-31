@@ -154,11 +154,14 @@ async function spoolDawnDictation(
     },
   );
   if (!response.ok) throw new Error(`Dawn spool failed (${response.status})`);
-  const result = await response.json() as { ok?: unknown; spoolDir?: unknown; id?: unknown };
-  if (result.ok !== true || typeof result.spoolDir !== "string" || typeof result.id !== "string") {
-    throw new Error("Dawn spool returned an invalid path");
+  const result = await response.json() as { ok?: unknown; entryPath?: unknown };
+  // Dawn's contract is the exact spool ENTRY identity (the .json sidecar the
+  // engine consumes via --entry), never the drain directory. The server
+  // derives it from spoolDir + id; the client never joins paths.
+  if (result.ok !== true || typeof result.entryPath !== "string" || result.entryPath.length === 0) {
+    throw new Error("Dawn spool returned an invalid entry path");
   }
-  return `process this dictation path: ${result.spoolDir}`;
+  return `process this dictation entry: ${result.entryPath}`;
 }
 
 export function CommandInput({ commands: externalCommands, onSend, onListFiles, fileResults, disabled, sessionStatus, retrying, onAbort, onForceKill, pendingPrompt, onCancelPending, sessionId, sessionName, draft, onDraftChange, history, images, onImagesChange, queuedCount }: Props) {

@@ -19,7 +19,7 @@
  */
 import { describe, it, expect, afterEach, beforeEach } from "vitest";
 import Fastify, { type FastifyInstance } from "fastify";
-import { mkdtempSync, rmSync, readdirSync, readFileSync } from "node:fs";
+import { mkdtempSync, rmSync, readdirSync, readFileSync, existsSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { register } from "../server/index.js";
@@ -173,10 +173,46 @@ describe("Dawn spool authorization — the Dawn pane is admitted, path-only", ()
     });
 
     expect(res.statusCode).toBe(200);
-    const body = res.json() as { ok?: unknown; spoolDir?: unknown; id?: unknown };
+    const body = res.json() as {
+      ok?: unknown;
+      spoolDir?: unknown;
+      id?: unknown;
+      entryPath?: unknown;
+    };
     expect(body.ok).toBe(true);
     expect(typeof body.spoolDir).toBe("string");
     expect(typeof body.id).toBe("string");
+
+    // Dawn's contract is the exact spool ENTRY identity: the `.json` sidecar
+    // the engine consumes via --entry. NOT the `.txt` (one field inside the
+    // entry) and NOT the directory (which would let the engine sweep siblings
+    // she was never told about). Assert it is derived from spoolDir + id, is
+    // neither the directory nor the transcript, and actually resolves to the
+    // sidecar for THIS dictation — a plausible string pointing at nothing, or
+    // at the wrong entry, would pass a shape check.
+    expect(typeof body.entryPath).toBe("string");
+    const entryPath = body.entryPath as string;
+    expect(entryPath).toBe(join(body.spoolDir as string, `${body.id as string}.json`));
+    expect(entryPath.endsWith(".json")).toBe(true);
+    expect(entryPath).not.toBe(body.spoolDir);
+    expect(entryPath).not.toMatch(/\.txt$/);
+    expect(existsSync(entryPath)).toBe(true);
+    expect(statSync(entryPath).isFile()).toBe(true);
+
+    // The sidecar names THIS dictation, and its transcript field points at the
+    // bytes the operator actually spoke — the identity chain end to end.
+    const sidecar = JSON.parse(readFileSync(entryPath, "utf8")) as {
+      id?: string;
+      transcriptPath?: string;
+    };
+    expect(sidecar.id).toBe(body.id);
+    expect(typeof sidecar.transcriptPath).toBe("string");
+    expect(
+      Buffer.compare(
+        readFileSync(sidecar.transcriptPath as string),
+        Buffer.from(transcript, "utf8"),
+      ),
+    ).toBe(0);
 
     // PATH-ONLY: the operator's transcript must never travel back in the response.
     expect(res.body).not.toContain(transcript);
