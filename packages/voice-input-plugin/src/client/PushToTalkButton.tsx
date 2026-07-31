@@ -1066,13 +1066,21 @@ export function PushToTalkButton({
       }
     }
     if (streamRef.current) {
+      // RELEASE ORDER IS LOAD-BEARING: notify consumers BEFORE ending the tracks.
+      // A consumer (the Dawn spool recorder in CommandInput) holds its OWN
+      // MediaRecorder on this same stream. Ending the tracks first strands that
+      // recorder in state "recording" on a dead stream, so its stop() cannot
+      // complete and WebKit never releases the capture session — iOS keeps the
+      // orange mic indicator lit and offers "Stop lydoptagelse?" long after the
+      // dashboard reports the recording ended.
+      const dying = streamRef.current;
+      streamRef.current = null;
+      onStreamChangeRef.current?.(null);
       try {
-        streamRef.current.getTracks().forEach((t) => t.stop());
+        dying.getTracks().forEach((t) => t.stop());
       } catch {
         /* defensive */
       }
-      streamRef.current = null;
-      onStreamChangeRef.current?.(null);
       recorderRef.current = null;
     }
     chunksRef.current = [];
@@ -1217,13 +1225,14 @@ export function PushToTalkButton({
       if (pendingStopRef.current) {
         pendingStopRef.current = false;
         inFlightStartRef.current = false;
+        // Release order is load-bearing — notify consumers before ending tracks.
+        streamRef.current = null;
+        onStreamChangeRef.current?.(null);
         try {
           stream.getTracks().forEach((t) => t.stop());
         } catch {
           /* defensive */
         }
-        streamRef.current = null;
-        onStreamChangeRef.current?.(null);
         return;
       }
 
@@ -1261,13 +1270,21 @@ export function PushToTalkButton({
           completedRequestId,
         );
         if (streamRef.current) {
+          // RELEASE ORDER IS LOAD-BEARING: notify consumers BEFORE ending the tracks.
+          // A consumer (the Dawn spool recorder in CommandInput) holds its OWN
+          // MediaRecorder on this same stream. Ending the tracks first strands that
+          // recorder in state "recording" on a dead stream, so its stop() cannot
+          // complete and WebKit never releases the capture session — iOS keeps the
+          // orange mic indicator lit and offers "Stop lydoptagelse?" long after the
+          // dashboard reports the recording ended.
+          const dying = streamRef.current;
+          streamRef.current = null;
+          onStreamChangeRef.current?.(null);
           try {
-            streamRef.current.getTracks().forEach((t) => t.stop());
+            dying.getTracks().forEach((t) => t.stop());
           } catch {
             /* defensive */
           }
-          streamRef.current = null;
-          onStreamChangeRef.current?.(null);
           recorderRef.current = null;
         }
         if (safetyNetRef.current) {
