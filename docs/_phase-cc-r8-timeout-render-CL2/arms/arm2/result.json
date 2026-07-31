@@ -1,0 +1,97 @@
+{
+  "arm": "A1-live-rendered-vs-never REAL-DOM (D1 renderedBy split)",
+  "staged_head": "4937a8ea061f6779cde5faf1cf7c4d184a641a4f",
+  "chromium": "/Users/vdrobkov/Library/Caches/ms-playwright/chromium-1234/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing",
+  "rendered": {
+    "session": "019fb9af-48cf-7312-9d18-e50fed1dadf4",
+    "dialog_mounted": true,
+    "visible_labels": [
+      "Deploy to production now",
+      "Run one more validation pass first",
+      "Cancel and hold"
+    ],
+    "screenshot": "rendered-mounted.png",
+    "socket": {
+      "has9999": false,
+      "has8000": false,
+      "nonLoop": 0
+    },
+    "post_timeout_body_excerpt": "2 Local Hidden Hide stale (24h+) Folders Folder OTHER (1) /private/tmp…/arm2-rendered-1785526699266 (1) Init git Session Worktree Tools ▾ arm2-rendered-1785526699266 1s github-copilot/gpt-5.4 (medium) Waiting for input $0.00 arm2-rendered-1785526699266 O A 2 github-copilot/gpt-5.4 medium 43s ● ↓2.1k ● ↑97 ↓4.1k ↑101 R3.1k $0.00 2.1k 400.0k Showing 2 of 15 · 13 tool & subagent steps hidden Show all activity Operator One Call the ask_user tool exactly once, immediately, with NO other text. Use method=\"select\", title=\"Deploy Build-1 to production now?\", message=\"The candidate passed all pre-deplo",
+    "assert_dom_shows_no_response": true,
+    "assert_dom_no_answered_in_terminal": true,
+    "details": {
+      "method": "select",
+      "receipt": {
+        "delivered": true,
+        "rendered": true,
+        "answered": false,
+        "dismissed": false,
+        "timedOut": true,
+        "invalid": false,
+        "source": "__bus__",
+        "renderedBy": {
+          "sub": "operator@op",
+          "display": "Operator One",
+          "isOperator": true
+        }
+      }
+    },
+    "receipt": {
+      "delivered": true,
+      "rendered": true,
+      "answered": false,
+      "dismissed": false,
+      "timedOut": true,
+      "invalid": false,
+      "source": "__bus__",
+      "renderedBy": {
+        "sub": "operator@op",
+        "display": "Operator One",
+        "isOperator": true
+      }
+    },
+    "assert_timedOut": true,
+    "assert_delivered_true": true,
+    "assert_rendered_true": true,
+    "assert_not_answered": true,
+    "assert_renderedBy_operator": true,
+    "assert_author_absent": true
+  },
+  "never": {
+    "session": "019fb9b0-1b91-713b-9c83-b205cd7e6f80",
+    "socket": {
+      "has9999": false,
+      "has8000": false,
+      "nonLoop": 0
+    },
+    "details": {
+      "method": "select",
+      "receipt": {
+        "delivered": false,
+        "rendered": false,
+        "answered": false,
+        "dismissed": false,
+        "timedOut": true,
+        "invalid": false,
+        "source": "__bus__"
+      }
+    },
+    "receipt": {
+      "delivered": false,
+      "rendered": false,
+      "answered": false,
+      "dismissed": false,
+      "timedOut": true,
+      "invalid": false,
+      "source": "__bus__"
+    },
+    "assert_timedOut": true,
+    "assert_delivered_false": true,
+    "assert_rendered_false": true,
+    "assert_no_renderedBy": true,
+    "assert_no_author": true
+  },
+  "A1_LIVE_CONTRAST_PROVEN": true,
+  "rendered_socket_clean": true,
+  "never_socket_clean": true
+}

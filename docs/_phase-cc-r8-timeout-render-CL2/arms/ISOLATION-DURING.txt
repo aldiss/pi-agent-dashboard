@@ -1,0 +1,8 @@
+ts=2026-07-31T19:44:09Z
+iso_dash_pid=58394
+== iso dashboard TCP ==
+COMMAND   PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+node    58394 vdrobkov   16u  IPv4 0x9275785abb4bacfa      0t0  TCP 127.0.0.1:8158 (LISTEN)
+node    58394 vdrobkov   19u  IPv4 0xdfe195dae463b756      0t0  TCP 127.0.0.1:8157 (LISTEN)
+node    58394 vdrobkov   23u  IPv4 0xe72c67a968e6c450      0t0  TCP 127.0.0.1:56611->127.0.0.1:8765 (ESTABLISHED)
+has9999=0 has8000=0 non_loopback=0

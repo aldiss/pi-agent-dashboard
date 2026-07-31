@@ -1,0 +1,54 @@
+{
+  "arm": "opt1-bijection",
+  "staged_head": "4937a8ea061f6779cde5faf1cf7c4d184a641a4f",
+  "option_index": 1,
+  "expected_original": "Run one more validation pass first",
+  "session": "019fb9b3-4097-7f9c-8f87-e9bd8a6a0dee",
+  "visible_labels": [
+    "Deploy to production now",
+    "Run one more validation pass first",
+    "Cancel and hold"
+  ],
+  "socket": {
+    "has9999": false,
+    "has8000": false,
+    "nonLoop": 0
+  },
+  "prompt_bodies": [
+    "Deploy Build-1 to production now?",
+    "The candidate passed all pre-deploy gates. Choose how to proceed."
+  ],
+  "screenshot": "preclick.png",
+  "returned_value": "Run one more validation pass first",
+  "receipt": {
+    "delivered": true,
+    "rendered": true,
+    "answered": true,
+    "dismissed": false,
+    "timedOut": false,
+    "invalid": false,
+    "source": "dashboard-default",
+    "author": {
+      "sub": "operator@op",
+      "display": "Operator One",
+      "isOperator": true
+    },
+    "renderedBy": {
+      "sub": "operator@op",
+      "display": "Operator One",
+      "isOperator": true
+    }
+  },
+  "selectedIndex": 1,
+  "assert_bijection": true,
+  "assert_selectedIndex": true,
+  "assert_answered": true,
+  "assert_source_dashboard": true,
+  "assert_question_visible": true,
+  "assert_labels_distinct": true,
+  "assert_no_placeholder": true,
+  "assert_zero_9999": true,
+  "assert_zero_8000": true,
+  "assert_loopback_only": true,
+  "PASS": true
+}

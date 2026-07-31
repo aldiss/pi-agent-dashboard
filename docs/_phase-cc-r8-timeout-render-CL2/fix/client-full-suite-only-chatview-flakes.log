@@ -1,0 +1,118 @@
+
+ RUN  v4.1.5 /Users/vdrobkov/build1-picker-cand-e0-wt
+
+[test-isolation] HOME=/var/folders/sh/rtc7_3wd27q_jffxy54dt44m0000gn/T/pi-web3-XXXXXX.JCy2mbuNpZ (real=/Users/vdrobkov)
+ ❯ |@blackbelt-technology/pi-dashboard-web| src/components/__tests__/ChatView.test.tsx (33 tests | 5 failed) 220ms
+     × renders toolResult messages using ToolCallStep 7ms
+     × renders expandable tool call with args and result 8ms
+     × renders running tool call with spinner icon 2ms
+     × renders error tool call with error icon 4ms
+     × renders tool call step with left accent border 2ms
+ ❯ |@blackbelt-technology/pi-dashboard-web| src/components/__tests__/ChatView.streaming-text-flush.test.tsx (3 tests | 2 failed) 58ms
+     × assistant text DOM index < running tool card DOM index, no streaming bubble 11ms
+     × after message_end, assistant text precedes tool card with single assistant row 5ms
+Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 7 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  |@blackbelt-technology/pi-dashboard-web| src/components/__tests__/ChatView.streaming-text-flush.test.tsx > Task 6.1a: long-running bash — text bubble appears above running tool card > assistant text DOM index < running tool card DOM index, no streaming bubble
+AssertionError: expected undefined to be defined
+ ❯ src/components/__tests__/ChatView.streaming-text-flush.test.tsx:173:27
+    171|
+    172|     expect(textBubble).toBeDefined();
+    173|     expect(runningButton).toBeDefined();
+       |                           ^
+    174|     expect(indexOf(container, textBubble!)).toBeLessThan(
+    175|       indexOf(container, runningButton!),
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/7]⎯
+
+ FAIL  |@blackbelt-technology/pi-dashboard-web| src/components/__tests__/ChatView.streaming-text-flush.test.tsx > Task 6.2: non-blocking [text, toolCall] — order unchanged > after message_end, assistant text precedes tool card with single assistant row
+AssertionError: expected undefined to be defined
+ ❯ src/components/__tests__/ChatView.streaming-text-flush.test.tsx:225:24
+    223|
+    224|     expect(textBubble).toBeDefined();
+    225|     expect(toolButton).toBeDefined();
+       |                        ^
+    226|     expect(indexOf(container, textBubble!)).toBeLessThan(
+    227|       indexOf(container, toolButton!),
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/7]⎯
+
+ FAIL  |@blackbelt-technology/pi-dashboard-web| src/components/__tests__/ChatView.test.tsx > ChatView > renders toolResult messages using ToolCallStep
+AssertionError: expected 'Show all activity' to contain '$ ls -la'
+
+Expected: "$ ls -la"
+Received: "Show all activity"
+
+ ❯ src/components/__tests__/ChatView.test.tsx:104:33
+    102|     const button = container.querySelector("button");
+    103|     expect(button).not.toBeNull();
+    104|     expect(button!.textContent).toContain("$ ls -la");
+       |                                 ^
+    105|
+    106|     // Should show status icon (SVG check for complete)
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/7]⎯
+
+ FAIL  |@blackbelt-technology/pi-dashboard-web| src/components/__tests__/ChatView.test.tsx > ChatView > renders expandable tool call with args and result
+AssertionError: expected null not to be null
+ ❯ src/components/__tests__/ChatView.test.tsx:120:26
+    118|     // Should show args and result in expanded view
+    119|     const expanded = container.querySelector(".bg-\\[var\\(--bg-second…
+    120|     expect(expanded).not.toBeNull();
+       |                          ^
+    121|     expect(expanded!.textContent).toContain("ls -la");
+    122|     expect(expanded!.textContent).toContain("file1");
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/7]⎯
+
+ FAIL  |@blackbelt-technology/pi-dashboard-web| src/components/__tests__/ChatView.test.tsx > ChatView > renders running tool call with spinner icon
+AssertionError: expected null not to be null
+ ❯ src/components/__tests__/ChatView.test.tsx:131:46
+    129|
+    130|     const button = container.querySelector("button");
+    131|     expect(button!.querySelector("svg")).not.toBeNull();
+       |                                              ^
+    132|   });
+    133|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/7]⎯
+
+ FAIL  |@blackbelt-technology/pi-dashboard-web| src/components/__tests__/ChatView.test.tsx > ChatView > renders error tool call with error icon
+AssertionError: expected null not to be null
+ ❯ src/components/__tests__/ChatView.test.tsx:139:46
+    137|
+    138|     const button = container.querySelector("button");
+    139|     expect(button!.querySelector("svg")).not.toBeNull();
+       |                                              ^
+    140|   });
+    141|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[6/7]⎯
+
+ FAIL  |@blackbelt-technology/pi-dashboard-web| src/components/__tests__/ChatView.test.tsx > ChatView > renders tool call step with left accent border
+AssertionError: expected null not to be null
+ ❯ src/components/__tests__/ChatView.test.tsx:179:26
+    177|     const { container } = render(<ThemeProvider><ChatView state={state…
+    178|     const toolStep = container.querySelector(".border-l-2.border-\\[va…
+    179|     expect(toolStep).not.toBeNull();
+       |                          ^
+    180|   });
+    181|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[7/7]⎯
+
+
+ Test Files  2 failed | 212 passed (214)
+      Tests  7 failed | 2193 passed | 2 skipped (2202)
+   Start at  21:33:33
+   Duration  154.94s (transform 3.12s, setup 0ms, import 24.18s, tests 18.81s, environment 83.10s)
+
+npm notice
+npm notice New major version of npm available! 10.9.7 -> 12.0.1
+npm notice Changelog: https://github.com/npm/cli/releases/tag/v12.0.1
+npm notice To update run: npm install -g npm@12.0.1
+npm notice
+web suite exit=1

@@ -1,0 +1,8 @@
+ts=2026-07-31T19:44:38Z
+== scratch 8157/8158 ==
+8157 free
+8158 free
+residual_ccr8_sessions=0
+== prod owns :9999/:8000 (untouched) ==
+node    53346 vdrobkov   19u  IPv4 0x24ecf39c74b3c559      0t0  TCP *:8000 (LISTEN)
+commit= 113263140666dee39721e2ef17e1db40a366cdc1 pid= 53346

@@ -1,0 +1,48 @@
+commit 4937a8ea061f6779cde5faf1cf7c4d184a641a4f
+Author: aldiss <v.drobkov@gmail.com>
+Date:   Fri Jul 31 21:36:56 2026 +0200
+
+    dashboard: render a prompt bus-timeout as "No response", not "Answered in terminal" (dl-13559)
+    
+    The real-DOM arm2 caught a client lifecycle defect: a PromptBus timeout
+    (prompt_cancel) was rendered to the operator as "Answered in terminal" — a false
+    claim that the prompt was answered in the TUI. Chain: useMessageHandler's
+    prompt_cancel case called dismissInteractiveRequest → status "dismissed" → every
+    renderer maps "dismissed" to "Answered in terminal". The enum already had a
+    distinct "cancelled" status the path ignored.
+    
+    Fix (client-state truthfulness; TUI dismiss semantics untouched):
+    - event-reducer.ts: add cancelInteractiveRequest — a sister of
+      dismissInteractiveRequest, identical except it sets status "cancelled" on the
+      request and the message args. Pending-only. Exported.
+    - useMessageHandler.ts: route case "prompt_cancel" (a bus timeout — nobody
+      answered) to cancelInteractiveRequest. Leave case "prompt_dismiss" (a genuine
+      TUI answer) on dismissInteractiveRequest, and ui_dismiss unchanged.
+    - All six interactive renderers: status "cancelled" now renders "No response"
+      (was "Cancelled"; Generic gained the case). "dismissed" still renders
+      "Answered in terminal".
+    - prompt-bus.ts: correct remaining ANSWER-only comments to the RESPONDER
+      semantic (author = answerer OR authenticated dismisser; renderedBy separate).
+      Comments only, no logic change.
+    
+    RED→GREEN: reducer (cancel sets "cancelled", no-op unless pending), handler
+    (prompt_cancel → "cancelled", prompt_dismiss → "dismissed" preserved), renderers
+    (cancelled → "No response" and NOT "Answered in terminal"; dismissed preserved).
+    Updates the two pre-existing renderer tests that pinned the old "Cancelled" label.
+
+ .../components/__tests__/InputRenderer.test.tsx    |   7 +-
+ .../__tests__/MultiselectRenderer.test.tsx         |   7 +-
+ .../interactive-renderers/ConfirmRenderer.tsx      |   2 +-
+ .../interactive-renderers/EditorRenderer.tsx       |   2 +-
+ .../GenericInteractiveRenderer.tsx                 |   2 +-
+ .../interactive-renderers/InputRenderer.tsx        |   2 +-
+ .../interactive-renderers/MultiselectRenderer.tsx  |   2 +-
+ .../interactive-renderers/SelectRenderer.tsx       |   2 +-
+ .../__tests__/GenericInteractiveRenderer.test.tsx  |  45 ++++++++
+ .../__tests__/SelectRenderer.test.tsx              |  19 ++++
+ ...essageHandler.prompt-cancel-vs-dismiss.test.tsx | 120 +++++++++++++++++++++
+ packages/client/src/hooks/useMessageHandler.ts     |   8 +-
+ .../client/src/lib/__tests__/event-reducer.test.ts |  58 +++++++++-
+ packages/client/src/lib/event-reducer.ts           |  48 +++++++++
+ packages/extension/src/prompt-bus.ts               |  25 ++---
+ 15 files changed, 322 insertions(+), 27 deletions(-)

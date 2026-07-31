@@ -1,0 +1,6 @@
+ts=2026-07-31T19:39:41.697Z
+has9999=false has8000=false
+non_loopback=0
+
+--- pid 19465 ---
+(no TCP)

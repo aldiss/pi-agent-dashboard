@@ -1,0 +1,322 @@
+commit 4937a8ea061f6779cde5faf1cf7c4d184a641a4f
+Author: aldiss <v.drobkov@gmail.com>
+Date:   Fri Jul 31 21:36:56 2026 +0200
+
+    dashboard: render a prompt bus-timeout as "No response", not "Answered in terminal" (dl-13559)
+    
+    The real-DOM arm2 caught a client lifecycle defect: a PromptBus timeout
+    (prompt_cancel) was rendered to the operator as "Answered in terminal" — a false
+    claim that the prompt was answered in the TUI. Chain: useMessageHandler's
+    prompt_cancel case called dismissInteractiveRequest → status "dismissed" → every
+    renderer maps "dismissed" to "Answered in terminal". The enum already had a
+    distinct "cancelled" status the path ignored.
+    
+    Fix (client-state truthfulness; TUI dismiss semantics untouched):
+    - event-reducer.ts: add cancelInteractiveRequest — a sister of
+      dismissInteractiveRequest, identical except it sets status "cancelled" on the
+      request and the message args. Pending-only. Exported.
+    - useMessageHandler.ts: route case "prompt_cancel" (a bus timeout — nobody
+      answered) to cancelInteractiveRequest. Leave case "prompt_dismiss" (a genuine
+      TUI answer) on dismissInteractiveRequest, and ui_dismiss unchanged.
+    - All six interactive renderers: status "cancelled" now renders "No response"
+      (was "Cancelled"; Generic gained the case). "dismissed" still renders
+      "Answered in terminal".
+    - prompt-bus.ts: correct remaining ANSWER-only comments to the RESPONDER
+      semantic (author = answerer OR authenticated dismisser; renderedBy separate).
+      Comments only, no logic change.
+    
+    RED→GREEN: reducer (cancel sets "cancelled", no-op unless pending), handler
+    (prompt_cancel → "cancelled", prompt_dismiss → "dismissed" preserved), renderers
+    (cancelled → "No response" and NOT "Answered in terminal"; dismissed preserved).
+    Updates the two pre-existing renderer tests that pinned the old "Cancelled" label.
+
+diff --git a/packages/client/src/components/interactive-renderers/ConfirmRenderer.tsx b/packages/client/src/components/interactive-renderers/ConfirmRenderer.tsx
+index c81f585..7aacd82 100644
+--- a/packages/client/src/components/interactive-renderers/ConfirmRenderer.tsx
++++ b/packages/client/src/components/interactive-renderers/ConfirmRenderer.tsx
+@@ -22,7 +22,7 @@ export function ConfirmRenderer({ params, status, result, onRespond, onCancel }:
+           <span className="ml-1 inline-flex items-center gap-0.5 text-red-400"><Icon path={mdiCloseCircle} size={0.55} /> Denied</span>
+         )}
+         {status === "cancelled" && (
+-          <span className="ml-1 text-[var(--text-tertiary)]">Cancelled</span>
++          <span className="ml-1 text-[var(--text-tertiary)]">No response</span>
+         )}
+         {status === "dismissed" && (
+           <span className="ml-1 text-[var(--text-tertiary)]">Answered in terminal</span>
+diff --git a/packages/client/src/components/interactive-renderers/EditorRenderer.tsx b/packages/client/src/components/interactive-renderers/EditorRenderer.tsx
+index d0b1497..0f31203 100644
+--- a/packages/client/src/components/interactive-renderers/EditorRenderer.tsx
++++ b/packages/client/src/components/interactive-renderers/EditorRenderer.tsx
+@@ -23,7 +23,7 @@ export function EditorRenderer({ params, status, result, onRespond, onCancel }:
+           </span>
+         )}
+         {status === "cancelled" && (
+-          <span className="ml-1 text-[var(--text-tertiary)]">Cancelled</span>
++          <span className="ml-1 text-[var(--text-tertiary)]">No response</span>
+         )}
+         {status === "dismissed" && (
+           <span className="ml-1 text-[var(--text-tertiary)]">Answered in terminal</span>
+diff --git a/packages/client/src/components/interactive-renderers/GenericInteractiveRenderer.tsx b/packages/client/src/components/interactive-renderers/GenericInteractiveRenderer.tsx
+index 9b2a837..48ab875 100644
+--- a/packages/client/src/components/interactive-renderers/GenericInteractiveRenderer.tsx
++++ b/packages/client/src/components/interactive-renderers/GenericInteractiveRenderer.tsx
+@@ -6,7 +6,7 @@ export function GenericInteractiveRenderer({ method, params, status }: Interacti
+     <div className="mx-4 my-1 p-2 bg-[var(--bg-hover)] rounded text-xs">
+       <span className="text-[var(--text-secondary)]">{method}: </span>
+       <span className="text-[var(--text-tertiary)]">
+-        {status === "pending" ? "Waiting for response..." : status === "dismissed" ? "Answered in terminal" : status}
++        {status === "pending" ? "Waiting for response..." : status === "cancelled" ? "No response" : status === "dismissed" ? "Answered in terminal" : status}
+       </span>
+       <span className="text-[var(--text-tertiary)] ml-1">
+         {JSON.stringify(params).slice(0, 100)}
+diff --git a/packages/client/src/components/interactive-renderers/InputRenderer.tsx b/packages/client/src/components/interactive-renderers/InputRenderer.tsx
+index 0859173..687960f 100644
+--- a/packages/client/src/components/interactive-renderers/InputRenderer.tsx
++++ b/packages/client/src/components/interactive-renderers/InputRenderer.tsx
+@@ -23,7 +23,7 @@ export function InputRenderer({ params, status, result, onRespond, onCancel }: I
+           </span>
+         )}
+         {status === "cancelled" && (
+-          <span className="ml-1 text-[var(--text-tertiary)]">Cancelled</span>
++          <span className="ml-1 text-[var(--text-tertiary)]">No response</span>
+         )}
+         {status === "dismissed" && (
+           <span className="ml-1 text-[var(--text-tertiary)]">Answered in terminal</span>
+diff --git a/packages/client/src/components/interactive-renderers/MultiselectRenderer.tsx b/packages/client/src/components/interactive-renderers/MultiselectRenderer.tsx
+index 3ba8153..88613af 100644
+--- a/packages/client/src/components/interactive-renderers/MultiselectRenderer.tsx
++++ b/packages/client/src/components/interactive-renderers/MultiselectRenderer.tsx
+@@ -45,7 +45,7 @@ export function MultiselectRenderer({ params, status, result, onRespond, onCance
+           <span className="ml-1 text-[var(--text-tertiary)]">None selected</span>
+         )}
+         {status === "cancelled" && (
+-          <span className="ml-1 text-[var(--text-tertiary)]">Cancelled</span>
++          <span className="ml-1 text-[var(--text-tertiary)]">No response</span>
+         )}
+         {status === "dismissed" && (
+           <span className="ml-1 text-[var(--text-tertiary)]">Answered in terminal</span>
+diff --git a/packages/client/src/components/interactive-renderers/SelectRenderer.tsx b/packages/client/src/components/interactive-renderers/SelectRenderer.tsx
+index 2d41ec8..5aac836 100644
+--- a/packages/client/src/components/interactive-renderers/SelectRenderer.tsx
++++ b/packages/client/src/components/interactive-renderers/SelectRenderer.tsx
+@@ -35,7 +35,7 @@ export function SelectRenderer({ params, status, result, onRespond, onCancel }:
+           </span>
+         )}
+         {status === "cancelled" && (
+-          <span className="ml-1 text-[var(--text-tertiary)] shrink-0">Cancelled</span>
++          <span className="ml-1 text-[var(--text-tertiary)] shrink-0">No response</span>
+         )}
+         {status === "dismissed" && (
+           <span className="ml-1 text-[var(--text-tertiary)] shrink-0">Answered in terminal</span>
+diff --git a/packages/client/src/components/interactive-renderers/__tests__/GenericInteractiveRenderer.test.tsx b/packages/client/src/components/interactive-renderers/__tests__/GenericInteractiveRenderer.test.tsx
+new file mode 100644
+index 0000000..7a1bd14
+--- /dev/null
++++ b/packages/client/src/components/interactive-renderers/__tests__/GenericInteractiveRenderer.test.tsx
+@@ -0,0 +1,45 @@
++import { describe, it, expect, vi, afterEach } from "vitest";
++import { render, cleanup } from "@testing-library/react";
++import React from "react";
++import { GenericInteractiveRenderer } from "../GenericInteractiveRenderer.js";
++import type { InteractiveRendererProps } from "../types.js";
++
++afterEach(() => cleanup());
++
++function props(over: Partial<InteractiveRendererProps> = {}): InteractiveRendererProps {
++  return {
++    requestId: "r1",
++    method: "custom-method",
++    params: { title: "Do the thing?" },
++    status: "pending",
++    onRespond: vi.fn(),
++    onCancel: vi.fn(),
++    ...over,
++  };
++}
++
++// ── dl-13559: the fallback renderer must also tell a bus TIMEOUT (status
++//    "cancelled") from a TUI answer (status "dismissed"). Pre-fix, "cancelled"
++//    fell through to render the raw enum string; "dismissed" → "Answered in
++//    terminal". A timeout must read as a truthful non-answer. ──
++describe("GenericInteractiveRenderer — status labels (dl-13559)", () => {
++  it("[able-to-fail] #given cancelled status #then renders 'No response' and NOT 'Answered in terminal'", () => {
++    const { container } = render(<GenericInteractiveRenderer {...props({ status: "cancelled" })} />);
++    const text = container.textContent ?? "";
++    expect(text).toContain("No response");
++    expect(text).not.toContain("Answered in terminal"); // RED pre-fix (fell through to raw "cancelled")
++    expect(text).not.toContain("cancelled"); // must not leak the raw enum string
++  });
++
++  it("#given dismissed status #then still renders 'Answered in terminal' (preserved)", () => {
++    const { container } = render(<GenericInteractiveRenderer {...props({ status: "dismissed" })} />);
++    const text = container.textContent ?? "";
++    expect(text).toContain("Answered in terminal");
++    expect(text).not.toContain("No response");
++  });
++
++  it("#given pending status #then renders 'Waiting for response...'", () => {
++    const { container } = render(<GenericInteractiveRenderer {...props({ status: "pending" })} />);
++    expect(container.textContent ?? "").toContain("Waiting for response...");
++  });
++});
+diff --git a/packages/client/src/components/interactive-renderers/__tests__/SelectRenderer.test.tsx b/packages/client/src/components/interactive-renderers/__tests__/SelectRenderer.test.tsx
+index 1b9eb70..2065d4e 100644
+--- a/packages/client/src/components/interactive-renderers/__tests__/SelectRenderer.test.tsx
++++ b/packages/client/src/components/interactive-renderers/__tests__/SelectRenderer.test.tsx
+@@ -119,3 +119,22 @@ describe("SelectRenderer — capsule rendering", () => {
+     expect(text).not.toContain("detected by regex pass");
+   });
+ });
++
++// ── dl-13559: a bus TIMEOUT (status "cancelled") must render a truthful
++//    non-answer ("No response") and NEVER "Answered in terminal" (which is a
++//    TUI-answer claim, reserved for status "dismissed"). ──
++describe("SelectRenderer — cancelled vs dismissed truthfulness (dl-13559)", () => {
++  it("[able-to-fail] #given cancelled status (bus timeout) #then renders 'No response' and NOT 'Answered in terminal'", () => {
++    const { container } = render(<SelectRenderer {...props({ status: "cancelled" })} />);
++    const text = container.textContent ?? "";
++    expect(text).toContain("No response");
++    expect(text).not.toContain("Answered in terminal"); // RED pre-fix (rendered "Cancelled", and the timeout was routed to dismissed)
++  });
++
++  it("#given dismissed status (answered in TUI) #then still renders 'Answered in terminal' (preserved)", () => {
++    const { container } = render(<SelectRenderer {...props({ status: "dismissed" })} />);
++    const text = container.textContent ?? "";
++    expect(text).toContain("Answered in terminal");
++    expect(text).not.toContain("No response");
++  });
++});
+diff --git a/packages/client/src/hooks/useMessageHandler.ts b/packages/client/src/hooks/useMessageHandler.ts
+index 5beea08..896692f 100644
+--- a/packages/client/src/hooks/useMessageHandler.ts
++++ b/packages/client/src/hooks/useMessageHandler.ts
+@@ -3,7 +3,7 @@
+  * Extracted from App.tsx — maps each message type to the correct state setter.
+  */
+ import { useCallback, useRef } from "react";
+-import { createInitialState, reduceEvent, addInteractiveRequest, resolveInteractiveRequest, dismissInteractiveRequest, markQueueEntryFailed, releaseOperatorBufferAsNeutral, OPERATOR_BUFFER_TIMEOUT_MS, type SessionState } from "../lib/event-reducer.js";
++import { createInitialState, reduceEvent, addInteractiveRequest, resolveInteractiveRequest, dismissInteractiveRequest, cancelInteractiveRequest, markQueueEntryFailed, releaseOperatorBufferAsNeutral, OPERATOR_BUFFER_TIMEOUT_MS, type SessionState } from "../lib/event-reducer.js";
+ import type { DashboardSession, CommandInfo, FlowInfo, FileEntry, OpenSpecData, OpenSpecGroup, ModelInfo, RoleInfo, PresenceParticipant } from "@blackbelt-technology/pi-dashboard-shared/types.js";
+ import type { PendingOperatorInput } from "@blackbelt-technology/pi-dashboard-shared/browser-protocol.js";
+ import { encodeFolderPath } from "../lib/folder-encoding.js";
+@@ -689,7 +689,11 @@ export function useMessageHandler(
+           const next = new Map(prev);
+           const current = next.get(msg.sessionId);
+           if (!current) return prev;
+-          const updated = dismissInteractiveRequest(current, msg.promptId);
++          // A bus timeout / abort — NOBODY answered. Route to cancel (→ status
++          // "cancelled" → renders "No response"), NOT dismiss (→ "dismissed" →
++          // "Answered in terminal", which falsely claims a TUI answer). Pete
++          // dl-13559: the real-DOM arm2 caught a timeout shown as answered.
++          const updated = cancelInteractiveRequest(current, msg.promptId);
+           if (updated === current) return prev;
+           next.set(msg.sessionId, updated);
+           return next;
+diff --git a/packages/client/src/lib/event-reducer.ts b/packages/client/src/lib/event-reducer.ts
+index ce1005f..eb66ae8 100644
+--- a/packages/client/src/lib/event-reducer.ts
++++ b/packages/client/src/lib/event-reducer.ts
+@@ -1033,6 +1033,54 @@ export function resolveInteractiveRequest(
+   };
+ }
+ 
++/**
++ * Cancel an interactive UI request (bus timeout / abort — NOT an answer).
++ *
++ * Sister to `dismissInteractiveRequest`, IDENTICAL in shape except it sets
++ * `status: "cancelled"` (not `"dismissed"`). The distinction is load-bearing at
++ * the render layer: `"dismissed"` means the prompt was answered elsewhere (the
++ * TUI) and renders "Answered in terminal"; `"cancelled"` means NOBODY answered
++ * (the PromptBus timer fired / the request was aborted) and must render a
++ * truthful non-answer ("No response"). Routing a bus timeout through the dismiss
++ * path made a timeout read as an answer (Pete dl-13559). Pending-only.
++ */
++export function cancelInteractiveRequest(
++  state: SessionState,
++  requestId: string,
++): SessionState {
++  // Only cancel pending requests
++  const existing = state.interactiveRequests.find((r) => r.requestId === requestId);
++  if (!existing || existing.status !== "pending") return state;
++
++  // Bug #3 fix: O(1) index lookup + targeted splice in place of
++  // O(n) full-array map(). See sister-comment in
++  // resolveInteractiveRequest above. Change:
++  // bug-3-messages-index-lookup-table.
++  const targetId = `ui-${requestId}`;
++  const idx = state.messagesIndex.get(targetId);
++  let nextMessages = state.messages;
++  let nextMessagesIndex = state.messagesIndex;
++  if (idx !== undefined && state.messages[idx]?.id === targetId) {
++    const updated: ChatMessage = {
++      ...state.messages[idx],
++      args: { ...state.messages[idx].args as any, status: "cancelled" },
++    };
++    nextMessages = state.messages.slice();
++    nextMessages[idx] = updated;
++    nextMessagesIndex = state.messagesIndex;
++  }
++  return {
++    ...state,
++    interactiveRequests: state.interactiveRequests.map((req) =>
++      req.requestId === requestId
++        ? { ...req, status: "cancelled" as const }
++        : req,
++    ),
++    messages: nextMessages,
++    messagesIndex: nextMessagesIndex,
++  };
++}
++
+ /** Dismiss an interactive UI request (answered in TUI, not via dashboard) */
+ export function dismissInteractiveRequest(
+   state: SessionState,
+diff --git a/packages/extension/src/prompt-bus.ts b/packages/extension/src/prompt-bus.ts
+index 9566110..9ead99c 100644
+--- a/packages/extension/src/prompt-bus.ts
++++ b/packages/extension/src/prompt-bus.ts
+@@ -53,17 +53,18 @@ export interface PromptResponse {
+   rendered?: boolean;
+   /**
+    * B2 authenticated operator author (server-stamped, never the body) of the
+-   * ANSWER ONLY. Threaded into the resolved response so the receipt proves WHO
+-   * ANSWERED. Absent when the responder carries no author (e.g. TUI) or
++   * RESPONSE — the RESPONDER actor: whoever ANSWERED or authenticated-DISMISSED
++   * (Pete dl-13527). Threaded into the resolved response so the receipt proves
++   * WHO responded. Absent when the responder carries no author (e.g. TUI) or
+    * single-operator. NEVER inherits the render identity — see `renderedBy`.
+    */
+   author?: PromptAuthor;
+   /**
+    * B2 authenticated operator author (server-stamped, never the body) of the
+-   * RENDER ACK — WHO RENDERED the dialog, distinct from WHO ANSWERED. Carried on
+-   * both the answer and the cancel/timeout resolves so a receipt can prove the
+-   * render identity WITHOUT conflating it into `author`. Absent when no authored
+-   * render ACK arrived (Pete dl-13383: responder-attribution split).
++   * RENDER ACK — WHO RENDERED the dialog, distinct from WHO RESPONDED (`author`).
++   * Carried on both the answer and the cancel/timeout resolves so a receipt can
++   * prove the render identity WITHOUT conflating it into `author`. Absent when no
++   * authored render ACK arrived (Pete dl-13383: responder-attribution split).
+    */
+   renderedBy?: PromptAuthor;
+ }
+@@ -227,13 +228,13 @@ export class PromptBus {
+       this.options.onDashboardDismiss(response.id);
+     }
+ 
+-    // A1/B2 (Pete dl-13383 responder-attribution split): carry the
+-    // render-lifecycle flag through, and keep WHO-ANSWERED separate from
++    // A1/B2 (Pete dl-13383 split + dl-13527 dismiss-actor): carry the
++    // render-lifecycle flag through, and keep WHO-RESPONDED separate from
+     // WHO-RENDERED. `author` is the RESPONDER's own author ONLY (the
+-    // authenticated answerer) — it NEVER falls back to the render-ACK author, so
+-    // a TUI answer (no author) after an operator render does NOT falsely prove
+-    // the operator answered. The render identity rides on `renderedBy` instead.
+-    // Single-operator → both undefined.
++    // authenticated answerer OR dismisser) — it NEVER falls back to the
++    // render-ACK author, so a TUI answer (no author) after an operator render
++    // does NOT falsely prove the operator responded. The render identity rides
++    // on `renderedBy` instead. Single-operator → both undefined.
+     entry.resolve({
+       ...response,
+       rendered: response.rendered ?? entry.rendered,

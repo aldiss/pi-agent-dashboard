@@ -1,0 +1,20 @@
+{
+  "arm": "operator-visible-raw-fallback",
+  "staged_head": "4937a8ea061f6779cde5faf1cf7c4d184a641a4f",
+  "scope_note": "render-path readable-raw (real ask_user); the translate/lint door is not staged on this dashboard surface (documented boundary)",
+  "session": "019fb9b3-e76f-7bc8-b3fa-a8b36af12be8",
+  "assert_raw_question_visible": true,
+  "socket": {
+    "has9999": false,
+    "has8000": false,
+    "nonLoop": 0
+  },
+  "screenshot": "raw-visible.png",
+  "assert_no_user_responded": true,
+  "assert_no_decision_receipt": true,
+  "assert_no_page_crash": true,
+  "page_errors": [],
+  "assert_zero_9999": true,
+  "assert_zero_8000": true,
+  "PASS": true
+}

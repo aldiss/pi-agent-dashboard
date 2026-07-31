@@ -1,0 +1,7 @@
+ts=2026-07-31T19:37:39Z
+== scratch 8157/8158 ==
+8157 free
+8158 free
+== prod owns :9999/:8000 ==
+node    53346 vdrobkov   19u  IPv4 0x24ecf39c74b3c559      0t0  TCP *:8000 (LISTEN)
+node    53346 vdrobkov   17u  IPv6 0xa95412ad7b1f69ed      0t0  TCP *:9999 (LISTEN)

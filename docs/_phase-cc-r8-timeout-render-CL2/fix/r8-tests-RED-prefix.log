@@ -1,0 +1,84 @@
+
+ RUN  v4.1.5 /Users/vdrobkov/build1-picker-cand-e0-wt
+
+[test-isolation] HOME=/var/folders/sh/rtc7_3wd27q_jffxy54dt44m0000gn/T/pi-r8r-XXXXXX.Pk5IMyS9nS (real=/Users/vdrobkov)
+ ❯ |@blackbelt-technology/pi-dashboard-web| src/components/interactive-renderers/__tests__/SelectRenderer.test.tsx (8 tests | 1 failed) 97ms
+     × [able-to-fail] #given cancelled status (bus timeout) #then renders 'No response' and NOT 'Answered in terminal' 5ms
+ ❯ |@blackbelt-technology/pi-dashboard-web| src/components/interactive-renderers/__tests__/GenericInteractiveRenderer.test.tsx (3 tests | 1 failed) 21ms
+     × [able-to-fail] #given cancelled status #then renders 'No response' and NOT 'Answered in terminal' 15ms
+ ❯ |@blackbelt-technology/pi-dashboard-web| src/hooks/__tests__/useMessageHandler.prompt-cancel-vs-dismiss.test.tsx (3 tests | 2 failed) 19ms
+     × [able-to-fail] prompt_cancel (bus timeout) → request status becomes 'cancelled', NOT 'dismissed' 15ms
+     × cancel then dismiss on distinct prompts stay distinct (no cross-contamination) 2ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 4 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  |@blackbelt-technology/pi-dashboard-web| src/hooks/__tests__/useMessageHandler.prompt-cancel-vs-dismiss.test.tsx > useMessageHandler — prompt_cancel vs prompt_dismiss routing (dl-13559) > [able-to-fail] prompt_cancel (bus timeout) → request status becomes 'cancelled', NOT 'dismissed'
+AssertionError: expected 'dismissed' to be 'cancelled' // Object.is equality
+
+Expected: "cancelled"
+Received: "dismissed"
+
+ ❯ src/hooks/__tests__/useMessageHandler.prompt-cancel-vs-dismiss.test.tsx:92:35
+     90|     dispatch({ type: "prompt_cancel", sessionId: SID, promptId: PROMPT…
+     91|
+     92|     expect(statusOf(getStates())).toBe("cancelled"); // RED pre-fix (w…
+       |                                   ^
+     93|     expect(statusOf(getStates())).not.toBe("dismissed");
+     94|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/4]⎯
+
+ FAIL  |@blackbelt-technology/pi-dashboard-web| src/hooks/__tests__/useMessageHandler.prompt-cancel-vs-dismiss.test.tsx > useMessageHandler — prompt_cancel vs prompt_dismiss routing (dl-13559) > cancel then dismiss on distinct prompts stay distinct (no cross-contamination)
+AssertionError: expected 'dismissed' to be 'cancelled' // Object.is equality
+
+Expected: "cancelled"
+Received: "dismissed"
+
+ ❯ src/hooks/__tests__/useMessageHandler.prompt-cancel-vs-dismiss.test.tsx:117:66
+    115|
+    116|     const reqs = getStates().get(SID)!.interactiveRequests;
+    117|     expect(reqs.find((r) => r.requestId === "p-cancel")?.status).toBe(…
+       |                                                                  ^
+    118|     expect(reqs.find((r) => r.requestId === "p-dismiss")?.status).toBe…
+    119|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/4]⎯
+
+ FAIL  |@blackbelt-technology/pi-dashboard-web| src/components/interactive-renderers/__tests__/GenericInteractiveRenderer.test.tsx > GenericInteractiveRenderer — status labels (dl-13559) > [able-to-fail] #given cancelled status #then renders 'No response' and NOT 'Answered in terminal'
+AssertionError: expected 'custom-method: cancelled{"title":"Do …' to contain 'No response'
+
+Expected: "No response"
+Received: "custom-method: cancelled{"title":"Do the thing?"}"
+
+ ❯ src/components/interactive-renderers/__tests__/GenericInteractiveRenderer.test.tsx:29:18
+     27|     const { container } = render(<GenericInteractiveRenderer {...props…
+     28|     const text = container.textContent ?? "";
+     29|     expect(text).toContain("No response");
+       |                  ^
+     30|     expect(text).not.toContain("Answered in terminal"); // RED pre-fix…
+     31|     expect(text).not.toContain("cancelled"); // must not leak the raw …
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/4]⎯
+
+ FAIL  |@blackbelt-technology/pi-dashboard-web| src/components/interactive-renderers/__tests__/SelectRenderer.test.tsx > SelectRenderer — cancelled vs dismissed truthfulness (dl-13559) > [able-to-fail] #given cancelled status (bus timeout) #then renders 'No response' and NOT 'Answered in terminal'
+AssertionError: expected '⚠️ Bash command blocked — Zsh =comman…' to contain 'No response'
+
+Expected: "No response"
+Received: "⚠️ Bash command blocked — Zsh =command expansionCancelled"
+
+ ❯ src/components/interactive-renderers/__tests__/SelectRenderer.test.tsx:130:18
+    128|     const { container } = render(<SelectRenderer {...props({ status: "…
+    129|     const text = container.textContent ?? "";
+    130|     expect(text).toContain("No response");
+       |                  ^
+    131|     expect(text).not.toContain("Answered in terminal"); // RED pre-fix…
+    132|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/4]⎯
+
+
+ Test Files  3 failed (3)
+      Tests  4 failed | 10 passed (14)
+   Start at  21:26:42
+   Duration  2.62s (transform 238ms, setup 0ms, import 688ms, tests 138ms, environment 1.34s)
+

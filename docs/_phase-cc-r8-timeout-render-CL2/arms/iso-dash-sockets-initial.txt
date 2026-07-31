@@ -1,0 +1,4 @@
+COMMAND   PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+node    58394 vdrobkov   16u  IPv4 0x9275785abb4bacfa      0t0  TCP 127.0.0.1:8158 (LISTEN)
+node    58394 vdrobkov   17u  IPv4 0x567dcc487af63669      0t0  TCP 127.0.0.1:54381->127.0.0.1:8765 (ESTABLISHED)
+node    58394 vdrobkov   19u  IPv4 0xdfe195dae463b756      0t0  TCP 127.0.0.1:8157 (LISTEN)
