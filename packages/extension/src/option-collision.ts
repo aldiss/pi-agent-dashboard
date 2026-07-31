@@ -1,79 +1,64 @@
 /**
- * makeCollisionSafeOptions — guards `ask_user` select/multiselect against
- * indistinguishable option labels (A4).
+ * assertDistinctOptions — A4 fail-closed guard for `ask_user`
+ * select/multiselect option labels.
  *
  * The `ask_user` picker sends a plain `string[]` of labels and the client
  * returns the chosen *label* string. If two labels are identical (after
- * trimming), a returned label is ambiguous — it could map to a different
- * hidden option than the one the operator actually clicked. A click must
- * NEVER resolve to a different option than the one shown.
+ * trimming), the returned label is ambiguous — it cannot be mapped back to a
+ * single intended option, so the chosen action can silently become a DIFFERENT
+ * hidden option than the one shown, across single select, batch sub-questions,
+ * AND multiselect.
  *
- * Fix: when (and only when) a collision exists, render disambiguated display
- * labels ("Deploy", "Deploy (2)", …) so what the operator sees is 1:1 with a
- * concrete option, and keep an exact display-label → original-{index,value}
- * map so the returned label round-trips to the precise intended option.
- *
- * No collision → display labels are byte-identical to the input and `resolve`
- * is an index-preserving passthrough (zero behavior change for the 99% case).
+ * DEFAULT = FAIL-CLOSED REJECTION (Pete dl-13350 + Lane, both prefer it): if
+ * two option labels are identical after trimming, REJECT the ask with a clear
+ * error BEFORE rendering — never silently disambiguate/map. The superseded
+ * display-rename approach (`makeCollisionSafeOptions`) is removed: Pete ruled
+ * details-only index-carry insufficient, and both gatekeepers prefer rejection
+ * over the high bar of model-visible index-carry across all three methods.
  */
 
-export interface OptionResolution {
-  /** Index of the matched option in the ORIGINAL options array. */
-  index: number;
-  /** The ORIGINAL (pre-disambiguation) option label at that index. */
-  value: string;
+/** Thrown when two option labels collide after trimming. */
+export class DuplicateOptionError extends Error {
+  constructor(
+    /** The trimmed label that appeared more than once. */
+    public readonly label: string,
+    /** The original (untrimmed) option strings that collided. */
+    public readonly collidingOriginals: string[],
+    /** The 0-based indices in the options array that share the trimmed label. */
+    public readonly indices: number[],
+  ) {
+    super(
+      `ask_user: option labels must be distinct — ${JSON.stringify(label)} appears ` +
+        `${indices.length} times (at indices ${indices.join(", ")}). ` +
+        `Duplicate labels are rejected because a click could not be mapped back to the ` +
+        `exact intended option. Give each option a distinct label.`,
+    );
+    this.name = "DuplicateOptionError";
+  }
 }
 
-export interface CollisionSafeOptions {
-  /** Labels to render — unique after trimming; equal to input when no collision. */
-  displayOptions: string[];
-  /** True when at least two input labels were identical after trimming. */
-  hadCollision: boolean;
-  /**
-   * Map a client-returned label back to its exact original option.
-   * Accepts a disambiguated display label OR a raw original label.
-   * Returns undefined when nothing matches.
-   */
-  resolve(returned: string): OptionResolution | undefined;
-}
-
-export function makeCollisionSafeOptions(options: string[]): CollisionSafeOptions {
-  const displayOptions: string[] = [];
-  // display label → original {index, value}
-  const displayToOriginal = new Map<string, OptionResolution>();
-  // trimmed display label → true (uniqueness ledger)
-  const usedTrimmed = new Set<string>();
-  let hadCollision = false;
-
+/**
+ * Reject the ask if any two labels are identical after trimming. No-op (returns
+ * the options unchanged) when all labels are distinct. `context` prefixes the
+ * error for batch sub-questions / multiselect so the agent can locate the ask.
+ */
+export function assertDistinctOptions(options: string[], context?: string): string[] {
+  // trimmed label → list of original indices carrying it
+  const byTrimmed = new Map<string, number[]>();
   options.forEach((original, index) => {
     const trimmed = original.trim();
-    let display = original;
-    if (usedTrimmed.has(trimmed)) {
-      hadCollision = true;
-      // Find the lowest suffix that is unique after trimming.
-      let n = 2;
-      let candidate = `${original} (${n})`;
-      while (usedTrimmed.has(candidate.trim())) {
-        n += 1;
-        candidate = `${original} (${n})`;
-      }
-      display = candidate;
-    }
-    usedTrimmed.add(display.trim());
-    displayOptions.push(display);
-    displayToOriginal.set(display, { index, value: original });
+    const arr = byTrimmed.get(trimmed);
+    if (arr) arr.push(index);
+    else byTrimmed.set(trimmed, [index]);
   });
 
-  const resolve = (returned: string): OptionResolution | undefined => {
-    const direct = displayToOriginal.get(returned);
-    if (direct) return direct;
-    // Fall back to a raw original-label match (client returned the pre-
-    // disambiguation label). First exact hit wins — only reachable when no
-    // collision applied to that label, so it is unambiguous.
-    const idx = options.indexOf(returned);
-    if (idx >= 0) return { index: idx, value: options[idx] };
-    return undefined;
-  };
-
-  return { displayOptions, hadCollision, resolve };
+  for (const [trimmed, indices] of byTrimmed) {
+    if (indices.length > 1) {
+      const collidingOriginals = indices.map((i) => options[i]);
+      const err = new DuplicateOptionError(trimmed, collidingOriginals, indices);
+      if (context) err.message = `${context}: ${err.message}`;
+      throw err;
+    }
+  }
+  return options;
 }

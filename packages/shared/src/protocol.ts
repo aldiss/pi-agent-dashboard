@@ -645,6 +645,20 @@ export interface PromptResponseServerMessage {
 }
 
 /**
+ * Server → extension: A1 render-lifecycle ACK. The dashboard client displayed
+ * the prompt dialog for `promptId`; the server forwards the ACK so the bridge
+ * can call `PromptBus.markRendered(promptId)`. A later timeout is then
+ * truthfully `delivered:true, rendered:true` instead of the old
+ * `source==="__bus__"` never-rendered heuristic. Carries no answer — purely a
+ * lifecycle signal, distinct from `prompt_response`.
+ */
+export interface PromptRenderedServerMessage {
+  type: "prompt_rendered";
+  sessionId: string;
+  promptId: string;
+}
+
+/**
  * Server → extension: the dashboard server is about to exit as part of a
  * deliberate restart or shutdown. Bridges that receive this MUST suppress
  * the spawn step in `server-auto-start.ts` for `quiesceMs` ms; mDNS
@@ -681,6 +695,7 @@ export type ServerToExtensionMessage =
   | FlowManagementExtensionMessage
   | ArchitectPromptResponseExtensionMessage
   | PromptResponseServerMessage
+  | PromptRenderedServerMessage
   | RoleSetExtensionMessage
   | RolePresetLoadExtensionMessage
   | RolePresetSaveExtensionMessage

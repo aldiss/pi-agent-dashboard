@@ -9,7 +9,7 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { polyfillMultiselect } from "./multiselect-polyfill.js";
 import { deriveReceipt, fallbackReceipt, type PromptReceipt } from "./prompt-receipt.js";
-import { makeCollisionSafeOptions } from "./option-collision.js";
+import { assertDistinctOptions } from "./option-collision.js";
 
 // ──────────────────────────────────────────────────────────────────────────
 // Schema definition
@@ -191,6 +191,9 @@ function noDecisionText(receipt: PromptReceipt): string {
   }
   if (receipt.dismissed) {
     return "No response: the user dismissed the question without answering — no decision was made.";
+  }
+  if (receipt.invalid) {
+    return "No response: the reply carried no valid answer (malformed / empty response) — no decision was made.";
   }
   return "No response — no decision was made.";
 }
@@ -385,8 +388,6 @@ export function registerAskUserTool(pi: ExtensionAPI): void {
           const subMsg = withTcid(params.message ? { message: params.message } : undefined);
 
           let answer: unknown;
-          // Collision-safe mapping (A4) for this sub-question, when applicable.
-          let safe: ReturnType<typeof makeCollisionSafeOptions> | undefined;
           try {
             switch (sq.method) {
               case "confirm":
@@ -403,8 +404,9 @@ export function registerAskUserTool(pi: ExtensionAPI): void {
                     `ask_user batch: sub-question method "select" requires a non-empty "options" array.`,
                   );
                 }
-                safe = makeCollisionSafeOptions(opts);
-                answer = await ctx.ui.select(subTitle, safe.displayOptions, subMsg);
+                // A4 fail-closed: reject trimmed-duplicate labels before render.
+                assertDistinctOptions(opts, `ask_user batch sub-question "${sq.title ?? "select"}"`);
+                answer = await ctx.ui.select(subTitle, opts, subMsg);
                 break;
               }
               case "multiselect": {
@@ -414,8 +416,9 @@ export function registerAskUserTool(pi: ExtensionAPI): void {
                     `ask_user batch: sub-question method "multiselect" requires a non-empty "options" array.`,
                   );
                 }
-                safe = makeCollisionSafeOptions(opts);
-                answer = await polyfillMultiselect(ctx, subTitle, safe.displayOptions, subMsg);
+                // A4 fail-closed: reject trimmed-duplicate labels before render.
+                assertDistinctOptions(opts, `ask_user batch sub-question "${sq.title ?? "multiselect"}"`);
+                answer = await polyfillMultiselect(ctx, subTitle, opts, subMsg);
                 break;
               }
               case "input":
@@ -425,7 +428,8 @@ export function registerAskUserTool(pi: ExtensionAPI): void {
                 throw new Error(`ask_user batch: unknown sub-question method "${sq.method}"`);
             }
           } catch (err) {
-            // Propagate hard errors (schema/logic bugs); cancellation is signalled by undefined.
+            // Propagate hard errors (schema/logic bugs incl. A4 duplicate
+            // rejection); cancellation is signalled by undefined.
             throw err;
           }
 
@@ -435,15 +439,8 @@ export function registerAskUserTool(pi: ExtensionAPI): void {
           const receipt = drainReceipt(ctx, toolCallId, sq.method, hadAnswer);
           receipts.push(receipt);
 
-          // Map a collision-safe display label back to its ORIGINAL option so
-          // the recorded answer is the exact intended one (select only; the
-          // multiselect decode path already returns original-label arrays).
-          if (sq.method === "select" && safe && typeof answer === "string") {
-            const resolved = safe.resolve(answer);
-            if (resolved) answer = resolved.value;
-          }
-
-          // Treat `undefined` from input/select/multiselect as cancellation.
+          // Treat `undefined` from input/select/multiselect as a non-decision
+          // (dismiss / timeout / malformed — the receipt carries the reason).
           // (confirm always resolves to a boolean and has no cancel path.)
           if (
             (sq.method === "input" || sq.method === "select" || sq.method === "multiselect") &&
@@ -458,15 +455,17 @@ export function registerAskUserTool(pi: ExtensionAPI): void {
         }
 
         // Aggregate receipt: when cancelled, the decisive (last) receipt carries
-        // the reason (dismissed vs timedOut); otherwise all were answered.
+        // the reason (dismissed vs timedOut vs invalid); otherwise all were answered.
         const decisive = receipts[receipts.length - 1];
         const aggregate: PromptReceipt = cancelled && decisive
           ? decisive
           : {
               delivered: receipts.every((r) => r.delivered),
+              rendered: receipts.every((r) => r.rendered),
               answered: !cancelled,
               dismissed: false,
               timedOut: false,
+              invalid: false,
               source: receipts.length > 0 ? receipts[0].source : "unknown",
             };
 
@@ -476,7 +475,9 @@ export function registerAskUserTool(pi: ExtensionAPI): void {
           const answeredCount = results.filter((r) => r !== null).length;
           const reason = decisive?.timedOut
             ? "timed out or was never delivered"
-            : "was dismissed by the user";
+            : decisive?.invalid
+              ? "returned no valid answer (malformed / empty response)"
+              : "was dismissed by the user";
           lines.push(
             `Batch not completed: after ${answeredCount} of ${params.questions.length} answers, the next question ${reason} — no decision was made for the remainder.`,
           );
@@ -524,10 +525,10 @@ export function registerAskUserTool(pi: ExtensionAPI): void {
         );
       }
 
-      // Collision-safe option mapping (A4): render distinct display labels and
-      // keep an exact display→original map so a click resolves to the precise
-      // intended option (no-op for already-distinct labels).
-      let safe: ReturnType<typeof makeCollisionSafeOptions> | undefined;
+      // A4 fail-closed option mapping: reject trimmed-duplicate labels BEFORE
+      // rendering (single select/multiselect) so a click can never resolve to a
+      // different hidden option than the one shown. Distinct labels pass
+      // through unchanged; the selected index is then unambiguous.
       let selectedIndex: number | undefined;
 
       switch (params.method) {
@@ -535,12 +536,12 @@ export function registerAskUserTool(pi: ExtensionAPI): void {
           result = await ctx.ui.confirm(title, params.message ?? "", withTcid(undefined));
           break;
         case "select":
-          safe = makeCollisionSafeOptions(options);
-          result = await ctx.ui.select(title, safe.displayOptions, msgOpts);
+          assertDistinctOptions(options);
+          result = await ctx.ui.select(title, options, msgOpts);
           break;
         case "multiselect":
-          safe = makeCollisionSafeOptions(options);
-          result = await polyfillMultiselect(ctx, title, safe.displayOptions, msgOpts);
+          assertDistinctOptions(options);
+          result = await polyfillMultiselect(ctx, title, options, msgOpts);
           break;
         case "input":
           result = await ctx.ui.input(title, params.placeholder, msgOpts);
@@ -550,14 +551,11 @@ export function registerAskUserTool(pi: ExtensionAPI): void {
       // Drain the receipt (A6) for this single prompt.
       const receipt = drainReceipt(ctx, toolCallId, params.method, result !== undefined);
 
-      // Resolve a collision-safe select answer back to its original option +
-      // record the exact selected index (bijection proof).
-      if (params.method === "select" && safe && typeof result === "string") {
-        const resolved = safe.resolve(result);
-        if (resolved) {
-          result = resolved.value;
-          selectedIndex = resolved.index;
-        }
+      // Record the exact selected index (bijection proof). Labels are distinct
+      // (A4 rejection ran above), so indexOf is unambiguous.
+      if (params.method === "select" && typeof result === "string") {
+        const idx = options.indexOf(result);
+        if (idx >= 0) selectedIndex = idx;
       }
 
       // Never let a no-answer read as a decision. `confirm` collapses a

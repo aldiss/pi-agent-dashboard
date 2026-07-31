@@ -574,9 +574,11 @@ describe("registerAskUserTool", () => {
       );
       expect(result.details.receipt).toEqual({
         delivered: true,
+        rendered: true,
         answered: true,
         dismissed: false,
         timedOut: false,
+        invalid: false,
         source: "dashboard",
       });
       expect(result.details.result).toBe("Ship it");
@@ -676,26 +678,52 @@ describe("registerAskUserTool", () => {
       expect(timedOut.details.receipt.dismissed).toBe(false);
     });
 
-    // (iv) duplicate-label bijection through the tool
-    it("duplicate-label select → click resolves to the EXACT hidden option (bijection)", async () => {
+    // (iv) A4 fail-closed: duplicate labels are REJECTED before render (the
+    // display-rename bijection is superseded — Pete dl-13350 + Lane).
+    it("[A4] duplicate-label select → REJECTED before any render (fail-closed)", async () => {
       const tool = getTool();
-      // Operator clicks the SECOND "Deploy" — the disambiguated display label.
-      const ctx = makeReceiptCtx({ select: { answer: "Deploy (2)", source: "dashboard" } });
-      const result = await tool.execute(
-        "tc-4",
-        { method: "select", title: "Action", options: ["Deploy", "Deploy", "Rollback"] },
-        undefined,
-        undefined,
-        ctx,
-      );
-      // The client was shown DISTINCT labels.
-      const shownOptions = ctx.ui.select.mock.calls[0][1];
-      expect(new Set(shownOptions).size).toBe(3);
-      expect(shownOptions).toEqual(["Deploy", "Deploy (2)", "Rollback"]);
-      // The returned selection maps to index 1 — the second Deploy, NOT the first.
-      expect(result.details.selectedIndex).toBe(1);
-      expect(result.details.result).toBe("Deploy");
-      expect(result.details.receipt.answered).toBe(true);
+      const ctx = makeReceiptCtx({ select: { answer: "Deploy", source: "dashboard" } });
+      await expect(
+        tool.execute(
+          "tc-4",
+          { method: "select", title: "Action", options: ["Deploy", "Deploy", "Rollback"] },
+          undefined,
+          undefined,
+          ctx,
+        ),
+      ).rejects.toThrow(/distinct/i);
+      // The prompt was NEVER rendered — no ctx.ui.select call fired.
+      expect(ctx.ui.select).not.toHaveBeenCalled();
+    });
+
+    it("[A4] trimmed-duplicate select (\"Deploy\" vs \"Deploy \") → REJECTED before render", async () => {
+      const tool = getTool();
+      const ctx = makeReceiptCtx({ select: { answer: "Deploy", source: "dashboard" } });
+      await expect(
+        tool.execute(
+          "tc-4b",
+          { method: "select", title: "Action", options: ["Deploy", "Deploy ", "Rollback"] },
+          undefined,
+          undefined,
+          ctx,
+        ),
+      ).rejects.toThrow(/distinct/i);
+      expect(ctx.ui.select).not.toHaveBeenCalled();
+    });
+
+    it("[A4] duplicate-label multiselect → REJECTED before render", async () => {
+      const tool = getTool();
+      const ctx = makeReceiptCtx({ multiselect: { answer: '["A"]', source: "dashboard" } });
+      await expect(
+        tool.execute(
+          "tc-4c",
+          { method: "multiselect", title: "Pick", options: ["A", "A", "B"] },
+          undefined,
+          undefined,
+          ctx,
+        ),
+      ).rejects.toThrow(/distinct/i);
+      expect(ctx.ui.multiselect).not.toHaveBeenCalled();
     });
 
     it("distinct-label select is unchanged: same labels shown, index preserved", async () => {
@@ -793,6 +821,138 @@ describe("registerAskUserTool", () => {
       expect(result.details.receipt.delivered).toBe(true);
       expect(result.details.receipts).toHaveLength(2);
       expect(result.details.receipts.every((r: any) => r.answered)).toBe(true);
+    });
+
+    // ── A2 / A3 able-to-fail: malformed / no-answer → explicit non-decision,
+    //    NEVER "User responded: undefined". Empty string + false stay valid. ──
+    it("[A2/A3 able-to-fail] malformed select (cancelled:false, answer:undefined) → invalid non-decision, never 'User responded: undefined'", async () => {
+      const tool = getTool();
+      // A non-cancelled response whose answer field is ABSENT. The bridge
+      // collapse yields `undefined`; the stashed response drives the receipt.
+      const store = new Map<string, any>();
+      const ui: any = {
+        __promptReceipts: store,
+        select: vi.fn(async (_t: string, _o: string[], opts?: any) => {
+          if (opts?.toolCallId) store.set(opts.toolCallId, { cancelled: false, source: "dashboard", answer: undefined });
+          return undefined; // collapsed
+        }),
+      };
+      const result = await tool.execute(
+        "tc-malformed",
+        { method: "select", title: "Pick", options: ["A", "B"] },
+        undefined,
+        undefined,
+        { ui },
+      );
+      expect(result.details.receipt.answered).toBe(false); // RED pre-amendment (was true)
+      expect(result.details.receipt.invalid).toBe(true);
+      expect(result.details.result).toBeUndefined();
+      expect(result.content[0].text).not.toMatch(/User responded/);
+      expect(result.content[0].text).toMatch(/malformed|no valid answer/i);
+    });
+
+    it("[A2] input answered with empty string is a VALID decision (answered, result='')", async () => {
+      const tool = getTool();
+      const ctx = makeReceiptCtx({ input: { answer: "", source: "dashboard" } });
+      const result = await tool.execute(
+        "tc-empty",
+        { method: "input", title: "Notes?" },
+        undefined,
+        undefined,
+        ctx,
+      );
+      expect(result.details.receipt.answered).toBe(true);
+      expect(result.details.receipt.invalid).toBe(false);
+      expect(result.details.result).toBe("");
+      expect(result.content[0].text).toMatch(/User responded: ""/);
+    });
+
+    it("[A3] batch sub-question malformed → aggregate invalid, readable non-decision line", async () => {
+      const tool = getTool();
+      const store = new Map<string, any>();
+      const ui: any = {
+        __promptReceipts: store,
+        input: vi.fn(async (_t: string, _ph: any, opts?: any) => {
+          if (opts?.toolCallId) store.set(opts.toolCallId, { answer: "Alice", source: "dashboard" });
+          return "Alice";
+        }),
+        select: vi.fn(async (_t: string, _o: string[], opts?: any) => {
+          if (opts?.toolCallId) store.set(opts.toolCallId, { cancelled: false, source: "dashboard", answer: undefined });
+          return undefined; // malformed collapse
+        }),
+        confirm: vi.fn(),
+      };
+      const result = await tool.execute(
+        "tc-batch-malformed",
+        {
+          method: "batch",
+          title: "Setup",
+          questions: [
+            { method: "input", title: "Name?" },
+            { method: "select", title: "Lang?", options: ["TS", "Py"] },
+            { method: "confirm", title: "Init?" },
+          ],
+        },
+        undefined,
+        undefined,
+        { ui },
+      );
+      expect(result.details.cancelled).toBe(true);
+      expect(ui.confirm).not.toHaveBeenCalled();
+      expect(result.details.receipts[0].answered).toBe(true);
+      expect(result.details.receipts[1].invalid).toBe(true);
+      expect(result.details.receipt.invalid).toBe(true);
+      expect(result.content[0].text).toMatch(/malformed|no valid answer/i);
+      expect(result.content[0].text).not.toMatch(/User responded: undefined/);
+    });
+
+    it("[A4] batch sub-question with duplicate options → REJECTED before render", async () => {
+      const tool = getTool();
+      const store = new Map<string, any>();
+      const ui: any = {
+        __promptReceipts: store,
+        input: vi.fn(async () => "Alice"),
+        select: vi.fn(async () => "TS"),
+        confirm: vi.fn(),
+      };
+      await expect(
+        tool.execute(
+          "tc-batch-dup",
+          {
+            method: "batch",
+            title: "Setup",
+            questions: [
+              { method: "input", title: "Name?" },
+              { method: "select", title: "Lang?", options: ["TS", "TS", "Py"] },
+            ],
+          },
+          undefined,
+          undefined,
+          { ui },
+        ),
+      ).rejects.toThrow(/distinct/i);
+      // The duplicate select is never rendered.
+      expect(ui.select).not.toHaveBeenCalled();
+    });
+
+    // ── A1 mechanism (unit): render-ACK threads through PromptBus so a rendered
+    //    timeout is delivered:true, an un-ACKed timeout is delivered:false. The
+    //    live client-sends-the-ACK path is the DEFERRED actual-surface arm. ──
+    it("[A1] rendered-then-timeout receipt is delivered:true (via stashed rendered flag)", async () => {
+      const tool = getTool();
+      const ctx = makeReceiptCtx({ select: { cancelled: true, source: "__bus__", rendered: true } });
+      const result = await tool.execute(
+        "tc-a1",
+        { method: "select", title: "Pick", options: ["A", "B"] },
+        undefined,
+        undefined,
+        ctx,
+      );
+      expect(result.details.receipt.timedOut).toBe(true);
+      expect(result.details.receipt.delivered).toBe(true);
+      expect(result.details.receipt.rendered).toBe(true);
+      expect(result.content[0].text).not.toMatch(/User responded/);
+      expect(result.content[0].text).toMatch(/timed out|never (delivered|rendered)/i);
     });
 
     // (v) ABLE-TO-FAIL CONTROL: proves the pre-fix collapse can't distinguish
