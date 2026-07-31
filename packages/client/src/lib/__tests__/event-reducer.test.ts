@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { createInitialState, findLastUserPrompt, reduceEvent, toDisplayString, addInteractiveRequest, resolveInteractiveRequest, dismissInteractiveRequest, extractAgentEndError, type SessionState, type PendingPrompt, type ChatMessage } from "../event-reducer.js";
+import { createInitialState, findLastUserPrompt, reduceEvent, toDisplayString, addInteractiveRequest, resolveInteractiveRequest, dismissInteractiveRequest, cancelInteractiveRequest, extractAgentEndError, type SessionState, type PendingPrompt, type ChatMessage } from "../event-reducer.js";
 import type { DashboardEvent } from "@blackbelt-technology/pi-dashboard-shared/types.js";
 
 function applyEvents(events: DashboardEvent[]): SessionState {
@@ -1156,6 +1156,62 @@ describe("command_feedback events", () => {
       const s2 = dismissInteractiveRequest(s1, "unknown-id");
 
       expect(s2).toBe(s1);
+    });
+  });
+
+  // ── dl-13559: cancelInteractiveRequest is the timeout/abort sister of
+  //    dismissInteractiveRequest. It sets status "cancelled" (NOT "dismissed"),
+  //    so a bus timeout renders "No response", never "Answered in terminal". ──
+  describe("cancelInteractiveRequest (dl-13559)", () => {
+    it("[able-to-fail] should transition pending request to CANCELLED (not dismissed)", () => {
+      const initial = createInitialState();
+      const s1 = addInteractiveRequest(initial, "req-1", "confirm", { title: "Continue?" });
+      const s2 = cancelInteractiveRequest(s1, "req-1");
+
+      expect(s2.interactiveRequests[0].status).toBe("cancelled"); // RED if it were "dismissed"
+      expect((s2.messages[0].args as any).status).toBe("cancelled");
+      expect(s2.interactiveRequests[0].status).not.toBe("dismissed");
+    });
+
+    it("should not change already resolved requests", () => {
+      const initial = createInitialState();
+      const s1 = addInteractiveRequest(initial, "req-1", "confirm", { title: "Continue?" });
+      const s2 = resolveInteractiveRequest(s1, "req-1", { confirmed: true });
+      const s3 = cancelInteractiveRequest(s2, "req-1");
+
+      expect(s3).toBe(s2); // No change — same reference
+      expect(s3.interactiveRequests[0].status).toBe("resolved");
+    });
+
+    it("should not change already dismissed requests (no-op unless pending)", () => {
+      const initial = createInitialState();
+      const s1 = addInteractiveRequest(initial, "req-1", "confirm", { title: "Continue?" });
+      const s2 = dismissInteractiveRequest(s1, "req-1");
+      const s3 = cancelInteractiveRequest(s2, "req-1");
+
+      expect(s3).toBe(s2);
+      expect(s3.interactiveRequests[0].status).toBe("dismissed");
+    });
+
+    it("should return same state for unknown requestId", () => {
+      const initial = createInitialState();
+      const s1 = addInteractiveRequest(initial, "req-1", "confirm", { title: "Continue?" });
+      const s2 = cancelInteractiveRequest(s1, "unknown-id");
+
+      expect(s2).toBe(s1);
+    });
+
+    it("dismiss and cancel are distinct: dismiss→dismissed, cancel→cancelled (no cross-contamination)", () => {
+      const initial = createInitialState();
+      const a1 = addInteractiveRequest(initial, "req-a", "select", { title: "A?" });
+      const b1 = addInteractiveRequest(a1, "req-b", "select", { title: "B?" });
+      const dismissed = dismissInteractiveRequest(b1, "req-a");
+      const cancelled = cancelInteractiveRequest(dismissed, "req-b");
+
+      const reqA = cancelled.interactiveRequests.find((r) => r.requestId === "req-a");
+      const reqB = cancelled.interactiveRequests.find((r) => r.requestId === "req-b");
+      expect(reqA?.status).toBe("dismissed");
+      expect(reqB?.status).toBe("cancelled");
     });
   });
 

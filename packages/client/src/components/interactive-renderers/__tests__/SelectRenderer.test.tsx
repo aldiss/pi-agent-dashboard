@@ -119,3 +119,22 @@ describe("SelectRenderer — capsule rendering", () => {
     expect(text).not.toContain("detected by regex pass");
   });
 });
+
+// ── dl-13559: a bus TIMEOUT (status "cancelled") must render a truthful
+//    non-answer ("No response") and NEVER "Answered in terminal" (which is a
+//    TUI-answer claim, reserved for status "dismissed"). ──
+describe("SelectRenderer — cancelled vs dismissed truthfulness (dl-13559)", () => {
+  it("[able-to-fail] #given cancelled status (bus timeout) #then renders 'No response' and NOT 'Answered in terminal'", () => {
+    const { container } = render(<SelectRenderer {...props({ status: "cancelled" })} />);
+    const text = container.textContent ?? "";
+    expect(text).toContain("No response");
+    expect(text).not.toContain("Answered in terminal"); // RED pre-fix (rendered "Cancelled", and the timeout was routed to dismissed)
+  });
+
+  it("#given dismissed status (answered in TUI) #then still renders 'Answered in terminal' (preserved)", () => {
+    const { container } = render(<SelectRenderer {...props({ status: "dismissed" })} />);
+    const text = container.textContent ?? "";
+    expect(text).toContain("Answered in terminal");
+    expect(text).not.toContain("No response");
+  });
+});

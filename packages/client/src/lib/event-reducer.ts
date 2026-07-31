@@ -1033,6 +1033,54 @@ export function resolveInteractiveRequest(
   };
 }
 
+/**
+ * Cancel an interactive UI request (bus timeout / abort — NOT an answer).
+ *
+ * Sister to `dismissInteractiveRequest`, IDENTICAL in shape except it sets
+ * `status: "cancelled"` (not `"dismissed"`). The distinction is load-bearing at
+ * the render layer: `"dismissed"` means the prompt was answered elsewhere (the
+ * TUI) and renders "Answered in terminal"; `"cancelled"` means NOBODY answered
+ * (the PromptBus timer fired / the request was aborted) and must render a
+ * truthful non-answer ("No response"). Routing a bus timeout through the dismiss
+ * path made a timeout read as an answer (Pete dl-13559). Pending-only.
+ */
+export function cancelInteractiveRequest(
+  state: SessionState,
+  requestId: string,
+): SessionState {
+  // Only cancel pending requests
+  const existing = state.interactiveRequests.find((r) => r.requestId === requestId);
+  if (!existing || existing.status !== "pending") return state;
+
+  // Bug #3 fix: O(1) index lookup + targeted splice in place of
+  // O(n) full-array map(). See sister-comment in
+  // resolveInteractiveRequest above. Change:
+  // bug-3-messages-index-lookup-table.
+  const targetId = `ui-${requestId}`;
+  const idx = state.messagesIndex.get(targetId);
+  let nextMessages = state.messages;
+  let nextMessagesIndex = state.messagesIndex;
+  if (idx !== undefined && state.messages[idx]?.id === targetId) {
+    const updated: ChatMessage = {
+      ...state.messages[idx],
+      args: { ...state.messages[idx].args as any, status: "cancelled" },
+    };
+    nextMessages = state.messages.slice();
+    nextMessages[idx] = updated;
+    nextMessagesIndex = state.messagesIndex;
+  }
+  return {
+    ...state,
+    interactiveRequests: state.interactiveRequests.map((req) =>
+      req.requestId === requestId
+        ? { ...req, status: "cancelled" as const }
+        : req,
+    ),
+    messages: nextMessages,
+    messagesIndex: nextMessagesIndex,
+  };
+}
+
 /** Dismiss an interactive UI request (answered in TUI, not via dashboard) */
 export function dismissInteractiveRequest(
   state: SessionState,

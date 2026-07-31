@@ -134,8 +134,8 @@ describe("MultiselectRenderer", () => {
   });
 
   describe("cancelled state", () => {
-    it("displays Cancelled label", () => {
-      render(
+    it("displays 'No response' label (dl-13559: a bus timeout is a non-answer, never 'Answered in terminal')", () => {
+      const { container } = render(
         <MultiselectRenderer
           {...baseProps}
           status="cancelled"
@@ -144,7 +144,8 @@ describe("MultiselectRenderer", () => {
         />,
       );
 
-      expect(screen.getByText("Cancelled")).toBeTruthy();
+      expect(screen.getByText("No response")).toBeTruthy();
+      expect(container.textContent ?? "").not.toContain("Answered in terminal");
     });
   });
 

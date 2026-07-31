@@ -3,7 +3,7 @@
  * Extracted from App.tsx — maps each message type to the correct state setter.
  */
 import { useCallback, useRef } from "react";
-import { createInitialState, reduceEvent, addInteractiveRequest, resolveInteractiveRequest, dismissInteractiveRequest, markQueueEntryFailed, releaseOperatorBufferAsNeutral, OPERATOR_BUFFER_TIMEOUT_MS, type SessionState } from "../lib/event-reducer.js";
+import { createInitialState, reduceEvent, addInteractiveRequest, resolveInteractiveRequest, dismissInteractiveRequest, cancelInteractiveRequest, markQueueEntryFailed, releaseOperatorBufferAsNeutral, OPERATOR_BUFFER_TIMEOUT_MS, type SessionState } from "../lib/event-reducer.js";
 import type { DashboardSession, CommandInfo, FlowInfo, FileEntry, OpenSpecData, OpenSpecGroup, ModelInfo, RoleInfo, PresenceParticipant } from "@blackbelt-technology/pi-dashboard-shared/types.js";
 import type { PendingOperatorInput } from "@blackbelt-technology/pi-dashboard-shared/browser-protocol.js";
 import { encodeFolderPath } from "../lib/folder-encoding.js";
@@ -689,7 +689,11 @@ export function useMessageHandler(
           const next = new Map(prev);
           const current = next.get(msg.sessionId);
           if (!current) return prev;
-          const updated = dismissInteractiveRequest(current, msg.promptId);
+          // A bus timeout / abort — NOBODY answered. Route to cancel (→ status
+          // "cancelled" → renders "No response"), NOT dismiss (→ "dismissed" →
+          // "Answered in terminal", which falsely claims a TUI answer). Pete
+          // dl-13559: the real-DOM arm2 caught a timeout shown as answered.
+          const updated = cancelInteractiveRequest(current, msg.promptId);
           if (updated === current) return prev;
           next.set(msg.sessionId, updated);
           return next;

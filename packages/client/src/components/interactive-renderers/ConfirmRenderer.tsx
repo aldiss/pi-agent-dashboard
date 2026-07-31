@@ -22,7 +22,7 @@ export function ConfirmRenderer({ params, status, result, onRespond, onCancel }:
           <span className="ml-1 inline-flex items-center gap-0.5 text-red-400"><Icon path={mdiCloseCircle} size={0.55} /> Denied</span>
         )}
         {status === "cancelled" && (
-          <span className="ml-1 text-[var(--text-tertiary)]">Cancelled</span>
+          <span className="ml-1 text-[var(--text-tertiary)]">No response</span>
         )}
         {status === "dismissed" && (
           <span className="ml-1 text-[var(--text-tertiary)]">Answered in terminal</span>

@@ -35,7 +35,7 @@ export function SelectRenderer({ params, status, result, onRespond, onCancel }: 
           </span>
         )}
         {status === "cancelled" && (
-          <span className="ml-1 text-[var(--text-tertiary)] shrink-0">Cancelled</span>
+          <span className="ml-1 text-[var(--text-tertiary)] shrink-0">No response</span>
         )}
         {status === "dismissed" && (
           <span className="ml-1 text-[var(--text-tertiary)] shrink-0">Answered in terminal</span>

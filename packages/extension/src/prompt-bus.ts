@@ -53,17 +53,18 @@ export interface PromptResponse {
   rendered?: boolean;
   /**
    * B2 authenticated operator author (server-stamped, never the body) of the
-   * ANSWER ONLY. Threaded into the resolved response so the receipt proves WHO
-   * ANSWERED. Absent when the responder carries no author (e.g. TUI) or
+   * RESPONSE — the RESPONDER actor: whoever ANSWERED or authenticated-DISMISSED
+   * (Pete dl-13527). Threaded into the resolved response so the receipt proves
+   * WHO responded. Absent when the responder carries no author (e.g. TUI) or
    * single-operator. NEVER inherits the render identity — see `renderedBy`.
    */
   author?: PromptAuthor;
   /**
    * B2 authenticated operator author (server-stamped, never the body) of the
-   * RENDER ACK — WHO RENDERED the dialog, distinct from WHO ANSWERED. Carried on
-   * both the answer and the cancel/timeout resolves so a receipt can prove the
-   * render identity WITHOUT conflating it into `author`. Absent when no authored
-   * render ACK arrived (Pete dl-13383: responder-attribution split).
+   * RENDER ACK — WHO RENDERED the dialog, distinct from WHO RESPONDED (`author`).
+   * Carried on both the answer and the cancel/timeout resolves so a receipt can
+   * prove the render identity WITHOUT conflating it into `author`. Absent when no
+   * authored render ACK arrived (Pete dl-13383: responder-attribution split).
    */
   renderedBy?: PromptAuthor;
 }
@@ -227,13 +228,13 @@ export class PromptBus {
       this.options.onDashboardDismiss(response.id);
     }
 
-    // A1/B2 (Pete dl-13383 responder-attribution split): carry the
-    // render-lifecycle flag through, and keep WHO-ANSWERED separate from
+    // A1/B2 (Pete dl-13383 split + dl-13527 dismiss-actor): carry the
+    // render-lifecycle flag through, and keep WHO-RESPONDED separate from
     // WHO-RENDERED. `author` is the RESPONDER's own author ONLY (the
-    // authenticated answerer) — it NEVER falls back to the render-ACK author, so
-    // a TUI answer (no author) after an operator render does NOT falsely prove
-    // the operator answered. The render identity rides on `renderedBy` instead.
-    // Single-operator → both undefined.
+    // authenticated answerer OR dismisser) — it NEVER falls back to the
+    // render-ACK author, so a TUI answer (no author) after an operator render
+    // does NOT falsely prove the operator responded. The render identity rides
+    // on `renderedBy` instead. Single-operator → both undefined.
     entry.resolve({
       ...response,
       rendered: response.rendered ?? entry.rendered,

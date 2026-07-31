@@ -6,7 +6,7 @@ export function GenericInteractiveRenderer({ method, params, status }: Interacti
     <div className="mx-4 my-1 p-2 bg-[var(--bg-hover)] rounded text-xs">
       <span className="text-[var(--text-secondary)]">{method}: </span>
       <span className="text-[var(--text-tertiary)]">
-        {status === "pending" ? "Waiting for response..." : status === "dismissed" ? "Answered in terminal" : status}
+        {status === "pending" ? "Waiting for response..." : status === "cancelled" ? "No response" : status === "dismissed" ? "Answered in terminal" : status}
       </span>
       <span className="text-[var(--text-tertiary)] ml-1">
         {JSON.stringify(params).slice(0, 100)}

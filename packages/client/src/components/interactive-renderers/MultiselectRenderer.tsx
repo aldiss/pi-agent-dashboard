@@ -45,7 +45,7 @@ export function MultiselectRenderer({ params, status, result, onRespond, onCance
           <span className="ml-1 text-[var(--text-tertiary)]">None selected</span>
         )}
         {status === "cancelled" && (
-          <span className="ml-1 text-[var(--text-tertiary)]">Cancelled</span>
+          <span className="ml-1 text-[var(--text-tertiary)]">No response</span>
         )}
         {status === "dismissed" && (
           <span className="ml-1 text-[var(--text-tertiary)]">Answered in terminal</span>
