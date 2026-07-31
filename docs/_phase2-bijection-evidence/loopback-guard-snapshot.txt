@@ -1,0 +1,8 @@
+2026-07-31T05:58:58.665Z loopback-listen-guard active
+2026-07-31T05:58:58.737Z loopback-listen-guard active
+2026-07-31T05:58:58.763Z loopback-listen-guard active
+2026-07-31T05:59:01.181Z loopback-listen-guard active
+2026-07-31T05:59:01.218Z loopback-listen-guard active
+2026-07-31T05:59:04.911Z loopback-listen-guard active
+2026-07-31T05:59:05.964Z FORCE tcp listen port=8134 host=(absent) -> 127.0.0.1
+2026-07-31T05:59:08.991Z FORCE tcp listen port=8133 host=0.0.0.0 -> 127.0.0.1

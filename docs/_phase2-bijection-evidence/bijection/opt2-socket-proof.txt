@@ -1,0 +1,9 @@
+ts=2026-07-31T06:08:48.411Z
+has9999=false has8000=false has8133=false has8134=false
+non_loopback_tcp_lines=1
+
+--- pid 13558 ---
+(no TCP)
+
+--- non-loopback lines ---
+(no TCP)

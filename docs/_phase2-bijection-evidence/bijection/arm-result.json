@@ -1,0 +1,74 @@
+{
+  "arm": "natural-healthy-bijection",
+  "staged_build": "d520be7",
+  "arm_pass": false,
+  "options": [
+    {
+      "option_index": 0,
+      "expected_original": "Deploy to production now",
+      "session": null,
+      "error": "spawn failed"
+    },
+    {
+      "option_index": 1,
+      "expected_original": "Run one more validation pass first",
+      "session": null,
+      "error": "spawn failed"
+    },
+    {
+      "option_index": 2,
+      "expected_original": "Cancel and hold",
+      "session": "019fb6ca-09fd-7de3-adeb-c5aa3c4d86e5",
+      "visible_labels": [
+        "Deploy to production now",
+        "Run one more validation pass first",
+        "Cancel and hold"
+      ],
+      "socket": {
+        "has9999": false,
+        "has8000": false,
+        "has8133": false,
+        "has8134": false,
+        "nonLoopCount": 1
+      },
+      "socket_zero_9999": true,
+      "socket_zero_8000": true,
+      "socket_loopback_only": false,
+      "prompt_bodies": [
+        "Deploy Build-1 to production now?",
+        "The candidate passed all pre-deploy gates. Choose how to proceed."
+      ],
+      "assert_question_visible": true,
+      "assert_labels_distinct": true,
+      "assert_no_placeholder": true,
+      "clicked_label": "Cancel and hold",
+      "session_log": "/tmp/build1-p2-20260731-8133/state/.pi/agent/sessions/--private-tmp-build1-p2-20260731-8133-probe-cwds-bij-opt2--/2026-07-31T06-08-41-981Z_019fb6ca-09fd-7de3-adeb-c5aa3c4d86e5.jsonl",
+      "details": {
+        "method": "select",
+        "result": "Cancel and hold",
+        "receipt": {
+          "delivered": true,
+          "answered": true,
+          "dismissed": false,
+          "timedOut": false,
+          "source": "dashboard-default"
+        },
+        "selectedIndex": 2
+      },
+      "returned_value": "Cancel and hold",
+      "receipt": {
+        "delivered": true,
+        "answered": true,
+        "dismissed": false,
+        "timedOut": false,
+        "source": "dashboard-default"
+      },
+      "selected_index": 2,
+      "assert_returned_equals_original_i": true,
+      "assert_receipt_answered": true,
+      "assert_receipt_source_adapter": true,
+      "assert_selectedIndex_matches": true,
+      "option_pass": false
+    }
+  ]
+}

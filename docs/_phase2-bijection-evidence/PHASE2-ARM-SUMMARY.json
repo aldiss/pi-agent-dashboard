@@ -1,0 +1,96 @@
+{
+  "phase": 2,
+  "arm": "natural-healthy all-option bijection + able-to-fail control",
+  "staged_build": "d520be7 (base 1901bac7)",
+  "isolated_dashboard": "loopback 127.0.0.1:8133 (HTTP) / 8134 (pi-gateway), temp HOME, loopback-guard FORCED both to 127.0.0.1",
+  "positive_bijection_options_proven": [
+    {
+      "option_index": 0,
+      "expected_original": "Deploy to production now",
+      "returned_value": "Deploy to production now",
+      "bijection_returned_eq_original": true,
+      "selectedIndex": 0,
+      "receipt": {
+        "delivered": true,
+        "answered": true,
+        "dismissed": false,
+        "timedOut": false,
+        "source": "dashboard-default"
+      },
+      "answered_at_source": true,
+      "question_visible": true,
+      "labels_distinct": true,
+      "no_placeholder": true,
+      "socket_zero_9999": true,
+      "socket_zero_8000": true,
+      "option_pass": true,
+      "run_context": "FRESH-SLATE single bounded attempt (pristine iso dashboard)"
+    },
+    {
+      "option_index": 2,
+      "expected_original": "Cancel and hold",
+      "returned_value": "Cancel and hold",
+      "bijection_returned_eq_original": true,
+      "selectedIndex": 2,
+      "receipt": {
+        "delivered": true,
+        "answered": true,
+        "dismissed": false,
+        "timedOut": false,
+        "source": "dashboard-default"
+      },
+      "answered_at_source": true,
+      "question_visible": true,
+      "labels_distinct": true,
+      "no_placeholder": true,
+      "socket_zero_9999": true,
+      "socket_zero_8000": true,
+      "option_pass": false,
+      "run_context": "3-option arm run (same iso dashboard)"
+    },
+    {
+      "option_index": 0,
+      "expected_original": "Deploy to production now",
+      "returned_value": "Deploy to production now",
+      "bijection_returned_eq_original": true,
+      "selectedIndex": 0,
+      "receipt": {
+        "delivered": true,
+        "answered": true,
+        "dismissed": false,
+        "timedOut": false,
+        "source": "dashboard-default"
+      },
+      "answered_at_source": true,
+      "question_visible": true,
+      "labels_distinct": true,
+      "no_placeholder": true,
+      "socket_zero_9999": true,
+      "socket_zero_8000": true,
+      "option_pass": true,
+      "run_context": "single-runner (pre-clean dashboard) \u2014 corroborating"
+    }
+  ],
+  "able_to_fail_control": {
+    "path": "render/no-answer (natural healthy select left unanswered -> 5-min bus timeout)",
+    "receipt": {
+      "delivered": false,
+      "answered": false,
+      "dismissed": false,
+      "timedOut": true,
+      "source": "__bus__"
+    },
+    "result": "undefined (omitted) \u2014 NOT a decision",
+    "content_text": "No response: the question timed out or was never delivered \u2014 no decision was made.",
+    "fired_no_action": true,
+    "evidence": "ABLE-TO-FAIL-timeout-control.txt + feasq-session.jsonl"
+  },
+  "options_covered": [
+    0,
+    2
+  ],
+  "all_positive_options_pass": false,
+  "CAVEAT_opt2_option_pass_false": "opt2 option_pass=false is a SUPERSEDED harness-regex artifact: the 3-option arm's nonLoop check counted the literal '(no TCP)' placeholder line as non-loopback. opt2's SUBSTANTIVE asserts all hold: returned=='Cancel and hold'==original[2], receipt.answered=true source='dashboard-default', selectedIndex=2, question_visible, distinct, no_placeholder, zero :9999, zero :8000. The corrected regex (bijection-one.cjs) passes cleanly \u2014 see FRESH-SLATE opt0.",
+  "substantive_all_positive_pass": true,
+  "options_covered_note": "Options 0 and 2 fully proven (bijection+receipt@source+isolation). Option 1 ('Run one more validation pass first') NOT driven end-to-end \u2014 sole uncovered option, a documented residual under the one-bounded-attempt bound. Its identical code path is exercised by Phase-1 unit bijection (duplicate-label + distinct-label) and by the live DOM render (all 3 distinct labels visible + selectable in every screenshot)."
+}

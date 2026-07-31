@@ -1,0 +1,19 @@
+PHASE-2 AFTER ISOLATION PROOF — 2026-07-31T06:22:40Z
+
+== scratch 8133/8134 FREE (all iso procs torn down) ==
+8133/8134 FREE
+
+== zero residual temp-HOME pi procs ==
+zero residual (clean)
+
+== prod STILL owns :9999/:8000 under ITS pid (I never touched it) ==
+COMMAND   PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+node    66306 vdrobkov   17u  IPv6 0x641ce0d72f3d0269      0t0  TCP *:9999 (LISTEN)
+node    66306 vdrobkov   19u  IPv4 0xb32aaabbb9cbc736      0t0  TCP *:8000 (LISTEN)
+(prod pid=66306 — rotated by prod's OWN idle-timer during the session; never signalled by me)
+
+== prod source commit still 28bfcbc7 (CommsLayer-1 stated HEAD, untouched) ==
+prod deployCommit= 28bfcbc7879c51f412414e28221965a3bcae7267 | version= 0.5.1 | mode= production
+
+== my worktree HEAD unchanged ==
+d520be7

@@ -1,0 +1,13 @@
+ABLE-TO-FAIL CONTROL (render/no-answer path) — live staged d520be7 — 2026-07-31T06:07:27Z
+session: 019fb6c2-4675-7335-a8ae-3fb92d5a961b (natural healthy select, left unanswered → 5-min bus timeout)
+
+== toolResult details (receipt-bearing) ==
+{"method": "select", "receipt": {"delivered": false, "answered": false, "dismissed": false, "timedOut": true, "source": "__bus__"}}
+
+== human-readable content text ==
+No response: the question timed out or was never delivered — no decision was made.
+
+ASSERTIONS:
+  receipt.timedOut=true  receipt.answered=false  receipt.delivered=false  source=__bus__
+  result: (omitted/undefined) — NOT a decision
+  fires NO action; content is readable raw non-decision text

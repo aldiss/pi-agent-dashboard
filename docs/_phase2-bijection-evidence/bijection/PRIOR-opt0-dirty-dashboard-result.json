@@ -1,0 +1,39 @@
+{
+  "option_index": 0,
+  "session": "019fb6ce-5ac8-7bd3-900e-ed68b1626fad",
+  "expected_original": "Deploy to production now",
+  "visible_labels": [
+    "Deploy to production now",
+    "Run one more validation pass first",
+    "Cancel and hold"
+  ],
+  "prompt_bodies": [
+    "Deploy Build-1 to production now?",
+    "The candidate passed all pre-deploy gates. Choose how to proceed."
+  ],
+  "returned_value": "Deploy to production now",
+  "receipt": {
+    "delivered": true,
+    "answered": true,
+    "dismissed": false,
+    "timedOut": false,
+    "source": "dashboard-default"
+  },
+  "selectedIndex": 0,
+  "socket": {
+    "has9999": false,
+    "has8000": false,
+    "nonLoop": 0
+  },
+  "assert_returned_equals_original_i": true,
+  "assert_receipt_answered": true,
+  "assert_receipt_source_adapter": true,
+  "assert_selectedIndex_matches": true,
+  "assert_question_visible": true,
+  "assert_labels_distinct": true,
+  "assert_no_placeholder": true,
+  "assert_socket_zero_9999": true,
+  "assert_socket_zero_8000": true,
+  "assert_socket_loopback_only": true,
+  "option_pass": true
+}

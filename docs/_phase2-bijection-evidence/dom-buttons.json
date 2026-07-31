@@ -1,0 +1,135 @@
+[
+  {
+    "i": 0,
+    "text": "feasq\nNEEDS INPUT",
+    "testid": "fleet-brief-item-session",
+    "cls": "w-full flex items-center gap-2 px-2 py-1.5 text-left border-b border-[var(--bord",
+    "aria": null
+  },
+  {
+    "i": 6,
+    "text": "2",
+    "testid": "pi-update-badge",
+    "cls": "inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium ",
+    "aria": "2 pi core updates available"
+  },
+  {
+    "i": 7,
+    "text": "Local",
+    "testid": null,
+    "cls": "flex items-center gap-1.5 px-2 py-1 rounded text-xs text-[var(--text-secondary)]",
+    "aria": null
+  },
+  {
+    "i": 10,
+    "text": "Hidden",
+    "testid": null,
+    "cls": "text-[10px] px-1.5 py-0.5 rounded border border-[var(--border-secondary)] text-[",
+    "aria": null
+  },
+  {
+    "i": 11,
+    "text": "Hide stale (24h+)",
+    "testid": null,
+    "cls": "text-[10px] px-1.5 py-0.5 rounded border border-blue-500/50 text-blue-400 bg-blu",
+    "aria": null
+  },
+  {
+    "i": 12,
+    "text": "Folders",
+    "testid": null,
+    "cls": "text-[10px] px-1.5 py-0.5 rounded border border-blue-500/50 text-blue-400 bg-blu",
+    "aria": null
+  },
+  {
+    "i": 13,
+    "text": "Folder",
+    "testid": "pin-dir-dialog-btn",
+    "cls": "text-[10px] px-1.5 py-0.5 rounded border border-[var(--border-secondary)] text-[",
+    "aria": null
+  },
+  {
+    "i": 14,
+    "text": "OTHER\n(1)",
+    "testid": "tier-header-other",
+    "cls": "flex items-center gap-1.5 px-2 py-1 text-[11px] font-semibold uppercase tracking",
+    "aria": null
+  },
+  {
+    "i": 16,
+    "text": "Init git",
+    "testid": "git-init-btn",
+    "cls": "flex items-center gap-1 hover:text-[var(--text-secondary)] transition-colors",
+    "aria": null
+  },
+  {
+    "i": 17,
+    "text": "Session",
+    "testid": "spawn-session-btn",
+    "cls": "flex items-center gap-1 px-2 md:px-2.5 py-2 md:py-1.5 text-sm md:text-xs font-me",
+    "aria": null
+  },
+  {
+    "i": 18,
+    "text": "Worktree",
+    "testid": "spawn-worktree-btn",
+    "cls": "flex items-center gap-1 px-2 md:px-2.5 py-2 md:py-1.5 text-sm md:text-xs font-me",
+    "aria": null
+  },
+  {
+    "i": 25,
+    "text": "Open",
+    "testid": "session-open-btn-mobile",
+    "cls": "inline-flex items-center gap-1 text-[11px] font-medium text-[var(--text-secondar",
+    "aria": null
+  },
+  {
+    "i": 26,
+    "text": "Check liveness",
+    "testid": "session-check-liveness-btn-mobile",
+    "cls": "inline-flex items-center gap-1 text-[11px] font-medium text-[var(--text-secondar",
+    "aria": null
+  },
+  {
+    "i": 34,
+    "text": "Show all activity",
+    "testid": "message-filter-show-all",
+    "cls": "ml-auto px-2 py-0.5 rounded bg-[var(--accent-primary)] text-white hover:bg-[var(",
+    "aria": null
+  },
+  {
+    "i": 37,
+    "text": "Deploy to production now",
+    "testid": null,
+    "cls": "w-full text-left px-3 py-1.5 text-xs rounded bg-blue-600 hover:bg-blue-500 text-",
+    "aria": null
+  },
+  {
+    "i": 38,
+    "text": "Run one more validation pass first",
+    "testid": null,
+    "cls": "w-full text-left px-3 py-1.5 text-xs rounded bg-blue-600 hover:bg-blue-500 text-",
+    "aria": null
+  },
+  {
+    "i": 39,
+    "text": "Cancel and hold",
+    "testid": null,
+    "cls": "w-full text-left px-3 py-1.5 text-xs rounded bg-transparent hover:bg-[var(--bg-s",
+    "aria": null
+  },
+  {
+    "i": 40,
+    "text": "github-copilot/gpt-5.4",
+    "testid": "model-selector-button",
+    "cls": "flex items-center gap-1 text-xs px-2 py-0.5 rounded text-[var(--text-secondary)]",
+    "aria": null
+  },
+  {
+    "i": 41,
+    "text": "medium",
+    "testid": "thinking-level-button",
+    "cls": "flex items-center gap-1 px-2 py-0.5 rounded text-[var(--text-secondary)] hover:t",
+    "aria": null
+  }
+]

@@ -1,0 +1,23 @@
+PHASE-2 ISOLATION PROOF — 2026-07-31T05:59:59Z
+staged build: worktree d520be7 (base 1901bac7), run direct from packages/server/bin
+prod HEAD reported by CommsLayer-1: 28bfcbc7 (NOT touched)
+
+== iso dashboard health ==
+    "version": "0.5.1",
+    "mode": "production",
+
+== iso dashboard PID 66478 all TCP sockets (loopback-only) ==
+COMMAND   PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+node    66478 vdrobkov   16u  IPv4 0x9275785abb4bacfa      0t0  TCP 127.0.0.1:8134 (LISTEN)
+node    66478 vdrobkov   17u  IPv4 0xcc8e6c4fc0ecb702      0t0  TCP 127.0.0.1:64022->127.0.0.1:8765 (ESTABLISHED)
+node    66478 vdrobkov   19u  IPv4 0x5c5c6b425be1673a      0t0  TCP 127.0.0.1:8133 (LISTEN)
+
+== NOTE: 127.0.0.1:8765 = pi-voice-sidecar (local voice-input ext, loopback, NOT prod) ==
+
+== zero prod :9999/:8000 in my tree ==
+NONE (good)
+
+== prod still owns :9999/:8000 under its OWN pid (not mine) ==
+COMMAND   PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
+node    53851 vdrobkov   17u  IPv6 0xad8dc148db1acd50      0t0  TCP *:9999 (LISTEN)
+node    53851 vdrobkov   19u  IPv4 0xa4380ced66e6ebea      0t0  TCP *:8000 (LISTEN)

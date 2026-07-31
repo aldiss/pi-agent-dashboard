@@ -1,0 +1,8 @@
+ts=2026-07-31T06:19:47.308Z
+has9999=false has8000=false
+non_loopback=0
+
+--- pid 84650 ---
+(no TCP)
+
+--- non-loopback ---
