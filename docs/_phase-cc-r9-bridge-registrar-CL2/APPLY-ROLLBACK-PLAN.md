@@ -71,12 +71,21 @@ echo "PRECOND OK: bound to e6 deploy.mjs ($E6_DEPLOY_BLOB)"
 ```
 
 ## APPLY — one self-contained transaction (auto-rollback on ANY failure; HELD)
-Run the whole block in ONE shell. On registrar OR post-verify OR receipt failure the transaction
-**automatically** calls `rollback()`, emits an `applyFAIL` receipt + a `rollback` receipt, proves
-final bytes+mode == PRE, and exits nonzero. Rollback is never a manual second step (§23).
-```sh
+Run the whole block **under bash** (it uses `PIPESTATUS`). On registrar OR post-verify OR
+receipt-sink failure the transaction **automatically** calls `rollback()`, emits an `applyFAIL` +
+`rollback` receipt, proves final bytes+mode == PRE, and exits nonzero. Rollback is never a manual
+second step (§23).
+
+**Exit codes:** `0` apply verified PASS · `1` apply failed, auto-rolled-back to PRE (clean) · `2`
+apply failed AND rollback could NOT restore PRE — MANUAL INTERVENTION · `3` apply failed, PRE
+bytes+mode restored (settings safe) but a rollback-receipt SINK failure left evidence incomplete —
+investigate.
+```bash
+#!/usr/bin/env bash
+# Run under BASH — PIPESTATUS is a bashism; producer+tee statuses are captured IMMEDIATELY.
 set -u
-S="$HOME/.pi/agent/settings.json"; UTC="$(date -u +%Y%m%dT%H%M%SZ)"
+S="$HOME/.pi/agent/settings.json"
+: "${UTC:=$(date -u +%Y%m%dT%H%M%SZ)}"   # honor a caller-provided UTC (deterministic/testable), else compute
 RECEIPT_APPLY="$S.apply-receipt-$UTC.json"; RECEIPT_RB="$S.rollback-receipt-$UTC.json"
 
 # 1. capture pre-state (sha + mode)
@@ -94,30 +103,36 @@ test "$(shasum -a 256 "$BAK" | awk '{print $1}')" = "$PRE_SHA" \
 #     Defined BEFORE apply so it is available the instant apply runs.
 rollback() {
   reason="$1"; TMP_R="$S.rollback.tmp"                # sibling temp = same fs
-  cat "$BAK" > "$TMP_R"
+  cat "$BAK" > "$TMP_R" 2>/dev/null || { echo "ROLLBACK ABORT: cannot stage backup — MANUAL: restore $BAK"; return 2; }
   node -e 'JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))' "$TMP_R" \
     || { echo "ROLLBACK ABORT: backup not valid JSON — MANUAL: restore $BAK"; rm -f "$TMP_R"; return 2; }
   chmod "$PRE_MODE" "$TMP_R"; mv "$TMP_R" "$S"        # atomic same-fs swap
   RB_SHA=$(shasum -a 256 "$S" | awk '{print $1}'); RB_MODE=$(stat -f '%Lp' "$S")
-  RES=FAIL; { [ "$RB_SHA" = "$PRE_SHA" ] && [ "$RB_MODE" = "$PRE_MODE" ]; } && RES=PASS
-  printf '{"phase":"rollback","ts_utc":"%s","reason":"%s","restored_sha":"%s","pre_sha":"%s","restored_mode":"%s","pre_mode":"%s","result":"%s"}\n' \
-    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$reason" "$RB_SHA" "$PRE_SHA" "$RB_MODE" "$PRE_MODE" "$RES" | tee "$RECEIPT_RB"
-  [ "$RES" = PASS ] || return 1     # final bytes+mode != PRE -> hard fail
+  # bytes+mode NOT restored -> hard fail (settings are NOT at PRE; never claim safe)
+  { [ "$RB_SHA" = "$PRE_SHA" ] && [ "$RB_MODE" = "$PRE_MODE" ]; } \
+    || { echo "ROLLBACK FAIL: settings NOT restored to PRE (sha/mode mismatch)"; return 1; }
+  # bytes+mode ARE restored; write the rollback receipt and capture the SINK status IMMEDIATELY
+  printf '{"phase":"rollback","ts_utc":"%s","reason":"%s","restored_sha":"%s","pre_sha":"%s","restored_mode":"%s","pre_mode":"%s","result":"PASS"}\n' \
+    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$reason" "$RB_SHA" "$PRE_SHA" "$RB_MODE" "$PRE_MODE" | tee "$RECEIPT_RB"
+  RB_SINK=("${PIPESTATUS[@]}")                        # [0]=printf [1]=tee (receipt sink) — capture NOW
+  [ "${RB_SINK[1]}" = "0" ] \
+    || { echo "ROLLBACK RECEIPT SINK FAILED (settings bytes+mode ARE restored to PRE)"; return 3; }
   return 0
 }
 
-# --- fail_apply(): the automatic failure path. applyFAIL receipt + auto-rollback + prove==PRE + exit. ---
+# --- fail_apply(): the automatic failure path. applyFAIL receipt + auto-rollback + accurate wording + exit. ---
 fail_apply() {
   reason="$1"
-  # keep the verifier's detailed FAIL receipt if it already wrote one; else emit a minimal applyFAIL
+  # keep the verifier's detailed FAIL receipt if it already wrote one; else best-effort a minimal applyFAIL
   [ -f "$RECEIPT_APPLY" ] || printf '{"phase":"apply","result":"FAIL","reason":"%s","ts_utc":"%s"}\n' \
-    "$reason" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$RECEIPT_APPLY"
+    "$reason" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$RECEIPT_APPLY" 2>/dev/null || true
   echo "APPLY FAILED ($reason) — auto-rolling back"
-  if rollback "$reason"; then
-    echo "AUTO-ROLLBACK OK: final bytes+mode == PRE (receipts: $RECEIPT_APPLY + $RECEIPT_RB)"; exit 1
-  else
-    echo "AUTO-ROLLBACK DID NOT REACH PRE — MANUAL INTERVENTION; backup=$BAK"; exit 2
-  fi
+  rollback "$reason"; rc=$?
+  case "$rc" in
+    0) echo "AUTO-ROLLBACK OK: final bytes+mode == PRE (receipts: $RECEIPT_APPLY + $RECEIPT_RB)"; exit 1 ;;
+    3) echo "AUTO-ROLLBACK: PRE bytes+mode RESTORED (settings safe), but the rollback receipt could NOT be written (sink failure) — evidence incomplete; investigate"; exit 3 ;;
+    *) echo "AUTO-ROLLBACK FAILED: settings NOT restored to PRE — MANUAL INTERVENTION; backup=$BAK"; exit 2 ;;
+  esac
 }
 
 # 3. immediate fire-time PRE recheck (still nothing applied -> plain abort)
@@ -180,9 +195,12 @@ const receipt = {
 process.stdout.write(JSON.stringify(receipt, null, 2) + "\n");
 process.exit(fails.length === 0 ? 0 : 1);
 NODE
-test "${PIPESTATUS[0]}" = "0" || fail_apply "postverify-failed"
+APPLY_ST=("${PIPESTATUS[@]}")            # [0]=node verifier, [1]=tee (apply-receipt sink) — capture IMMEDIATELY
+prod="${APPLY_ST[0]}"; teerc="${APPLY_ST[1]}"
+[ "$prod"  = "0" ] || fail_apply "postverify-failed"          # verifier rejected the write -> auto-rollback
+[ "$teerc" = "0" ] || fail_apply "apply-receipt-sink-failed"  # cannot record the apply receipt -> auto-rollback (no proof => revert)
 
-echo "APPLY VERIFIED PASS — receipt: $RECEIPT_APPLY (no rollback needed)"
+echo "APPLY VERIFIED PASS — receipt: $RECEIPT_APPLY (no rollback needed)"; exit 0
 ```
 
 ## Manual / standalone ROLLBACK (same `rollback()` procedure — if ever needed after a PASSED apply)
@@ -213,7 +231,11 @@ unrelated-state restoration, not merely the masked subset.
   transaction control flow: the auto-rollback fires, the temp settings are restored to PRE
   (sha + mode), and the overall run exits nonzero — with the happy path (PASS, no rollback,
   exit 0) shown alongside.
-
+- `tests/r13-receipt-sink-controls-proof.txt` — two receipt-SINK able-to-fail controls (the receipt
+  path pre-created as a directory so `tee` fails): (1) an apply-receipt sink failure on an otherwise
+  PASSing apply triggers `fail_apply` → auto-rollback to PRE → exit 1; (2) a rollback-receipt sink
+  failure exits LOUD nonzero (3) with accurate "PRE restored (safe) but receipt sink failed" wording
+  — never a false `AUTO-ROLLBACK OK`. Both exercise the real extracted wrapper.
 ## Receipt schema (all phases; result=FAIL ⇒ the transaction already auto-rolled-back + exited nonzero)
 **apply receipt** (`$S.apply-receipt-<UTC>.json`):
 | field | meaning |

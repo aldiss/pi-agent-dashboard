@@ -1,21 +1,17 @@
-r12 forced-failure AUTO-ROLLBACK proof — exercises the REAL apply wrapper extracted verbatim from
-APPLY-ROLLBACK-PLAN.md (## APPLY block), run under a temp HOME with ONLY the registrar faked.
-The real rollback()/fail_apply()/post-verify node-block execute. Never touches live settings.
-Generated: 2026-08-01T08:58:02Z
+r12 forced-failure AUTO-ROLLBACK proof (regenerated against the r13 wrapper: explicit bash + PIPESTATUS).
+Real apply block extracted verbatim from APPLY-ROLLBACK-PLAN.md; temp HOME; only the registrar faked.
+Generated: 2026-08-01T09:24:51Z
 
-=== CASE A: registrar writes a CORRECT post-state -> post-verify PASS, NO rollback, exit 0 ===
-  pre: sha256=7a9dab75c679a024774cd0417e32afeb1eb15df4c1385a08415ff629788665b1 mode=644
-  APPLY VERIFIED PASS — receipt: /tmp/cl3-realwrapper/home/.pi/agent/settings.json.apply-receipt-20260801T085802Z.json (no rollback needed)
-  >>> overall exit=0
+=== CASE A: correct post-state -> PASS, no rollback, exit 0 ===
+      "result": "PASS",
+    APPLY VERIFIED PASS — receipt: /tmp/cl3-r13/home/.pi/agent/settings.json.apply-receipt-A1.json (no rollback needed)
+    >>> exit=0
+    >>> settings != PRE
 
-=== CASE B: registrar writes a BAD post-state (stale left, release gone, unrelated corrupted)
-         -> post-verify FAIL -> AUTO-ROLLBACK -> restored==PRE (sha+mode) -> exit nonzero ===
-  pre: sha256=7a9dab75c679a024774cd0417e32afeb1eb15df4c1385a08415ff629788665b1 mode=644
-  APPLY FAILED (postverify-failed) — auto-rolling back
-  {"phase":"rollback","ts_utc":"2026-08-01T08:58:03Z","reason":"postverify-failed","restored_sha":"7a9dab75c679a024774cd0417e32afeb1eb15df4c1385a08415ff629788665b1","pre_sha":"7a9dab75c679a024774cd0417e32afeb1eb15df4c1385a08415ff629788665b1","restored_mode":"644","pre_mode":"644","result":"PASS"}
-  AUTO-ROLLBACK OK: final bytes+mode == PRE (receipts: /tmp/cl3-realwrapper/home/.pi/agent/settings.json.apply-receipt-20260801T085803Z.json + /tmp/cl3-realwrapper/home/.pi/agent/settings.json.rollback-receipt-20260801T085803Z.json)
-  >>> overall exit=1
-  >>> POST-ROLLBACK: temp settings RESTORED == original PRE (byte-identical)
-
-Conclusion: a post-mutation failure automatically invokes rollback(), emits applyFAIL + rollback
-receipts, restores exact PRE bytes+mode, and exits nonzero — no manual second step (§23).
+=== CASE B: bad post-state -> post-verify FAIL -> AUTO-ROLLBACK -> restored==PRE -> exit 1 ===
+      "result": "FAIL",
+    APPLY FAILED (postverify-failed) — auto-rolling back
+    {"phase":"rollback","ts_utc":"2026-08-01T09:24:51Z","reason":"postverify-failed","restored_sha":"2178fdd754b4810a8d30b9f1cb90d5cef20e6d04ef0317195c861c202060023a","pre_sha":"2178fdd754b4810a8d30b9f1cb90d5cef20e6d04ef0317195c861c202060023a","restored_mode":"644","pre_mode":"644","result":"PASS"}
+    AUTO-ROLLBACK OK: final bytes+mode == PRE (receipts: /tmp/cl3-r13/home/.pi/agent/settings.json.apply-receipt-B1.json + /tmp/cl3-r13/home/.pi/agent/settings.json.rollback-receipt-B1.json)
+    >>> exit=1
+    >>> settings == PRE (byte-identical)

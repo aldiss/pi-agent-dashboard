@@ -131,5 +131,15 @@ wrapper (apply block extracted verbatim, temp HOME, only registrar faked):
 `tests/r12-forced-failure-autorollback-proof.txt` (CASE A GOOD→PASS/exit 0/no-rollback; CASE B
 BAD→auto-rollback→restored==PRE→exit 1). See `tests/r12-autorollback-note.md`.
 
+## r13 — bash + PIPESTATUS + receipt-sink handling (docs-only; dl-13845)
+r12 checked only the verifier `${PIPESTATUS[0]}`, missed the `tee` (receipt-sink) status, was
+implicitly bash, and a rollback-receipt sink failure could still print a clean "AUTO-ROLLBACK OK".
+r13: explicit `#!/usr/bin/env bash`; capture producer+tee `PIPESTATUS` IMMEDIATELY; apply-receipt
+sink failure → `fail_apply`+rollback; rollback-receipt sink failure → loud nonzero exit 3 with
+accurate "PRE restored (safe) but receipt sink failed" wording (no false OK); documented exit-code
+table (0/1/2/3). **Code (`e6ae9b9`) unchanged** (docs-only). Own-hand proofs (real wrapper, temp
+HOME): `tests/r12-forced-failure-autorollback-proof.txt` (regenerated) + `tests/r13-receipt-sink-
+controls-proof.txt` (2 able-to-fail sink controls). See `tests/r13-shell-hardening-note.md`.
+
 ## Manifest
-`SHA256SUMS.ccr9.txt` — SHA-256 over all evidence files (self-verifying; regenerated at r12).
+`SHA256SUMS.ccr9.txt` — SHA-256 over all evidence files (self-verifying; regenerated at r13).

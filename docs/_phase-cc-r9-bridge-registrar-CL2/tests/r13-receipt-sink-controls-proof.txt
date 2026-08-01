@@ -1,0 +1,26 @@
+r13 receipt-SINK able-to-fail controls — exercise the real wrapper with a receipt sink forced to FAIL
+(the receipt path is pre-created as a DIRECTORY so tee cannot write it). Temp HOME; live never touched.
+Generated: 2026-08-01T09:24:51Z
+
+=== CONTROL 1 — APPLY-receipt sink fails (GOOD apply, but apply-receipt path is a dir):
+    verifier PASSes but tee fails -> fail_apply(apply-receipt-sink-failed) -> AUTO-ROLLBACK to PRE -> exit 1 ===
+      "result": "PASS",
+    APPLY FAILED (apply-receipt-sink-failed) — auto-rolling back
+    {"phase":"rollback","ts_utc":"2026-08-01T09:24:52Z","reason":"apply-receipt-sink-failed","restored_sha":"2178fdd754b4810a8d30b9f1cb90d5cef20e6d04ef0317195c861c202060023a","pre_sha":"2178fdd754b4810a8d30b9f1cb90d5cef20e6d04ef0317195c861c202060023a","restored_mode":"644","pre_mode":"644","result":"PASS"}
+    AUTO-ROLLBACK OK: final bytes+mode == PRE (receipts: /tmp/cl3-r13/home/.pi/agent/settings.json.apply-receipt-CTRL1.json + /tmp/cl3-r13/home/.pi/agent/settings.json.rollback-receipt-CTRL1.json)
+    >>> exit=1
+    >>> settings == PRE (byte-identical)
+
+=== CONTROL 2 — ROLLBACK-receipt sink fails (BAD apply, and rollback-receipt path is a dir):
+    post-verify FAIL -> rollback restores PRE bytes, but rollback-receipt tee fails -> return 3
+    -> LOUD nonzero exit 3 with accurate 'PRE RESTORED (safe) but receipt sink failed' wording, NO false OK ===
+      "result": "FAIL",
+    APPLY FAILED (postverify-failed) — auto-rolling back
+    {"phase":"rollback","ts_utc":"2026-08-01T09:24:52Z","reason":"postverify-failed","restored_sha":"2178fdd754b4810a8d30b9f1cb90d5cef20e6d04ef0317195c861c202060023a","pre_sha":"2178fdd754b4810a8d30b9f1cb90d5cef20e6d04ef0317195c861c202060023a","restored_mode":"644","pre_mode":"644","result":"PASS"}
+    ROLLBACK RECEIPT SINK FAILED (settings bytes+mode ARE restored to PRE)
+    AUTO-ROLLBACK: PRE bytes+mode RESTORED (settings safe), but the rollback receipt could NOT be written (sink failure) — evidence incomplete; investigate
+    >>> exit=3
+    >>> settings == PRE (byte-identical)
+
+Both controls: settings end == PRE (bytes safe), exit is nonzero, and the failure path is the REAL
+fail_apply()/rollback() wrapper — a receipt sink failure never yields a false success.
