@@ -1,0 +1,39 @@
+
+ RUN  v4.1.5 /Users/vdrobkov/build1-picker-cand-e0-wt
+
+ ❯ |scripts| deploy-bridge-registrar.test.mjs (8 tests | 2 failed) 13ms
+     × [control 1: stale pruned] planPackages removes the stale /tmp canonical bridge, keeps the release target 4ms
+     × [control 3: different-package + workflows preserved] identity 'no' and non-bridge entries stay 1ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  |scripts| deploy-bridge-registrar.test.mjs > bridge pruner — 5 controls (dl-13727) > [control 1: stale pruned] planPackages removes the stale /tmp canonical bridge, keeps the release target
+AssertionError: expected [] to include '/var/folders/sh/rtc7_3wd27q_jffxy54dt…'
+ ❯ deploy-bridge-registrar.test.mjs:89:21
+     87|     const pkgs = [WORKFLOWS, TMP_STALE_ext];
+     88|     const { kept, removed } = planPackages(pkgs, REL211_ext);
+     89|     expect(removed).toContain(TMP_STALE_ext);      // the exact stale …
+       |                     ^
+     90|     expect(kept).not.toContain(TMP_STALE_ext);     // and excluded fro…
+     91|     expect(kept).toContain(REL211_ext);            // target present
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ FAIL  |scripts| deploy-bridge-registrar.test.mjs > bridge pruner — 5 controls (dl-13727) > [control 3: different-package + workflows preserved] identity 'no' and non-bridge entries stay
+AssertionError: expected [] to include '/var/folders/sh/rtc7_3wd27q_jffxy54dt…'
+ ❯ deploy-bridge-registrar.test.mjs:115:21
+    113|     expect(removed).not.toContain(OTHER_ext);
+    114|     expect(removed).not.toContain(WORKFLOWS);
+    115|     expect(removed).toContain(TMP_STALE_ext); // only the stale canoni…
+       |                     ^
+    116|   });
+    117|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  2 failed | 6 passed (8)
+   Start at  07:47:24
+   Duration  177ms (transform 23ms, setup 0ms, import 33ms, tests 13ms, environment 0ms)
+

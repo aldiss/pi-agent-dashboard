@@ -1,0 +1,29 @@
+GREEN 1: isolated/jail --prod-root -> live settings untouched
+  ✓ deploy exits 0
+  ✓ logs the isolation SKIP
+  ✓ settings.json BYTE-IDENTICAL (dev plugin-bridge untouched in jail)
+GREEN 2: real --prod-root -> keys preserved + main bridge appended
+  ✓ deploy exits 0
+  ✓ defaultProvider preserved
+  ✓ defaultModel preserved
+  ✓ thinking preserved
+  ✓ existing npm package preserved
+  ✓ release main bridge appended to packages
+GREEN 3: real --prod-root + --no-bridge-register -> untouched (explicit skip)
+  ✓ deploy exits 0
+  ✓ logs the --no-bridge-register SKIP
+  ✓ settings.json BYTE-IDENTICAL
+GREEN 4: real --prod-root + unparseable settings -> die non-zero, no clobber
+  ✓ deploy EXITS NON-ZERO (die on unparseable — guard now reachable)
+  ✓ logs the refuse-to-clobber die message
+  ✓ corrupt settings.json left UNTOUCHED (not clobbered)
+GREEN 5: real --prod-root -> plugin-bridge pinned under release, dev-tree removed
+  ✓ deploy exits 0
+  ✓ plugin-bridge PINNED under release (/private/var/folders/sh/rtc7_3wd27q_jffxy54dt44m0000gn/T/x11-dc2DOj/.pi-dashboard-prod/releases/fakesha0000000000000000000000000000000000/packages/flows-anthropic-bridge-plugin/src/bridge/index.ts)
+  ✓ pinned path resolves under the release, not the dev tree
+  ✓ stale DEV-tree plugin-bridge path REMOVED
+  ✓ operator keys preserved
+  ✓ logs the release plugin-bridge registration
+  ✓ logs the stale dev-tree removal
+
+PASS: 22 passed, 0 failed

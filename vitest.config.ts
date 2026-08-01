@@ -19,6 +19,10 @@ export default defineConfig({
       "packages/flows-plugin",
       "packages/flows-anthropic-bridge-plugin",
       "packages/voice-input-plugin",
+      // scripts/ carries a narrow vitest project (deploy-bridge-registrar.test.mjs
+      // only); the sibling deploy-bridge-isolation.test.mjs is a standalone node
+      // script, excluded by that project's include glob.
+      "scripts",
       // NOTE: packages/electron is intentionally NOT included here — it has
       // pre-existing orphaned tests that depend on ambient PATH/mocks never
       // wired up. Offline-packages tests are runnable via

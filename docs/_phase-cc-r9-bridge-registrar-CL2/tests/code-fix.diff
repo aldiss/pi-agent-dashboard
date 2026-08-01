@@ -1,0 +1,119 @@
+diff --git a/scripts/deploy.mjs b/scripts/deploy.mjs
+index 2d66e6a..4434832 100644
+--- a/scripts/deploy.mjs
++++ b/scripts/deploy.mjs
+@@ -28,6 +28,7 @@ import { execFileSync } from "node:child_process";
+ import { existsSync, mkdirSync, rmSync, symlinkSync, readlinkSync, readFileSync, readdirSync, writeFileSync, renameSync, realpathSync } from "node:fs";
+ import { homedir } from "node:os";
+ import { join, resolve } from "node:path";
++import { pathToFileURL } from "node:url";
+ 
+ const REPO = resolve(process.argv[1], "..", "..");
+ 
+@@ -183,6 +184,62 @@ function releasePluginBridges(releaseRoot) {
+   return out;
+ }
+ 
++// ── Bridge pruner (dl-13727) ────────────────────────────────────────────────
++// Recognize a dashboard extension bridge by CANONICAL PACKAGE IDENTITY, not by
++// path substring. The stale July-26 bridge lived under /private/tmp/... (no
++// "pi-agent-dashboard"/"pi-dashboard-prod" substring), so the old substring-only
++// predicate never pruned it — sessions kept loading the pre-receipt tool. Both
++// the stale AND the release extension declare name
++// "@blackbelt-technology/pi-dashboard-extension", so identity recognizes both.
++// Identity is authoritative for EXISTING paths; the legacy substring heuristic is
++// a fallback ONLY for paths that are missing/unreadable (cannot be identified).
++const DASHBOARD_EXTENSION_IDENTITY = "@blackbelt-technology/pi-dashboard-extension";
++
++// 'yes'     = existing path whose package.json name IS the canonical dashboard extension
++// 'no'      = existing path that is a DIFFERENT package (preserve it — identity authoritative)
++// 'unknown' = path missing/unreadable -> caller falls back to the legacy substring heuristic
++export function dashboardExtIdentity(p, readFile = (fp) => readFileSync(fp, "utf8")) {
++  try {
++    const pj = JSON.parse(readFile(join(p, "package.json")));
++    return pj && pj.name === DASHBOARD_EXTENSION_IDENTITY ? "yes" : "no";
++  } catch { return "unknown"; }
++}
++
++export function isDashboardBridge(p, readFile) {
++  if (typeof p !== "string") return false;
++  if (!(p.startsWith("/") || /^[a-zA-Z]:[\\/]/.test(p))) return false;
++  if (!/packages[\\/]extension\/?$/.test(p)) return false;
++  const id = dashboardExtIdentity(p, readFile);
++  if (id === "yes") return true;
++  if (id === "no") return false; // existing DIFFERENT package -> preserve
++  return p.includes("pi-agent-dashboard") || p.includes("pi-dashboard-prod"); // missing -> legacy fallback
++}
++
++// Pure plan: given the current `packages` array + the release target, return
++// { kept, removed }. Prunes every dashboard bridge that is not the target, keeps
++// everything else, and guarantees the target is present EXACTLY ONCE (a
++// pre-existing duplicate of the target collapses to one; an absent target is
++// appended). dl-13727 control #2.
++export function planPackages(pkgs, target, readFile) {
++  const removed = pkgs.filter((p) => isDashboardBridge(p, readFile) && p !== target);
++  // Keep non-dashboard entries as-is; collapse any target duplicates to a single
++  // occurrence (first position wins) so re-running the plan is idempotent.
++  const kept = [];
++  let targetSeen = false;
++  for (const p of pkgs) {
++    if (p === target) {
++      if (targetSeen) continue; // drop duplicate target occurrences
++      targetSeen = true;
++      kept.push(p);
++    } else if (!isDashboardBridge(p, readFile)) {
++      kept.push(p);
++    }
++    // else: a non-target dashboard bridge -> pruned (already in `removed`)
++  }
++  if (!targetSeen) kept.push(target);
++  return { kept, removed };
++}
++
+ function registerBridge(a) {
+   // JAIL-ISOLATION (X11-a): registerBridge writes the operator's REAL
+   // ~/.pi/agent/settings.json. An isolated/jail build (--prod-root != the real
+@@ -218,14 +275,10 @@ function registerBridge(a) {
+   try { releaseRoot = realpathSync(currentLink); } catch { releaseRoot = currentLink; }
+   const target = join(releaseRoot, "packages", "extension");
+   const pkgs = Array.isArray(settings.packages) ? settings.packages : [];
+-  const isDashboardBridge = (p) =>
+-    typeof p === "string" &&
+-    (p.startsWith("/") || /^[a-zA-Z]:[\\/]/.test(p)) &&
+-    /packages[\\/]extension\/?$/.test(p) &&
+-    (p.includes("pi-agent-dashboard") || p.includes("pi-dashboard-prod"));
+-  const removed = pkgs.filter((p) => isDashboardBridge(p) && p !== target);
+-  const kept = pkgs.filter((p) => !isDashboardBridge(p) || p === target);
+-  if (!kept.includes(target)) kept.push(target);
++  // dl-13727: prune stale dashboard bridges by canonical package identity (with a
++  // legacy substring fallback for missing/unreadable paths) + keep the release
++  // target exactly once. See isDashboardBridge/planPackages at module scope.
++  const { kept, removed } = planPackages(pkgs, target);
+   settings.packages = kept;
+   // X11-b: pin the RELEASE plugin-bridge(s) in dashboardPluginBridges + prune stale
+   // dev-tree / non-release dashboard-* entries (same D6 treatment as the main bridge).
+@@ -277,4 +330,8 @@ function main() {
+   }
+ }
+ 
+-main();
++// Run the deploy ONLY when invoked directly (node scripts/deploy.mjs …), never
++// on import. This lets the pure helpers above (dashboardExtIdentity /
++// isDashboardBridge / planPackages) be unit-tested without executing a deploy.
++// dl-13727.
++if (import.meta.url === pathToFileURL(process.argv[1]).href) main();
+diff --git a/vitest.config.ts b/vitest.config.ts
+index 50fa438..bbeeb03 100644
+--- a/vitest.config.ts
++++ b/vitest.config.ts
+@@ -19,6 +19,10 @@ export default defineConfig({
+       "packages/flows-plugin",
+       "packages/flows-anthropic-bridge-plugin",
+       "packages/voice-input-plugin",
++      // scripts/ carries a narrow vitest project (deploy-bridge-registrar.test.mjs
++      // only); the sibling deploy-bridge-isolation.test.mjs is a standalone node
++      // script, excluded by that project's include glob.
++      "scripts",
+       // NOTE: packages/electron is intentionally NOT included here — it has
+       // pre-existing orphaned tests that depend on ambient PATH/mocks never
+       // wired up. Offline-packages tests are runnable via

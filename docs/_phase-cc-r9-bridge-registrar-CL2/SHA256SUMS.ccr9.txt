@@ -1,0 +1,6 @@
+a6e7067825211494ea44e1ba9382ce9bf91af79e528cce96823c4a9431e3994d  ./APPLY-ROLLBACK-PLAN.md
+63c92b65ddb15e23649b4c0dd3731ebfd73f3ac8f231bba0dac7a1698efdb812  ./README.md
+76292c1d2d4fe0a5836e24419f1d67bfb3747ecbc9e42f74ac742d5b938905cb  ./tests/code-fix.diff
+27050c1aae4562c2e871897a80fc5acf9373e4b65402af343d53433285743312  ./tests/existing-isolation-test-22-green.log
+d2772178b53c0dd2c093ddbae87b8a077f2361162b6254d50c343ffd8466f2b3  ./tests/registrar-tests-GREEN.log
+9bcc639aed9846d991cc79318a7dd91a00aace7b33af06d16a3b548b50a05290  ./tests/registrar-tests-RED-prefix-baseline.log
