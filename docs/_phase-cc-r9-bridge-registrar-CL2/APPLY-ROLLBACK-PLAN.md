@@ -9,7 +9,8 @@ performed. Every command below is for a later, Lane-gated live action.
 stay live and recovery became a second manual action (a §23 violation — rollback must be
 automatic). r12 makes APPLY **one self-contained transaction**: rollback is a **callable
 hash-bound procedure defined before apply**, and any failure (registrar / post-verify / receipt)
-**auto-invokes** it, emits an `applyFAIL` + `rollback` receipt, **proves final bytes+mode == PRE**,
+**auto-invokes** it, ATTEMPTS an `applyFAIL` + `rollback` receipt (best-effort — a missing/invalid
+required receipt ⇒ evidence-incomplete exit 3), **proves final bytes+mode == PRE**,
 then exits nonzero. The `e6ae9b9` code/tests are unchanged and immutable; docs-only.
 
 **r11 (dl-13823/dl-13824):** hard-fail executable verifiers, clean-exact-e6 precondition, PRE
@@ -19,7 +20,7 @@ schema — all retained below.
 ## Ownership
 The live apply is a **LANE-gated action executed by the CommsLayer driver (or Lane)** —
 NOT read-only Pete. Pete is the **verifier only**: Pete re-derives own-hand and reviews this
-plan + the emitted receipts; Pete does not run the apply. All "execute" steps below are for the
+plan + any emitted receipts; Pete does not run the apply. All "execute" steps below are for the
 CommsLayer/Lane operator.
 
 ## What the fix changes
@@ -72,8 +73,9 @@ echo "PRECOND OK: bound to e6 deploy.mjs ($E6_DEPLOY_BLOB)"
 
 ## APPLY — one self-contained transaction (auto-rollback on ANY failure; HELD)
 Run the whole block **under bash** (it uses `PIPESTATUS`). On registrar OR post-verify OR
-receipt-sink failure the transaction **automatically** calls `rollback()`, emits an `applyFAIL` +
-`rollback` receipt, proves final bytes+mode == PRE, and exits nonzero. Rollback is never a manual
+receipt-sink failure the transaction **automatically** calls `rollback()`, ATTEMPTS an `applyFAIL` +
+`rollback` receipt (best-effort — a missing/invalid required receipt ⇒ evidence-incomplete exit 3),
+proves final bytes+mode == PRE, and exits nonzero. Rollback is never a manual
 second step (§23).
 
 **Exit codes** (STATE — restored-to-PRE — is tracked SEPARATELY from EVIDENCE — required receipts
@@ -279,7 +281,7 @@ unrelated-state restoration, not merely the masked subset.
 | `failed_checks[]` | the specific failed assertions (empty on PASS) |
 
 (registrar-fail before the verifier runs: a minimal `{phase:"apply",result:"FAIL",reason,ts_utc}`
-receipt is emitted by `fail_apply`.)
+receipt is ATTEMPTED (best-effort) by `fail_apply`.)
 
 **rollback receipt** (`$S.rollback-receipt-<UTC>.json`): `phase, ts_utc, reason, restored_sha,
 pre_sha, restored_mode, pre_mode, result`. `result=PASS` iff `restored_sha === pre_sha` AND
