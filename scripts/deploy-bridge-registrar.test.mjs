@@ -1,9 +1,12 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isDashboardBridge, planPackages, dashboardExtIdentity } from "./deploy.mjs";
+
+const DEPLOY_ABS = join(dirname(fileURLToPath(import.meta.url)), "deploy.mjs");
 
 /**
  * dl-13727 — bridge-pruner canonical-identity recognition (5 controls).
@@ -134,5 +137,52 @@ describe("bridge pruner — 5 controls (dl-13727)", () => {
     expect(second.kept).toEqual(first.kept);                              // stable
     expect(second.removed).toEqual([]);                                   // nothing left to prune
     expect(second.kept.filter((x) => x === REL211_ext).length).toBe(1);   // target still exactly once
+  });
+});
+
+// ── Gap 1 (dl-13803): the module must be IMPORTABLE without running a deploy.
+//    Pre-fix, `const REPO = resolve(process.argv[1], ...)` ran at load and threw
+//    ERR_INVALID_ARG_TYPE under `import()`/`node -e` (argv[1] undefined). The fix
+//    derives REPO from import.meta.url and guards main() against undefined argv[1]. ──
+describe("importability (dl-13803)", () => {
+  it("[able-to-fail] dynamic import via `node -e` does NOT throw (RED pre-fix: ERR_INVALID_ARG_TYPE)", () => {
+    // Spawn a child that dynamic-imports deploy.mjs with argv[1] undefined (the
+    // exact case that threw pre-fix). Exit 0 = imported cleanly, main() did not run.
+    const code =
+      `import(${JSON.stringify(DEPLOY_ABS)})` +
+      `.then((m) => { if (typeof m.planPackages !== "function") { console.error("MISSING_EXPORT"); process.exit(2); } process.exit(0); })` +
+      `.catch((e) => { console.error(e && e.code ? e.code : String(e)); process.exit(1); })`;
+    let exit = 0;
+    let out = "";
+    try {
+      out = execFileSync("node", ["-e", code], { encoding: "utf8", stdio: "pipe" });
+    } catch (err) {
+      exit = err.status ?? 1;
+      out = (err.stdout ?? "") + (err.stderr ?? "");
+    }
+    expect(exit).toBe(0);                       // RED pre-fix: exit 1 with ERR_INVALID_ARG_TYPE
+    expect(out).not.toMatch(/ERR_INVALID_ARG_TYPE/);
+  });
+
+  it("plain ESM static import (this test's own import) exposes the pure helpers", () => {
+    // This file already `import { isDashboardBridge, planPackages, dashboardExtIdentity }`
+    // at top — reaching here proves the static import path works and main() did not run.
+    expect(typeof isDashboardBridge).toBe("function");
+    expect(typeof planPackages).toBe("function");
+    expect(typeof dashboardExtIdentity).toBe("function");
+  });
+
+  it("direct invocation still runs main() (no-arg -> die '--ref required')", () => {
+    let exit = 0;
+    let out = "";
+    try {
+      out = execFileSync("node", [DEPLOY_ABS], { encoding: "utf8", stdio: "pipe" });
+    } catch (err) {
+      exit = err.status ?? 1;
+      out = (err.stdout ?? "") + (err.stderr ?? "");
+    }
+    // main() ran and hit the --ref guard (die => non-zero, with the FATAL message).
+    expect(exit).not.toBe(0);
+    expect(out).toMatch(/--ref <git-ref> is required/);
   });
 });

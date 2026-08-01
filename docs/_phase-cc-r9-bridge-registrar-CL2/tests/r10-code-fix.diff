@@ -1,0 +1,60 @@
+diff --git a/scripts/deploy.mjs b/scripts/deploy.mjs
+index 4434832..60db298 100644
+--- a/scripts/deploy.mjs
++++ b/scripts/deploy.mjs
+@@ -28,9 +28,13 @@ import { execFileSync } from "node:child_process";
+ import { existsSync, mkdirSync, rmSync, symlinkSync, readlinkSync, readFileSync, readdirSync, writeFileSync, renameSync, realpathSync } from "node:fs";
+ import { homedir } from "node:os";
+ import { join, resolve } from "node:path";
+-import { pathToFileURL } from "node:url";
++import { pathToFileURL, fileURLToPath } from "node:url";
+ 
+-const REPO = resolve(process.argv[1], "..", "..");
++// Derive the repo root from the module's OWN url (always defined), NOT
++// process.argv[1] (undefined under `import()` / `node -e` -> ERR_INVALID_ARG_TYPE
++// at load, which made the module non-importable). Same value as before for a
++// direct `node scripts/deploy.mjs` invocation. dl-13803.
++const REPO = resolve(fileURLToPath(import.meta.url), "..", "..");
+ 
+ function parseArgs(argv) {
+   const a = { prodRoot: join(homedir(), ".pi-dashboard-prod"), restart: false, rollback: false, skipTests: false, skipClientBuild: false, archiveGuard: true, registerBridgeOnly: false, noBridgeRegister: false };
+@@ -331,7 +335,9 @@ function main() {
+ }
+ 
+ // Run the deploy ONLY when invoked directly (node scripts/deploy.mjs …), never
+-// on import. This lets the pure helpers above (dashboardExtIdentity /
+-// isDashboardBridge / planPackages) be unit-tested without executing a deploy.
+-// dl-13727.
+-if (import.meta.url === pathToFileURL(process.argv[1]).href) main();
++// on import. `process.argv[1]` is undefined under `import()`/`node -e`, so guard
++// against it before pathToFileURL (which throws on undefined). This lets the pure
++// helpers (dashboardExtIdentity / isDashboardBridge / planPackages) be imported
++// without executing a deploy. dl-13727 / dl-13803.
++const invoked = process.argv[1];
++if (invoked && import.meta.url === pathToFileURL(invoked).href) main();
+diff --git a/scripts/vitest.config.ts b/scripts/vitest.config.ts
+index fbe635d..aba97c4 100644
+--- a/scripts/vitest.config.ts
++++ b/scripts/vitest.config.ts
+@@ -1,14 +1,17 @@
+ import { defineConfig } from "vitest/config";
+ 
+ /**
+- * Vitest project for scripts/ tests. Narrow include so ONLY the vitest-style
+- * registrar test is swept in — the sibling `deploy-bridge-isolation.test.mjs` is
+- * a standalone node script (run via `node scripts/deploy-bridge-isolation.test.mjs`)
++ * Vitest project for scripts/ tests. Explicit include (not a glob) so ONLY the
++ * vitest-style tests are swept in — the sibling `deploy-bridge-isolation.test.mjs`
++ * is a standalone node script (run via `node scripts/deploy-bridge-isolation.test.mjs`)
+  * and must NOT be collected by vitest.
+  */
+ export default defineConfig({
+   test: {
+-    include: ["deploy-bridge-registrar.test.mjs"],
++    include: [
++      "deploy-bridge-registrar.test.mjs",
++      "deploy-register-bridge-e2e.test.mjs",
++    ],
+     environment: "node",
+     pool: "forks",
+     maxWorkers: 1,

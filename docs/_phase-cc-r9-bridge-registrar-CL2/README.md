@@ -72,5 +72,41 @@ restore `.bak-<UTC>`. CRITICAL: only fixes FUTURE session loads; already-running
 ## tsc/lint
 Unaffected: 10 pre-existing errors (unchanged floor), zero in deploy.mjs or the new files.
 
+## r10 amendment (dl-13803 / dl-13808) — three gaps closed on top of cf70b17
+Pete BLOCKED cf70b17 with three real gaps; the r9 body above stands (identity-first
+pruning + pure plan + RED2→GREEN8 + isolation22 + honest holds). r10 fixes:
+
+- **Gap 1 — importability (was falsely claimed).** `scripts/deploy.mjs:33`
+  `REPO = resolve(process.argv[1], …)` ran at load and threw `ERR_INVALID_ARG_TYPE`
+  under `import()`/`node -e` (argv[1] undefined) — it only imported under vitest. Fixed:
+  REPO now derives from `resolve(fileURLToPath(import.meta.url), "..", "..")` (same repo
+  root for direct invocation), and the `main()` guard is argv[1]-undefined-safe
+  (`const invoked = process.argv[1]; if (invoked && import.meta.url === pathToFileURL(invoked).href) main();`).
+  Control tests (`deploy-bridge-registrar.test.mjs` "importability (dl-13803)"): dynamic
+  `node -e` import exits 0 (no throw); static ESM import exposes the helpers; direct
+  invocation still runs main() (no-arg → die "--ref required"). RED baseline
+  (`tests/r10-importability-RED-baseline.log`): on the pre-fix `process.argv[1]` REPO the
+  dynamic-import control FAILS with ERR_INVALID_ARG_TYPE (1 failed / 10 passed).
+
+- **Gap 2 — e2e `--register-bridge-only` integration** (`scripts/deploy-register-bridge-e2e.test.mjs`).
+  Temp-HOME test invoking the REAL registerBridge via `execFileSync`. Asserts, against the
+  WRITTEN `$HOME/.pi/agent/settings.json`: stale canonical bridge pruned; release extension
+  present EXACTLY ONCE using a REALPATH-NORMALIZED expected target (macOS `/var/folders`→
+  `/private/var/folders`); unrelated `@other/ext` + `npm:something` preserved; non-dashboard
+  top-level keys (`defaultModel`/`thinking`) byte-unchanged; release plugin-bridge pinned +
+  stale `dashboard-*` repinned + non-dashboard `keepme` preserved. A SECOND run is
+  BYTE-IDENTICAL (idempotent). The operator's REAL `~/.pi/agent/settings.json` is proven
+  untouched (mtime before === after). 13/13 GREEN (`tests/r10-scripts-GREEN-13.log`).
+
+- **Gap 3 — apply/rollback plan rewritten** (`APPLY-ROLLBACK-PLAN.md`): LANE/Comms-owned
+  (Pete verifier only), hash-bound (sha256 pre/post + backup-hash===pre), same-directory-temp
+  atomic apply AND rollback (`renameSync` same-fs, NOT plain `cp`), JSON-validated, full
+  unrelated-state proof (masked-diff on apply, full-hash-equality on rollback). Critical
+  no-running-session-repair note retained.
+
+Holds honored: no live settings mutation (stale /tmp bridge still present in real settings —
+verified read-only), no `--register-bridge-only` against the real prod-root, no restart/deploy/
+push. deploy.mjs-only (no door-2/3 interleave). r10 logs: `tests/r10-*`.
+
 ## Manifest
-`SHA256SUMS.ccr9.txt` — SHA-256 over all evidence files (self-verifying).
+`SHA256SUMS.ccr9.txt` — SHA-256 over all evidence files (self-verifying; regenerated at r10).

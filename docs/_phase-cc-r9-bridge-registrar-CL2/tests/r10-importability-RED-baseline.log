@@ -1,0 +1,33 @@
+
+ RUN  v4.1.5 /Users/vdrobkov/build1-picker-cand-e0-wt
+
+ ❯ |scripts| deploy-bridge-registrar.test.mjs (11 tests | 1 failed) 223ms
+     × [able-to-fail] dynamic import via `node -e` does NOT throw (RED pre-fix: ERR_INVALID_ARG_TYPE) 119ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  |scripts| deploy-bridge-registrar.test.mjs > importability (dl-13803) > [able-to-fail] dynamic import via `node -e` does NOT throw (RED pre-fix: ERR_INVALID_ARG_TYPE)
+AssertionError: expected 1 to be +0 // Object.is equality
+
+- Expected
++ Received
+
+- 0
++ 1
+
+ ❯ deploy-bridge-registrar.test.mjs:163:18
+    161|       out = (err.stdout ?? "") + (err.stderr ?? "");
+    162|     }
+    163|     expect(exit).toBe(0);                       // RED pre-fix: exit 1…
+       |                  ^
+    164|     expect(out).not.toMatch(/ERR_INVALID_ARG_TYPE/);
+    165|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 10 passed (11)
+   Start at  10:12:55
+   Duration  431ms (transform 30ms, setup 0ms, import 42ms, tests 223ms, environment 0ms)
+

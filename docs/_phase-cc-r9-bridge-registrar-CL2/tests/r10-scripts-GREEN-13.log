@@ -1,0 +1,9 @@
+
+ RUN  v4.1.5 /Users/vdrobkov/build1-picker-cand-e0-wt
+
+
+ Test Files  2 passed (2)
+      Tests  13 passed (13)
+   Start at  10:16:18
+   Duration  866ms (transform 40ms, setup 0ms, import 60ms, tests 535ms, environment 0ms)
+

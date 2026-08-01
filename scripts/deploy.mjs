@@ -28,9 +28,13 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, rmSync, symlinkSync, readlinkSync, readFileSync, readdirSync, writeFileSync, renameSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { pathToFileURL, fileURLToPath } from "node:url";
 
-const REPO = resolve(process.argv[1], "..", "..");
+// Derive the repo root from the module's OWN url (always defined), NOT
+// process.argv[1] (undefined under `import()` / `node -e` -> ERR_INVALID_ARG_TYPE
+// at load, which made the module non-importable). Same value as before for a
+// direct `node scripts/deploy.mjs` invocation. dl-13803.
+const REPO = resolve(fileURLToPath(import.meta.url), "..", "..");
 
 function parseArgs(argv) {
   const a = { prodRoot: join(homedir(), ".pi-dashboard-prod"), restart: false, rollback: false, skipTests: false, skipClientBuild: false, archiveGuard: true, registerBridgeOnly: false, noBridgeRegister: false };
@@ -331,7 +335,9 @@ function main() {
 }
 
 // Run the deploy ONLY when invoked directly (node scripts/deploy.mjs …), never
-// on import. This lets the pure helpers above (dashboardExtIdentity /
-// isDashboardBridge / planPackages) be unit-tested without executing a deploy.
-// dl-13727.
-if (import.meta.url === pathToFileURL(process.argv[1]).href) main();
+// on import. `process.argv[1]` is undefined under `import()`/`node -e`, so guard
+// against it before pathToFileURL (which throws on undefined). This lets the pure
+// helpers (dashboardExtIdentity / isDashboardBridge / planPackages) be imported
+// without executing a deploy. dl-13727 / dl-13803.
+const invoked = process.argv[1];
+if (invoked && import.meta.url === pathToFileURL(invoked).href) main();
