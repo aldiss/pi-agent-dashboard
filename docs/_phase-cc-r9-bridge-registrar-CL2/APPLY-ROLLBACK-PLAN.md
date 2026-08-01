@@ -76,10 +76,12 @@ receipt-sink failure the transaction **automatically** calls `rollback()`, emits
 `rollback` receipt, proves final bytes+mode == PRE, and exits nonzero. Rollback is never a manual
 second step (§23).
 
-**Exit codes:** `0` apply verified PASS · `1` apply failed, auto-rolled-back to PRE (clean) · `2`
-apply failed AND rollback could NOT restore PRE — MANUAL INTERVENTION · `3` apply failed, PRE
-bytes+mode restored (settings safe) but a rollback-receipt SINK failure left evidence incomplete —
-investigate.
+**Exit codes** (STATE — restored-to-PRE — is tracked SEPARATELY from EVIDENCE — required receipts
+present+valid): `0` apply verified PASS · `1` apply failed, settings auto-rolled-back to PRE AND all
+required receipts present+valid (clean) · `2` apply failed, settings NOT restored to PRE — MANUAL
+INTERVENTION · `3` apply failed, settings restored to PRE (safe) BUT evidence incomplete — a required
+receipt (apply and/or rollback) is missing — investigate. A missing receipt is NEVER reported as "OK"
+and an absent path is NEVER named as a present receipt.
 ```bash
 #!/usr/bin/env bash
 # Run under BASH — PIPESTATUS is a bashism; producer+tee statuses are captured IMMEDIATELY.
@@ -120,19 +122,31 @@ rollback() {
   return 0
 }
 
-# --- fail_apply(): the automatic failure path. applyFAIL receipt + auto-rollback + accurate wording + exit. ---
+# --- receipt_valid(): a receipt path is a REAL, JSON-valid file. Never treat an absent path as a receipt. ---
+receipt_valid() { [ -f "$1" ] && node -e 'JSON.parse(require("fs").readFileSync(process.argv[1],"utf8"))' "$1" >/dev/null 2>&1; }
+
+# --- fail_apply(): automatic failure path. STATE (restored-to-PRE) is separate from EVIDENCE (receipts present). ---
 fail_apply() {
   reason="$1"
-  # keep the verifier's detailed FAIL receipt if it already wrote one; else best-effort a minimal applyFAIL
-  [ -f "$RECEIPT_APPLY" ] || printf '{"phase":"apply","result":"FAIL","reason":"%s","ts_utc":"%s"}\n' \
+  # best-effort the apply receipt if the verifier did not already write a valid one (a sink failure -> stays absent)
+  receipt_valid "$RECEIPT_APPLY" || printf '{"phase":"apply","result":"FAIL","reason":"%s","ts_utc":"%s"}\n' \
     "$reason" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$RECEIPT_APPLY" 2>/dev/null || true
   echo "APPLY FAILED ($reason) — auto-rolling back"
   rollback "$reason"; rc=$?
-  case "$rc" in
-    0) echo "AUTO-ROLLBACK OK: final bytes+mode == PRE (receipts: $RECEIPT_APPLY + $RECEIPT_RB)"; exit 1 ;;
-    3) echo "AUTO-ROLLBACK: PRE bytes+mode RESTORED (settings safe), but the rollback receipt could NOT be written (sink failure) — evidence incomplete; investigate"; exit 3 ;;
-    *) echo "AUTO-ROLLBACK FAILED: settings NOT restored to PRE — MANUAL INTERVENTION; backup=$BAK"; exit 2 ;;
-  esac
+  # STATE axis: rc 0/3 = restored to PRE; rc 1/2 = NOT restored -> manual.
+  if [ "$rc" != "0" ] && [ "$rc" != "3" ]; then
+    echo "AUTO-ROLLBACK FAILED: settings NOT restored to PRE — MANUAL INTERVENTION; backup=$BAK"; exit 2
+  fi
+  # EVIDENCE axis: which required receipts are actually present+valid (never name an absent path as a receipt).
+  ar=no; receipt_valid "$RECEIPT_APPLY" && ar=yes
+  rr=no; [ "$rc" = "0" ] && receipt_valid "$RECEIPT_RB" && rr=yes
+  if [ "$ar" = yes ] && [ "$rr" = yes ]; then
+    echo "AUTO-ROLLBACK OK: settings restored to PRE; receipts: $RECEIPT_APPLY + $RECEIPT_RB"; exit 1
+  fi
+  # restored, but >=1 required receipt missing -> EVIDENCE-INCOMPLETE, never OK; name only present receipts.
+  missing=""; [ "$ar" = no ] && missing="$missing apply-receipt(NOT-written)"; [ "$rr" = no ] && missing="$missing rollback-receipt(NOT-written)"
+  present=""; [ "$ar" = yes ] && present="$present apply:$RECEIPT_APPLY"; [ "$rr" = yes ] && present="$present rollback:$RECEIPT_RB"
+  echo "AUTO-ROLLBACK EVIDENCE-INCOMPLETE: settings restored to PRE (safe), but missing required receipt(s):$missing; present receipt(s):$present"; exit 3
 }
 
 # 3. immediate fire-time PRE recheck (still nothing applied -> plain abort)
@@ -232,10 +246,13 @@ unrelated-state restoration, not merely the masked subset.
   (sha + mode), and the overall run exits nonzero — with the happy path (PASS, no rollback,
   exit 0) shown alongside.
 - `tests/r13-receipt-sink-controls-proof.txt` — two receipt-SINK able-to-fail controls (the receipt
-  path pre-created as a directory so `tee` fails): (1) an apply-receipt sink failure on an otherwise
-  PASSing apply triggers `fail_apply` → auto-rollback to PRE → exit 1; (2) a rollback-receipt sink
-  failure exits LOUD nonzero (3) with accurate "PRE restored (safe) but receipt sink failed" wording
-  — never a false `AUTO-ROLLBACK OK`. Both exercise the real extracted wrapper.
+  path pre-created as a directory so `tee` fails), each asserting STATE separately from EVIDENCE:
+  (1) an apply-receipt sink failure on an otherwise PASSing apply → `fail_apply` → auto-rollback to PRE
+  → **exit 3 evidence-incomplete** (asserts: no "OK", apply receipt ABSENT, rollback receipt VALID,
+  final PRE bytes+mode, distinct nonzero); (2) a rollback-receipt sink failure → **exit 3
+  evidence-incomplete** (asserts: no "OK", apply receipt VALID, rollback receipt ABSENT, final PRE
+  bytes+mode). Neither is ever a false `AUTO-ROLLBACK OK`; only present paths are named as receipts.
+  Both exercise the real extracted wrapper.
 ## Receipt schema (all phases; result=FAIL ⇒ the transaction already auto-rolled-back + exited nonzero)
 **apply receipt** (`$S.apply-receipt-<UTC>.json`):
 | field | meaning |

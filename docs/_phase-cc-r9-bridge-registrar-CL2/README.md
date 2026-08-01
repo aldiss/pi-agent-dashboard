@@ -141,5 +141,15 @@ table (0/1/2/3). **Code (`e6ae9b9`) unchanged** (docs-only). Own-hand proofs (re
 HOME): `tests/r12-forced-failure-autorollback-proof.txt` (regenerated) + `tests/r13-receipt-sink-
 controls-proof.txt` (2 able-to-fail sink controls). See `tests/r13-shell-hardening-note.md`.
 
+## r14 — evidence classification: STATE separate from EVIDENCE (docs-only; dl-13852)
+r13 conflated two things: its apply-receipt-sink control printed "AUTO-ROLLBACK OK" / exit 1 and
+named the ABSENT apply-receipt path as a present receipt. r14 separates STATE (settings restored to
+PRE) from EVIDENCE (required receipts present+valid): a `receipt_valid()` helper gates naming; rc
+0/3=restored, 1/2=not→exit 2; when restored, exit 1 "OK" ONLY if BOTH receipts present+valid, else
+exit 3 EVIDENCE-INCOMPLETE (never "OK", only present paths named as receipts). Exit-code table
+updated. **Code (`e6ae9b9`) unchanged** (docs-only). Own-hand proofs with explicit assertions (real
+wrapper, temp HOME): CASE A exit0 / CASE B exit1-OK-both-receipts / CONTROL 1 exit3-apply-absent /
+CONTROL 2 exit3-rollback-absent — all ALL-PASS. See `tests/r14-evidence-classification-note.md`.
+
 ## Manifest
-`SHA256SUMS.ccr9.txt` — SHA-256 over all evidence files (self-verifying; regenerated at r13).
+`SHA256SUMS.ccr9.txt` — SHA-256 over all evidence files (self-verifying; regenerated at r14).

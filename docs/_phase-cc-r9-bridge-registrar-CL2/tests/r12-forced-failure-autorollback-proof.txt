@@ -1,17 +1,20 @@
-r12 forced-failure AUTO-ROLLBACK proof (regenerated against the r13 wrapper: explicit bash + PIPESTATUS).
-Real apply block extracted verbatim from APPLY-ROLLBACK-PLAN.md; temp HOME; only the registrar faked.
-Generated: 2026-08-01T09:24:51Z
+r14 evidence-classification proof — STATE (restored-to-PRE) asserted SEPARATELY from EVIDENCE (receipts).
+Real apply block extracted verbatim from the plan; temp HOME; only registrar faked; live never touched.
+Generated: 2026-08-01T09:37:53Z
 
-=== CASE A: correct post-state -> PASS, no rollback, exit 0 ===
-      "result": "PASS",
-    APPLY VERIFIED PASS — receipt: /tmp/cl3-r13/home/.pi/agent/settings.json.apply-receipt-A1.json (no rollback needed)
-    >>> exit=0
-    >>> settings != PRE
+=== CASE A (correct apply) — expect PASS exit 0 ===
+      APPLY VERIFIED PASS — receipt: /tmp/cl3-r14/home/.pi/agent/settings.json.apply-receipt-A1.json (no rollback needed)
+      exit=0
+      ASSERT PASS: exit==0
+      ASSERT PASS: output has APPLY VERIFIED PASS
+      CASE A: ALL-PASS
 
-=== CASE B: bad post-state -> post-verify FAIL -> AUTO-ROLLBACK -> restored==PRE -> exit 1 ===
-      "result": "FAIL",
-    APPLY FAILED (postverify-failed) — auto-rolling back
-    {"phase":"rollback","ts_utc":"2026-08-01T09:24:51Z","reason":"postverify-failed","restored_sha":"2178fdd754b4810a8d30b9f1cb90d5cef20e6d04ef0317195c861c202060023a","pre_sha":"2178fdd754b4810a8d30b9f1cb90d5cef20e6d04ef0317195c861c202060023a","restored_mode":"644","pre_mode":"644","result":"PASS"}
-    AUTO-ROLLBACK OK: final bytes+mode == PRE (receipts: /tmp/cl3-r13/home/.pi/agent/settings.json.apply-receipt-B1.json + /tmp/cl3-r13/home/.pi/agent/settings.json.rollback-receipt-B1.json)
-    >>> exit=1
-    >>> settings == PRE (byte-identical)
+=== CASE B (bad apply) — expect AUTO-ROLLBACK OK, both receipts valid, settings==PRE, exit 1 ===
+      AUTO-ROLLBACK OK: settings restored to PRE; receipts: /tmp/cl3-r14/home/.pi/agent/settings.json.apply-receipt-B1.json + /tmp/cl3-r14/home/.pi/agent/settings.json.rollback-receipt-B1.json
+      exit=1
+      ASSERT PASS: exit==1
+      ASSERT PASS: output has AUTO-ROLLBACK OK
+      ASSERT PASS: apply receipt VALID
+      ASSERT PASS: rollback receipt VALID
+      ASSERT PASS: settings==PRE
+      CASE B: ALL-PASS
