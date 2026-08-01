@@ -151,5 +151,15 @@ updated. **Code (`e6ae9b9`) unchanged** (docs-only). Own-hand proofs with explic
 wrapper, temp HOME): CASE A exit0 / CASE B exit1-OK-both-receipts / CONTROL 1 exit3-apply-absent /
 CONTROL 2 exit3-rollback-absent — all ALL-PASS. See `tests/r14-evidence-classification-note.md`.
 
+## r15 — receipt contract + rollback producer+sink status (docs-only; dl-13863/dl-13859)
+Fix only dl-13859. Two changes: (1) top **receipt contract** — receipts are ATTEMPTED (best-effort),
+NOT guaranteed; a missing/invalid required receipt ⇒ PRE-restored / evidence-incomplete / exit 3
+(never OK). (2) `rollback()` now requires **BOTH** the `printf` producer (`RB_SINK[0]`) AND the `tee`
+sink (`RB_SINK[1]`) to return zero before the rollback receipt counts (was checking only the tee).
+**Code (`e6ae9b9`) unchanged** (docs-only). Own-hand proof adds CONTROL 3 (producer-nonzero /
+tee-zero → `ROLLBACK RECEIPT NOT COMPLETE (producer=1 sink=0)` → exit 3, receipt not credited, PRE);
+A/B/C1/C2 regenerated + ALL-PASS. See `tests/r15-receipt-contract-note.md` +
+`tests/r15-producer-status-control-proof.txt`.
+
 ## Manifest
-`SHA256SUMS.ccr9.txt` — SHA-256 over all evidence files (self-verifying; regenerated at r14).
+`SHA256SUMS.ccr9.txt` — SHA-256 over all evidence files (self-verifying; regenerated at r15).

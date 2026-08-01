@@ -1,0 +1,15 @@
+r15 producer-status control — rollback-receipt PRODUCER forced nonzero while the tee SINK succeeds.
+rollback() now requires BOTH producer and sink zero, so the rollback receipt is NOT credited. Real wrapper; temp HOME.
+Generated: 2026-08-01T09:52:32Z
+
+=== CONTROL 3 — producer-nonzero / tee-zero -> exit 3 evidence-incomplete ===
+      ROLLBACK RECEIPT NOT COMPLETE (producer=1 sink=0); settings bytes+mode ARE restored to PRE
+      AUTO-ROLLBACK EVIDENCE-INCOMPLETE: settings restored to PRE (safe), but missing required receipt(s): rollback-receipt(NOT-written); present receipt(s): apply:/tmp/cl3-r15/home/.pi/agent/settings.json.apply-receipt-CTRL3.json
+      exit=3
+      ASSERT PASS: exit==3 (distinct nonzero)
+      ASSERT PASS: NO false AUTO-ROLLBACK OK
+      ASSERT PASS: rollback NOT COMPLETE (producer flagged)
+      ASSERT PASS: rollback receipt NOT credited (absent/empty)
+      ASSERT PASS: apply receipt VALID
+      ASSERT PASS: settings restored == PRE bytes+mode
+      CONTROL 3: ALL-PASS

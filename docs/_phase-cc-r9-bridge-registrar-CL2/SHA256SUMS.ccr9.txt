@@ -1,5 +1,5 @@
-ba933aa50f6d5e5f6caf3ad9b9486ef68de03045244beec405dd9d63f69277fe  ./APPLY-ROLLBACK-PLAN.md
-806b8a2813cd8185daf4169cfb3ff61ab9f39766bd6835a74f3523e75dad4ca3  ./README.md
+f409f039cc4dacb05e64cd29e71b7e289adbacf0797c94875d07cea3bd4ff71c  ./APPLY-ROLLBACK-PLAN.md
+3889ce437217fc09183687b08840cd596a82c46a6ff5b4cdde80f25dc869402f  ./README.md
 76292c1d2d4fe0a5836e24419f1d67bfb3747ecbc9e42f74ac742d5b938905cb  ./tests/code-fix.diff
 27050c1aae4562c2e871897a80fc5acf9373e4b65402af343d53433285743312  ./tests/existing-isolation-test-22-green.log
 fd59195ba9b63657e838dcba2582395e22fa6d43d415bd7603f1805499c20e78  ./tests/r10-code-fix.diff
@@ -10,9 +10,11 @@ e3a43be74da6811a5dbf02596a5f11a2fb7aaf8662faa247f009ed97cb753c14  ./tests/r10-sc
 477e12960ddd505ca389a35a939a160439638af1c00cd8ec7b11c9f70358cbc5  ./tests/r11-plan-hardening-note.md
 43fd415879f814570153191e7407a4d24f26448237724602637c628374f896e4  ./tests/r11-verifier-hardfail-proof.txt
 103907284e2f2cdbbd82a70617147722619c9cd1e35d6f7fc900a85752465122  ./tests/r12-autorollback-note.md
-9f007163fcac8416523d55f68b14645d62287961209dfa6d3759eb713f383436  ./tests/r12-forced-failure-autorollback-proof.txt
-a896af6f1b0c4a91c4d44e302b2db371cea6f7f60690669b1722f3ba4b0e7580  ./tests/r13-receipt-sink-controls-proof.txt
+2ffbcee049b846aa64a69d3e67ddfb6e73b7c272fcd5e6eee71baac5fae71d27  ./tests/r12-forced-failure-autorollback-proof.txt
+bb3ee001592149ad61bf2df4b56d64d9bfc3f3cadfb89b3777a19f088646247f  ./tests/r13-receipt-sink-controls-proof.txt
 7effeb59283870fba7b80bb8a7e245e43783c7c2638fb126fd30fb32650f1935  ./tests/r13-shell-hardening-note.md
 209fb6dcb7d42ce0b79a6a04f9e901da4686f268021e875538ecfdb51ce50cff  ./tests/r14-evidence-classification-note.md
+ca8e10b156ffbdeada995f990e6c59f3d86dcdb91478d6440c2212610ce288f0  ./tests/r15-producer-status-control-proof.txt
+8f08d1934dcf3157a1827dd60ab6b531f3550acc1e12e1e2ff28b46d01992d8d  ./tests/r15-receipt-contract-note.md
 d2772178b53c0dd2c093ddbae87b8a077f2361162b6254d50c343ffd8466f2b3  ./tests/registrar-tests-GREEN.log
 9bcc639aed9846d991cc79318a7dd91a00aace7b33af06d16a3b548b50a05290  ./tests/registrar-tests-RED-prefix-baseline.log

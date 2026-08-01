@@ -82,6 +82,11 @@ required receipts present+valid (clean) · `2` apply failed, settings NOT restor
 INTERVENTION · `3` apply failed, settings restored to PRE (safe) BUT evidence incomplete — a required
 receipt (apply and/or rollback) is missing — investigate. A missing receipt is NEVER reported as "OK"
 and an absent path is NEVER named as a present receipt.
+
+**Receipt contract:** receipts are ATTEMPTED (best-effort), NOT guaranteed — a producer *or* sink
+failure can leave a required receipt missing or invalid. A missing/invalid required receipt ⇒ settings
+restored to PRE / evidence-incomplete / **exit 3** (never "OK"). In `rollback()`, BOTH the receipt
+producer AND the sink must return zero before the rollback receipt counts as complete.
 ```bash
 #!/usr/bin/env bash
 # Run under BASH — PIPESTATUS is a bashism; producer+tee statuses are captured IMMEDIATELY.
@@ -113,12 +118,13 @@ rollback() {
   # bytes+mode NOT restored -> hard fail (settings are NOT at PRE; never claim safe)
   { [ "$RB_SHA" = "$PRE_SHA" ] && [ "$RB_MODE" = "$PRE_MODE" ]; } \
     || { echo "ROLLBACK FAIL: settings NOT restored to PRE (sha/mode mismatch)"; return 1; }
-  # bytes+mode ARE restored; write the rollback receipt and capture the SINK status IMMEDIATELY
+  # bytes+mode ARE restored; write the rollback receipt and capture BOTH producer+sink status IMMEDIATELY
   printf '{"phase":"rollback","ts_utc":"%s","reason":"%s","restored_sha":"%s","pre_sha":"%s","restored_mode":"%s","pre_mode":"%s","result":"PASS"}\n' \
     "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$reason" "$RB_SHA" "$PRE_SHA" "$RB_MODE" "$PRE_MODE" | tee "$RECEIPT_RB"
-  RB_SINK=("${PIPESTATUS[@]}")                        # [0]=printf [1]=tee (receipt sink) — capture NOW
-  [ "${RB_SINK[1]}" = "0" ] \
-    || { echo "ROLLBACK RECEIPT SINK FAILED (settings bytes+mode ARE restored to PRE)"; return 3; }
+  RB_SINK=("${PIPESTATUS[@]}")                        # [0]=printf (producer) [1]=tee (sink) — capture NOW
+  # the rollback receipt is COMPLETE only if BOTH the producer AND the sink returned zero
+  { [ "${RB_SINK[0]}" = "0" ] && [ "${RB_SINK[1]}" = "0" ]; } \
+    || { echo "ROLLBACK RECEIPT NOT COMPLETE (producer=${RB_SINK[0]} sink=${RB_SINK[1]}); settings bytes+mode ARE restored to PRE"; return 3; }
   return 0
 }
 
@@ -253,6 +259,10 @@ unrelated-state restoration, not merely the masked subset.
   evidence-incomplete** (asserts: no "OK", apply receipt VALID, rollback receipt ABSENT, final PRE
   bytes+mode). Neither is ever a false `AUTO-ROLLBACK OK`; only present paths are named as receipts.
   Both exercise the real extracted wrapper.
+- `tests/r15-producer-status-control-proof.txt` — a producer-nonzero / tee-zero control: the rollback
+  receipt PRODUCER is forced to exit nonzero while the tee sink succeeds. Because `rollback()` now
+  requires BOTH producer and sink zero, the rollback receipt is NOT credited → **exit 3** (asserts: no
+  "OK", settings restored to PRE bytes+mode, rollback receipt NOT credited, distinct nonzero).
 ## Receipt schema (all phases; result=FAIL ⇒ the transaction already auto-rolled-back + exited nonzero)
 **apply receipt** (`$S.apply-receipt-<UTC>.json`):
 | field | meaning |

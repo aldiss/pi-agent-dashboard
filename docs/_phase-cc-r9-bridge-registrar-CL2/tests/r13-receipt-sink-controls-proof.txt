@@ -1,25 +1,25 @@
-r13/r14 receipt-SINK able-to-fail controls — receipt path pre-created as a DIRECTORY so tee fails.
-STATE asserted separately from EVIDENCE. Real wrapper; temp HOME; live never touched.
-Generated: 2026-08-01T09:37:16Z
+r13/r14 receipt-SINK able-to-fail controls (regenerated against r15). STATE asserted separately from EVIDENCE.
+Generated: 2026-08-01T09:52:30Z
 
-=== CONTROL 1 — APPLY-receipt sink fails on a PASSing apply -> exit 3 evidence-incomplete ===
-      AUTO-ROLLBACK EVIDENCE-INCOMPLETE: settings restored to PRE (safe), but missing required receipt(s): apply-receipt(NOT-written); present receipt(s): rollback:/tmp/cl3-r14/home/.pi/agent/settings.json.rollback-receipt-CTRL1.json
+=== CONTROL 1 — apply-receipt sink fails on PASSing apply -> exit 3 ===
+      AUTO-ROLLBACK EVIDENCE-INCOMPLETE: settings restored to PRE (safe), but missing required receipt(s): apply-receipt(NOT-written); present receipt(s): rollback:/tmp/cl3-r15/home/.pi/agent/settings.json.rollback-receipt-CTRL1.json
       exit=3
-      ASSERT PASS: exit==3 (distinct nonzero)
-      ASSERT PASS: NO false AUTO-ROLLBACK OK
-      ASSERT PASS: output has EVIDENCE-INCOMPLETE
-      ASSERT PASS: apply receipt ABSENT (not valid)
+      ASSERT PASS: exit==3
+      ASSERT PASS: no AUTO-ROLLBACK OK
+      ASSERT PASS: EVIDENCE-INCOMPLETE
+      ASSERT PASS: apply receipt ABSENT
       ASSERT PASS: rollback receipt VALID
-      ASSERT PASS: final settings==PRE (bytes+mode)
+      ASSERT PASS: settings==PRE bytes+mode
       CONTROL 1: ALL-PASS
 
-=== CONTROL 2 — ROLLBACK-receipt sink fails -> exit 3 evidence-incomplete ===
-      AUTO-ROLLBACK EVIDENCE-INCOMPLETE: settings restored to PRE (safe), but missing required receipt(s): rollback-receipt(NOT-written); present receipt(s): apply:/tmp/cl3-r14/home/.pi/agent/settings.json.apply-receipt-CTRL2.json
+=== CONTROL 2 — rollback-receipt sink fails -> exit 3 ===
+      ROLLBACK RECEIPT NOT COMPLETE (producer=0 sink=1); settings bytes+mode ARE restored to PRE
+      AUTO-ROLLBACK EVIDENCE-INCOMPLETE: settings restored to PRE (safe), but missing required receipt(s): rollback-receipt(NOT-written); present receipt(s): apply:/tmp/cl3-r15/home/.pi/agent/settings.json.apply-receipt-CTRL2.json
       exit=3
-      ASSERT PASS: exit==3 (distinct nonzero)
-      ASSERT PASS: NO false AUTO-ROLLBACK OK
-      ASSERT PASS: output has EVIDENCE-INCOMPLETE
+      ASSERT PASS: exit==3
+      ASSERT PASS: no AUTO-ROLLBACK OK
+      ASSERT PASS: EVIDENCE-INCOMPLETE
       ASSERT PASS: apply receipt VALID
-      ASSERT PASS: rollback receipt ABSENT (not valid)
-      ASSERT PASS: final settings==PRE (bytes+mode)
+      ASSERT PASS: rollback receipt ABSENT
+      ASSERT PASS: settings==PRE bytes+mode
       CONTROL 2: ALL-PASS
