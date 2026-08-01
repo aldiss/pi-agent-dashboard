@@ -32,6 +32,16 @@
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { emitSpoolEntry } from "./spool-emit.js";
+import {
+  CaptureStore,
+  parseServedEngine,
+  parseFallbackTaken,
+  parseDecodedDurationMs,
+  parseProcessingLatencyMs,
+  parseAudioEnergy,
+  parseEchoedRequestId,
+  isValidCorrelationId,
+} from "./capture-store.js";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 
 interface PluginConfig {
@@ -65,6 +75,10 @@ const DEFAULTS: PluginConfig = {
 interface PluginState {
   cfg: PluginConfig;
   sidecarHealthy: boolean;
+  // dl-13765 req 2: bounded server-side capture records, keyed by correlationId,
+  // so a failure survives the page. Built ONLY from server observations + the
+  // coarse client linkage the ENUM gate already accepts. Never unbounded.
+  captureStore: CaptureStore;
 }
 
 export type SessionNameResolver = (sessionId: string) => string | undefined;
@@ -190,6 +204,7 @@ export async function register(
   const state: PluginState = {
     cfg: { ...DEFAULTS, ...configOverrides },
     sidecarHealthy: false,
+    captureStore: new CaptureStore(),
   };
 
   // Initial probe + background poll. Polling here is best-effort; the
@@ -308,6 +323,30 @@ export async function register(
     return reply.code(200).send({ healthy: true, engine: state.cfg.engine });
   });
 
+  // dl-13765 req 2: bounded read of the server-side capture records so a failure
+  // survives the page. This reuses the EXISTING plugin route prefix — no new
+  // public product surface. The store is bounded (≤200 records, coarse fields
+  // only), so the response is inherently bounded. `?correlationId=<uuid>` returns
+  // one joined record; no query returns the bounded list (newest first). Numbers/
+  // enums/booleans/timestamps only — nothing reconstructable as audio.
+  fastify.get<{ Querystring: { correlationId?: string } }>(
+    "/api/plugins/voice-input/capture-records",
+    async (request, reply) => {
+      const id = request.query?.correlationId;
+      if (typeof id === "string" && id.length > 0) {
+        if (!isValidCorrelationId(id)) {
+          return reply.code(400).send({ error: "invalid correlationId" });
+        }
+        const record = state.captureStore.get(id);
+        return reply.code(200).send({ record: record ?? null });
+      }
+      return reply.code(200).send({
+        records: state.captureStore.list(),
+        count: state.captureStore.size(),
+      });
+    }
+  );
+
   // Privacy-safe client PHASE telemetry (T2/T3). The pre-POST short-blob path
   // NEVER reaches /transcribe (nothing is sent), so without this endpoint the
   // operator's actual failure mode — a sub-1KiB blob — emits nothing at all.
@@ -361,6 +400,21 @@ export async function register(
       stopReason: isRecordingStopped ? stopReason : "unknown",
       correlationId: isRecordingStopped ? correlationId : "unknown",
     });
+    // dl-13765 req 2: on the already-validated `recording-stopped` linkage, stamp
+    // the bounded store so the server-observed transcribe record joins the client
+    // stop. Only the coarse fields the ENUM gate already validated are recorded —
+    // the gate is NOT widened. Wrapped/swallowed: never affects the 204.
+    if (isRecordingStopped) {
+      try {
+        state.captureStore.record(correlationId, {
+          clientStopReason: stopReason,
+          clientStopSizeClass: sizeClass,
+          clientStopSeen: true,
+        });
+      } catch {
+        /* observational */
+      }
+    }
     return reply.code(204).send();
   });
 
@@ -392,6 +446,23 @@ export async function register(
       correlationId: stopMetadata.correlationId,
     };
 
+    // dl-13765: persist server-OBSERVED capture fields keyed by correlationId,
+    // bounded, so a failure survives the page. Observational: this records what
+    // the server already sees; it never changes the proxy behaviour or timing,
+    // and a store failure can never affect the response (wrapped, swallowed).
+    const advertisedEngine = state.cfg.engine;
+    const recordCapture = (fields: Record<string, unknown>): void => {
+      try {
+        if (!isValidCorrelationId(stopMetadata.correlationId)) return;
+        state.captureStore.record(stopMetadata.correlationId, {
+          advertisedEngine,
+          ...fields,
+        });
+      } catch {
+        /* observational — a store failure must never affect the response */
+      }
+    };
+
     if (!state.sidecarHealthy) {
       void probeSidecar(state);
       logIdentity(request, {
@@ -399,6 +470,11 @@ export async function register(
         outcome: "sidecar-unhealthy",
         status: 503,
         ...proxyLogIdentity,
+      });
+      recordCapture({
+        serverOutcome: "sidecar-unhealthy",
+        httpStatus: 503,
+        http502Class: "app-sidecar-unhealthy",
       });
       return reply.code(503).send({ error: "Voice sidecar unavailable" });
     }
@@ -422,6 +498,11 @@ export async function register(
               "content-type":
                 (request.headers["content-type"] as string) ||
                 "application/octet-stream",
+              // dl-13792 req 4: forward the correlation id so the sidecar echoes it
+              // and its energy/duration record joins the captureAttemptId chain.
+              ...(isValidCorrelationId(stopMetadata.correlationId)
+                ? { "x-voice-request-id": stopMetadata.correlationId }
+                : {}),
             },
             // Node 20+ undici accepts Buffer; cast as BodyInit-compatible via unknown
             // (Buffer is a Uint8Array subclass; DOM lib's BodyInit doesn't include
@@ -433,6 +514,72 @@ export async function register(
         clearTimeout(timer);
         const respBody = await upstream.text();
         const ct = upstream.headers.get("content-type");
+
+        // dl-13792: extract the sidecar's now-correct observation fields ONCE.
+        // servedEngine/fallbackTaken are the sidecar's authoritative report; the
+        // TRUE decoded duration is decoded_duration_ms (PCM-derived); the legacy
+        // duration_ms is processing latency (kept, honestly labelled). Energy is a
+        // bounded numbers-only aggregate. The sidecar echoes request_id for the join.
+        const sidecarServedEngine = parseServedEngine(respBody);
+        const sidecarFallbackExplicit = parseFallbackTaken(respBody);
+        // dl-13862: fallback is TRI-STATE — known-true / known-false / unknown.
+        // The bug this fixes: the old boolean collapse turned "we have no idea"
+        // into a confident `false` (a reader would conclude the requested engine
+        // served it and stop looking at exactly the point the real cause might be).
+        //
+        //  - explicit fallback_taken present (true OR false) → KNOWN, taken verbatim.
+        //  - no explicit flag, served engine KNOWN → the served≠advertised heuristic
+        //    may run (it has a real input to reason from) → KNOWN.
+        //  - no explicit flag, served UNKNOWN (the legacy engine_used-only body) →
+        //    UNKNOWN. The heuristic MUST NOT run — it has no input worth reasoning
+        //    from — so we assert nothing, NEVER `false`.
+        let sidecarFallbackKnown: boolean;
+        let sidecarFallback: boolean; // meaningful ONLY when sidecarFallbackKnown
+        if (sidecarFallbackExplicit !== null) {
+          sidecarFallbackKnown = true;
+          sidecarFallback = sidecarFallbackExplicit; // explicit true OR false, verbatim
+        } else if (sidecarServedEngine !== "unknown") {
+          sidecarFallbackKnown = true;
+          sidecarFallback = sidecarServedEngine !== advertisedEngine; // heuristic on a KNOWN served
+        } else {
+          sidecarFallbackKnown = false;
+          sidecarFallback = false; // placeholder ONLY; NOT stored while unknown (see below)
+        }
+        const decodedDurationMs = parseDecodedDurationMs(respBody); // TRUE audio length or null
+        const processingLatencyMs = parseProcessingLatencyMs(respBody); // legacy latency or null
+        const energy = parseAudioEnergy(respBody);
+        const echoedRequestId = parseEchoedRequestId(respBody);
+        const sidecarFields: Record<string, unknown> = {
+          servedEngine: sidecarServedEngine,
+          // dl-13862 tri-state, mirroring the decodedDurationMs/decodedDurationKnown
+          // idiom already in this file. `fallbackTakenKnown` is ALWAYS stored and is
+          // the authoritative signal. A boolean has NO out-of-band sentinel (unlike
+          // decodedDurationMs=-1), so storing `false` for the unknown case WOULD BE
+          // the very defect — therefore `fallbackTaken` is present ONLY when known
+          // and ABSENT when unknown. That makes the three states three distinct
+          // observable outcomes in the STORED record: known-true (fallbackTaken:true,
+          // fallbackTakenKnown:true), known-false (fallbackTaken:false,
+          // fallbackTakenKnown:true), unknown (fallbackTaken ABSENT,
+          // fallbackTakenKnown:false). Explicit false is NEVER merged into unknown.
+          fallbackTakenKnown: sidecarFallbackKnown,
+          ...(sidecarFallbackKnown ? { fallbackTaken: sidecarFallback } : {}),
+          // TRUE decoded duration (PCM). -1 sentinel only when the sidecar did not
+          // report it (older build); never the processing-latency value.
+          decodedDurationMs: decodedDurationMs ?? -1,
+          decodedDurationKnown: decodedDurationMs !== null,
+          // Legacy processing latency, kept + honestly labelled — NEVER audio length.
+          processingLatencyMs: processingLatencyMs ?? -1,
+          // dl-13792 req 4 (server half): server-side aggregate energy IS now
+          // measured — in the SIDECAR, at the decode point — and forwarded here.
+          serverEnergyMeasured: energy.energyPeak !== null || energy.energyFramesTotal !== null,
+          serverEnergySource: "sidecar-pcm",
+          energyPeak: energy.energyPeak ?? -1,
+          energyRms: energy.energyRms ?? -1,
+          energyFramesAbove: energy.energyFramesAbove ?? -1,
+          energyFramesTotal: energy.energyFramesTotal ?? -1,
+          sidecarEchoedRequestId: echoedRequestId,
+          sidecarRequestIdJoins: echoedRequestId === stopMetadata.correlationId && echoedRequestId.length > 0,
+        };
 
         // DEFENSE-IN-DEPTH (criterion 9 at the proxy). The fixed sidecar
         // guarantees 200 ⟹ non-empty, but dl-12467 leaves "which sidecar ran"
@@ -451,6 +598,19 @@ export async function register(
               ...proxyLogIdentity,
               upstreamStatus: upstream.status,
               bodySizeClass: sizeClass(respBody.length),
+            });
+            // dl-13792: served engine + fallback + TRUE decoded duration + energy
+            // now come from the sidecar (correct layer). Even on a 2xx-empty the
+            // sidecar reports them. This 502 is an APPLICATION 502
+            // (EmptyUpstreamTranscript), distinct from an edge/proxy 502.
+            recordCapture({
+              serverOutcome: "upstream-2xx-empty",
+              serverOutcomeReason: verdict.reason,
+              httpStatus: 502,
+              http502Class: "app-2xx-empty",
+              upstreamStatus: upstream.status,
+              ...sidecarFields,
+              upstreamBodySizeClass: sizeClass(respBody.length),
             });
             return reply.code(502).send({
               error:
@@ -475,6 +635,19 @@ export async function register(
             ...proxyLogIdentity,
             bodySizeClass: sizeClass(respBody.length),
           });
+          // dl-13769: the retention incident followed SUCCESSFUL transcripts, so
+          // the success path is recorded too. dl-13792: served engine + fallback +
+          // TRUE decoded duration + energy now come from the sidecar (correct
+          // layer) — this is where "which engine served" and "did the upload carry
+          // acoustic energy / how long was it" are finally answered.
+          recordCapture({
+            serverOutcome: "ok",
+            httpStatus: upstream.status,
+            http502Class: "none",
+            upstreamStatus: upstream.status,
+            ...sidecarFields,
+            upstreamBodySizeClass: sizeClass(respBody.length),
+          });
           reply.code(upstream.status);
           if (ct) reply.header("content-type", ct);
           return reply.send(respBody);
@@ -489,6 +662,14 @@ export async function register(
           ...proxyLogIdentity,
           bodySizeClass: sizeClass(respBody.length),
         });
+        recordCapture({
+          serverOutcome: "upstream-non-2xx",
+          httpStatus: upstream.status,
+          http502Class: "none",
+          upstreamStatus: upstream.status,
+          ...sidecarFields,
+          upstreamBodySizeClass: sizeClass(respBody.length),
+        });
         reply.code(upstream.status);
         if (ct) reply.header("content-type", ct);
         return reply.send(respBody);
@@ -502,6 +683,13 @@ export async function register(
         outcome: "proxy-exception",
         status: 502,
         ...proxyLogIdentity,
+      });
+      // dl-13765 req 5: an APPLICATION 502 from a proxy exception (the fetch to
+      // the sidecar threw — network/abort/timeout). Distinct from an edge 502.
+      recordCapture({
+        serverOutcome: "proxy-exception",
+        httpStatus: 502,
+        http502Class: "app-proxy-exception",
       });
       return reply.code(502).send({ error: `Sidecar proxy failed: ${msg}` });
     }
