@@ -120,5 +120,16 @@ hash+mode hard-fail, and a machine-checkable **receipt** schema. **Code (`e6ae9b
 See `tests/r11-plan-hardening-note.md`. Holds unchanged (no live apply/restart/deploy/push, no
 door-2/3 interleave, no running-session repair).
 
+## r12 — automatic rollback on failure (docs-only; dl-13827)
+Pete BLOCK dl-13827: the r11 plan's post-verify failure path only *printed* `roll back now` and
+exited 1 — it never invoked rollback, so a rejected write could stay live (§23 requires automatic
+rollback). r12 makes APPLY one self-contained transaction: `rollback()` is a callable hash-bound
+atomic procedure defined before apply, and any post-mutation failure (registrar / post-verify)
+auto-invokes `fail_apply()` → applyFAIL + rollback receipts → proves final bytes+mode == PRE →
+exits nonzero. **Code (`e6ae9b9`) unchanged** (docs-only). Own-hand proof exercising the REAL
+wrapper (apply block extracted verbatim, temp HOME, only registrar faked):
+`tests/r12-forced-failure-autorollback-proof.txt` (CASE A GOOD→PASS/exit 0/no-rollback; CASE B
+BAD→auto-rollback→restored==PRE→exit 1). See `tests/r12-autorollback-note.md`.
+
 ## Manifest
-`SHA256SUMS.ccr9.txt` — SHA-256 over all evidence files (self-verifying; regenerated at r11).
+`SHA256SUMS.ccr9.txt` — SHA-256 over all evidence files (self-verifying; regenerated at r12).
