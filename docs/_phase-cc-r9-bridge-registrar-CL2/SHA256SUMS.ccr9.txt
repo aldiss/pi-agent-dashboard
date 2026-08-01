@@ -1,5 +1,5 @@
-e5f05f386e90ea1fc60acc6312e2fb093e19934520e3def6c99382a07159da69  ./APPLY-ROLLBACK-PLAN.md
-b1fbbadbde0b4452d031409308c4f0e72dbce81da3f4f0349aab200988614043  ./README.md
+b1fedcbec21ac26c55cd55b34dfcfa68f92c51b7c2c0d685fa711899aac64fa6  ./APPLY-ROLLBACK-PLAN.md
+c0e5b2bd170c1e95627259aabdfe17e5854ee558f616bbf377ed2bce52cf39b4  ./README.md
 76292c1d2d4fe0a5836e24419f1d67bfb3747ecbc9e42f74ac742d5b938905cb  ./tests/code-fix.diff
 27050c1aae4562c2e871897a80fc5acf9373e4b65402af343d53433285743312  ./tests/existing-isolation-test-22-green.log
 fd59195ba9b63657e838dcba2582395e22fa6d43d415bd7603f1805499c20e78  ./tests/r10-code-fix.diff
@@ -7,5 +7,7 @@ aae4cc48d7340d3df471dc68cccc39c6ceb34c336935f2149eea3d6cc637a1ed  ./tests/r10-im
 cec61040d6134468a5ec4c232fc3e8d844a82387f15a4b2082204f5bf8d7a6c7  ./tests/r10-importability-RED-baseline.log
 df94e275691508cfee3b6b5262e77cdbe9c2ce94be7adf52fef41d04aaf4c55b  ./tests/r10-isolation-22-green.log
 e3a43be74da6811a5dbf02596a5f11a2fb7aaf8662faa247f009ed97cb753c14  ./tests/r10-scripts-GREEN-13.log
+477e12960ddd505ca389a35a939a160439638af1c00cd8ec7b11c9f70358cbc5  ./tests/r11-plan-hardening-note.md
+43fd415879f814570153191e7407a4d24f26448237724602637c628374f896e4  ./tests/r11-verifier-hardfail-proof.txt
 d2772178b53c0dd2c093ddbae87b8a077f2361162b6254d50c343ffd8466f2b3  ./tests/registrar-tests-GREEN.log
 9bcc639aed9846d991cc79318a7dd91a00aace7b33af06d16a3b548b50a05290  ./tests/registrar-tests-RED-prefix-baseline.log

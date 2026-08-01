@@ -1,0 +1,11 @@
+r11 verifier hard-fail proof — post-apply check logic run against a TEMP fixture (never live settings).
+Logic is byte-identical to APPLY-ROLLBACK-PLAN.md step 5, with S/BAK/releaseRoot injected via env for isolation.
+Generated: 2026-08-01T08:41:01Z
+
+=== CASE A: correct post-state (stale pruned, release once, plugin exact, unrelated identical) — expect PASS exit 0 ===
+{"result":"PASS","failed_checks":[]}
+exit=0
+
+=== CASE B: stale /tmp bridge STILL present — expect FAIL exit 1 ===
+{"result":"FAIL","failed_checks":["stale","target"]}
+exit=1

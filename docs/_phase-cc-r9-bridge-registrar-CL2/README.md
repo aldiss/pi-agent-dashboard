@@ -108,5 +108,17 @@ Holds honored: no live settings mutation (stale /tmp bridge still present in rea
 verified read-only), no `--register-bridge-only` against the real prod-root, no restart/deploy/
 push. deploy.mjs-only (no door-2/3 interleave). r10 logs: `tests/r10-*`.
 
+## r11 — plan hardening (docs-only; dl-13823 / dl-13824)
+Pete BLOCK dl-13823 / Lane release dl-13824: the r10 plan's verifiers only *printed* booleans
+/ `echo OK || echo MISMATCH` and exited 0 on mismatch. r11 makes every pre-, post-apply and
+rollback condition **executable and nonzero-exit on mismatch**, binds the apply to the exact
+clean `e6ae9b9` code (deploy.mjs blob `60db298…`), adds an immediate fire-time `PRE_SHA`/`PRE_MODE`
+recheck, asserts exact target/plugin/unrelated-state/mode, sibling-temp atomic rollback with
+hash+mode hard-fail, and a machine-checkable **receipt** schema. **Code (`e6ae9b9`) unchanged**
+(`git diff e6ae9b9 -- scripts/` empty) — docs-only. Own-hand proof the verifier hard-fails:
+`tests/r11-verifier-hardfail-proof.txt` (correct → PASS/exit 0; stale-present → FAIL/exit 1).
+See `tests/r11-plan-hardening-note.md`. Holds unchanged (no live apply/restart/deploy/push, no
+door-2/3 interleave, no running-session repair).
+
 ## Manifest
-`SHA256SUMS.ccr9.txt` — SHA-256 over all evidence files (self-verifying; regenerated at r10).
+`SHA256SUMS.ccr9.txt` — SHA-256 over all evidence files (self-verifying; regenerated at r11).
