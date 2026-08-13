@@ -20,6 +20,7 @@
  */
 import React from "react";
 import { ActiveOperatorSurfaces } from "./ActiveOperatorSurfaces.js";
+import { ExternalSessionsPanel } from "./ExternalSessionsPanel.js";
 
 export function DashboardPage(): React.ReactElement {
   return (
@@ -33,6 +34,9 @@ export function DashboardPage(): React.ReactElement {
         </h1>
         <div className="rounded border border-[var(--border-primary)] bg-[var(--bg-secondary)] overflow-hidden">
           <ActiveOperatorSurfaces />
+        </div>
+        <div className="mt-4 rounded border border-[var(--border-primary)] bg-[var(--bg-secondary)] overflow-hidden">
+          <ExternalSessionsPanel />
         </div>
       </div>
     </div>
