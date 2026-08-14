@@ -69,6 +69,14 @@ export interface SessionManager {
  */
 export interface SessionManagerDeps {
   deriveAudience?: (name: string | undefined, source: string | undefined) => Audience;
+  /**
+   * Driver-registry membership, injected from `driver-registry.ts` for the same
+   * reason as `deriveAudience`: the pure manager stays FS-decoupled while still
+   * stamping at the register/restore choke-point, so a LIVE bridge-registered
+   * driver is tiered correctly without waiting for a rescan.
+   * See change: classify-drivers-from-registry.
+   */
+  isRegisteredDriver?: (name: string | undefined) => boolean;
 }
 
 export function createMemorySessionManager(deps: SessionManagerDeps = {}): SessionManager {
@@ -124,6 +132,10 @@ export function createMemorySessionManager(deps: SessionManagerDeps = {}): Sessi
         // choke-point so LIVE bridge-registered sessions buffer from the first
         // operator turn. See change: operator-voice-buffer-hold.
         audience: deps.deriveAudience?.(params.name ?? existing?.name, params.source),
+        // Stamp driver-ness at the same choke-point so a live driver lands in the
+        // drivers tier from its first registration, not only after a rescan.
+        // See change: classify-drivers-from-registry.
+        isRegisteredDriver: deps.isRegisteredDriver?.(params.name ?? existing?.name),
         status: "active",
         model: params.model,
         thinkingLevel: params.thinkingLevel,
@@ -150,6 +162,11 @@ export function createMemorySessionManager(deps: SessionManagerDeps = {}): Sessi
       // (sessionFromMeta); keep that value. See change: operator-voice-buffer-hold.
       if (session.audience === undefined && deps.deriveAudience) {
         session.audience = deps.deriveAudience(session.name, session.source);
+      }
+      // Same for driver-ness: a reconstructed session carries none, a scanned one
+      // already has it (sessionFromMeta). See change: classify-drivers-from-registry.
+      if (session.isRegisteredDriver === undefined && deps.isRegisteredDriver) {
+        session.isRegisteredDriver = deps.isRegisteredDriver(session.name);
       }
       sessions.set(session.id, session);
     },

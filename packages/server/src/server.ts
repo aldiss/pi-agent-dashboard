@@ -14,6 +14,7 @@ import { createMemoryEventStore, type EventStore } from "./memory-event-store.js
 import { createHeapWatchdog } from "./heap-watchdog.js";
 import { createMemorySessionManager, type SessionManager } from "./memory-session-manager.js";
 import { audienceRegistry } from "./audience-registry.js";
+import { driverRegistry } from "./driver-registry.js";
 import { createPiGateway, type PiGateway } from "./pi-gateway.js";
 import { failLoudCrash } from "./fail-loud.js";
 import { createBrowserGateway, type BrowserGateway } from "./browser-gateway.js";
@@ -399,7 +400,10 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
   }
 
   const preferencesStore = createPreferencesStore();
-  const sessionManager = createMemorySessionManager({ deriveAudience: audienceRegistry.deriveSessionAudience });
+  const sessionManager = createMemorySessionManager({
+    deriveAudience: audienceRegistry.deriveSessionAudience,
+    isRegisteredDriver: driverRegistry.isRegisteredDriver,
+  });
   /** Per-session push preferences (in-memory, resets on restart). */
   const pushPrefsMap = new Map<string, PushPrefs>();
   const metaPersistence = createMetaPersistence();
@@ -758,6 +762,21 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
       if (nextAudience !== s.audience) {
         sessionManager.update(s.id, { audience: nextAudience });
         browserGateway.broadcastSessionUpdated(s.id, { audience: nextAudience });
+      }
+    }
+  });
+
+  // Sister fold for the driver registry: `spawn-driver` writes a driver's row at
+  // spawn, which may land AFTER the session registers with the dashboard. On a
+  // registry CHANGE, re-derive `isRegisteredDriver` for known sessions so the
+  // sidebar tier self-corrects `other → drivers` without a restart.
+  // See change: classify-drivers-from-registry.
+  driverRegistry.startWatch(() => {
+    for (const s of sessionManager.listAll()) {
+      const nextIsDriver = driverRegistry.isRegisteredDriver(s.name);
+      if (nextIsDriver !== s.isRegisteredDriver) {
+        sessionManager.update(s.id, { isRegisteredDriver: nextIsDriver });
+        browserGateway.broadcastSessionUpdated(s.id, { isRegisteredDriver: nextIsDriver });
       }
     }
   });

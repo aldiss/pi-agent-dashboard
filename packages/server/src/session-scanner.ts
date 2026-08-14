@@ -11,6 +11,7 @@ import { type SessionMeta, metaPath, readSessionMeta, writeSessionMeta } from "@
 import { condenseForFirstMessage } from "@blackbelt-technology/pi-dashboard-shared/skill-block-parser.js";
 import type { Audience } from "@blackbelt-technology/pi-dashboard-shared/vendor/operator-voice-audience/audience-core.js";
 import { audienceRegistry } from "./audience-registry.js";
+import { driverRegistry } from "./driver-registry.js";
 import { extractSessionStats } from "./session-stats-reader.js";
 
 function getSessionsDir(): string {
@@ -62,6 +63,7 @@ export function sessionFromMeta(
   meta: SessionMeta,
   startedAt: number,
   deriveAudience: (name: string | undefined, source: string | undefined) => Audience = audienceRegistry.deriveSessionAudience,
+  isDriver: (name: string | undefined) => boolean = driverRegistry.isRegisteredDriver,
 ): DashboardSession {
   const source = (meta.source as SessionSource) ?? "tui";
   return {
@@ -75,6 +77,9 @@ export function sessionFromMeta(
     // deriver (INTERACTIVE_SOURCES={tui,terminal,zed} — zed included so the start-
     // derive matches the extension's end-stamp). See change: operator-voice-buffer-hold.
     audience: deriveAudience(meta.name, source),
+    // Stamp driver-ness from the authoritative driver registry so the sidebar
+    // tier does not have to guess it from cwd. See change: classify-drivers-from-registry.
+    isRegisteredDriver: isDriver(meta.name),
     // FIX-C3 (Pete row-019f6e9b, dl-8874): a persisted session with `endedAt` set is a
     // GENUINE end — reactivation clears it (register → `endedAt: undefined`; live-
     // rescue + resurrection-sweep → `endedAt: null`, the wire-safe clear), so `endedAt`

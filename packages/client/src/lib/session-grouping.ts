@@ -286,10 +286,19 @@ export const SESSION_TIER_ORDER: ReadonlyArray<SessionTier> = [
 ];
 
 /**
- * Anchored at start-of-name so e.g. `"NotJoan"` does not match. All NINE
+ * Anchored at start-of-name so e.g. `"NotJoan"` does not match. All TEN
  * standing-crew names (Sol fix-cycle-2 N3: Alice + Harry — the iOS-Dispatcher
- * Harry is the 9th seat; Alice is L0.4 standing crew). Kept in sync with the
- * extension's canonical-9 (`audience.ts:STANDING_CREW_NAME_RE`).
+ * Harry is the 9th seat; Alice is L0.4 standing crew. Dawn is the 10th — the
+ * L0.5f recorder seat, ratified 2026-07-30 per AGENTS.md §1, added here
+ * 2026-08-14). Sister to the extension's own name regex
+ * (`audience.ts:STANDING_CREW_NAME_RE`), which is tracked separately.
+ *
+ * Dawn's omission was not cosmetic: her sessions are `source: "tmux"` from
+ * `~/.pi/orchestration-state` (no `nos-cells/`, no `-driver` segment) and her
+ * name carries a single capital, so {@link THEMED_NAME_RE} — which needs two —
+ * missed her too and she fell all the way through to `other`. She is a
+ * positional seat, not a judgment peer, but she is operator-addressed, and this
+ * regex governs where the operator sees her.
  *
  * The trailing negative-lookahead `(?![A-Za-z])` accepts ANY non-letter boundary
  * after the canonical name — hyphen (`Joan-tenure-23`), space + em-dash
@@ -307,7 +316,7 @@ export const SESSION_TIER_ORDER: ReadonlyArray<SessionTier> = [
  * `historicalAudience` (message-filter-classifier.ts), NOT this name regex (G3
  * closed). `classifyTier` now drives SIDEBAR grouping only.
  */
-const STANDING_CREW_NAME_RE = /^(Bert|Joan|Peggy|Lane|Pete|Faye|Don|Alice|Harry)(?![A-Za-z])/i;
+const STANDING_CREW_NAME_RE = /^(Bert|Joan|Peggy|Lane|Pete|Faye|Don|Alice|Harry|Dawn)(?![A-Za-z])/i;
 
 /** Subagent worker by name (e.g. `subagent-worker-3f4a…`). */
 const SUBAGENT_WORKER_NAME_RE = /^subagent-worker-[0-9a-f]/i;
@@ -325,18 +334,21 @@ const THEMED_NAME_RE = /^[A-Z][a-z]+[A-Z][a-z]+/;
  *   1. `name` matches `subagent-worker-…` → `worker`.
  *   2. `sessionFile` path ends `/run-N/session.jsonl` (cell-internal worker) → `worker`.
  *   3. `name` starts with a standing-crew canonical name (Bert / Joan / Peggy /
- *      Lane / Pete / Faye / Don / Alice / Harry — all NINE; Sol fix-cycle-2 N3
- *      added Alice + Harry) anchored at start-of-name → `standing-crew`.
+ *      Lane / Pete / Faye / Don / Alice / Harry / Dawn — all TEN; Sol
+ *      fix-cycle-2 N3 added Alice + Harry, Dawn added 2026-08-14) anchored at
+ *      start-of-name → `standing-crew`.
  *   4. `source === "tui"` → `operator-chat-pane`.
- *   5. `source === "tmux"` AND cwd under `nos-cells/` (or a `-driver` cell-id
- *      outside `/.pi/cells/`) → `drivers`. Keyed on cwd, NOT a themed-name
- *      regex: pi-driver names are often single-word PascalCase (`Vault`,
- *      `Harbor`, `Keystone`) or even absent, which the compound
- *      {@link THEMED_NAME_RE} would miss.
- *   6. `source === "tmux"` AND (name contains `"cell-executor"` OR themed-PascalCase name
+ *   5. `source === "tmux"` AND `isRegisteredDriver` (server-stamped from the
+ *      driver registry) → `drivers`. The AUTHORITATIVE signal; consulted before
+ *      the cwd heuristic below because drivers are spawned into arbitrary
+ *      working directories.
+ *   6. `source === "tmux"` AND cwd under `nos-cells/` (or a `-driver` cell-id
+ *      outside `/.pi/cells/`) → `drivers`. Retained as a FALLBACK for drivers
+ *      the registry does not know about.
+ *   7. `source === "tmux"` AND (name contains `"cell-executor"` OR themed-PascalCase name
  *      combined with a cell-pattern indicator — `"cell"` / `"ephemeral"` / `"l2"` substring
  *      in name, or cwd containing `"/.pi/cells/"`) → `cell-executor`.
- *   7. Else → `other`.
+ *   8. Else → `other`.
  *
  * Matches the AGENTS.md v1.3.1 standing-crew canonical-name discipline + the
  * cell-pattern v0.4 cell-executor naming conventions; sessions that do not
@@ -349,12 +361,23 @@ export function classifyTier(session: DashboardSession): SessionTier {
   if (STANDING_CREW_NAME_RE.test(name)) return "standing-crew";
   if (session.source === "tui") return "operator-chat-pane";
   if (session.source === "tmux") {
-    // pi-drivers (L2 orchestration) live under the operator's nos-cells/ tree
-    // (e.g. .../nos-cells/architect-pair-driver) and are matched BEFORE the
-    // cell-executor rules below. Keyed on cwd — NOT a themed-name regex —
-    // because driver names are often single-word PascalCase (Vault, Harbor,
-    // Keystone) or absent (the arch-diagram-driver tmux peer has no name),
-    // which the compound THEMED_NAME_RE would miss. Distinct from
+    // pi-drivers (L2 orchestration) are identified from the AUTHORITATIVE driver
+    // registry (`cell-driver-registry.json`, written by `spawn-driver` at spawn),
+    // stamped server-side onto `isRegisteredDriver`. This runs BEFORE the cwd
+    // heuristic because drivers are spawned into arbitrary working directories —
+    // Seatwright runs from `~/.pi/orchestration-state`, Branchwright from a plain
+    // product-repo checkout — so no path- or name-shaped rule can catch them.
+    // Ordering is load-bearing: the worker + standing-crew checks above still run
+    // first, so a standing-crew seat that ALSO has a registry row (all nine do)
+    // is never reclassified as a driver.
+    // See change: classify-drivers-from-registry.
+    if (session.isRegisteredDriver) return "drivers";
+
+    // Fallback for a driver the registry does not know about (registered by
+    // another path, or an unreadable registry). Keyed on cwd — NOT a themed-name
+    // regex — because driver names are often single-word PascalCase (Vault,
+    // Harbor, Keystone) or absent (the arch-diagram-driver tmux peer has no
+    // name), which the compound THEMED_NAME_RE would miss. Distinct from
     // cell-executors: drivers are nos-cells/, cell-executors are /.pi/cells/
     // (nos-cells/ ≠ /.pi/cells/). The "-driver" cell-id fallback is guarded so
     // it never swallows a /.pi/cells/ cell-executor.

@@ -179,6 +179,8 @@ describe("classifyTier", () => {
     expect(classifyTier(s({ name: "Faye-tenure-2" }))).toBe("standing-crew");
     expect(classifyTier(s({ name: "Don-tenure-1" }))).toBe("standing-crew");
     expect(classifyTier(s({ name: "Alice" }))).toBe("standing-crew");
+    // Dawn — the 10th seat (L0.5f recorder, ratified 2026-07-30).
+    expect(classifyTier(s({ name: "Dawn" }))).toBe("standing-crew");
   });
 
   it("classifies standing-crew names with a ' — status' suffix (the live dashboard name shape)", () => {
@@ -204,6 +206,7 @@ describe("classifyTier", () => {
     expect(classifyTier(s({ name: "Donna" }))).not.toBe("standing-crew");
     expect(classifyTier(s({ name: "Petersen" }))).not.toBe("standing-crew");
     expect(classifyTier(s({ name: "Bertram" }))).not.toBe("standing-crew");
+    expect(classifyTier(s({ name: "Dawning" }))).not.toBe("standing-crew");
   });
 
   it("classifies TUI sessions as operator-chat-pane (after worker/standing-crew checks)", () => {

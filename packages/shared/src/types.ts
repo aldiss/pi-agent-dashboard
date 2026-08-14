@@ -71,6 +71,20 @@ export interface DashboardSession {
    * See change: operator-voice-buffer-hold.
    */
   audience?: "operator" | "agent" | "unknown";
+  /**
+   * Whether this session is a pi-driver, per the authoritative driver registry
+   * (`~/.pi/orchestration-state/cell-driver-registry.json`, written by
+   * `spawn-driver` at spawn). Server-derived from `name`; re-derived on a
+   * registry CHANGE so a session that registered before its registry row
+   * landed self-corrects. Drives sidebar tier grouping ONLY.
+   *
+   * Drivers are spawned into arbitrary working directories, so the cwd/name
+   * heuristics in `classifyTier` miss them; this is the signal that does not.
+   * Absent (older server / unreadable registry) → the heuristics still apply.
+   * Server-managed — Bridges SHALL NOT send this.
+   * See change: classify-drivers-from-registry.
+   */
+  isRegisteredDriver?: boolean;
   status: SessionStatus;
   model?: string;
   thinkingLevel?: string;
