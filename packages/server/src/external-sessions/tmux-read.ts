@@ -94,19 +94,31 @@ export interface TmuxSessionPane {
 
 /**
  * `list-panes -a` across all sessions on socket pi, one entry per session's
- * first pane: `session_name \t pane_pid`. Returns `[]` on any tmux failure.
+ * first pane: `pane_pid session_name`. Returns `[]` on any tmux failure.
+ *
+ * The delimiter is a SPACE with pane_pid FIRST, deliberately NOT a tab: when
+ * tmux renders `-F` output under a stripped server env (no locale / no TTY, as
+ * the production dashboard is launched), it sanitizes control characters like
+ * TAB to `_`. A tab delimiter therefore silently collapsed every row into one
+ * unparseable field in production (all pane_pids null → every session skipped
+ * → empty panel), even though it worked from an interactive shell. pane_pid is
+ * always leading digits and a space is printable (never sanitized); the session
+ * name is the remainder (and may itself contain spaces), so parse from the left.
  */
 export function listSessions(spawnSync?: SpawnSyncFn): TmuxSessionPane[] {
-  const r = runTmux("list-panes", ["-a", "-F", "#{session_name}\t#{pane_pid}"], spawnSync);
+  const r = runTmux("list-panes", ["-a", "-F", "#{pane_pid} #{session_name}"], spawnSync);
   if (r.status !== 0 || !r.stdout) return [];
   const seen = new Set<string>();
   const out: TmuxSessionPane[] = [];
   for (const line of r.stdout.split("\n")) {
-    if (!line.trim()) continue;
-    const [name, pidStr] = line.split("\t");
-    if (!name || seen.has(name)) continue; // first pane per session only
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const m = trimmed.match(/^(\d+)\s+(.+)$/);
+    if (!m) continue;
+    const name = m[2]!;
+    if (seen.has(name)) continue; // first pane per session only
     seen.add(name);
-    const pid = Number.parseInt(pidStr ?? "", 10);
+    const pid = Number.parseInt(m[1]!, 10);
     out.push({ sessionName: name, panePid: Number.isInteger(pid) && pid > 0 ? pid : null });
   }
   return out;

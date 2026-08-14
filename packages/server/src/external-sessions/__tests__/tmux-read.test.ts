@@ -87,12 +87,28 @@ describe("exit-code discipline", () => {
   });
 
   it("listSessions dedupes to one entry per session with its pane pid", () => {
-    const out = "cx-gap2\t100\ncx-gap2\t101\ncc-probe\t200\n";
+    // pane_pid FIRST, space-delimited (the sanitization-safe format).
+    const out = "100 cx-gap2\n101 cx-gap2\n200 cc-probe\n";
     const sessions = listSessions(fakeSpawn({ status: 0, stdout: out }));
     expect(sessions).toEqual([
       { sessionName: "cx-gap2", panePid: 100 },
       { sessionName: "cc-probe", panePid: 200 },
     ]);
+  });
+
+  it("listSessions requests a TAB-free -F format (tmux sanitizes TAB->'_' under a stripped server env)", () => {
+    // Regression guard: a tab delimiter silently broke pane_pid parsing in
+    // production (all pids null -> every session skipped -> empty panel).
+    let seenArgs: string[] = [];
+    listSessions(fakeSpawn({ status: 0, stdout: "" }, (_c, a) => { seenArgs = a; }));
+    const fmt = seenArgs[seenArgs.indexOf("-F") + 1] ?? "";
+    expect(fmt).not.toContain("\t");
+    expect(fmt).toBe("#{pane_pid} #{session_name}");
+  });
+
+  it("listSessions parses a session name containing spaces (pid-first, remainder-is-name)", () => {
+    const sessions = listSessions(fakeSpawn({ status: 0, stdout: "200 my session\n" }));
+    expect(sessions).toEqual([{ sessionName: "my session", panePid: 200 }]);
   });
 
   it("listSessions returns [] on tmux failure", () => {
