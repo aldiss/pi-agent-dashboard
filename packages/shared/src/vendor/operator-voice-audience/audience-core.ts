@@ -111,6 +111,13 @@ export const STANDING_TIERS: ReadonlySet<string> = new Set([
 	"L0.5b",
 	"L0.5c",
 	"L0.5d",
+	// L0.5f — Dawn, the recorder seat (AGENTS.md §1; standing crew grew 9→10 on
+	// 2026-07-30). Omitting it did not merely mis-group her: a registry entry whose
+	// tier is absent here fails the `isStanding` test below and falls into the
+	// TRANSIENT-name branch, i.e. a standing incumbent was being classified as a
+	// throwaway driver name. She is a positional seat, not a judgment peer, but she
+	// is operator-addressed, which is what this set governs.
+	"L0.5f",
 	"L1",
 ]);
 
