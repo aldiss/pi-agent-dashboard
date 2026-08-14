@@ -366,15 +366,29 @@ describe("groupSessionsByTier", () => {
 });
 
 describe("SESSION_TIER_ORDER", () => {
-  it("is the canonical 6-element order with drivers after standing-crew", () => {
+  it("is the canonical 7-element order with drivers after standing-crew and external below drivers", () => {
     expect(SESSION_TIER_ORDER).toEqual([
       "standing-crew",
       "drivers",
+      "external",
       "cell-executor",
       "operator-chat-pane",
       "worker",
       "other",
     ]);
+  });
+
+  it("classifies a read-only external pane into the external tier, never `other`", () => {
+    // Regression guard: external panes previously fell through the name/source
+    // heuristics into `other`, which is default-collapsed, so none of them were
+    // visible on load. This must classify before every other rule.
+    const external = {
+      ...mk("codex:done-cx-gap2", "/private/tmp/gap2-wt", 100),
+      name: "done-cx-gap2",
+      source: "codex",
+      external: { runtime: "codex", tmuxSession: "done-cx-gap2", readOnly: true },
+    } as unknown as Parameters<typeof classifyTier>[0];
+    expect(classifyTier(external)).toBe("external");
   });
 });
 

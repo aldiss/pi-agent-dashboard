@@ -264,12 +264,15 @@ export function filterStaleSessions(
  * Coarse-grained role tier the session belongs to, for sidebar primary
  * grouping. Orthogonal to directory grouping (which becomes secondary).
  *
- * Tier order (when rendered): standing-crew → drivers → cell-executor →
- * operator-chat-pane → worker → other. Empty tiers are omitted by
- * {@link groupSessionsByTier}. `drivers` sits above `cell-executor` because
+ * Tier order (when rendered): standing-crew → drivers → external →
+ * cell-executor → operator-chat-pane → worker → other. Empty tiers are omitted
+ * by {@link groupSessionsByTier}. `drivers` sits above `cell-executor` because
  * pi-drivers are L2 orchestration peers, above cell-internal workers.
+ * `external` (read-only Codex / Claude Code tmux panes) sits directly below
+ * `drivers`: they are agent sessions the operator watches, so they must be
+ * visible without expanding anything, but they rank below his own crew.
  */
-export type SessionTier = "standing-crew" | "drivers" | "cell-executor" | "operator-chat-pane" | "worker" | "other";
+export type SessionTier = "standing-crew" | "drivers" | "external" | "cell-executor" | "operator-chat-pane" | "worker" | "other";
 
 /**
  * Canonical tier order used by {@link groupSessionsByTier}. Exported for
@@ -279,6 +282,7 @@ export type SessionTier = "standing-crew" | "drivers" | "cell-executor" | "opera
 export const SESSION_TIER_ORDER: ReadonlyArray<SessionTier> = [
   "standing-crew",
   "drivers",
+  "external",
   "cell-executor",
   "operator-chat-pane",
   "worker",
@@ -356,6 +360,12 @@ const THEMED_NAME_RE = /^[A-Z][a-z]+[A-Z][a-z]+/;
  */
 export function classifyTier(session: DashboardSession): SessionTier {
   const name = session.name ?? "";
+  // Read-only external panes (Codex / Claude Code) classify FIRST and
+  // unconditionally. Without this they fall through the name/source heuristics
+  // into `other`, which is default-collapsed, so the operator sees none of them
+  // on load — the exact complaint this surface exists to answer. Their own tier
+  // is default-expanded (see DEFAULT_EXPANDED_TIERS in SessionList).
+  if (session.external) return "external";
   if (SUBAGENT_WORKER_NAME_RE.test(name)) return "worker";
   if (session.sessionFile && WORKER_SESSION_FILE_RE.test(session.sessionFile)) return "worker";
   if (STANDING_CREW_NAME_RE.test(name)) return "standing-crew";

@@ -3,7 +3,7 @@ import { SpawnErrorBanner } from "./SpawnErrorBanner.js";
 import { getApiBase } from "../lib/api-context.js";
 import { useLocation } from "wouter";
 import { Icon } from "@mdi/react";
-import { mdiChevronRight, mdiChevronDown, mdiChevronUp, mdiPlus, mdiPin, mdiFolder, mdiFolderOpen, mdiConsoleLine, mdiCog, mdiPuzzleOutline, mdiFileDocumentOutline, mdiViewDashboard, mdiAccountGroup, mdiCube, mdiHelpCircle, mdiSteering } from "@mdi/js";
+import { mdiChevronRight, mdiChevronDown, mdiChevronUp, mdiPlus, mdiPin, mdiFolder, mdiFolderOpen, mdiConsoleLine, mdiCog, mdiPuzzleOutline, mdiFileDocumentOutline, mdiViewDashboard, mdiAccountGroup, mdiCube, mdiHelpCircle, mdiSteering, mdiEyeOutline } from "@mdi/js";
 import { PiLogo } from "./PiLogo.js";
 import { FolderActionBar } from "./FolderActionBar.js";
 import { encodeFolderPath } from "../lib/folder-encoding.js";
@@ -149,6 +149,7 @@ export { groupSessionsByDirectory, filterSessions, type DirectoryGroup } from ".
 const TIER_LABEL: Record<SessionTier, string> = {
   "standing-crew": "Standing crew",
   drivers: "Drivers",
+  external: "Codex & Claude Code",
   "cell-executor": "Cell-executors",
   "operator-chat-pane": "Operator chat-panes",
   worker: "Workers",
@@ -158,6 +159,7 @@ const TIER_LABEL: Record<SessionTier, string> = {
 const TIER_ICON: Record<SessionTier, string> = {
   "standing-crew": mdiAccountGroup,
   drivers: mdiSteering,
+  external: mdiEyeOutline,
   "cell-executor": mdiCube,
   "operator-chat-pane": mdiConsoleLine,
   worker: mdiCog,
@@ -169,10 +171,15 @@ const TIER_ICON: Record<SessionTier, string> = {
  * (operator-chat-pane, worker, other) default to collapsed; the user's
  * explicit toggle inverts the default and is persisted by flipping the
  * presence of `tier:<name>` in the shared collapsed-groups set.
+ *
+ * `external` is default-expanded on purpose: these panes are read-only and
+ * cannot ask for anything, so the operator only benefits from them if they are
+ * visible without a click.
  */
 const DEFAULT_EXPANDED_TIERS: ReadonlySet<SessionTier> = new Set<SessionTier>([
   "standing-crew",
   "drivers",
+  "external",
   "cell-executor",
 ]);
 
