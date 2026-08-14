@@ -69,6 +69,8 @@ import { registerOpenSpecGroupRoutes } from "./routes/openspec-group-routes.js";
 import { createOpenSpecGroupStore, joinGroupIdsToOpenSpecData } from "./openspec-group-store.js";
 import { registerSystemRoutes } from "./routes/system-routes.js";
 import { registerSurfacesRoutes } from "./routes/surfaces-routes.js";
+import { createExternalSessionRegistry } from "./external-sessions/scanner.js";
+import { registerExternalSessionRoutes } from "./external-sessions/routes/external-session-routes.js";
 import { registerDonNarrationRoutes } from "./routes/don-narration-routes.js";
 import { registerDoctorRoutes } from "./routes/doctor-routes.js";
 import { registerPushRoutes, registerPushMisconfiguredMiddleware } from "./routes/push-routes.js";
@@ -1189,6 +1191,30 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
   // See packages/server/src/routes/surfaces-routes.ts + cell:
   // pi-agent-dashboard-ux-message-discoverability/v1 (W4.4 + W6 Feature 4).
   registerSurfacesRoutes(fastify, { networkGuard });
+  // Read-only external-session viewer — Codex / Claude Code sessions in tmux
+  // panes on socket `pi`. Non-destructive tmux reads only; no input path.
+  // See packages/server/src/external-sessions/.
+  const externalSessionRegistry = createExternalSessionRegistry();
+  registerExternalSessionRoutes(fastify, { registry: externalSessionRegistry, networkGuard });
+  // Gate ONLY the background scan timer: under vitest / NODE_ENV=test / fixture
+  // mode it would spawn tmux/ps subprocess storms against the operator's real
+  // `pi` socket on every tick, adding load that tips already-flaky infra tests.
+  // Registry construction + route registration stay unconditional (the API is
+  // always mounted; it just returns an empty list until the first refresh).
+  // Production (VITEST unset, not fixture) is unchanged. Mirrors hygieneTimer:
+  // try/catch body + unref.
+  const externalScanEnabled =
+    !isFixture && process.env.NODE_ENV !== "test" && process.env.VITEST !== "true";
+  if (externalScanEnabled) {
+    const externalSessionScanTimer = setInterval(() => {
+      try {
+        externalSessionRegistry.refresh();
+      } catch (err) {
+        console.error("[external-sessions] scan refresh failed:", err);
+      }
+    }, 2500);
+    if (typeof externalSessionScanTimer.unref === "function") externalSessionScanTimer.unref();
+  }
   // Path B sister-coupling primitive — Don narration canonical state-file.
   // See packages/server/src/routes/don-narration-routes.ts + cell:
   // operator-driver-experience-don-build/v1 (W6 D6 deliverable).
