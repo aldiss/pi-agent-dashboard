@@ -4,6 +4,7 @@ const COLLAPSED_GROUPS_KEY = "dashboard:collapsedGroups";
 const STALE_HOURS_KEY = "dashboard:staleHours";
 const HIDE_STALE_KEY = "dashboard:hideStale";
 const GROUP_BY_FOLDER_KEY = "dashboard:groupByFolder";
+const GROUP_BY_CELL_KEY = "dashboard:groupByCell";
 /** Last time the operator saw the fleet-brief (visible view). Sister to the
  *  other `dashboard:*` keys. Drives the finished-unseen window cutoff.
  *  See change: build-2-dashboard-v3 (P0 fix #5 + #6). */
@@ -98,6 +99,21 @@ export function setGroupByFolder(value: boolean): void {
   getStorage().setItem(GROUP_BY_FOLDER_KEY, String(value));
 }
 
+/** Whether sessions are grouped by orchestration cell. Default: off. */
+export function getGroupByCell(): boolean {
+  try {
+    const raw = getStorage().getItem(GROUP_BY_CELL_KEY);
+    if (raw === null) return false;
+    return raw === "true";
+  } catch {
+    return false;
+  }
+}
+
+export function setGroupByCell(value: boolean): void {
+  getStorage().setItem(GROUP_BY_CELL_KEY, String(value));
+}
+
 /**
  * Read the last time the operator saw the fleet-brief (epoch ms). Returns
  * `null` when the key is missing / cleared / non-positive — the first-run
@@ -145,7 +161,8 @@ export function setCollapsedGroups(cwds: Set<string>): void {
  * Remove collapsed group keys that don't match any current session cwds.
  * Returns the pruned set.
  *
- * Tier-toggle keys (e.g. `tier:standing-crew`, `tier:worker`) share this same
+ * Tier-toggle keys (e.g. `tier:standing-crew`, `tier:worker`) and cell-group
+ * keys (`__cell__:*`) share this same
  * collapsed-groups Set per SessionList.tsx `handleToggleTierCollapse` design,
  * but they are NOT cwd-derived and have no cwd-shaped lifetime; the prune
  * pass MUST preserve them unconditionally so that operator-toggled tier state
@@ -159,7 +176,7 @@ export function pruneStaleCollapsedGroups(knownCwds: Set<string>): Set<string> {
   const collapsed = getCollapsedGroups();
   const pruned = new Set<string>();
   for (const key of collapsed) {
-    if (key.startsWith("tier:")) {
+    if (key.startsWith("tier:") || key.startsWith("__cell__:")) {
       pruned.add(key);
       continue;
     }

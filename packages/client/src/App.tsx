@@ -89,7 +89,8 @@ import type { ToolContext } from "./components/tool-renderers/index.js";
 import type { ContextUsageInfo } from "./components/SessionList.js";
 import { ApiContext, deriveApiBase, VITE_API_URL, setGlobalApiBase, getApiBase } from "./lib/api-context.js";
 import { SessionAssetsProvider } from "./lib/SessionAssetsContext.js";
-import { fetchExternalSessions, type ExternalSession } from "./lib/external-sessions-api.js";
+import { fetchExternalSessionsSnapshot, type ExternalSession } from "./lib/external-sessions-api.js";
+import type { ExternalSessionsResponse } from "@blackbelt-technology/pi-dashboard-shared/external-session.js";
 import { mapExternalSession, mergeExternalSessions } from "./lib/external-session-mapper.js";
 import { decodeSessionRouteId, isExternalSessionId } from "./lib/session-route.js";
 import { PluginContextProvider, applyPluginConfigUpdate } from "@blackbelt-technology/dashboard-plugin-runtime/context";
@@ -223,20 +224,25 @@ export default function App() {
   const [showMessageFilterControls, setShowMessageFilterControls] = useState(false);
   const [sessions, setSessions] = useState<Map<string, DashboardSession>>(new Map());
   const [externalSessions, setExternalSessions] = useState<ExternalSession[]>([]);
+  const [externalCellGrouping, setExternalCellGrouping] = useState<
+    Pick<ExternalSessionsResponse, "owners" | "drivers">
+  >({ owners: {}, drivers: [] });
   const [externalSessionsLoaded, setExternalSessionsLoaded] = useState(false);
   useEffect(() => {
     let disposed = false;
     let refreshing = false;
     setExternalSessions([]);
+    setExternalCellGrouping({ owners: {}, drivers: [] });
     setExternalSessionsLoaded(false);
 
     const refresh = async () => {
       if (refreshing) return;
       refreshing = true;
       try {
-        const next = await fetchExternalSessions();
+        const next = await fetchExternalSessionsSnapshot();
         if (!disposed) {
-          setExternalSessions(next);
+          setExternalSessions(next.sessions);
+          setExternalCellGrouping({ owners: next.owners, drivers: next.drivers });
           setExternalSessionsLoaded(true);
         }
       } catch {
@@ -1062,6 +1068,7 @@ export default function App() {
       <div className="flex-1 flex flex-col min-h-0">
     <SessionList
       sessions={sessionsArr}
+      cellGrouping={externalCellGrouping}
       terminals={terminalsArr}
       selectedId={selectedId}
       hasLoadedOnce={hasLoadedOnce}

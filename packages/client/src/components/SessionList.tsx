@@ -11,6 +11,7 @@ import { DndContext, closestCenter, PointerSensor, TouchSensor, useSensor, useSe
 import { SortableContext, verticalListSortingStrategy, arrayMove } from "@dnd-kit/sortable";
 import { SortablePinnedGroup } from "./SortablePinnedGroup.js";
 import type { DashboardSession, OpenSpecData, CommandInfo, FlowInfo, ImageContent } from "@blackbelt-technology/pi-dashboard-shared/types.js";
+import type { ExternalSessionsResponse } from "@blackbelt-technology/pi-dashboard-shared/external-session.js";
 import type { TerminalSession } from "@blackbelt-technology/pi-dashboard-shared/terminal-types.js";
 import {
   groupSessionsByDirectory,
@@ -21,8 +22,11 @@ import {
   filterByQuery,
   sortSessionsByOrder,
   groupTierByFolder,
+  groupSessionsByCell,
+  UNGROUPED_CELL_KEY,
   stablePartitionByBand,
   SESSION_TIER_ORDER,
+  type CellGroup,
   type DirectoryGroup,
   type SessionTier,
 } from "../lib/session-grouping.js";
@@ -37,6 +41,8 @@ import {
   setHideStale,
   getGroupByFolder,
   setGroupByFolder,
+  getGroupByCell,
+  setGroupByCell,
 } from "../lib/session-filter-storage.js";
 import { SessionCard, GroupGitInfo, EditorButtons, branchCache } from "./SessionCard.js";
 import { PlaceholderSessionCard } from "./PlaceholderSessionCard.js";
@@ -63,6 +69,8 @@ export interface ContextUsageInfo {
 
 interface Props {
   sessions: DashboardSession[];
+  /** Read-only ownership metadata used only when the Cells grouping mode is active. */
+  cellGrouping?: Pick<ExternalSessionsResponse, "owners" | "drivers">;
   selectedId?: string;
   onSelect: (sessionId: string) => void;
   /**
@@ -212,6 +220,7 @@ function ToggleButton({
   return (
     <button
       onClick={onClick}
+      aria-pressed={active}
       className={`text-[10px] px-1.5 py-0.5 rounded border ${
         active
           ? "border-blue-500/50 text-blue-400 bg-blue-500/10"
@@ -223,7 +232,7 @@ function ToggleButton({
   );
 }
 
-export function SessionList({ sessions, selectedId, onSelect, hasLoadedOnce, contextUsageMap, openspecMap, sessionOrderMap, onReorderSessions, onSendPrompt, onFlowAction, onOpenSpecRefresh, onAttachProposal, onDetachProposal, onBulkArchive, onReadArtifact, onOpenPiResources, onRename, onCheckLiveness, onResume, onResumeKeepPosition, onHideSession, onUnhideSession, onSpawnSession, onSpawnWorktree, spawningCwds, spawnResult, onSpawnResultSeen, pinnedDirectories, onPinDirectory, onOpenPinDialog, onUnpinDirectory, onReorderPinnedDirs, terminals, onKillTerminal, onRenameTerminal, onCollapseSidebar, commandsMap, flowsMap, onKillProcess, onOpenSpecs, onOpenArchive, onOpenTerminals, onOpenEditor, editorStatuses, editorAvailable, headerExtra, errorSessionIds, spawnErrors, onDismissSpawnError, resumeErrors, onDismissResumeError }: Props) {
+export function SessionList({ sessions, cellGrouping, selectedId, onSelect, hasLoadedOnce, contextUsageMap, openspecMap, sessionOrderMap, onReorderSessions, onSendPrompt, onFlowAction, onOpenSpecRefresh, onAttachProposal, onDetachProposal, onBulkArchive, onReadArtifact, onOpenPiResources, onRename, onCheckLiveness, onResume, onResumeKeepPosition, onHideSession, onUnhideSession, onSpawnSession, onSpawnWorktree, spawningCwds, spawnResult, onSpawnResultSeen, pinnedDirectories, onPinDirectory, onOpenPinDialog, onUnpinDirectory, onReorderPinnedDirs, terminals, onKillTerminal, onRenameTerminal, onCollapseSidebar, commandsMap, flowsMap, onKillProcess, onOpenSpecs, onOpenArchive, onOpenTerminals, onOpenEditor, editorStatuses, editorAvailable, headerExtra, errorSessionIds, spawnErrors, onDismissSpawnError, resumeErrors, onDismissResumeError }: Props) {
   // Coarse, interval-updated wall clock. Used only by the relative-time badge
   // (`now - selectBadgeTimestamp(session)`, class `hidden md:inline`) and the
   // stale-active filter (≤30s staleness is irrelevant to either). Computing
@@ -329,7 +338,10 @@ export function SessionList({ sessions, selectedId, onSelect, hasLoadedOnce, con
   // Folder-grouping toggle. When ON (default), each tier's sessions are grouped
   // into directory folders; when OFF, the tier renders a flat list of sessions
   // with no directory wrapping. Persisted via dashboard:groupByFolder.
-  const [groupByFolder, setGroupByFolderState] = useState(() => getGroupByFolder());
+  const [groupByCell, setGroupByCellState] = useState(() => getGroupByCell());
+  const [groupByFolder, setGroupByFolderState] = useState(
+    () => !getGroupByCell() && getGroupByFolder(),
+  );
   // Sidebar-level search/filter.
   //   - workspaceFilter: substring match against the folder path.
   //     Narrows the folder list. Matching folders auto-expand.
@@ -461,9 +473,34 @@ export function SessionList({ sessions, selectedId, onSelect, hasLoadedOnce, con
     }
     return out;
   }, [unpinnedGroups, sessionOrderMap, groupByFolder]);
+  const cellGroups = useMemo(
+    () => groupSessionsByCell(filteredSessions, cellGrouping),
+    [filteredSessions, cellGrouping],
+  );
+  const visibleCellGroups = useMemo(() => {
+    const workspaceQuery = workspaceFilter.trim().toLowerCase();
+    const sessionQuery = sessionSearch.trim();
+    return cellGroups
+      .map((group) => {
+        const workspaceMatches = workspaceQuery === ""
+          ? group.sessions
+          : group.sessions.filter((session) => session.cwd.toLowerCase().includes(workspaceQuery));
+        const visibleSessions = sessionQuery === ""
+          ? workspaceMatches
+          : filterByQuery(workspaceMatches, sessionQuery);
+        return { ...group, sessions: visibleSessions };
+      })
+      .filter((group) => group.sessions.length > 0);
+  }, [cellGroups, sessionSearch, workspaceFilter]);
   const allGroups = useMemo(
-    () => [...pinnedGroups, ...tierGroups.flatMap((tg) => tg.groups)],
-    [pinnedGroups, tierGroups],
+    () => groupByCell
+      ? cellGroups.map((group) => ({
+          cwd: `__cell__:${group.key}`,
+          sessions: group.sessions,
+          pinned: false,
+        }))
+      : [...pinnedGroups, ...tierGroups.flatMap((tg) => tg.groups)],
+    [cellGroups, groupByCell, pinnedGroups, tierGroups],
   );
 
   const sensors = useSensors(
@@ -485,7 +522,7 @@ export function SessionList({ sessions, selectedId, onSelect, hasLoadedOnce, con
       for (const group of allGroups) {
         // Flat-mode tier buckets use a synthetic cwd key and have no real
         // directory to persist order against — skip reorder/resume for them.
-        if (group.cwd.startsWith("__tier__:")) continue;
+        if (group.cwd.startsWith("__tier__:") || group.cwd.startsWith("__cell__:")) continue;
         // Session IDs only (terminals moved to TerminalsView)
         const sessionIds = group.sessions.map((s) => s.id);
         const oldIndex = sessionIds.indexOf(active.id as string);
@@ -635,6 +672,49 @@ export function SessionList({ sessions, selectedId, onSelect, hasLoadedOnce, con
         {/* Session + terminal cards — animated collapse */}
         <div className={`group-collapse ${isCollapsed ? "collapsed" : "expanded"}`}>
           {renderSessionCards(group)}
+        </div>
+      </div>
+    );
+  }
+
+  function renderCellGroup(group: CellGroup) {
+    const storageKey = `__cell__:${group.key}`;
+    const isCollapsed = isFolderCollapsed(storageKey);
+    const cardGroup: DirectoryGroup = {
+      cwd: storageKey,
+      sessions: group.sessions,
+      pinned: false,
+    };
+
+    return (
+      <div
+        key={group.key}
+        className="bg-[var(--bg-secondary)] rounded-lg p-2"
+        data-testid={`cell-group-${group.key}`}
+      >
+        <button
+          type="button"
+          className="w-full px-2 py-1.5 min-h-[44px] md:min-h-0 rounded hover:bg-[var(--bg-hover)]"
+          onClick={() => handleToggleCollapse(storageKey)}
+          aria-expanded={!isCollapsed}
+        >
+          <span className="flex items-center gap-1.5 text-left">
+            <span className="inline-flex text-[var(--text-tertiary)]">
+              <Icon path={isCollapsed ? mdiChevronRight : mdiChevronDown} size={0.6} />
+            </span>
+            <span className="inline-flex text-[var(--text-tertiary)]">
+              <Icon path={group.key === UNGROUPED_CELL_KEY ? mdiHelpCircle : mdiCube} size={0.55} />
+            </span>
+            <span className="text-xs font-medium text-[var(--text-secondary)] truncate">
+              {group.label}
+            </span>
+            <span className="text-[10px] text-[var(--text-muted)]">
+              ({group.sessions.length})
+            </span>
+          </span>
+        </button>
+        <div className={`group-collapse ${isCollapsed ? "collapsed" : "expanded"}`}>
+          {renderSessionCards(cardGroup)}
         </div>
       </div>
     );
@@ -928,11 +1008,31 @@ export function SessionList({ sessions, selectedId, onSelect, hasLoadedOnce, con
               setGroupByFolderState((p) => {
                 const next = !p;
                 setGroupByFolder(next);
+                if (next) {
+                  setGroupByCellState(false);
+                  setGroupByCell(false);
+                }
                 return next;
               });
             }}
           >
             Folders
+          </ToggleButton>
+          <ToggleButton
+            active={groupByCell}
+            onClick={() => {
+              setGroupByCellState((p) => {
+                const next = !p;
+                setGroupByCell(next);
+                if (next) {
+                  setGroupByFolderState(false);
+                  setGroupByFolder(false);
+                }
+                return next;
+              });
+            }}
+          >
+            Cells
           </ToggleButton>
           {onPinDirectory && (
             <button
@@ -948,7 +1048,7 @@ export function SessionList({ sessions, selectedId, onSelect, hasLoadedOnce, con
         </div>
       </div>
       <div ref={listRef} className="flex-1 overflow-y-auto">
-      {filteredSessions.length === 0 && pinnedGroups.length === 0 ? (
+      {filteredSessions.length === 0 && (groupByCell || pinnedGroups.length === 0) ? (
         // Loading ≠ empty (build-2 fix-cycle-2 MAJOR 1): the calm "No active
         // sessions" copy is a factual claim that the fleet IS empty — it must
         // NOT show while a load source is unsettled/failed (`hasLoadedOnce ===
@@ -963,6 +1063,12 @@ export function SessionList({ sessions, selectedId, onSelect, hasLoadedOnce, con
       ) : (
         <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
         <ul className="flex flex-col gap-2 p-2">
+          {groupByCell ? (
+            <>
+              {visibleCellGroups.map((group) => renderCellGroup(group))}
+            </>
+          ) : (
+            <>
           {/* Pinned directory groups (filtered if workspace/session filter active) */}
           {pinnedGroups.length > 0 && (
             <SortableContext items={pinnedGroups.filter(folderMatchesFilters).map((g) => g.cwd)} strategy={verticalListSortingStrategy}>
@@ -1046,6 +1152,8 @@ export function SessionList({ sessions, selectedId, onSelect, hasLoadedOnce, con
               </div>
             );
           })}
+            </>
+          )}
         </ul>
         </DndContext>
       )}

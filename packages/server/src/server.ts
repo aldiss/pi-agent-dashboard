@@ -74,6 +74,7 @@ import { registerSystemRoutes } from "./routes/system-routes.js";
 import { registerSurfacesRoutes } from "./routes/surfaces-routes.js";
 import { createExternalSessionRegistry } from "./external-sessions/scanner.js";
 import { registerExternalSessionRoutes } from "./external-sessions/routes/external-session-routes.js";
+import { createExternalSessionTranscriptReader } from "./external-sessions/transcript-reader.js";
 import { registerDonNarrationRoutes } from "./routes/don-narration-routes.js";
 import { registerDoctorRoutes } from "./routes/doctor-routes.js";
 import { registerPushRoutes, registerPushMisconfiguredMiddleware } from "./routes/push-routes.js";
@@ -1226,7 +1227,12 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
   // panes on socket `pi`. Non-destructive tmux reads only; no input path.
   // See packages/server/src/external-sessions/.
   const externalSessionRegistry = createExternalSessionRegistry();
-  registerExternalSessionRoutes(fastify, { registry: externalSessionRegistry, networkGuard });
+  const externalSessionTranscriptReader = createExternalSessionTranscriptReader();
+  registerExternalSessionRoutes(fastify, {
+    registry: externalSessionRegistry,
+    networkGuard,
+    transcriptReader: externalSessionTranscriptReader,
+  });
   // Gate ONLY the background scan timer: under vitest / NODE_ENV=test / fixture
   // mode it would spawn tmux/ps subprocess storms against the operator's real
   // `pi` socket on every tick, adding load that tips already-flaky infra tests.
@@ -1240,6 +1246,9 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
     const externalSessionScanTimer = setInterval(() => {
       try {
         externalSessionRegistry.refresh();
+        void externalSessionTranscriptReader
+          .prime(externalSessionRegistry.list())
+          .catch((err) => console.error("[external-sessions] transcript prime failed:", err));
       } catch (err) {
         console.error("[external-sessions] scan refresh failed:", err);
       }

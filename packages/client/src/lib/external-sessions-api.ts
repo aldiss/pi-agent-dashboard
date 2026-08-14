@@ -9,13 +9,27 @@ import { getApiBase } from "./api-context.js";
 import type {
   ExternalRuntime,
   ExternalSession,
+  ExternalSessionDriver,
+  ExternalSessionOwner,
   ExternalSessionState,
+  ExternalSessionsResponse,
+  ExternalSessionTranscriptResponse,
+  ExternalTranscriptEntry,
+  ExternalTranscriptEntryKind,
+  ExternalTranscriptSource,
 } from "@blackbelt-technology/pi-dashboard-shared/external-session.js";
 
 export type {
   ExternalRuntime,
   ExternalSession,
+  ExternalSessionDriver,
+  ExternalSessionOwner,
   ExternalSessionState,
+  ExternalSessionsResponse,
+  ExternalSessionTranscriptResponse,
+  ExternalTranscriptEntry,
+  ExternalTranscriptEntryKind,
+  ExternalTranscriptSource,
 } from "@blackbelt-technology/pi-dashboard-shared/external-session.js";
 
 export interface ExternalSessionCapture {
@@ -26,12 +40,21 @@ export interface ExternalSessionCapture {
   capturedAt: number;
 }
 
-/** GET /api/external-sessions → the current snapshot list. */
-export async function fetchExternalSessions(): Promise<ExternalSession[]> {
+/** GET /api/external-sessions → sessions plus cell ownership metadata. */
+export async function fetchExternalSessionsSnapshot(): Promise<ExternalSessionsResponse> {
   const res = await fetch(`${getApiBase()}/api/external-sessions`);
   if (!res.ok) throw new Error(`external-sessions ${res.status}`);
-  const body = (await res.json()) as { sessions?: ExternalSession[] };
-  return body.sessions ?? [];
+  const body = (await res.json()) as Partial<ExternalSessionsResponse>;
+  return {
+    sessions: body.sessions ?? [],
+    owners: body.owners ?? {},
+    drivers: body.drivers ?? [],
+  };
+}
+
+/** Compatibility list API for existing callers. */
+export async function fetchExternalSessions(): Promise<ExternalSession[]> {
+  return (await fetchExternalSessionsSnapshot()).sessions;
 }
 
 /** GET /api/external-sessions/:id/capture → a fresh (live) or frozen (ended) read. */
@@ -41,4 +64,15 @@ export async function fetchExternalSessionCapture(id: string): Promise<ExternalS
   );
   if (!res.ok) throw new Error(`external-session capture ${res.status}`);
   return (await res.json()) as ExternalSessionCapture;
+}
+
+/** GET /api/external-sessions/:id/transcript → normalized runtime transcript or capture fallback. */
+export async function fetchExternalSessionTranscript(
+  id: string,
+): Promise<ExternalSessionTranscriptResponse> {
+  const res = await fetch(
+    `${getApiBase()}/api/external-sessions/${encodeURIComponent(id)}/transcript`,
+  );
+  if (!res.ok) throw new Error(`external-session transcript ${res.status}`);
+  return (await res.json()) as ExternalSessionTranscriptResponse;
 }

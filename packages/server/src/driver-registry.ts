@@ -20,6 +20,7 @@
 import { readFileSync, watch, type FSWatcher } from "node:fs";
 import { join } from "node:path";
 import os from "node:os";
+import type { ExternalSessionDriver } from "@blackbelt-technology/pi-dashboard-shared/external-session.js";
 
 /** Canonical registry path (the NOS §19 driver/cell registry). */
 export const DRIVER_REGISTRY_PATH = join(
@@ -94,9 +95,40 @@ export function indexDriverNames(parsed: unknown): Set<string> {
   return names;
 }
 
+function indexCellDrivers(parsed: unknown): ExternalSessionDriver[] {
+  const drivers = (parsed as { drivers?: unknown } | null)?.drivers;
+  if (drivers === null || typeof drivers !== "object" || Array.isArray(drivers)) return [];
+
+  const result: ExternalSessionDriver[] = [];
+  for (const row of Object.values(drivers as Record<string, unknown>)) {
+    if (row === null || typeof row !== "object" || Array.isArray(row)) continue;
+    const record = row as { real_name?: unknown; tmux?: unknown; cell?: unknown };
+    if (typeof record.real_name !== "string" || record.real_name.trim() === "") continue;
+    result.push({
+      realName: record.real_name.trim(),
+      tmux:
+        typeof record.tmux === "string" && record.tmux.trim() !== ""
+          ? record.tmux.trim()
+          : null,
+      cell:
+        typeof record.cell === "string" && record.cell.trim() !== ""
+          ? record.cell.trim()
+          : null,
+    });
+  }
+  return result;
+}
+
+interface DriverRegistrySnapshot {
+  names: Set<string>;
+  drivers: ExternalSessionDriver[];
+}
+
 export interface DriverRegistry {
   /** The cached name index; re-reads once the TTL lapses. Empty when unreadable. */
   getDriverNames(nowMs?: number): ReadonlySet<string>;
+  /** Canonical driver records from the same cached registry snapshot. */
+  getCellDrivers(nowMs?: number): ExternalSessionDriver[];
   /** Whether `name` is a registered driver. `false` on a missing/unreadable registry. */
   isRegisteredDriver(name: string | undefined, nowMs?: number): boolean;
   /** Drop the cache (fired on a registry-CHANGE watch event). */
@@ -121,26 +153,35 @@ export function createDriverRegistry(opts: DriverRegistryOptions = {}): DriverRe
   const clock = opts.now ?? Date.now;
   const readFile = opts.readFile ?? ((p: string) => readFileSync(p, "utf8"));
 
-  let cached: Set<string> | undefined;
+  let cached: DriverRegistrySnapshot | undefined;
   let cachedAt = 0;
   let watcher: FSWatcher | undefined;
 
-  function readAndIndex(): Set<string> {
+  function readAndIndex(): DriverRegistrySnapshot {
     try {
-      return indexDriverNames(JSON.parse(readFile(registryPath)));
+      const parsed = JSON.parse(readFile(registryPath));
+      return { names: indexDriverNames(parsed), drivers: indexCellDrivers(parsed) };
     } catch {
       // Missing / unreadable / parse-failure → empty index → every session
       // reports `false` and the cwd/name heuristics in `classifyTier` still
       // apply. Degrade to today's behaviour; never throw.
-      return new Set<string>();
+      return { names: new Set<string>(), drivers: [] };
     }
   }
 
-  function getDriverNames(nowMs: number = clock()): ReadonlySet<string> {
+  function getSnapshot(nowMs: number): DriverRegistrySnapshot {
     if (cached && nowMs - cachedAt < ttlMs) return cached;
     cached = readAndIndex();
     cachedAt = nowMs;
     return cached;
+  }
+
+  function getDriverNames(nowMs: number = clock()): ReadonlySet<string> {
+    return getSnapshot(nowMs).names;
+  }
+
+  function getCellDrivers(nowMs: number = clock()): ExternalSessionDriver[] {
+    return getSnapshot(nowMs).drivers;
   }
 
   function isRegisteredDriver(name: string | undefined, nowMs: number = clock()): boolean {
@@ -173,7 +214,14 @@ export function createDriverRegistry(opts: DriverRegistryOptions = {}): DriverRe
     watcher = undefined;
   }
 
-  return { getDriverNames, isRegisteredDriver, invalidate, startWatch, stopWatch };
+  return {
+    getDriverNames,
+    getCellDrivers,
+    isRegisteredDriver,
+    invalidate,
+    startWatch,
+    stopWatch,
+  };
 }
 
 /** Production singleton — lazily reads the real registry path + caches. */

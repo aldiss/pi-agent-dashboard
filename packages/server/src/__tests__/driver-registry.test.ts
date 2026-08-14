@@ -16,12 +16,22 @@ import {
 const REGISTRY_FIXTURE = JSON.stringify({
   schema_version: 1,
   drivers: {
-    Seatwright: { real_name: "Seatwright", state: "alive", tmux: "Seatwright" },
-    Branchwright: { real_name: "Branchwright", state: "alive", tmux: "Branchwright" },
-    Docket: { real_name: "Docket", state: "alive", tmux: "Docket-5" },
-    "Docket-2": { real_name: "Docket-2", state: "ended", tmux: null },
-    Harry: { real_name: "Harry", state: "alive", tmux: "harry-live-20" },
-    "sess-019f13fd": { real_name: "sess-019f13fd", state: "alive", tmux: null },
+    Seatwright: {
+      real_name: "Seatwright",
+      state: "alive",
+      tmux: "Seatwright",
+      cell: "cell-seat",
+    },
+    Branchwright: {
+      real_name: "Branchwright",
+      state: "alive",
+      tmux: "Branchwright",
+      cell: "cell-branch",
+    },
+    Docket: { real_name: "Docket", state: "alive", tmux: "Docket-5", cell: "cell-docket" },
+    "Docket-2": { real_name: "Docket-2", state: "ended", tmux: null, cell: null },
+    Harry: { real_name: "Harry", state: "alive", tmux: "harry-live-20", cell: "cell-harry" },
+    "sess-019f13fd": { real_name: "sess-019f13fd", state: "alive", tmux: null, cell: null },
   },
 });
 
@@ -73,6 +83,17 @@ describe("indexDriverNames", () => {
 });
 
 describe("createDriverRegistry", () => {
+  it("returns canonical driver records with tmux aliases and null cells", () => {
+    const drivers = mk(REGISTRY_FIXTURE).getCellDrivers();
+
+    expect(drivers).toHaveLength(6);
+    expect(drivers).toEqual(expect.arrayContaining([
+      { realName: "Seatwright", tmux: "Seatwright", cell: "cell-seat" },
+      { realName: "Docket", tmux: "Docket-5", cell: "cell-docket" },
+      { realName: "Docket-2", tmux: null, cell: null },
+    ]));
+  });
+
   it("recognises a registered driver by exact name", () => {
     const reg = mk(REGISTRY_FIXTURE);
     expect(reg.isRegisteredDriver("Seatwright")).toBe(true);
@@ -101,14 +122,18 @@ describe("createDriverRegistry", () => {
     });
     expect(missing.isRegisteredDriver("Seatwright")).toBe(false);
     expect(missing.getDriverNames().size).toBe(0);
+    expect(missing.getCellDrivers()).toEqual([]);
 
     const garbage = mk("{ not json");
     expect(garbage.isRegisteredDriver("Seatwright")).toBe(false);
+    expect(garbage.getCellDrivers()).toEqual([]);
   });
 
   it("caches within the TTL and re-reads after it lapses", () => {
     let reads = 0;
-    let payload = JSON.stringify({ drivers: { Alpha: { real_name: "Alpha" } } });
+    let payload = JSON.stringify({
+      drivers: { Alpha: { real_name: "Alpha", tmux: null, cell: null } },
+    });
     let now = 1000;
     const reg = createDriverRegistry({
       registryPath: "/fake",
@@ -121,14 +146,24 @@ describe("createDriverRegistry", () => {
     });
 
     expect(reg.isRegisteredDriver("Alpha")).toBe(true);
+    expect(reg.getCellDrivers()).toEqual([
+      { realName: "Alpha", tmux: null, cell: null },
+    ]);
     expect(reg.isRegisteredDriver("Alpha")).toBe(true);
     expect(reads).toBe(1);
 
-    payload = JSON.stringify({ drivers: { Beta: { real_name: "Beta" } } });
+    payload = JSON.stringify({
+      drivers: { Beta: { real_name: "Beta", tmux: "beta-live", cell: "cell-beta" } },
+    });
     now += 1000;
-    expect(reg.isRegisteredDriver("Beta")).toBe(false); // still cached
+    expect(reg.getCellDrivers()).toEqual([
+      { realName: "Alpha", tmux: null, cell: null },
+    ]); // still cached
     now += 5000;
-    expect(reg.isRegisteredDriver("Beta")).toBe(true); // TTL lapsed → re-read
+    expect(reg.getCellDrivers()).toEqual([
+      { realName: "Beta", tmux: "beta-live", cell: "cell-beta" },
+    ]); // TTL lapsed → re-read
+    expect(reg.isRegisteredDriver("Beta")).toBe(true);
     expect(reads).toBe(2);
   });
 

@@ -2,9 +2,9 @@
  * External-session types — read-only view of Codex / Claude Code sessions that
  * run in tmux panes on socket `pi`, invisible to the pi-session pipeline.
  *
- * These sessions are NOT pi sessions and NOT bridged. The dashboard reads them
- * non-destructively (tmux capture-pane) and surfaces them read-only. There is
- * no input path from the dashboard to a pane — viewing only.
+ * These sessions are NOT pi sessions and NOT bridged. The dashboard reads their
+ * runtime JSONL transcripts and uses tmux capture-pane as a raw fallback. Both
+ * paths are non-destructive; there is no dashboard input path to a pane.
  *
  * `state` is a two-value honesty predicate: a pane that has died must look
  * dead ("ended"), never stale-live. See scanner.ts for the transition
@@ -53,4 +53,60 @@ export interface ExternalSession {
   outputChangedAt: number | null;
   /** Line count of `output`. */
   lineCount: number;
+}
+
+/** Sanitized ownership metadata keyed by external tmux session name. */
+export interface ExternalSessionOwner {
+  owner: string;
+  cell: string | null;
+}
+
+/** Canonical cell-driver identity exposed alongside external sessions. */
+export interface ExternalSessionDriver {
+  realName: string;
+  tmux: string | null;
+  cell: string | null;
+}
+
+/** Read-only external-session list response. */
+export interface ExternalSessionsResponse {
+  sessions: ExternalSession[];
+  owners: Record<string, ExternalSessionOwner>;
+  drivers: ExternalSessionDriver[];
+}
+
+/** Source used for an external session's read-only detail timeline. */
+export type ExternalTranscriptSource = ExternalRuntime | "capture";
+
+/** Normalized transcript row shared by Claude Code and Codex readers. */
+export type ExternalTranscriptEntryKind =
+  | "user"
+  | "assistant"
+  | "thinking"
+  | "tool_call"
+  | "tool_result"
+  | "status";
+
+export interface ExternalTranscriptEntry {
+  id: string;
+  /** Millisecond epoch. Zero when the source row has no usable timestamp. */
+  ts: number;
+  kind: ExternalTranscriptEntryKind;
+  text?: string;
+  toolName?: string;
+  toolInput?: unknown;
+  toolResult?: string;
+  /** Runtime-native tool id used to correlate a call with its result. */
+  toolCallId?: string;
+  isError?: boolean;
+  durationMs?: number;
+}
+
+export interface ExternalSessionTranscriptResponse {
+  id: string;
+  source: ExternalTranscriptSource;
+  entries: ExternalTranscriptEntry[];
+  /** True when entry, read-byte, or tool-result limits omitted source data. */
+  truncated: boolean;
+  transcriptPath?: string;
 }

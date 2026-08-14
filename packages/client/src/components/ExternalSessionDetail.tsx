@@ -19,10 +19,16 @@ import {
 } from "@mdi/js";
 import {
   fetchExternalSessionCapture,
+  fetchExternalSessionTranscript,
   type ExternalRuntime,
   type ExternalSessionCapture,
   type ExternalSessionState,
+  type ExternalSessionTranscriptResponse,
+  type ExternalTranscriptEntry,
 } from "../lib/external-sessions-api.js";
+import { MarkdownContent } from "./MarkdownContent.js";
+import { ThinkingBlock } from "./ThinkingBlock.js";
+import { ToolCallStep } from "./ToolCallStep.js";
 
 const DEFAULT_POLL_INTERVAL_MS = 2_000;
 const SCROLL_THRESHOLD_PX = 64;
@@ -67,6 +73,10 @@ interface CapturedView extends ExternalSessionCapture {
   sessionId: string;
 }
 
+interface TranscriptView extends ExternalSessionTranscriptResponse {
+  sessionId: string;
+}
+
 function formatClock(timestamp: number | null | undefined): string | null {
   if (timestamp == null || !Number.isFinite(timestamp)) return null;
   return new Date(timestamp).toLocaleTimeString([], {
@@ -90,10 +100,123 @@ function findMatches(output: string, query: string): number[] {
   return matches;
 }
 
+function toolArgs(input: unknown): Record<string, unknown> | undefined {
+  if (input == null) return undefined;
+  if (typeof input === "object" && !Array.isArray(input)) {
+    return input as Record<string, unknown>;
+  }
+  return { input };
+}
+
+function ExternalTranscriptTimeline({
+  entries,
+  ended,
+}: {
+  entries: ExternalTranscriptEntry[];
+  ended: boolean;
+}): React.ReactElement {
+  const resultsByCall = new Map<string, ExternalTranscriptEntry>();
+  const callsById = new Map<string, ExternalTranscriptEntry>();
+  for (const entry of entries) {
+    if (entry.kind === "tool_call" && entry.toolCallId) callsById.set(entry.toolCallId, entry);
+    if (entry.kind === "tool_result" && entry.toolCallId) resultsByCall.set(entry.toolCallId, entry);
+  }
+  const pairedResultIds = new Set(
+    [...resultsByCall.entries()]
+      .filter(([toolCallId]) => callsById.has(toolCallId))
+      .map(([, result]) => result.id),
+  );
+  const toolContext = { editors: [] };
+
+  if (entries.length === 0) {
+    return (
+      <div className="px-4 py-8 text-center text-sm text-[var(--text-tertiary)]">
+        No transcript entries yet.
+      </div>
+    );
+  }
+
+  return (
+    <>
+      {entries.map((entry) => {
+        if (entry.kind === "user") {
+          return (
+            <div key={entry.id} className="mt-4 mb-4 flex flex-col items-end" data-kind="user">
+              <div className="editorial-userbubble bg-blue-500/10 border border-blue-500/20 border-l-2 border-l-blue-400 rounded-xl shadow-md px-4 py-2 max-w-[85%]">
+                <MarkdownContent content={entry.text ?? ""} />
+              </div>
+            </div>
+          );
+        }
+        if (entry.kind === "assistant") {
+          return (
+            <div key={entry.id} className="mt-4 mb-4 flex justify-start" data-kind="assistant">
+              <div className="bg-[var(--bg-tertiary)] border border-[var(--border-subtle)] rounded-xl shadow-md px-4 py-2 max-w-[85%]">
+                <MarkdownContent content={entry.text ?? ""} />
+              </div>
+            </div>
+          );
+        }
+        if (entry.kind === "thinking") {
+          return (
+            <ThinkingBlock
+              key={entry.id}
+              content={entry.text ?? ""}
+              duration={entry.durationMs}
+            />
+          );
+        }
+        if (entry.kind === "tool_call") {
+          const result = entry.toolCallId ? resultsByCall.get(entry.toolCallId) : undefined;
+          return (
+            <ToolCallStep
+              key={entry.id}
+              toolName={entry.toolName ?? result?.toolName ?? "unknown"}
+              toolCallId={entry.toolCallId ?? entry.id}
+              args={toolArgs(entry.toolInput)}
+              status={result ? (result.isError ? "error" : "complete") : ended ? "error" : "running"}
+              result={result?.toolResult ?? (ended ? "No result captured before session ended." : undefined)}
+              context={toolContext}
+              startedAt={entry.ts || undefined}
+              duration={result?.durationMs ?? entry.durationMs}
+            />
+          );
+        }
+        if (entry.kind === "tool_result") {
+          if (pairedResultIds.has(entry.id)) return null;
+          const call = entry.toolCallId ? callsById.get(entry.toolCallId) : undefined;
+          return (
+            <ToolCallStep
+              key={entry.id}
+              toolName={entry.toolName ?? call?.toolName ?? "tool result"}
+              toolCallId={entry.toolCallId ?? entry.id}
+              args={toolArgs(call?.toolInput)}
+              status={entry.isError ? "error" : "complete"}
+              result={entry.toolResult}
+              context={toolContext}
+              startedAt={call?.ts || entry.ts || undefined}
+              duration={entry.durationMs}
+            />
+          );
+        }
+        return (
+          <div
+            key={entry.id}
+            className="mx-4 my-2 text-center text-[10px] uppercase tracking-wide text-[var(--text-tertiary)]"
+            data-kind="status"
+          >
+            {entry.text ?? "Status update"}
+          </div>
+        );
+      })}
+    </>
+  );
+}
+
 /**
  * Read-only detail surface for a tmux-hosted Codex or Claude Code session.
- * Only GET capture polling and clipboard writes exist here; no pane write API
- * is imported or accepted through props.
+ * Only GET transcript/capture polling and clipboard writes exist here; no pane
+ * write API is imported or accepted through props.
  */
 export function ExternalSessionDetail({
   sessionId,
@@ -109,6 +232,8 @@ export function ExternalSessionDetail({
   pollIntervalMs = DEFAULT_POLL_INTERVAL_MS,
 }: ExternalSessionDetailProps): React.ReactElement {
   const [capture, setCapture] = useState<CapturedView | null>(null);
+  const [transcript, setTranscript] = useState<TranscriptView | null>(null);
+  const [viewMode, setViewMode] = useState<"conversation" | "raw">("conversation");
   const [frozenSessionId, setFrozenSessionId] = useState<string | null>(null);
   const [loadingSessionId, setLoadingSessionId] = useState<string | null>(null);
   const [error, setError] = useState<{ sessionId: string; message: string } | null>(null);
@@ -131,7 +256,7 @@ export function ExternalSessionDetail({
   const [activeMatch, setActiveMatch] = useState(0);
   const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "failed">("idle");
 
-  const outputRef = useRef<HTMLPreElement>(null);
+  const scrollRef = useRef<HTMLElement | null>(null);
   const activeMatchRef = useRef<HTMLElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const mountedRef = useRef(false);
@@ -150,10 +275,14 @@ export function ExternalSessionDetail({
   parentEndedRef.current = state === "ended";
 
   const currentCapture = capture?.sessionId === sessionId ? capture : null;
+  const currentTranscript = transcript?.sessionId === sessionId ? transcript : null;
   hasCaptureRef.current = currentCapture != null;
   const captureEnded = currentCapture?.state === "ended";
   const ended = state === "ended" || captureEnded || frozenSessionId === sessionId;
   const endedClock = formatClock(endedAt);
+  const hasStructuredTranscript = currentTranscript != null && currentTranscript.source !== "capture";
+  const showConversation = hasStructuredTranscript && viewMode === "conversation";
+  const showRaw = !showConversation;
   const output = currentCapture?.output ?? "";
   const displayOutput = currentCapture
     ? output || "(no output captured)"
@@ -165,6 +294,21 @@ export function ExternalSessionDetail({
     ? model
     : `${runtime}/${model ?? "unknown model"}`;
   const modelLabel = `${runtimeModel}${effort ? ` (${effort})` : ""}`;
+  const transcriptRevision = useMemo(() => {
+    const entries = currentTranscript?.entries;
+    if (!entries?.length) return "0";
+    const last = entries[entries.length - 1]!;
+    return [
+      entries.length,
+      last.id,
+      last.text?.length ?? 0,
+      last.toolResult?.length ?? 0,
+    ].join(":");
+  }, [currentTranscript?.entries]);
+  const contentRevision = showConversation
+    ? `transcript:${transcriptRevision}`
+    : `capture:${currentCapture?.output.length ?? 0}`;
+  const hasVisibleContent = showConversation ? currentTranscript != null : currentCapture != null;
 
   const matches = useMemo(
     () => findMatches(output, searchQuery),
@@ -181,7 +325,7 @@ export function ExternalSessionDetail({
     }, 150);
   }, []);
 
-  const loadCapture = useCallback(async (id: string, generation: number): Promise<void> => {
+  const loadDetail = useCallback(async (id: string, generation: number): Promise<void> => {
     if (inFlightGenerationRef.current === generation) return;
     const keepAliveOnly = frozenRef.current
       || (parentEndedRef.current && hasCaptureRef.current);
@@ -189,7 +333,24 @@ export function ExternalSessionDetail({
     inFlightGenerationRef.current = generation;
     if (mountedRef.current && !keepAliveOnly) setLoadingSessionId(id);
     try {
-      const next = await fetchExternalSessionCapture(id);
+      if (keepAliveOnly) {
+        await fetchExternalSessionCapture(id);
+        if (
+          mountedRef.current
+          && generation === generationRef.current
+          && id === currentSessionIdRef.current
+        ) {
+          frozenRef.current = true;
+          setFrozenSessionId(id);
+          setError(null);
+        }
+        return;
+      }
+
+      const [captureResult, transcriptResult] = await Promise.allSettled([
+        fetchExternalSessionCapture(id),
+        fetchExternalSessionTranscript(id),
+      ]);
       if (
         !mountedRef.current
         || generation !== generationRef.current
@@ -199,17 +360,35 @@ export function ExternalSessionDetail({
       // Parent list polling is authoritative enough to freeze immediately.
       // Ignore an in-flight result after that transition so neither bytes nor
       // scroll position jump while the operator is reading frozen output.
-      if (keepAliveOnly || (parentEndedRef.current && hasCaptureRef.current)) {
+      if (parentEndedRef.current && hasCaptureRef.current) {
         frozenRef.current = true;
         setFrozenSessionId(id);
         setError(null);
         return;
       }
 
-      setCapture({ ...next, sessionId: id });
-      hasCaptureRef.current = true;
-      setError(null);
-      if (next.state === "ended" || parentEndedRef.current) {
+      if (captureResult.status === "fulfilled") {
+        setCapture({ ...captureResult.value, sessionId: id });
+        hasCaptureRef.current = true;
+      }
+      if (transcriptResult.status === "fulfilled") {
+        setTranscript({ ...transcriptResult.value, sessionId: id });
+      }
+
+      const failed = captureResult.status === "rejected"
+        ? captureResult.reason
+        : transcriptResult.status === "rejected"
+          ? transcriptResult.reason
+          : null;
+      setError(failed == null ? null : {
+        sessionId: id,
+        message: failed instanceof Error ? failed.message : String(failed),
+      });
+
+      if (
+        (captureResult.status === "fulfilled" && captureResult.value.state === "ended")
+        || parentEndedRef.current
+      ) {
         frozenRef.current = true;
         setFrozenSessionId(id);
       }
@@ -257,6 +436,8 @@ export function ExternalSessionDetail({
     hasCaptureRef.current = false;
     isNearBottomRef.current = true;
     setCapture(null);
+    setTranscript(null);
+    setViewMode("conversation");
     setFrozenSessionId(null);
     setLoadingSessionId(null);
     setError(null);
@@ -266,12 +447,12 @@ export function ExternalSessionDetail({
     setActiveMatch(0);
     setCopyStatus("idle");
 
-    void loadCapture(sessionId, generation);
+    void loadDetail(sessionId, generation);
     const interval = window.setInterval(() => {
-      void loadCapture(sessionId, generation);
+      void loadDetail(sessionId, generation);
     }, pollIntervalMs);
     return () => window.clearInterval(interval);
-  }, [loadCapture, pollIntervalMs, sessionId]);
+  }, [loadDetail, pollIntervalMs, sessionId]);
 
   useEffect(() => {
     if (state !== "ended" || !currentCapture) return;
@@ -279,16 +460,16 @@ export function ExternalSessionDetail({
     setFrozenSessionId(sessionId);
   }, [currentCapture, sessionId, state]);
 
-  // Tail-follow must depend on growing capture content, not message count.
+  // Tail-follow tracks growing transcript content or raw capture bytes.
   useEffect(() => {
-    if (!currentCapture || !isNearBottomRef.current) return;
+    if (!hasVisibleContent || !isNearBottomRef.current) return;
     requestAnimationFrame(() => {
-      const element = outputRef.current;
+      const element = scrollRef.current;
       if (!element || !isNearBottomRef.current) return;
       markProgrammatic();
       element.scrollTo({ top: element.scrollHeight, behavior: "auto" });
     });
-  }, [currentCapture?.output.length, markProgrammatic, sessionId]);
+  }, [contentRevision, hasVisibleContent, markProgrammatic, sessionId]);
 
   useEffect(() => {
     if (!searchQuery || matches.length === 0) return;
@@ -297,7 +478,7 @@ export function ExternalSessionDetail({
 
   const handleScroll = useCallback(() => {
     if (programmaticScrollRef.current) return;
-    const element = outputRef.current;
+    const element = scrollRef.current;
     if (!element) return;
     const nearBottom = element.scrollHeight - element.scrollTop - element.clientHeight < SCROLL_THRESHOLD_PX;
     isNearBottomRef.current = nearBottom;
@@ -305,7 +486,7 @@ export function ExternalSessionDetail({
   }, []);
 
   const scrollToBottom = useCallback(() => {
-    const element = outputRef.current;
+    const element = scrollRef.current;
     if (!element) return;
     markProgrammatic();
     element.scrollTo({ top: element.scrollHeight, behavior: "smooth" });
@@ -360,6 +541,9 @@ export function ExternalSessionDetail({
     : copyStatus === "failed"
       ? "Copy failed"
       : "Copy tmux attach command";
+  const setScrollElement = useCallback((element: HTMLElement | null) => {
+    scrollRef.current = element;
+  }, []);
 
   return (
     <div
@@ -397,29 +581,43 @@ export function ExternalSessionDetail({
               {endedClock ? `Ended · ${endedClock}` : "Ended"}
             </span>
           )}
+          {hasStructuredTranscript && (
+            <button
+              type="button"
+              onClick={() => setViewMode(showConversation ? "raw" : "conversation")}
+              className={`${isMobile ? "min-h-[44px] px-2" : "px-2 py-1"} rounded text-[10px] border border-[var(--border-subtle)] text-[var(--text-tertiary)] hover:text-[var(--text-primary)] shrink-0`}
+              aria-label={showConversation ? "Raw terminal" : "Conversation"}
+            >
+              {showConversation ? "Raw terminal" : "Conversation"}
+            </button>
+          )}
+          {showRaw && (
+            <>
+              <button
+                type="button"
+                onClick={toggleWrap}
+                className={`${isMobile ? "min-w-[44px] min-h-[44px]" : "p-1"} flex items-center justify-center text-[var(--text-muted)] hover:text-[var(--text-primary)]`}
+                aria-label={wrap ? "Show exact lines (no wrapping)" : "Wrap long lines"}
+                aria-pressed={wrap}
+                title={wrap ? "Wrapping on — tap for exact lines" : "Exact lines — tap to wrap"}
+                data-testid="external-session-wrap-toggle"
+              >
+                <Icon path={wrap ? mdiWrap : mdiWrapDisabled} size={isMobile ? 0.75 : 0.65} />
+              </button>
+              <button
+                type="button"
+                onClick={toggleSearch}
+                className={`${isMobile ? "min-w-[44px] min-h-[44px]" : "p-1"} flex items-center justify-center text-[var(--text-muted)] hover:text-[var(--text-primary)]`}
+                aria-label={searchOpen ? "Close output search" : "Search output"}
+                title={searchOpen ? "Close output search" : "Search output"}
+              >
+                <Icon path={searchOpen ? mdiClose : mdiMagnify} size={isMobile ? 0.75 : 0.65} />
+              </button>
+            </>
+          )}
           <button
             type="button"
-            onClick={toggleWrap}
-            className={`${isMobile ? "min-w-[44px] min-h-[44px]" : "p-1"} flex items-center justify-center text-[var(--text-muted)] hover:text-[var(--text-primary)]`}
-            aria-label={wrap ? "Show exact lines (no wrapping)" : "Wrap long lines"}
-            aria-pressed={wrap}
-            title={wrap ? "Wrapping on — tap for exact lines" : "Exact lines — tap to wrap"}
-            data-testid="external-session-wrap-toggle"
-          >
-            <Icon path={wrap ? mdiWrap : mdiWrapDisabled} size={isMobile ? 0.75 : 0.65} />
-          </button>
-          <button
-            type="button"
-            onClick={toggleSearch}
-            className={`${isMobile ? "min-w-[44px] min-h-[44px]" : "p-1"} flex items-center justify-center text-[var(--text-muted)] hover:text-[var(--text-primary)]`}
-            aria-label={searchOpen ? "Close output search" : "Search output"}
-            title={searchOpen ? "Close output search" : "Search output"}
-          >
-            <Icon path={searchOpen ? mdiClose : mdiMagnify} size={isMobile ? 0.75 : 0.65} />
-          </button>
-          <button
-            type="button"
-            onClick={() => void loadCapture(sessionId, generationRef.current)}
+            onClick={() => void loadDetail(sessionId, generationRef.current)}
             disabled={ended || loadingSessionId === sessionId}
             className={`${isMobile ? "min-w-[44px] min-h-[44px]" : "p-1"} flex items-center justify-center text-[var(--text-muted)] hover:text-[var(--text-primary)] disabled:opacity-40`}
             aria-label="Refresh output"
@@ -445,7 +643,7 @@ export function ExternalSessionDetail({
             )}
           </div>
         )}
-        {searchOpen && (
+        {showRaw && searchOpen && (
           <div className="px-3 py-2 border-t border-[var(--border-subtle)] flex items-center gap-2">
             <input
               ref={searchInputRef}
@@ -484,21 +682,52 @@ export function ExternalSessionDetail({
         </div>
       )}
 
+      {currentTranscript?.source === "capture" && (
+        <div className="shrink-0 px-4 py-2 border-b border-[var(--border-primary)] bg-[var(--bg-secondary)] text-[12px] text-[var(--text-secondary)]">
+          No transcript found — showing raw terminal output.
+        </div>
+      )}
+
       <div className="flex-1 min-h-0 relative bg-[var(--bg-code)]">
-        <pre
-          ref={outputRef}
-          onScroll={handleScroll}
-          className={`absolute inset-0 m-0 overflow-auto ${wrap ? "whitespace-pre-wrap break-words" : "whitespace-pre"} font-mono text-[11px] leading-snug text-[var(--text-secondary)] ${ended ? "opacity-60" : ""}`}
-          data-testid="external-session-output"
-          aria-label="Captured terminal output"
-        >
-          <code
-            className={`min-h-full ${wrap ? "w-full" : "min-w-max"} flex flex-col justify-end p-3`}
-            data-testid="external-session-output-content"
+        {showConversation ? (
+          <div
+            ref={setScrollElement}
+            onScroll={handleScroll}
+            className="absolute inset-0 overflow-auto bg-[var(--bg-primary)]"
+            data-testid="external-session-scroll"
+            aria-label="External session conversation"
           >
-            <span>{outputNode}</span>
-          </code>
-        </pre>
+            <div
+              className="min-h-full flex flex-col justify-end py-3"
+              data-testid="external-session-conversation"
+            >
+              {currentTranscript?.truncated && (
+                <div className="mx-4 mb-2 text-center text-[10px] text-[var(--text-tertiary)]">
+                  Earlier transcript content omitted by read limits.
+                </div>
+              )}
+              <ExternalTranscriptTimeline
+                entries={currentTranscript?.entries ?? []}
+                ended={ended}
+              />
+            </div>
+          </div>
+        ) : (
+          <pre
+            ref={setScrollElement}
+            onScroll={handleScroll}
+            className={`absolute inset-0 m-0 overflow-auto ${wrap ? "whitespace-pre-wrap break-words" : "whitespace-pre"} font-mono text-[11px] leading-snug text-[var(--text-secondary)] ${ended ? "opacity-60" : ""}`}
+            data-testid="external-session-output"
+            aria-label="Captured terminal output"
+          >
+            <code
+              className={`min-h-full ${wrap ? "w-full" : "min-w-max"} flex flex-col justify-end p-3`}
+              data-testid="external-session-output-content"
+            >
+              <span>{outputNode}</span>
+            </code>
+          </pre>
+        )}
         {ended && (
           <span className="absolute top-2 right-3 pointer-events-none text-[9px] uppercase tracking-widest font-semibold px-1.5 py-0.5 rounded bg-[var(--bg-tertiary)] border border-[var(--border-subtle)] text-[var(--text-tertiary)]">
             frozen — no further output
@@ -509,7 +738,7 @@ export function ExternalSessionDetail({
             className="absolute top-2 left-3 max-w-[70%] truncate text-[10px] px-2 py-1 rounded bg-[var(--bg-tertiary)] border border-[var(--border-subtle)] text-[var(--accent-red)]"
             title={error.message}
           >
-            Capture refresh failed
+            Detail refresh failed
           </span>
         )}
         {showScrollButton && (

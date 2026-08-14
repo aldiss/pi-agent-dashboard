@@ -564,6 +564,144 @@ describe("SessionList folder grouping toggle", () => {
   });
 });
 
+describe("SessionList Cells/Folders grouping controls", () => {
+  const cellGrouping = {
+    owners: {
+      "paneview-external-tmux": { owner: "Paneview", cell: null },
+    },
+    drivers: [
+      { realName: "Paneview", tmux: "paneview-driver", cell: "Paneview" },
+    ],
+  };
+
+  function groupingSessions(): DashboardSession[] {
+    return [
+      makeSession({
+        id: "paneview-pi",
+        name: "Paneview",
+        cwd: "/repo/paneview-pi",
+        source: "tmux",
+        isRegisteredDriver: true,
+      }),
+      makeSession({
+        id: "paneview-external",
+        name: "Paneview external",
+        cwd: "/repo/paneview-external",
+        source: "codex",
+        external: {
+          runtime: "codex",
+          tmuxSession: "paneview-external-tmux",
+          readOnly: true,
+        },
+      }),
+      makeSession({
+        id: "unlinked",
+        name: "Unlinked",
+        cwd: "/repo/unlinked",
+      }),
+    ];
+  }
+
+  function renderGroupingList() {
+    const sessions = groupingSessions();
+    const view = render(
+      <TestRouter>
+        <ThemeProvider>
+          <SkinProvider>
+            <SessionList
+              sessions={sessions}
+              cellGrouping={cellGrouping}
+              onSelect={() => {}}
+              onSpawnSession={() => {}}
+            />
+          </SkinProvider>
+        </ThemeProvider>
+      </TestRouter>,
+    );
+    return { ...view, sessions };
+  }
+
+  function sessionIds(container: ParentNode): string[] {
+    return Array.from(container.querySelectorAll("[data-session-id]"))
+      .map((element) => element.getAttribute("data-session-id"))
+      .filter((id): id is string => id !== null);
+  }
+
+  it("renders sibling Folders and Cells controls with exactly one aria-pressed", () => {
+    renderGroupingList();
+
+    const folders = screen.getByRole("button", { name: "Folders" });
+    const cells = screen.getByRole("button", { name: "Cells" });
+    expect(folders.parentElement).toBe(cells.parentElement);
+    expect(folders.getAttribute("aria-pressed")).toBe("true");
+    expect(cells.getAttribute("aria-pressed")).toBe("false");
+  });
+
+  it("clicking Cells persists cell mode and groups linked panes without loss or duplication", () => {
+    const { container, sessions } = renderGroupingList();
+
+    fireEvent.click(screen.getByRole("button", { name: "Cells" }));
+
+    expect(screen.getByRole("button", { name: "Cells" }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("button", { name: "Folders" }).getAttribute("aria-pressed")).toBe("false");
+    expect(localStorage.getItem("dashboard:groupByCell")).toBe("true");
+    expect(localStorage.getItem("dashboard:groupByFolder")).toBe("false");
+
+    const paneviewGroups = screen.getAllByTestId("cell-group-Paneview");
+    expect(paneviewGroups).toHaveLength(1);
+    expect(paneviewGroups[0]!.textContent).toContain("Paneview");
+    expect(paneviewGroups[0]!.textContent).toContain("(2)");
+    expect(sessionIds(paneviewGroups[0]!)).toEqual([
+      "paneview-pi",
+      "paneview-external",
+    ]);
+
+    const ungrouped = screen.getByTestId("cell-group-__ungrouped__");
+    expect(ungrouped.textContent).toContain("Ungrouped");
+    expect(ungrouped.textContent).toContain("(1)");
+    expect(sessionIds(ungrouped)).toEqual(["unlinked"]);
+
+    const renderedIds = sessionIds(container);
+    expect(renderedIds).toHaveLength(sessions.length);
+    expect(new Set(renderedIds).size).toBe(sessions.length);
+    expect([...renderedIds].sort()).toEqual(sessions.map((session) => session.id).sort());
+  });
+
+  it("clicking Folders restores folder grouping and persists the inverse mode", () => {
+    renderGroupingList();
+
+    fireEvent.click(screen.getByRole("button", { name: "Cells" }));
+    fireEvent.click(screen.getByRole("button", { name: "Folders" }));
+
+    expect(screen.getByRole("button", { name: "Folders" }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("button", { name: "Cells" }).getAttribute("aria-pressed")).toBe("false");
+    expect(localStorage.getItem("dashboard:groupByFolder")).toBe("true");
+    expect(localStorage.getItem("dashboard:groupByCell")).toBe("false");
+    expect(screen.queryByTestId("cell-group-Paneview")).toBeNull();
+    expect(screen.queryByTestId("cell-group-__ungrouped__")).toBeNull();
+    expect(screen.getAllByTestId("spawn-session-btn").length).toBeGreaterThan(0);
+  });
+
+  it("shows the empty state in Cells mode when only an empty pinned folder exists", () => {
+    localStorage.setItem("dashboard:groupByCell", "true");
+    localStorage.setItem("dashboard:groupByFolder", "false");
+
+    render(
+      <TestRouter><ThemeProvider><SkinProvider>
+        <SessionList
+          sessions={[]}
+          cellGrouping={{ owners: {}, drivers: [] }}
+          pinnedDirectories={["/empty-pin"]}
+          hasLoadedOnce
+          onSelect={() => {}}
+        />
+      </SkinProvider></ThemeProvider></TestRouter>,
+    );
+
+    expect(screen.getByTestId("session-list-empty")).toBeTruthy();
+  });
+});
+
 describe("SessionList — needs-you partition applies in SEARCH mode (build-2 fix-cycle NIT 1)", () => {
   function cardOrder(container: HTMLElement): string[] {
     return Array.from(container.querySelectorAll("[data-session-id]")).map(

@@ -12,6 +12,8 @@ import {
   setHideStale,
   getGroupByFolder,
   setGroupByFolder,
+  getGroupByCell,
+  setGroupByCell,
 } from "../session-filter-storage.js";
 
 // Node 25's built-in localStorage overrides jsdom's and lacks standard methods.
@@ -113,6 +115,14 @@ describe("session-filter-storage", () => {
       expect(getCollapsedGroups()).toEqual(new Set(["tier:worker", "tier:standing-crew", "tier:cell-executor"]));
     });
 
+    it("preserves __cell__:* keys even when knownCwds is empty", () => {
+      setCollapsedGroups(new Set(["__cell__:Paneview", "__cell__:__ungrouped__"]));
+      const result = pruneStaleCollapsedGroups(new Set());
+
+      expect(result).toEqual(new Set(["__cell__:Paneview", "__cell__:__ungrouped__"]));
+      expect(getCollapsedGroups()).toEqual(result);
+    });
+
     it("preserves cwd-keys present in knownCwds and tier:* keys together", () => {
       setCollapsedGroups(new Set(["/a", "/b", "tier:worker"]));
       const result = pruneStaleCollapsedGroups(new Set(["/a", "/b"]));
@@ -195,6 +205,25 @@ describe("session-filter-storage", () => {
     it("round-trips false", () => {
       setGroupByFolder(false);
       expect(getGroupByFolder()).toBe(false);
+    });
+  });
+
+  describe("getGroupByCell / setGroupByCell", () => {
+    it("defaults to false when dashboard:groupByCell is absent", () => {
+      expect(getGroupByCell()).toBe(false);
+    });
+
+    it("persists true under dashboard:groupByCell", () => {
+      setGroupByCell(true);
+      expect(store.get("dashboard:groupByCell")).toBe("true");
+      expect(getGroupByCell()).toBe(true);
+    });
+
+    it("round-trips false under dashboard:groupByCell", () => {
+      setGroupByCell(true);
+      setGroupByCell(false);
+      expect(store.get("dashboard:groupByCell")).toBe("false");
+      expect(getGroupByCell()).toBe(false);
     });
   });
 });

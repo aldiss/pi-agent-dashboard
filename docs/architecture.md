@@ -123,21 +123,65 @@ TypeScript type definitions shared across all components:
 - `scanner.ts::captureOne()` captures separate 1000-line drill buffer.
 - Drill buffer stays separate from canonical sample.
 - Drill buffer never stamps `outputChangedAt`.
-- Registry retains ended sessions for 24 hours.
 - Capture polling renews 30-second active-view lease.
+- Registry retains ended sessions for 24 hours.
 - Active-view lease blocks ended-session pruning.
 - `App.tsx` polls `GET /api/external-sessions`.
+- `GET /api/external-sessions` returns `{ sessions, owners, drivers }`.
+- `owners` exposes sanitized `{ owner, cell }` records keyed by tmux session name.
+- `owners-reader.ts` reads `~/.pi/orchestration-state/external-session-owners.json`.
+- Owners reader caches results for 5 seconds.
+- Missing or malformed owners file yields `{}`.
+- `drivers` exposes sanitized `{ realName, tmux, cell }` records from `cell-driver-registry.json`.
 - `mapExternalSession()` builds read-only `DashboardSession` values.
 - `mergeExternalSessions()` appends mapped values to derived session arrays.
 - WebSocket-owned `sessions` Map stays pi-only.
+- `Cells` mode groups sessions across role tiers.
+- Unlinked sessions enter `Ungrouped`.
 - `SessionList` passes render-time `Date.now()` to external cards.
 - Selected ended external card stays visible when ended section stays collapsed.
-- `ExternalSessionDetail` polls `GET /api/external-sessions/:id/capture` only.
-- `<pre className="whitespace-pre">` renders capture without pane writes.
-- Ended view freezes visible output.
-- Keepalive polls renew lease without replacing frozen output.
+- `transcript-reader.ts` reads runtime PID start time and `CODEX_HOME` through `ps`.
+- Codex locator scans `<CODEX_HOME>/sessions/**/rollout-*.jsonl`.
+- Missing `CODEX_HOME` falls back to `~/.codex`.
+- Claude Code locator scans direct `~/.claude/projects/<cwd-slug>/*.jsonl` children only.
+- Claude Code locator excludes nested subagent logs.
+- Claude Code locator builds `<cwd-slug>` by replacing `/` with `-`.
+- Locator selects nearest file birthtime at or after process start.
+- Locator never selects newest file or mtime.
+- Location cache keys session id plus runtime PID.
+- Live missing file or changed PID triggers fresh resolution.
+- Live external-session scan primes transcript locator cache.
+- Primed path lets first-open retained ended session read transcript after PID exit.
+- `readJsonlTail()` opens transcript read-only.
+- Reader caps tail at 2 MiB and 2,000 physical JSONL records.
+- Reader drops partial head row and ignores incomplete append snapshot.
+- `parseClaudeTranscript()` normalizes messages, thinking, tool use, and tool results.
+- `parseCodexTranscript()` normalizes messages, reasoning, function/custom calls, outputs, patches, and task status.
+- Parsers omit encrypted or unrenderable blocks.
+- Normalized tool entries preserve runtime call id for result correlation.
+- Generated entry ids stay stable across tail-window slides.
+- Parser returns newest 400 normalized entries in source order.
+- Parser caps aggregate normalized entry payload at 768 KiB.
+- Parser caps each tool result at 64 KiB UTF-8.
+- Truncated tool result ends with `… truncated`.
+- Read-byte, record, entry, aggregate-payload, or tool-result cap sets `truncated: true`.
+- Failed lookup or read returns `source: "capture"` with empty entries.
+- Successful lookup returns runtime source plus `transcriptPath`.
+- Ended session with same PID reuses last parsed response.
+- `GET /api/external-sessions/:id/transcript` runs `networkGuard`.
+- Transcript route resolves session through registry and returns `404` for unknown id.
+- `ExternalSessionDetail` polls capture and transcript routes together every 2 seconds.
+- Runtime transcript renders user and assistant messages through `MarkdownContent`.
+- Runtime transcript renders reasoning through `ThinkingBlock`.
+- Runtime transcript renders correlated calls and results through `ToolCallStep`.
+- `Raw terminal` toggle exposes literal capture with wrap and search controls.
+- `source: "capture"` shows explicit fallback notice and raw terminal output.
+- Tail-follow tracks structured entry growth or raw capture growth.
+- Ended client view freezes visible transcript and scroll position.
+- Ended keepalive polls capture route without replacing frozen content.
 - Footer copies `tmux -L pi attach -t <session>` command to clipboard.
-- Detail view exposes no composer or pane-write control.
+- `/api/external-sessions*` exposes GET routes only.
+- Detail view exposes no composer, `contenteditable`, pane write, or terminal emulator.
 
 ### Interactive UI Flow (PromptBus — extension dialog → browser → response)
 1. Extension calls `ctx.ui.confirm()` / `select()` / `input()` / `editor()` / bridge-patched `multiselect()`

@@ -7,6 +7,9 @@ import type { DashboardSession } from "@blackbelt-technology/pi-dashboard-shared
 import {
   groupSessionsByDirectory,
   groupTierByFolder,
+  groupSessionsByCell,
+  resolveSessionCell,
+  UNGROUPED_CELL_KEY,
   filterStaleSessions,
   classifyTier,
   groupSessionsByTier,
@@ -413,5 +416,174 @@ describe("groupTierByFolder", () => {
   it("returns no buckets for empty input in either mode", () => {
     expect(groupTierByFolder([], false)).toHaveLength(0);
     expect(groupTierByFolder([], true)).toHaveLength(0);
+  });
+});
+
+describe("resolveSessionCell", () => {
+  const cellGrouping = {
+    owners: {
+      "external-with-cell": { owner: "RemoteOwner", cell: "RemoteCell" },
+      "external-owner-fallback": { owner: "OwnerFallback", cell: null },
+    },
+    drivers: [
+      { realName: "Paneview", tmux: "paneview-driver", cell: "Paneview" },
+    ],
+  };
+
+  function piDriver(name: string): DashboardSession {
+    return {
+      ...mk(`pi-${name}`, "/repo/pi", 100),
+      name,
+      source: "tmux",
+      isRegisteredDriver: true,
+    };
+  }
+
+  function external(tmuxSession: string): DashboardSession {
+    return {
+      ...mk(`external-${tmuxSession}`, "/repo/external", 100),
+      source: "codex",
+      external: {
+        runtime: "codex",
+        tmuxSession,
+        readOnly: true,
+      },
+    } as DashboardSession;
+  }
+
+  it("resolves a pi driver cell by either driver realName or tmux name", () => {
+    expect(resolveSessionCell(piDriver("Paneview"), cellGrouping)).toBe("Paneview");
+    expect(resolveSessionCell(piDriver("paneview-driver"), cellGrouping)).toBe("Paneview");
+  });
+
+  it("matches driver names case-insensitively and ignores dashboard status suffixes", () => {
+    expect(resolveSessionCell(piDriver("PANEVIEW"), cellGrouping)).toBe("Paneview");
+    expect(resolveSessionCell(piDriver("Paneview — HOLD-WARM"), cellGrouping)).toBe("Paneview");
+  });
+
+  it("resolves an external pane from its owner record's explicit cell", () => {
+    expect(resolveSessionCell(external("external-with-cell"), cellGrouping)).toBe("RemoteCell");
+  });
+
+  it("falls back to the owner name when an external owner record has a null cell", () => {
+    expect(resolveSessionCell(external("external-owner-fallback"), cellGrouping)).toBe("OwnerFallback");
+  });
+
+  it("returns the Ungrouped key for an unlinked session", () => {
+    expect(UNGROUPED_CELL_KEY).toBe("__ungrouped__");
+    expect(resolveSessionCell(external("not-in-owners"), cellGrouping)).toBe(UNGROUPED_CELL_KEY);
+  });
+});
+
+describe("groupSessionsByCell", () => {
+  function piDriver(id: string, name: string, cwd: string): DashboardSession {
+    return {
+      ...mk(id, cwd, 100),
+      name,
+      source: "tmux",
+      isRegisteredDriver: true,
+    };
+  }
+
+  function external(id: string, tmuxSession: string, cwd: string): DashboardSession {
+    return {
+      ...mk(id, cwd, 100),
+      source: "codex",
+      external: {
+        runtime: "codex",
+        tmuxSession,
+        readOnly: true,
+      },
+    } as DashboardSession;
+  }
+
+  it("puts a Paneview pi driver and its owned external pane in one cell group", () => {
+    const sessions = [
+      piDriver("paneview-pi", "Paneview", "/repo/pi"),
+      external("paneview-external", "paneview-external-tmux", "/repo/external"),
+    ];
+    const groups = groupSessionsByCell(sessions, {
+      owners: {
+        "paneview-external-tmux": { owner: "Paneview", cell: null },
+      },
+      drivers: [
+        { realName: "Paneview", tmux: "paneview-driver", cell: "Paneview" },
+      ],
+    });
+
+    expect(groups).toHaveLength(1);
+    expect(groups[0]!.key).toBe("Paneview");
+    expect(groups[0]!.label).toBe("Paneview");
+    expect(groups[0]!.sessions.map((session) => session.id).sort()).toEqual([
+      "paneview-external",
+      "paneview-pi",
+    ]);
+  });
+
+  it("joins two different drivers assigned to the same cell", () => {
+    const groups = groupSessionsByCell(
+      [
+        piDriver("driver-a", "DriverA", "/repo/a"),
+        piDriver("driver-b", "DriverB", "/repo/b"),
+      ],
+      {
+        owners: {},
+        drivers: [
+          { realName: "DriverA", tmux: "driver-a-tmux", cell: "SharedCell" },
+          { realName: "DriverB", tmux: "driver-b-tmux", cell: "SharedCell" },
+        ],
+      },
+    );
+
+    expect(groups).toHaveLength(1);
+    expect(groups[0]!.key).toBe("SharedCell");
+    expect(groups[0]!.sessions.map((session) => session.id).sort()).toEqual([
+      "driver-a",
+      "driver-b",
+    ]);
+  });
+
+  it("keeps every session exactly once in one Ungrouped group when metadata is missing or empty", () => {
+    const sessions = [
+      piDriver("driver", "UnknownDriver", "/repo/driver"),
+      external("external", "unknown-external", "/repo/external"),
+      mk("plain", "/repo/plain", 300),
+    ];
+
+    for (const metadata of [undefined, { owners: {}, drivers: [] }]) {
+      const groups = groupSessionsByCell(sessions, metadata);
+      expect(groups).toHaveLength(1);
+      expect(groups[0]!.key).toBe(UNGROUPED_CELL_KEY);
+      expect(groups[0]!.label).toBe("Ungrouped");
+      expect(groups[0]!.sessions.map((session) => session.id)).toEqual([
+        "driver",
+        "external",
+        "plain",
+      ]);
+    }
+  });
+
+  it("sorts the Ungrouped group after every named cell group", () => {
+    const groups = groupSessionsByCell(
+      [
+        mk("unlinked", "/repo/unlinked", 300),
+        piDriver("zeta", "ZetaDriver", "/repo/zeta"),
+        piDriver("alpha", "AlphaDriver", "/repo/alpha"),
+      ],
+      {
+        owners: {},
+        drivers: [
+          { realName: "ZetaDriver", tmux: null, cell: "Zeta" },
+          { realName: "AlphaDriver", tmux: null, cell: "Alpha" },
+        ],
+      },
+    );
+
+    expect(groups.map((group) => group.key)).toEqual(expect.arrayContaining([
+      "Alpha",
+      "Zeta",
+      UNGROUPED_CELL_KEY,
+    ]));
+    expect(groups.at(-1)?.key).toBe(UNGROUPED_CELL_KEY);
   });
 });

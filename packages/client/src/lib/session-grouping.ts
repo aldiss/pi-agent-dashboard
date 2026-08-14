@@ -4,6 +4,7 @@
  */
 import type { DashboardSession } from "@blackbelt-technology/pi-dashboard-shared/types.js";
 import type { TerminalSession } from "@blackbelt-technology/pi-dashboard-shared/terminal-types.js";
+import type { ExternalSessionsResponse } from "@blackbelt-technology/pi-dashboard-shared/external-session.js";
 import { normalizePath } from "@blackbelt-technology/pi-dashboard-shared/platform/paths.js";
 import { isNeedsYou } from "./card-state.js";
 import { activityTimestamp } from "./session-card-time.js";
@@ -52,6 +53,77 @@ export interface DirectoryGroup {
   cwd: string;
   sessions: DashboardSession[];
   pinned: boolean;
+}
+
+export const UNGROUPED_CELL_KEY = "__ungrouped__";
+
+export type CellGroupingMetadata = Pick<ExternalSessionsResponse, "owners" | "drivers">;
+
+export interface CellGroup {
+  key: string;
+  label: string;
+  sessions: DashboardSession[];
+}
+
+function cellDriverLookupKeys(value: string | null | undefined): string[] {
+  if (!value) return [];
+  const trimmed = value.trim();
+  if (trimmed === "") return [];
+  const keys = [trimmed.toLowerCase()];
+  const suffixIndex = trimmed.indexOf(" — ");
+  if (suffixIndex > 0) keys.push(trimmed.slice(0, suffixIndex).trim().toLowerCase());
+  return keys;
+}
+
+/** Resolve a dashboard session to its server-reported orchestration cell. */
+export function resolveSessionCell(
+  session: DashboardSession,
+  cellGrouping?: CellGroupingMetadata,
+): string {
+  if (!cellGrouping) return UNGROUPED_CELL_KEY;
+
+  const externalTmux = session.external?.tmuxSession;
+  if (externalTmux) {
+    const owner = cellGrouping.owners[externalTmux];
+    if (!owner) return UNGROUPED_CELL_KEY;
+    return owner.cell || owner.owner || UNGROUPED_CELL_KEY;
+  }
+
+  const sessionName = session.name;
+  if (!sessionName) return UNGROUPED_CELL_KEY;
+  const sessionKeys = new Set(cellDriverLookupKeys(sessionName));
+  const driver = cellGrouping.drivers.find((candidate) =>
+    [...cellDriverLookupKeys(candidate.realName), ...cellDriverLookupKeys(candidate.tmux)]
+      .some((key) => sessionKeys.has(key)),
+  );
+  if (!driver) return UNGROUPED_CELL_KEY;
+  return driver.cell || driver.realName || UNGROUPED_CELL_KEY;
+}
+
+/** Group sessions by orchestration cell, keeping every session exactly once. */
+export function groupSessionsByCell(
+  sessions: DashboardSession[],
+  cellGrouping?: CellGroupingMetadata,
+): CellGroup[] {
+  const byCell = new Map<string, DashboardSession[]>();
+  for (const session of sessions) {
+    const key = resolveSessionCell(session, cellGrouping);
+    const existing = byCell.get(key);
+    if (existing) existing.push(session);
+    else byCell.set(key, [session]);
+  }
+
+  return [...byCell.entries()]
+    .map(([key, groupedSessions]) => ({
+      key,
+      label: key === UNGROUPED_CELL_KEY ? "Ungrouped" : key,
+      sessions: groupedSessions,
+    }))
+    .sort((a, b) => {
+      if (a.key === UNGROUPED_CELL_KEY) return 1;
+      if (b.key === UNGROUPED_CELL_KEY) return -1;
+      return a.label.localeCompare(b.label);
+    });
 }
 
 /** Sort sessions within a group by server order, then by startedAt descending for unordered ones. */

@@ -1,5 +1,5 @@
 import Fastify, { type FastifyInstance } from "fastify";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { registerExternalSessionRoutes } from "../routes/external-session-routes.js";
 import {
   createExternalSessionRegistry,
@@ -16,6 +16,17 @@ function observation(output: string): ExternalSessionObservation {
     effort: "ultra",
     output,
     lineCount: output.split("\n").length,
+  };
+}
+
+function makeTranscriptReader() {
+  return {
+    read: vi.fn(async (session: { id: string }) => ({
+      id: session.id,
+      source: "capture" as const,
+      entries: [],
+      truncated: false,
+    })),
   };
 }
 
@@ -40,6 +51,7 @@ describe("external-session routes", () => {
     registerExternalSessionRoutes(fastify, {
       registry,
       networkGuard: async () => {},
+      transcriptReader: makeTranscriptReader(),
     });
 
     const first = await fastify.inject({ method: "GET", url: "/api/external-sessions" });
@@ -76,6 +88,7 @@ describe("external-session routes", () => {
     registerExternalSessionRoutes(fastify, {
       registry,
       networkGuard: async () => {},
+      transcriptReader: makeTranscriptReader(),
     });
 
     t = 2_099;
@@ -90,5 +103,179 @@ describe("external-session routes", () => {
     registry.refresh();
     const list = await fastify.inject({ method: "GET", url: "/api/external-sessions" });
     expect(list.json().sessions).toHaveLength(1);
+  });
+
+  it("returns the injected reader's structured transcript for a known session", async () => {
+    const registry = createExternalSessionRegistry({
+      scan: () => [observation("raw fallback")],
+      isLive: () => true,
+      now: () => 1_000,
+    });
+    registry.refresh();
+    const networkGuard = vi.fn(async () => {});
+    const transcriptReader = {
+      read: vi.fn(async (session: { id: string }) => ({
+        id: session.id,
+        source: "codex" as const,
+        entries: [
+          {
+            id: "entry-1",
+            ts: 1_000,
+            kind: "assistant" as const,
+            text: "Structured answer",
+          },
+        ],
+        truncated: false,
+        transcriptPath: "/tmp/codex-home/sessions/rollout.jsonl",
+      })),
+    };
+    fastify = Fastify();
+    registerExternalSessionRoutes(fastify, { registry, networkGuard, transcriptReader });
+
+    const response = await fastify.inject({
+      method: "GET",
+      url: "/api/external-sessions/codex%3Acx-gap2/transcript",
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      id: "codex:cx-gap2",
+      source: "codex",
+      entries: [
+        {
+          id: "entry-1",
+          ts: 1_000,
+          kind: "assistant",
+          text: "Structured answer",
+        },
+      ],
+      truncated: false,
+      transcriptPath: "/tmp/codex-home/sessions/rollout.jsonl",
+    });
+    expect(networkGuard).toHaveBeenCalledTimes(1);
+    expect(transcriptReader.read).toHaveBeenCalledTimes(1);
+    expect(transcriptReader.read.mock.calls[0]?.[0]).toMatchObject({
+      id: "codex:cx-gap2",
+      runtime: "codex",
+      runtimePid: 40716,
+    });
+  });
+
+  it("returns 404 for an unknown transcript id without calling the reader", async () => {
+    const registry = createExternalSessionRegistry({ scan: () => [], isLive: () => true });
+    const transcriptReader = makeTranscriptReader();
+    fastify = Fastify();
+    registerExternalSessionRoutes(fastify, {
+      registry,
+      transcriptReader,
+      networkGuard: async () => {},
+    });
+
+    const response = await fastify.inject({
+      method: "GET",
+      url: "/api/external-sessions/codex%3Amissing/transcript",
+    });
+
+    expect(response.statusCode).toBe(404);
+    expect(response.json()).toEqual({ error: "unknown external session: codex:missing" });
+    expect(transcriptReader.read).not.toHaveBeenCalled();
+  });
+
+  it("runs networkGuard before transcript lookup", async () => {
+    const registry = createExternalSessionRegistry({
+      scan: () => [observation("raw fallback")],
+      isLive: () => true,
+    });
+    registry.refresh();
+    const transcriptReader = makeTranscriptReader();
+    const networkGuard = vi.fn(async (_request, reply) => {
+      reply.code(403).send({ success: false, error: "Access denied" });
+    });
+    fastify = Fastify();
+    registerExternalSessionRoutes(fastify, { registry, transcriptReader, networkGuard });
+
+    const response = await fastify.inject({
+      method: "GET",
+      url: "/api/external-sessions/codex%3Acx-gap2/transcript",
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(response.json()).toEqual({ success: false, error: "Access denied" });
+    expect(networkGuard).toHaveBeenCalledTimes(1);
+    expect(transcriptReader.read).not.toHaveBeenCalled();
+  });
+
+  it("includes injected external-session owners and cell drivers in the list response", async () => {
+    const registry = createExternalSessionRegistry({ scan: () => [], isLive: () => true });
+    const networkGuard = vi.fn(async () => {});
+    const ownersReader = {
+      getOwners: vi.fn(() => ({
+        "cx-gap2": { owner: "Seatwright", cell: "cell-alpha" },
+        "claude-review": { owner: "Docket", cell: null },
+      })),
+    };
+    const driverRegistry = {
+      getCellDrivers: vi.fn(() => [
+        { realName: "Seatwright", tmux: "seatwright-live", cell: "cell-alpha" },
+        { realName: "Docket", tmux: null, cell: null },
+      ]),
+    };
+    fastify = Fastify();
+    registerExternalSessionRoutes(fastify, {
+      registry,
+      networkGuard,
+      transcriptReader: makeTranscriptReader(),
+      ownersReader,
+      driverRegistry,
+    });
+
+    const response = await fastify.inject({
+      method: "GET",
+      url: "/api/external-sessions",
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      sessions: [],
+      owners: {
+        "cx-gap2": { owner: "Seatwright", cell: "cell-alpha" },
+        "claude-review": { owner: "Docket", cell: null },
+      },
+      drivers: [
+        { realName: "Seatwright", tmux: "seatwright-live", cell: "cell-alpha" },
+        { realName: "Docket", tmux: null, cell: null },
+      ],
+    });
+    expect(networkGuard).toHaveBeenCalledTimes(1);
+    expect(ownersReader.getOwners).toHaveBeenCalledTimes(1);
+    expect(driverRegistry.getCellDrivers).toHaveBeenCalledTimes(1);
+  });
+
+  it("runs networkGuard before reading external-session list metadata", async () => {
+    const registry = createExternalSessionRegistry({ scan: () => [], isLive: () => true });
+    const ownersReader = { getOwners: vi.fn(() => ({})) };
+    const driverRegistry = { getCellDrivers: vi.fn(() => []) };
+    const networkGuard = vi.fn(async (_request, reply) => {
+      reply.code(403).send({ success: false, error: "Access denied" });
+    });
+    fastify = Fastify();
+    registerExternalSessionRoutes(fastify, {
+      registry,
+      networkGuard,
+      transcriptReader: makeTranscriptReader(),
+      ownersReader,
+      driverRegistry,
+    });
+
+    const response = await fastify.inject({
+      method: "GET",
+      url: "/api/external-sessions",
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(response.json()).toEqual({ success: false, error: "Access denied" });
+    expect(networkGuard).toHaveBeenCalledTimes(1);
+    expect(ownersReader.getOwners).not.toHaveBeenCalled();
+    expect(driverRegistry.getCellDrivers).not.toHaveBeenCalled();
   });
 });
