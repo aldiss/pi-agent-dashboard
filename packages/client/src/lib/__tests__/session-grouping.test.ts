@@ -366,11 +366,11 @@ describe("groupSessionsByTier", () => {
 });
 
 describe("SESSION_TIER_ORDER", () => {
-  it("is the canonical 7-element order with drivers after standing-crew and external below drivers", () => {
+  it("is the canonical 7-element order with external directly below standing-crew", () => {
     expect(SESSION_TIER_ORDER).toEqual([
       "standing-crew",
-      "drivers",
       "external",
+      "drivers",
       "cell-executor",
       "operator-chat-pane",
       "worker",

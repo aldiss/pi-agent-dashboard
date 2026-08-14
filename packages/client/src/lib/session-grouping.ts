@@ -264,15 +264,16 @@ export function filterStaleSessions(
  * Coarse-grained role tier the session belongs to, for sidebar primary
  * grouping. Orthogonal to directory grouping (which becomes secondary).
  *
- * Tier order (when rendered): standing-crew → drivers → external →
+ * Tier order (when rendered): standing-crew → external → drivers →
  * cell-executor → operator-chat-pane → worker → other. Empty tiers are omitted
  * by {@link groupSessionsByTier}. `drivers` sits above `cell-executor` because
  * pi-drivers are L2 orchestration peers, above cell-internal workers.
  * `external` (read-only Codex / Claude Code tmux panes) sits directly below
- * `drivers`: they are agent sessions the operator watches, so they must be
- * visible without expanding anything, but they rank below his own crew.
+ * `standing-crew`: measured on the live dashboard, placing it under `drivers`
+ * pushed its header 5075px down the list — rendered, but unreachable without a
+ * long scroll, which defeats the point of showing them at all.
  */
-export type SessionTier = "standing-crew" | "drivers" | "external" | "cell-executor" | "operator-chat-pane" | "worker" | "other";
+export type SessionTier = "standing-crew" | "external" | "drivers" | "cell-executor" | "operator-chat-pane" | "worker" | "other";
 
 /**
  * Canonical tier order used by {@link groupSessionsByTier}. Exported for
@@ -281,8 +282,8 @@ export type SessionTier = "standing-crew" | "drivers" | "external" | "cell-execu
  */
 export const SESSION_TIER_ORDER: ReadonlyArray<SessionTier> = [
   "standing-crew",
-  "drivers",
   "external",
+  "drivers",
   "cell-executor",
   "operator-chat-pane",
   "worker",
