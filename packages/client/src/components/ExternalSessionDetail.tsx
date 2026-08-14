@@ -14,6 +14,8 @@ import {
   mdiEyeOutline,
   mdiMagnify,
   mdiRefresh,
+  mdiWrap,
+  mdiWrapDisabled,
 } from "@mdi/js";
 import {
   fetchExternalSessionCapture,
@@ -24,6 +26,27 @@ import {
 
 const DEFAULT_POLL_INTERVAL_MS = 2_000;
 const SCROLL_THRESHOLD_PX = 64;
+const WRAP_PREF_KEY = "dashboard:externalOutputWrap";
+
+/** Remembered wrap choice; falls back to wrap-on-mobile when unset. */
+function readWrapPref(isMobile: boolean): boolean {
+  try {
+    const stored = window.localStorage.getItem(WRAP_PREF_KEY);
+    if (stored === "true") return true;
+    if (stored === "false") return false;
+  } catch {
+    /* ignore */
+  }
+  return isMobile;
+}
+
+function writeWrapPref(value: boolean): void {
+  try {
+    window.localStorage.setItem(WRAP_PREF_KEY, String(value));
+  } catch {
+    /* ignore */
+  }
+}
 
 export interface ExternalSessionDetailProps {
   sessionId: string;
@@ -91,6 +114,19 @@ export function ExternalSessionDetail({
   const [error, setError] = useState<{ sessionId: string; message: string } | null>(null);
   const [showScrollButton, setShowScrollButton] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
+  // Line wrapping. A tmux capture is 180-206 columns wide; on a phone that runs
+  // off the right edge and the operator has to pan horizontally to read a
+  // sentence. Wrap defaults ON for narrow viewports and OFF on desktop, where
+  // exact column alignment (box-drawing, tables) is worth the horizontal scroll.
+  // The choice is remembered once made.
+  const [wrap, setWrap] = useState<boolean>(() => readWrapPref(isMobile));
+  const toggleWrap = useCallback(() => {
+    setWrap((prev) => {
+      const next = !prev;
+      writeWrapPref(next);
+      return next;
+    });
+  }, []);
   const [searchQuery, setSearchQuery] = useState("");
   const [activeMatch, setActiveMatch] = useState(0);
   const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "failed">("idle");
@@ -363,6 +399,17 @@ export function ExternalSessionDetail({
           )}
           <button
             type="button"
+            onClick={toggleWrap}
+            className={`${isMobile ? "min-w-[44px] min-h-[44px]" : "p-1"} flex items-center justify-center text-[var(--text-muted)] hover:text-[var(--text-primary)]`}
+            aria-label={wrap ? "Show exact lines (no wrapping)" : "Wrap long lines"}
+            aria-pressed={wrap}
+            title={wrap ? "Wrapping on — tap for exact lines" : "Exact lines — tap to wrap"}
+            data-testid="external-session-wrap-toggle"
+          >
+            <Icon path={wrap ? mdiWrap : mdiWrapDisabled} size={isMobile ? 0.75 : 0.65} />
+          </button>
+          <button
+            type="button"
             onClick={toggleSearch}
             className={`${isMobile ? "min-w-[44px] min-h-[44px]" : "p-1"} flex items-center justify-center text-[var(--text-muted)] hover:text-[var(--text-primary)]`}
             aria-label={searchOpen ? "Close output search" : "Search output"}
@@ -441,12 +488,12 @@ export function ExternalSessionDetail({
         <pre
           ref={outputRef}
           onScroll={handleScroll}
-          className={`absolute inset-0 m-0 overflow-auto whitespace-pre font-mono text-[11px] leading-snug text-[var(--text-secondary)] ${ended ? "opacity-60" : ""}`}
+          className={`absolute inset-0 m-0 overflow-auto ${wrap ? "whitespace-pre-wrap break-words" : "whitespace-pre"} font-mono text-[11px] leading-snug text-[var(--text-secondary)] ${ended ? "opacity-60" : ""}`}
           data-testid="external-session-output"
           aria-label="Captured terminal output"
         >
           <code
-            className="min-h-full min-w-max flex flex-col justify-end p-3"
+            className={`min-h-full ${wrap ? "w-full" : "min-w-max"} flex flex-col justify-end p-3`}
             data-testid="external-session-output-content"
           >
             <span>{outputNode}</span>
