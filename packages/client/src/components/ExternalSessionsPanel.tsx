@@ -21,16 +21,28 @@ import { formatRelativeTime } from "../lib/format.js";
 const POLL_INTERVAL_MS = 2_000;
 const COLLAPSED_KEY = "dashboard:externalSessionsCollapsed";
 
-function getCollapsed(): boolean {
+/**
+ * `full`    — dedicated /dashboard page: every session's output rendered inline.
+ * `compact` — main session list sidebar: one row per session (badge / state /
+ *             title / meta); the output is revealed per-row on click, so seven
+ *             sessions don't push the operator's pi sessions off-screen.
+ */
+export type ExternalSessionsVariant = "full" | "compact";
+
+/** Collapse state is per-variant so the sidebar and the page toggle independently. */
+function collapsedKey(variant: ExternalSessionsVariant): string {
+  return variant === "full" ? COLLAPSED_KEY : `${COLLAPSED_KEY}:${variant}`;
+}
+function getCollapsed(variant: ExternalSessionsVariant): boolean {
   try {
-    return window.localStorage.getItem(COLLAPSED_KEY) === "true";
+    return window.localStorage.getItem(collapsedKey(variant)) === "true";
   } catch {
     return false;
   }
 }
-function setCollapsedPersist(value: boolean): void {
+function setCollapsedPersist(variant: ExternalSessionsVariant, value: boolean): void {
   try {
-    window.localStorage.setItem(COLLAPSED_KEY, String(value));
+    window.localStorage.setItem(collapsedKey(variant), String(value));
   } catch {
     /* ignore */
   }
@@ -53,20 +65,52 @@ function relAgo(msEpoch: number): string {
   return `${formatRelativeTime(age < 0 ? 0 : age)} ago`;
 }
 
-function SessionCard({ session }: { session: ExternalSession }): React.ReactElement {
+function SessionCard({
+  session,
+  compact = false,
+}: {
+  session: ExternalSession;
+  compact?: boolean;
+}): React.ReactElement {
   const live = session.state === "live";
   const meta: string[] = [];
   if (session.model) meta.push(session.model);
   if (session.effort) meta.push(session.effort);
+  // Compact rows start closed; the operator opens the one they want to read.
+  const [open, setOpen] = useState<boolean>(false);
+  const showOutput = !compact || open;
 
   return (
     <li
-      className="px-3 py-2.5 border-b border-[var(--border-color)] last:border-b-0"
+      className={`px-3 py-2.5 border-b border-[var(--border-color)] last:border-b-0 ${
+        compact ? "cursor-pointer hover:bg-[var(--bg-surface)] transition-colors" : ""
+      }`}
       data-testid="external-session-card"
       data-runtime={session.runtime}
       data-state={session.state}
+      {...(compact
+        ? {
+            role: "button" as const,
+            tabIndex: 0,
+            "aria-expanded": open,
+            onClick: () => setOpen((v) => !v),
+            onKeyDown: (e: React.KeyboardEvent) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                setOpen((v) => !v);
+              }
+            },
+          }
+        : {})}
     >
       <div className="flex items-center gap-2 flex-wrap">
+        {compact && (
+          <Icon
+            path={open ? mdiChevronDown : mdiChevronRight}
+            size={0.5}
+            className="text-[var(--text-tertiary)] flex-shrink-0"
+          />
+        )}
         <span
           className={`text-[10px] font-semibold px-1.5 py-0.5 rounded border ${runtimeBadgeClasses(session.runtime)}`}
         >
@@ -101,24 +145,33 @@ function SessionCard({ session }: { session: ExternalSession }): React.ReactElem
         </div>
       )}
 
-      <pre
-        className={`mt-1.5 max-h-64 overflow-auto whitespace-pre rounded bg-[var(--bg-primary)] border border-[var(--border-color)] p-2 text-[11px] font-mono leading-snug text-[var(--text-secondary)] ${
-          live ? "" : "opacity-50"
-        }`}
-        data-testid="external-session-output"
-      >
-        {session.output || "(no output captured)"}
-      </pre>
+      {showOutput && (
+        <pre
+          className={`mt-1.5 ${compact ? "max-h-48" : "max-h-64"} overflow-auto whitespace-pre rounded bg-[var(--bg-primary)] border border-[var(--border-color)] p-2 text-[11px] font-mono leading-snug text-[var(--text-secondary)] ${
+            live ? "" : "opacity-50"
+          }`}
+          data-testid="external-session-output"
+          {...(compact ? { onClick: (e: React.MouseEvent) => e.stopPropagation() } : {})}
+        >
+          {session.output || "(no output captured)"}
+        </pre>
+      )}
 
       <div className="mt-1 text-[10px] text-[var(--text-tertiary)]">
         {session.lineCount} line{session.lineCount === 1 ? "" : "s"} · updated {relAgo(session.outputAt)}
+        {compact && !open && <span className="ml-1 opacity-70">· click to read</span>}
       </div>
     </li>
   );
 }
 
-export function ExternalSessionsPanel(): React.ReactElement {
-  const [collapsed, setCollapsed] = useState<boolean>(() => getCollapsed());
+export function ExternalSessionsPanel({
+  variant = "full",
+}: {
+  variant?: ExternalSessionsVariant;
+} = {}): React.ReactElement {
+  const compact = variant === "compact";
+  const [collapsed, setCollapsed] = useState<boolean>(() => getCollapsed(variant));
   const [sessions, setSessions] = useState<ExternalSession[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
@@ -152,10 +205,10 @@ export function ExternalSessionsPanel(): React.ReactElement {
   const toggleCollapsed = useCallback(() => {
     setCollapsed((prev) => {
       const next = !prev;
-      setCollapsedPersist(next);
+      setCollapsedPersist(variant, next);
       return next;
     });
-  }, []);
+  }, [variant]);
   const onRefresh = useCallback(
     (e: React.MouseEvent) => {
       e.stopPropagation();
@@ -192,7 +245,7 @@ export function ExternalSessionsPanel(): React.ReactElement {
         </span>
         <span className="flex items-center gap-1 text-[10px] text-[var(--text-tertiary)] mr-1">
           <Icon path={mdiEyeOutline} size={0.5} />
-          read-only view
+          {compact ? "read-only" : "read-only view"}
         </span>
         <button
           onClick={onRefresh}
@@ -215,7 +268,7 @@ export function ExternalSessionsPanel(): React.ReactElement {
           ) : (
             <ul className="list-none p-0 m-0">
               {sessions.map((s) => (
-                <SessionCard key={s.id} session={s} />
+                <SessionCard key={s.id} session={s} compact={compact} />
               ))}
             </ul>
           )}

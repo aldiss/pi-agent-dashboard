@@ -10,6 +10,7 @@ import { encodeFolderPath } from "../lib/folder-encoding.js";
 import { DndContext, closestCenter, PointerSensor, TouchSensor, useSensor, useSensors, type DragEndEvent } from "@dnd-kit/core";
 import { SortableContext, verticalListSortingStrategy, arrayMove } from "@dnd-kit/sortable";
 import { SortablePinnedGroup } from "./SortablePinnedGroup.js";
+import { ExternalSessionsPanel } from "./ExternalSessionsPanel.js";
 import type { DashboardSession, OpenSpecData, CommandInfo, FlowInfo, ImageContent } from "@blackbelt-technology/pi-dashboard-shared/types.js";
 import type { TerminalSession } from "@blackbelt-technology/pi-dashboard-shared/terminal-types.js";
 import {
@@ -934,6 +935,11 @@ export function SessionList({ sessions, selectedId, onSelect, hasLoadedOnce, con
         </div>
       </div>
       <div ref={listRef} className="flex-1 overflow-y-auto">
+      {/* Codex / Claude Code sessions running in tmux panes — read-only, and
+          rendered here (not only on /dashboard) so they sit in the same list as
+          the operator's pi sessions. Outside the empty/loading branch below so
+          they still show when there are no pi sessions. */}
+      <ExternalSessionsPanel variant="compact" />
       {filteredSessions.length === 0 && pinnedGroups.length === 0 ? (
         // Loading ≠ empty (build-2 fix-cycle-2 MAJOR 1): the calm "No active
         // sessions" copy is a factual claim that the fleet IS empty — it must
