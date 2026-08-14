@@ -9,9 +9,9 @@
  * `createExternalSessionRegistry` = the stateful layer. `refresh()` folds a
  * fresh scan into a persistent store and applies the honesty transitions:
  *   - new session            → add as state:"live"
- *   - present & live          → update output/lastLiveAt/outputAt
+ *   - present & live          → update output/lastLiveAt/outputAt; stamp outputChangedAt on change
  *   - was live, now not live   → state:"ended", set endedAt, FREEZE output, KEEP it
- *   - ended past retention     → prune (never instantly)
+ *   - ended past retention     → prune unless capture polling keeps its view lease active
  *
  * Liveness is a single discrete predicate `isExternalSessionLive` (exported and
  * exposed on the registry). Break it and a dead pane wrongly looks live — that
@@ -36,7 +36,8 @@ import {
 } from "./tmux-read.js";
 import { classifySession, isPiRootArgv, runtimeArgvMatches } from "./classify.js";
 
-export const DEFAULT_RETENTION_MS = 15 * 60 * 1000; // 15 min
+export const DEFAULT_RETENTION_MS = 24 * 60 * 60 * 1000; // 24 hours
+const DEFAULT_VIEW_GRACE_MS = 30 * 1000;
 const LIST_CAPTURE_LINES = 200; // scrollback for the list snapshot
 const DRILL_CAPTURE_LINES = 1000; // larger scrollback for the drill-in
 
@@ -192,6 +193,8 @@ export interface ExternalSessionRegistryDeps {
   /** Fresh larger-scrollback read for a live drill-in (defaults to tmux capture). */
   captureLive?: (sess: string) => { status: number | null; output: string; lineCount: number };
   retentionMs?: number;
+  /** Capture polling renews this lease; ended sessions under lease are not pruned. */
+  viewGraceMs?: number;
 }
 
 export interface ExternalSessionRegistry {
@@ -225,8 +228,11 @@ export function createExternalSessionRegistry(
   const captureLive =
     deps.captureLive ?? ((sess: string) => tmuxCapture(sess, DRILL_CAPTURE_LINES, spawnSync));
   const retentionMs = deps.retentionMs ?? DEFAULT_RETENTION_MS;
+  const viewGraceMs = deps.viewGraceMs ?? DEFAULT_VIEW_GRACE_MS;
 
   const store = new Map<string, ExternalSession>();
+  const viewedUntil = new Map<string, number>();
+  const drillCaptures = new Map<string, { output: string; lineCount: number; capturedAt: number }>();
 
   function idOf(runtime: ExternalRuntime, tmuxSession: string): string {
     return `${runtime}:${tmuxSession}`;
@@ -242,6 +248,7 @@ export function createExternalSessionRegistry(
       observedIds.add(id);
       const existing = store.get(id);
       if (!existing) {
+        drillCaptures.delete(id);
         store.set(id, {
           id,
           runtime: obs.runtime,
@@ -258,15 +265,19 @@ export function createExternalSessionRegistry(
           endedAt: null,
           output: obs.output,
           outputAt: t,
+          outputChangedAt: null,
           lineCount: obs.lineCount,
         });
       } else {
         // Present & observed → live. Revive if it had been marked ended and
         // the same id reappeared (operator relaunched in the same tmux session).
+        if (existing.state === "ended") drillCaptures.delete(id);
+        const outputChanged = existing.output !== obs.output;
         existing.state = "live";
         existing.endedAt = null;
         existing.output = obs.output;
         existing.outputAt = t;
+        if (outputChanged) existing.outputChangedAt = t;
         existing.lineCount = obs.lineCount;
         existing.lastLiveAt = t;
         if (obs.cwd != null) existing.cwd = obs.cwd;
@@ -280,7 +291,12 @@ export function createExternalSessionRegistry(
     for (const [id, s] of store) {
       if (observedIds.has(id)) continue;
       if (s.state === "ended") {
-        if (s.endedAt != null && t - s.endedAt >= retentionMs) store.delete(id);
+        const viewLeaseActive = t < (viewedUntil.get(id) ?? 0);
+        if (s.endedAt != null && t - s.endedAt >= retentionMs && !viewLeaseActive) {
+          store.delete(id);
+          viewedUntil.delete(id);
+          drillCaptures.delete(id);
+        }
         continue;
       }
       if (isLive(s)) {
@@ -303,20 +319,36 @@ export function createExternalSessionRegistry(
   function captureOne(id: string) {
     const s = store.get(id);
     if (!s) return null;
+    const t = now();
+    viewedUntil.set(id, t + viewGraceMs);
     if (s.state === "ended") {
       // Frozen output — never re-read a dead pane.
-      return { id, output: s.output, lineCount: s.lineCount, state: s.state, capturedAt: s.outputAt };
+      const drill = drillCaptures.get(id);
+      return {
+        id,
+        output: drill?.output ?? s.output,
+        lineCount: drill?.lineCount ?? s.lineCount,
+        state: s.state,
+        capturedAt: drill?.capturedAt ?? s.outputAt,
+      };
     }
     const cap = captureLive(s.tmuxSession);
     if (cap.status === 0) {
-      const t = now();
-      s.output = cap.output;
-      s.outputAt = t;
-      s.lineCount = cap.lineCount;
+      // Detail reads 1000 lines while refresh samples 200. Keep them separate:
+      // comparing/replacing across capture depths would fabricate activity on
+      // every detail poll and the following list refresh.
+      drillCaptures.set(id, { output: cap.output, lineCount: cap.lineCount, capturedAt: t });
       return { id, output: cap.output, lineCount: cap.lineCount, state: s.state, capturedAt: t };
     }
     // Read failed — fall back to the last known output without lying about state.
-    return { id, output: s.output, lineCount: s.lineCount, state: s.state, capturedAt: s.outputAt };
+    const drill = drillCaptures.get(id);
+    return {
+      id,
+      output: drill?.output ?? s.output,
+      lineCount: drill?.lineCount ?? s.lineCount,
+      state: s.state,
+      capturedAt: drill?.capturedAt ?? s.outputAt,
+    };
   }
 
   return {

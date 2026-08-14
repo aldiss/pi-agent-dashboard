@@ -55,11 +55,14 @@ function driver(overrides: Partial<DashboardSession> = {}): DashboardSession {
   };
 }
 
-function renderList(sessions: DashboardSession[]) {
+function renderList(
+  sessions: DashboardSession[],
+  contextUsageMap?: Map<string, { tokens: number | null; contextWindow: number }>,
+) {
   return render(
     <TestRouter>
       <ThemeProvider>
-        <SessionList sessions={sessions} onSelect={() => {}} />
+        <SessionList sessions={sessions} onSelect={() => {}} contextUsageMap={contextUsageMap} />
       </ThemeProvider>
     </TestRouter>,
   );
@@ -82,13 +85,10 @@ describe("driver indicators in the session list (dl-2620)", () => {
   });
 
   it("renders the indicators ALONGSIDE the context bar (both present on the card)", () => {
-    renderList([
-      driver({
-        contextTokens: 5000,
-        contextWindow: 10000,
-        progress: { pct: 80 },
-      }),
-    ]);
+    renderList(
+      [driver({ progress: { pct: 80 } })],
+      new Map([["drv-1", { tokens: 5000, contextWindow: 10000 }]]),
+    );
     // both the existing context bar and the new progress bar coexist
     expect(screen.getByTestId("context-usage-bar")).toBeTruthy();
     expect(screen.getByTestId("driver-progress-bar")).toBeTruthy();

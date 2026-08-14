@@ -24,6 +24,22 @@ function makeSession(overrides: Partial<DashboardSession> = {}): DashboardSessio
   };
 }
 
+function makeExternalSession(overrides: Record<string, unknown> = {}): DashboardSession {
+  return {
+    ...makeSession(),
+    id: "codex:done-cx-gap2",
+    name: "done-cx-gap2",
+    source: "codex",
+    model: "codex/gpt-5.6-sol",
+    external: {
+      runtime: "codex",
+      tmuxSession: "done-cx-gap2",
+      readOnly: true,
+    },
+    ...overrides,
+  } as unknown as DashboardSession;
+}
+
 const defaultProps = {
   selectedId: undefined,
   onSelect: () => {},
@@ -274,5 +290,161 @@ describe("SessionCard", () => {
     const session = makeSession({ model: "claude-sonnet-4", thinkingLevel: "high" });
     render(<SessionCard session={session} {...defaultProps} />);
     expect(screen.getByText("claude-sonnet-4 (high)")).toBeTruthy();
+  });
+
+  describe("external read-only sessions", () => {
+    const now = new Date(2026, 7, 14, 15, 0).getTime();
+
+    it("renders moving output honestly with a legible Codex source and read-only metadata", () => {
+      const session = makeExternalSession({
+        external: {
+          runtime: "codex",
+          tmuxSession: "done-cx-gap2",
+          readOnly: true,
+          outputChangedAt: now - 5_000,
+          lineCount: 249,
+        },
+        thinkingLevel: "ultra",
+      });
+
+      const { container } = render(<SessionCard session={session} {...defaultProps} now={now} />);
+      const card = container.querySelector("[data-session-id]") as HTMLElement;
+      const source = container.querySelector('[title="Codex"]') as HTMLElement;
+
+      expect(card.getAttribute("data-activity")).toBe("live");
+      expect(screen.getByText("Output moving")).toBeTruthy();
+      expect(screen.queryByText(/Thinking|Waiting for input/)).toBeNull();
+      expect(screen.getByText("codex/gpt-5.6-sol (ultra)")).toBeTruthy();
+      expect(screen.getByText("read-only")).toBeTruthy();
+      expect(screen.getByText("249 lines")).toBeTruthy();
+      expect(source.className).toContain("text-[var(--text-secondary)]");
+    });
+
+    it("uses only outputChangedAt and stays neutral on first load", () => {
+      const session = makeExternalSession({
+        lastActivityAt: now - 1_000,
+        status: "streaming",
+        currentTool: "ask_user",
+      });
+
+      const { container } = render(<SessionCard session={session} {...defaultProps} now={now} />);
+      const card = container.querySelector("[data-session-id]") as HTMLElement;
+
+      expect(card.getAttribute("data-activity")).toBe("idle");
+      expect(screen.getByText("No new output")).toBeTruthy();
+      expect(screen.queryByText(/Thinking|Waiting for input/)).toBeNull();
+      expect(card.className).not.toContain("animate-pulse");
+    });
+
+    it("renders quiet output with elapsed change time", () => {
+      const session = makeExternalSession({
+        external: {
+          runtime: "codex",
+          tmuxSession: "done-cx-gap2",
+          readOnly: true,
+          outputChangedAt: now - 4 * 60_000,
+        },
+      });
+
+      const { container } = render(<SessionCard session={session} {...defaultProps} now={now} />);
+
+      expect(container.querySelector("[data-session-id]")?.getAttribute("data-activity")).toBe("idle");
+      expect(screen.getByText("No new output · 4m")).toBeTruthy();
+    });
+
+    it("renders ended output as frozen with an absolute time and Claude Code identity", () => {
+      const endedAt = new Date(2026, 7, 14, 14, 32).getTime();
+      const session = makeExternalSession({
+        source: "claude-code",
+        status: "ended",
+        endedAt,
+        model: "claude-code/Opus 4 (1M context)",
+        external: {
+          runtime: "claude-code",
+          tmuxSession: "done-cc-dashtrunk",
+          readOnly: true,
+          outputChangedAt: endedAt - 20_000,
+          lineCount: 152,
+        },
+      });
+
+      const { container } = render(<SessionCard session={session} {...defaultProps} now={now} />);
+      const card = container.querySelector("[data-session-id]") as HTMLElement;
+      const source = container.querySelector('[title="Claude Code"]') as HTMLElement;
+
+      expect(card.getAttribute("data-activity")).toBe("idle");
+      expect(card.className).toContain("frozen");
+      expect(card.className).toContain("opacity-70");
+      expect(screen.getByText("Ended · 14:32")).toBeTruthy();
+      expect(screen.getAllByText("14:32").length).toBeGreaterThan(0);
+      expect(screen.getByText("ENDED")).toBeTruthy();
+      expect(screen.getByText("152 lines · frozen")).toBeTruthy();
+      expect(source.className).toContain("text-[var(--text-secondary)]");
+    });
+
+    it("offers Open only and never wires hide or liveness actions", () => {
+      const onSelect = vi.fn();
+      const onHide = vi.fn();
+      const onUnhide = vi.fn();
+      const onCheckLiveness = vi.fn();
+      const session = makeExternalSession();
+
+      render(
+        <SessionCard
+          session={session}
+          {...defaultProps}
+          now={now}
+          onSelect={onSelect}
+          onHide={onHide}
+          onUnhide={onUnhide}
+          onCheckLiveness={onCheckLiveness}
+        />,
+      );
+
+      fireEvent.click(screen.getByTestId("session-open-btn"));
+      fireEvent.click(screen.getByTestId("session-open-btn-mobile"));
+      expect(onSelect).toHaveBeenCalledTimes(2);
+      expect(screen.queryByTestId("session-hide-btn")).toBeNull();
+      expect(screen.queryByTestId("session-unhide-btn")).toBeNull();
+      expect(screen.queryByTestId("session-check-liveness-btn")).toBeNull();
+      expect(screen.queryByTestId("session-check-liveness-btn-mobile")).toBeNull();
+      expect(onHide).not.toHaveBeenCalled();
+      expect(onUnhide).not.toHaveBeenCalled();
+      expect(onCheckLiveness).not.toHaveBeenCalled();
+    });
+
+    it("keeps ended external cards openable without resume or fork", () => {
+      const onResume = vi.fn();
+      const session = makeExternalSession({
+        status: "ended",
+        endedAt: now,
+        sessionFile: "/must/not/enable/actions.jsonl",
+      });
+
+      render(<SessionCard session={session} {...defaultProps} now={now} onResume={onResume} />);
+
+      expect(screen.getByTestId("session-open-btn")).toBeTruthy();
+      expect(screen.getByTestId("session-open-btn-mobile")).toBeTruthy();
+      expect(screen.queryByText("Resume")).toBeNull();
+      expect(screen.queryByText("Fork")).toBeNull();
+      expect(onResume).not.toHaveBeenCalled();
+    });
+
+    it("omits the context bar without real data and preserves it with real data", () => {
+      const session = makeExternalSession();
+      const { rerender } = render(<SessionCard session={session} {...defaultProps} now={now} />);
+
+      expect(screen.queryByTestId("context-usage-bar")).toBeNull();
+
+      rerender(
+        <SessionCard
+          session={session}
+          {...defaultProps}
+          now={now}
+          contextUsage={{ tokens: 5_000, contextWindow: 10_000 }}
+        />,
+      );
+      expect(screen.getByTestId("context-usage-bar")).toBeTruthy();
+    });
   });
 });

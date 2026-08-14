@@ -1,6 +1,6 @@
 import React, { useState, useEffect, type ReactNode } from "react";
 import { Icon } from "@mdi/react";
-import { mdiFlash, mdiOpenInNew, mdiPencil, mdiPencilOutline, mdiSourceBranch, mdiHeartPulse, mdiEyeOffOutline, mdiEyeOutline, mdiConsoleLine, mdiRobotOutline, mdiCodeTags, mdiApplicationOutline, mdiCommentQuestion, mdiPlayCircleOutline, mdiSourceFork, mdiPaperclip, mdiFileTree } from "@mdi/js";
+import { mdiFlash, mdiOpenInNew, mdiPencil, mdiPencilOutline, mdiSourceBranch, mdiHeartPulse, mdiEyeOffOutline, mdiEyeOutline, mdiConsoleLine, mdiRobotOutline, mdiCodeTags, mdiApplicationOutline, mdiCommentQuestion, mdiPlayCircleOutline, mdiSourceFork, mdiPaperclip, mdiFileTree, mdiAsterisk, mdiHexagonOutline } from "@mdi/js";
 import type { DashboardSession, ImageContent } from "@blackbelt-technology/pi-dashboard-shared/types.js";
 import { getSessionDisplayName } from "../lib/session-display-name.js";
 import { formatRelativeTime } from "../lib/format.js";
@@ -23,11 +23,13 @@ export const statusColors: Record<string, string> = {
 };
 
 export const sourceBadgeColors: Record<string, string> = {
-  tui: "text-blue-400",
-  zed: "text-purple-400",
-  tmux: "text-orange-400",
-  dashboard: "text-blue-400",
-  terminal: "text-cyan-400",
+  tui: "text-[var(--text-tertiary)]",
+  zed: "text-[var(--text-tertiary)]",
+  tmux: "text-[var(--text-tertiary)]",
+  dashboard: "text-[var(--text-tertiary)]",
+  terminal: "text-[var(--text-tertiary)]",
+  "claude-code": "text-[var(--text-secondary)]",
+  codex: "text-[var(--text-secondary)]",
   unknown: "text-[var(--text-tertiary)]",
 };
 
@@ -37,6 +39,8 @@ const sourceIcons: Record<string, string> = {
   tmux: mdiApplicationOutline,
   zed: mdiCodeTags,
   terminal: mdiConsoleLine,
+  "claude-code": mdiAsterisk,
+  codex: mdiHexagonOutline,
 };
 
 const sourceLabels: Record<string, string> = {
@@ -45,9 +49,30 @@ const sourceLabels: Record<string, string> = {
   tmux: "tmux",
   zed: "Zed",
   terminal: "Terminal",
+  "claude-code": "Claude Code",
+  codex: "Codex",
 };
 
+const EXTERNAL_OUTPUT_MOVING_WINDOW_MS = 10_000;
+
+function isExternalReadOnlySession(session: DashboardSession): boolean {
+  return session.external?.readOnly === true;
+}
+
+function isExternalOutputMoving(session: DashboardSession, now: number): boolean {
+  const changedAt = session.external?.outputChangedAt;
+  return changedAt != null
+    && Number.isFinite(changedAt)
+    && Math.max(0, now - changedAt) < EXTERNAL_OUTPUT_MOVING_WINDOW_MS;
+}
+
+function formatClockTime(timestamp: number): string {
+  const date = new Date(timestamp);
+  return `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+}
+
 export function getCardPulseClass(session: DashboardSession): string {
+  if (isExternalReadOnlySession(session)) return "";
   if (session.currentTool === "ask_user") return "bg-purple-500/5 animate-pulse";
   if (session.status === "streaming" || session.resuming) return "bg-yellow-500/5 animate-pulse";
   if (session.unread) return "bg-cyan-500/5";
@@ -64,7 +89,11 @@ export function getCardPulseClass(session: DashboardSession): string {
  *    wait  = amber  (alive, awaiting operator input — incl. ask_user)
  *    unread= teal   (ended but has unviewed activity)
  *    idle  = grey   (ended/dormant) · error = red */
-export function getActivityKind(session: DashboardSession, hasError?: boolean): string {
+export function getActivityKind(session: DashboardSession, hasError?: boolean, now = Date.now()): string {
+  if (isExternalReadOnlySession(session)) {
+    if (session.status === "ended") return "idle";
+    return isExternalOutputMoving(session, now) ? "live" : "idle";
+  }
   if (hasError) return "error";
   if (session.resuming) return "live";
   if (session.status === "ended") return session.unread ? "unread" : "idle";
@@ -75,7 +104,29 @@ export function getActivityKind(session: DashboardSession, hasError?: boolean): 
   return "idle";
 }
 
-export function ActivityIndicator({ session }: { session: DashboardSession }) {
+export function ActivityIndicator({ session, now = Date.now() }: { session: DashboardSession; now?: number }) {
+  if (isExternalReadOnlySession(session)) {
+    if (session.status === "ended") {
+      return (
+        <span className="editorial-activity text-[var(--text-tertiary)] truncate">
+          Ended · {formatClockTime(selectBadgeTimestamp(session))}
+        </span>
+      );
+    }
+
+    const changedAt = session.external?.outputChangedAt;
+    if (isExternalOutputMoving(session, now)) {
+      return <span className="editorial-activity truncate inline-flex items-center gap-0.5"><Icon path={mdiFlash} size={0.5} /> Output moving</span>;
+    }
+    return (
+      <span className="editorial-activity text-[var(--text-tertiary)] truncate inline-flex items-center gap-0.5">
+        <Icon path={mdiFlash} size={0.5} />
+        {changedAt != null && Number.isFinite(changedAt)
+          ? `No new output · ${formatRelativeTime(Math.max(0, now - changedAt))}`
+          : "No new output"}
+      </span>
+    );
+  }
   if (session.resuming) {
     return <span className="editorial-activity text-yellow-400">Resuming…</span>;
   }
@@ -326,18 +377,23 @@ export const SessionCard = React.memo(function SessionCard({
 }) {
   const isSelected = selectedId === session.id;
   const isAlive = session.status !== "ended";
+  const isExternal = isExternalReadOnlySession(session);
+  const isExternalEnded = isExternal && !isAlive;
   const showCost = (session.cost ?? 0) > 0;
-  const dotColor = session.resuming
-    ? "bg-yellow-500 animate-pulse"
-    : hasError
-      ? "bg-red-500"
-      : (statusColors[session.status] ?? "bg-[var(--bg-surface)]");
+  const dotColor = isExternal
+    ? (isAlive && isExternalOutputMoving(session, now) ? "bg-green-500" : "bg-[var(--bg-surface)]")
+    : session.resuming
+      ? "bg-yellow-500 animate-pulse"
+      : hasError
+        ? "bg-red-500"
+        : (statusColors[session.status] ?? "bg-[var(--bg-surface)]");
 
   const selectedRing = isSelected
     ? "border-blue-500/60 bg-blue-500/5 backdrop-blur-sm"
     : "border-[var(--border-subtle)] bg-[var(--bg-tertiary)]";
 
-  const hasMetaChips = !!(session.gitBranch || session.worktree || session.attachedProposal);
+  const hasMetaChips = !!(isExternal || session.gitBranch || session.worktree || session.attachedProposal);
+  const hasContextData = contextUsage?.tokens != null && contextUsage.contextWindow > 0;
 
   // Wire the ONE pure card-state derivation into the production card render
   // (build-2 fix-cycle NIT 2). Emitted as `data-age-band` / `data-band-reason`
@@ -354,13 +410,14 @@ export const SessionCard = React.memo(function SessionCard({
       as="li"
       pressScale={0.985}
       data-session-id={session.id}
-      data-activity={getActivityKind(session, hasError)}
+      data-activity={getActivityKind(session, hasError, now)}
+      data-source={session.source}
       data-age-band={cardState.ageBand}
       data-band-reason={cardState.reason}
       onClick={() => onSelect(session.id)}
       className={`editorial-card group relative px-3 py-2.5 md:px-3.5 md:py-2.5 cursor-pointer rounded-xl border shadow-sm shadow-[var(--shadow-card)] hover:shadow-md transition-shadow duration-200 flex flex-col gap-1 md:gap-2 ${
         selectedRing
-      } ${isHidden ? "opacity-40" : ""} ${getCardPulseClass(session)}`}
+      } ${isHidden ? "opacity-40" : ""} ${isExternal ? "ext-ro" : ""} ${isExternalEnded ? "frozen opacity-70" : ""} ${getCardPulseClass(session)}`}
     >
       {/* Row 1: status dot + source icon (desktop) + name + action buttons (desktop) + time (desktop) + cost (mobile) */}
       <div className="flex items-center gap-2 min-w-0">
@@ -378,7 +435,16 @@ export const SessionCard = React.memo(function SessionCard({
         </span>
         {/* Action buttons — desktop only, visible on hover */}
         <span className="hidden md:flex items-center gap-1.5 text-[var(--text-tertiary)] opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
-          {isHidden ? (
+          {isExternal ? (
+            <button
+              onClick={(e) => { e.stopPropagation(); onSelect(session.id); }}
+              className="hover:text-green-400 transition-colors"
+              title="Open session"
+              data-testid="session-open-btn"
+            >
+              <Icon path={mdiOpenInNew} size={0.5} />
+            </button>
+          ) : isHidden ? (
             <button
               onClick={(e) => { e.stopPropagation(); onUnhide(session.id); }}
               className="hover:text-green-400 transition-colors"
@@ -397,7 +463,7 @@ export const SessionCard = React.memo(function SessionCard({
               <Icon path={mdiEyeOffOutline} size={0.45} />
             </button>
           )}
-          {isAlive && onCheckLiveness && (
+          {!isExternal && isAlive && onCheckLiveness && (
             <button
               onClick={(e) => { e.stopPropagation(); onCheckLiveness(session.id); }}
               className="hover:text-blue-400 transition-colors"
@@ -407,7 +473,7 @@ export const SessionCard = React.memo(function SessionCard({
               <Icon path={mdiHeartPulse} size={0.5} />
             </button>
           )}
-          {isAlive && (
+          {!isExternal && isAlive && (
             <button
               onClick={(e) => { e.stopPropagation(); onSelect(session.id); }}
               className="hover:text-green-400 transition-colors"
@@ -423,7 +489,9 @@ export const SessionCard = React.memo(function SessionCard({
           className="hidden md:inline text-[10px] md:text-[11px] text-[var(--text-muted)] shrink-0"
           title={`Started ${new Date(session.startedAt).toLocaleString()}`}
         >
-          {formatRelativeTime(now - selectBadgeTimestamp(session))}
+          {isExternalEnded
+            ? formatClockTime(selectBadgeTimestamp(session))
+            : formatRelativeTime(now - selectBadgeTimestamp(session))}
         </span>
         {/* Cost — mobile only (inline in row 1), desktop in row 3 */}
         {showCost && (
@@ -438,7 +506,7 @@ export const SessionCard = React.memo(function SessionCard({
           title/aria-label). Desktop uses the hover icon cluster above. There is
           NO destructive Exit here — the removed Exit path was the kill-0 hole.
           Only alive cards (a dark/unknown/kill-0-live session looks alive). */}
-      {isAlive && (
+      {(isAlive || isExternal) && (
         <div className="md:hidden flex items-center gap-2 pt-0.5">
           <button
             onClick={(e) => { e.stopPropagation(); onSelect(session.id); }}
@@ -448,7 +516,7 @@ export const SessionCard = React.memo(function SessionCard({
             <Icon path={mdiOpenInNew} size={0.55} />
             <span>Open</span>
           </button>
-          {onCheckLiveness && (
+          {!isExternal && onCheckLiveness && (
             <button
               onClick={(e) => { e.stopPropagation(); onCheckLiveness(session.id); }}
               className="inline-flex items-center gap-1 text-[11px] font-medium text-[var(--text-secondary)] hover:text-blue-400 transition-colors px-1.5 py-1 rounded"
@@ -471,7 +539,7 @@ export const SessionCard = React.memo(function SessionCard({
         )}
         <span className="flex-1" />
         {/* Resume/Fork — desktop only, ended sessions only */}
-        {onResume && session.sessionFile && !isAlive && (
+        {!isExternal && onResume && session.sessionFile && !isAlive && (
           <span className="hidden md:flex items-center gap-1.5 shrink-0 pl-3">
             {(!isAlive || isHidden) && (
               <button
@@ -497,13 +565,20 @@ export const SessionCard = React.memo(function SessionCard({
 
       {/* Row 3: activity (left) | context bar + cost (right) — context+activity always visible per operator-empirical mobile friction 2026-05-23 ~23:35 CEST; cost desktop-only since mobile shows it in Row 1 */}
       <div className="flex items-center text-[11px] gap-2 mt-0.5">
-        <ActivityIndicator session={session} />
+        <ActivityIndicator session={session} now={now} />
         <span className="flex-1" />
-        <ContextUsageBar
-          tokens={contextUsage?.tokens ?? null}
-          contextWindow={contextUsage?.contextWindow}
-          compact
-        />
+        {isExternal && session.external?.lineCount != null && (
+          <span className="text-[10px] text-[var(--text-muted)] tabular-nums shrink-0">
+            {session.external.lineCount} lines{isExternalEnded ? " · frozen" : ""}
+          </span>
+        )}
+        {hasContextData && (
+          <ContextUsageBar
+            tokens={contextUsage.tokens}
+            contextWindow={contextUsage.contextWindow}
+            compact
+          />
+        )}
         {showCost && (
           <span className="hidden md:inline text-[var(--text-secondary)] w-9 text-right tabular-nums">
             ${session.cost!.toFixed(2)}
@@ -546,6 +621,19 @@ export const SessionCard = React.memo(function SessionCard({
       {/* Row 5 (desktop) / Row 3-4 (mobile): Meta chips */}
       {hasMetaChips && (
         <div className="flex flex-wrap gap-1.5 mt-0.5">
+          {isExternal && (
+            <MetaChip
+              icon={<Icon path={mdiEyeOutline} size={0.4} />}
+              label="read-only"
+            />
+          )}
+          {isExternalEnded && (
+            <MetaChip
+              icon={null}
+              label="ENDED"
+              colorClass="text-[var(--text-tertiary)] font-semibold tracking-wide"
+            />
+          )}
           {session.gitBranch && (
             <MetaChip
               icon={<Icon path={mdiSourceBranch} size={0.4} />}

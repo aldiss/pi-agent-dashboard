@@ -285,6 +285,23 @@ html, body {
 [data-skin="editorial"] .editorial-card[data-activity="unread"] .editorial-dot { background: var(--status-fresh) !important; }
 [data-skin="editorial"] .editorial-card[data-activity="error"]  .editorial-dot { background: var(--accent-red) !important; }
 
+/* Frozen external sessions remain readable but unmistakably inert. */
+[data-skin="editorial"] .editorial-card.frozen::before {
+  background: repeating-linear-gradient(
+    135deg,
+    var(--text-faint) 0,
+    var(--text-faint) 3px,
+    transparent 3px,
+    transparent 6px
+  );
+  opacity: 1;
+}
+[data-skin="editorial"] .editorial-card.frozen .editorial-dot {
+  background: transparent !important;
+  box-shadow: none !important;
+  border: 1px solid var(--text-faint);
+}
+
 /* Status TEXT solid in the semantic hue — kills the dim "Waiting for input"
    that dissolves into the background (the explicit anti-pattern to retire).
    Overrides the Tailwind text-*-400 / text-[var(--text-tertiary)] utilities. */

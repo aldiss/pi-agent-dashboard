@@ -116,6 +116,29 @@ TypeScript type definitions shared across all components:
 - **Persistence**: the bit lives in `.meta.json` (`SessionMeta.unread`). `server.ts onChange` writes it on every session update; `session-scanner.ts::sessionFromMeta` restores it on cold start. The cold-start "force `status = ended`" override at `server.ts:273-279` is intentionally non-destructive on `unread` — a session that was unread when the server stopped is still unread when it starts back up, even before its bridge reattaches.
 - **Render precedence** (`SessionCard.tsx::getCardPulseClass`): `ask_user` (purple) > `streaming || resuming` (yellow) > `unread` (cyan) > none. Streaming with `unread: true` shows yellow stripes; when streaming ends with the session still unviewed, the trigger fires, the card flips to cyan. The `card-unread-pulse` CSS class reuses the `card-working-stripes-scroll` and `card-working-opacity-pulse` keyframes verbatim — only the stripe and tint colors change to cool cyan (`rgba(34, 211, 238, 0.18)` and `rgba(34, 211, 238, 0.07)`). Cyan was selected to occupy its own corner of the dashboard palette (distant from yellow, purple, green, red). Reduced-motion users see a static cyan-tinted background, matching the working-pulse arm.
 
+### External tmux session flow (read-only)
+
+- `scanner.ts::refresh()` captures canonical 200-line sample.
+- `refresh()` stamps `outputChangedAt` only when canonical sample text changes.
+- `scanner.ts::captureOne()` captures separate 1000-line drill buffer.
+- Drill buffer stays separate from canonical sample.
+- Drill buffer never stamps `outputChangedAt`.
+- Registry retains ended sessions for 24 hours.
+- Capture polling renews 30-second active-view lease.
+- Active-view lease blocks ended-session pruning.
+- `App.tsx` polls `GET /api/external-sessions`.
+- `mapExternalSession()` builds read-only `DashboardSession` values.
+- `mergeExternalSessions()` appends mapped values to derived session arrays.
+- WebSocket-owned `sessions` Map stays pi-only.
+- `SessionList` passes render-time `Date.now()` to external cards.
+- Selected ended external card stays visible when ended section stays collapsed.
+- `ExternalSessionDetail` polls `GET /api/external-sessions/:id/capture` only.
+- `<pre className="whitespace-pre">` renders capture without pane writes.
+- Ended view freezes visible output.
+- Keepalive polls renew lease without replacing frozen output.
+- Footer copies `tmux -L pi attach -t <session>` command to clipboard.
+- Detail view exposes no composer or pane-write control.
+
 ### Interactive UI Flow (PromptBus — extension dialog → browser → response)
 1. Extension calls `ctx.ui.confirm()` / `select()` / `input()` / `editor()` / bridge-patched `multiselect()`
 2. Bridge PromptBus intercepts via patched `ctx.ui` methods, creates a `PromptRequest` with a unique `promptId` and `pipeline` tag (e.g. `"command"`, `"architect"`)

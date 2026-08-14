@@ -1,5 +1,5 @@
 /** Source environment where a pi session is running */
-export type SessionSource = "tui" | "zed" | "tmux" | "dashboard" | "terminal" | "claude-code" | "unknown";
+export type SessionSource = "tui" | "zed" | "tmux" | "dashboard" | "terminal" | "codex" | "claude-code" | "unknown";
 
 /** Current status of a session */
 export type SessionStatus = "active" | "idle" | "streaming" | "ended";
@@ -60,6 +60,14 @@ export interface DashboardSession {
    */
   accessCellId?: string;
   source: SessionSource;
+  /** Read-only tmux-backed session metadata. Its presence structurally gates all write controls. */
+  external?: {
+    runtime: "codex" | "claude-code";
+    tmuxSession: string;
+    readOnly: true;
+    outputChangedAt?: number;
+    lineCount?: number;
+  };
   /**
    * Operator-voice audience classification (door-3 pre-render hold). Server-
    * derived ONCE per session from `name` + `source` + role-registry via the

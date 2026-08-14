@@ -215,7 +215,7 @@ describe("session-list re-render storm — shipped-code structural assertions", 
   });
 
   it("Part 4: App memoizes the sessions/terminals arrays handed to SessionList", () => {
-    expect(appSrc).toMatch(/const sessionsArr = useMemo\(\(\) => Array\.from\(sessions\.values\(\)\), \[sessions\]\)/);
+    expect(appSrc).toMatch(/const sessionsArr = useMemo\([\s\S]*?mergeExternalSessions\(sessions, externalSessions\)[\s\S]*?\[sessions, externalSessions\][\s\S]*?\);/);
     expect(appSrc).toMatch(/const terminalsArr = useMemo\(\(\) => Array\.from\(terminals\.values\(\)\), \[terminals\]\)/);
     expect(appSrc).toMatch(/sessions=\{sessionsArr\}/);
     expect(appSrc).not.toMatch(/sessions=\{Array\.from\(sessions\.values\(\)\)\}/);

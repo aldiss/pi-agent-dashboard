@@ -35,7 +35,10 @@ beforeEach(() => {
   });
 });
 
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
+});
 
 function makeSession(overrides: Partial<DashboardSession> = {}): DashboardSession {
   return {
@@ -77,6 +80,107 @@ describe("SessionList — calm-zero suppressed on unsettled load (build-2 fix-cy
   it("empty + hasLoadedOnce undefined (back-compat) → shows the empty-state", () => {
     const { container } = renderList({});
     expect(container.querySelector('[data-testid="session-list-empty"]')).toBeTruthy();
+  });
+});
+
+describe("SessionList external sessions", () => {
+  it("does not mount the bespoke external-sessions panel", () => {
+    render(
+      <TestRouter><ThemeProvider>
+        <SessionList sessions={[]} onSelect={() => {}} />
+      </ThemeProvider></TestRouter>,
+    );
+
+    expect(screen.queryByTestId("external-sessions-panel")).toBeNull();
+  });
+
+  it("keeps a folder containing only ended external sessions visible", () => {
+    const cwd = "/only/ended-external";
+    render(
+      <TestRouter><ThemeProvider><SkinProvider>
+        <SessionList
+          sessions={[makeSession({
+            id: "codex:ended-pane",
+            cwd,
+            source: "codex",
+            status: "ended",
+            endedAt: Date.now() - 1_000,
+            external: {
+              runtime: "codex",
+              tmuxSession: "ended-pane",
+              readOnly: true,
+            },
+          })]}
+          onSelect={() => {}}
+        />
+      </SkinProvider></ThemeProvider></TestRouter>,
+    );
+
+    expect(screen.getByTestId(`folder-ended-toggle-${cwd}`)).toBeTruthy();
+  });
+
+  it("recomputes the 10-second external activity window on list snapshots", () => {
+    const changedAt = new Date(2026, 7, 14, 14, 0).getTime();
+    vi.useFakeTimers();
+    vi.setSystemTime(changedAt);
+    const session = makeSession({
+      id: "codex:moving-pane",
+      source: "codex",
+      external: {
+        runtime: "codex",
+        tmuxSession: "moving-pane",
+        readOnly: true,
+        outputChangedAt: changedAt,
+      },
+    });
+
+    const view = render(
+      <TestRouter><ThemeProvider><SkinProvider>
+        <SessionList sessions={[session]} onSelect={() => {}} />
+      </SkinProvider></ThemeProvider></TestRouter>,
+    );
+    expect(view.container.querySelector("[data-session-id]")?.getAttribute("data-activity")).toBe("live");
+
+    vi.setSystemTime(changedAt + 10_001);
+    view.rerender(
+      <TestRouter><ThemeProvider><SkinProvider>
+        <SessionList sessions={[{ ...session }]} onSelect={() => {}} />
+      </SkinProvider></ThemeProvider></TestRouter>,
+    );
+    expect(view.container.querySelector("[data-session-id]")?.getAttribute("data-activity")).toBe("idle");
+    vi.useRealTimers();
+  });
+
+  it("keeps a selected external card visible when it ends", () => {
+    const session = makeSession({
+      id: "codex:selected-pane",
+      source: "codex",
+      external: {
+        runtime: "codex",
+        tmuxSession: "selected-pane",
+        readOnly: true,
+      },
+    });
+    const view = render(
+      <TestRouter><ThemeProvider><SkinProvider>
+        <SessionList sessions={[session]} selectedId={session.id} onSelect={() => {}} />
+      </SkinProvider></ThemeProvider></TestRouter>,
+    );
+    expect(view.container.querySelector(`[data-session-id="${session.id}"]`)).toBeTruthy();
+
+    view.rerender(
+      <TestRouter><ThemeProvider><SkinProvider>
+        <SessionList
+          sessions={[{ ...session, status: "ended", endedAt: Date.now() }]}
+          selectedId={session.id}
+          onSelect={() => {}}
+        />
+      </SkinProvider></ThemeProvider></TestRouter>,
+    );
+
+    const endedCard = view.container.querySelector(`[data-session-id="${session.id}"]`);
+    expect(endedCard).toBeTruthy();
+    expect(endedCard?.className).toContain("frozen");
   });
 });
 

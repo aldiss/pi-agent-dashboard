@@ -10,7 +10,6 @@ import { encodeFolderPath } from "../lib/folder-encoding.js";
 import { DndContext, closestCenter, PointerSensor, TouchSensor, useSensor, useSensors, type DragEndEvent } from "@dnd-kit/core";
 import { SortableContext, verticalListSortingStrategy, arrayMove } from "@dnd-kit/sortable";
 import { SortablePinnedGroup } from "./SortablePinnedGroup.js";
-import { ExternalSessionsPanel } from "./ExternalSessionsPanel.js";
 import type { DashboardSession, OpenSpecData, CommandInfo, FlowInfo, ImageContent } from "@blackbelt-technology/pi-dashboard-shared/types.js";
 import type { TerminalSession } from "@blackbelt-technology/pi-dashboard-shared/terminal-types.js";
 import {
@@ -685,13 +684,20 @@ export function SessionList({ sessions, selectedId, onSelect, hasLoadedOnce, con
               .sort(
                 (a, b) => (b.endedAt ?? b.startedAt) - (a.endedAt ?? a.startedAt),
               );
-            const showEnded =
-              endedSessions.length > 0 &&
-              (endedExpanded.has(group.cwd) || sessionSearch.length > 0);
+            const showAllEnded = endedExpanded.has(group.cwd) || sessionSearch.length > 0;
+            const selectedEndedExternal = endedSessions.find(
+              (session) => session.id === selectedId && session.external?.readOnly,
+            );
+            const visibleEndedSessions = showAllEnded
+              ? endedSessions
+              : selectedEndedExternal
+                ? [selectedEndedExternal]
+                : [];
+            const showEnded = visibleEndedSessions.length > 0;
             const visibleSessions = flatMergeMode
               ? matched // ended interleaved naturally; sessionOrder still applies below
               : (showEnded
-                  ? [...activeSessions, ...endedSessions]
+                  ? [...activeSessions, ...visibleEndedSessions]
                   : activeSessions);
             // Empty-state: search query active but nothing matched in
             // this folder. Still rendered inline so the user can clear
@@ -776,7 +782,7 @@ export function SessionList({ sessions, selectedId, onSelect, hasLoadedOnce, con
                         session={session}
                         selectedId={selectedId}
                         onSelect={onSelect}
-                        now={now}
+                        now={session.external?.readOnly ? Date.now() : now}
                         isHidden={!!session.hidden}
                         onHide={handleHide}
                         onUnhide={handleUnhide}
@@ -935,11 +941,6 @@ export function SessionList({ sessions, selectedId, onSelect, hasLoadedOnce, con
         </div>
       </div>
       <div ref={listRef} className="flex-1 overflow-y-auto">
-      {/* Codex / Claude Code sessions running in tmux panes — read-only, and
-          rendered here (not only on /dashboard) so they sit in the same list as
-          the operator's pi sessions. Outside the empty/loading branch below so
-          they still show when there are no pi sessions. */}
-      <ExternalSessionsPanel variant="compact" />
       {filteredSessions.length === 0 && pinnedGroups.length === 0 ? (
         // Loading ≠ empty (build-2 fix-cycle-2 MAJOR 1): the calm "No active
         // sessions" copy is a factual claim that the fleet IS empty — it must
@@ -981,7 +982,7 @@ export function SessionList({ sessions, selectedId, onSelect, hasLoadedOnce, con
               const visibleDirGroups = groups.filter((g) =>
                 workspaceFilter.length > 0
                   ? folderMatchesFilters(g)
-                  : g.sessions.some((s) => s.status !== "ended")
+                  : g.sessions.some((s) => s.status !== "ended" || s.external?.readOnly)
               );
               if (visibleDirGroups.length === 0) return null;
               count = visibleDirGroups.length;
@@ -997,7 +998,8 @@ export function SessionList({ sessions, selectedId, onSelect, hasLoadedOnce, con
                 ? filterByQuery(tierSessions, sessionSearch)
                 : tierSessions;
               const aliveCount = tierSessions.filter((s) => s.status !== "ended").length;
-              const hasVisible = sessionSearch.length > 0 ? matched.length > 0 : aliveCount > 0;
+              const hasExternal = tierSessions.some((s) => s.external?.readOnly);
+              const hasVisible = sessionSearch.length > 0 ? matched.length > 0 : aliveCount > 0 || hasExternal;
               if (!flatGroup || !hasVisible) return null;
               count = sessionSearch.length > 0 ? matched.length : aliveCount;
               content = (
@@ -1060,4 +1062,3 @@ export function SessionList({ sessions, selectedId, onSelect, hasLoadedOnce, con
     </div>
   );
 }
-

@@ -82,7 +82,7 @@ function SessionCard({
 
   return (
     <li
-      className={`px-3 py-2.5 border-b border-[var(--border-color)] last:border-b-0 ${
+      className={`px-3 py-2.5 border-b border-[var(--border-subtle)] last:border-b-0 ${
         compact ? "cursor-pointer hover:bg-[var(--bg-surface)] transition-colors" : ""
       }`}
       data-testid="external-session-card"
@@ -120,7 +120,7 @@ function SessionCard({
           className={`text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded ${
             live
               ? "bg-green-500/20 text-green-300 border border-green-500/40"
-              : "bg-[var(--bg-surface)] text-[var(--text-tertiary)] border border-[var(--border-color)]"
+              : "bg-[var(--bg-surface)] text-[var(--text-tertiary)] border border-[var(--border-subtle)]"
           }`}
           title={live ? "live" : "ended"}
         >
@@ -147,7 +147,7 @@ function SessionCard({
 
       {showOutput && (
         <pre
-          className={`mt-1.5 ${compact ? "max-h-48" : "max-h-64"} overflow-auto whitespace-pre rounded bg-[var(--bg-primary)] border border-[var(--border-color)] p-2 text-[11px] font-mono leading-snug text-[var(--text-secondary)] ${
+          className={`mt-1.5 ${compact ? "max-h-48" : "max-h-64"} overflow-auto whitespace-pre rounded bg-[var(--bg-primary)] border border-[var(--border-secondary)] p-2 text-[11px] font-mono leading-snug text-[var(--text-secondary)] ${
             live ? "" : "opacity-50"
           }`}
           data-testid="external-session-output"
@@ -221,7 +221,7 @@ export function ExternalSessionsPanel({
 
   return (
     <div
-      className="border-b border-[var(--border-color)] bg-[var(--bg-secondary)]"
+      className="border-b border-[var(--border-primary)] bg-[var(--bg-secondary)]"
       data-testid="external-sessions-panel"
     >
       <button

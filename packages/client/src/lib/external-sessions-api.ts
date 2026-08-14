@@ -6,28 +6,17 @@
  * write path to an external pane.
  */
 import { getApiBase } from "./api-context.js";
+import type {
+  ExternalRuntime,
+  ExternalSession,
+  ExternalSessionState,
+} from "@blackbelt-technology/pi-dashboard-shared/external-session.js";
 
-export type ExternalRuntime = "codex" | "claude-code";
-export type ExternalSessionState = "live" | "ended";
-
-export interface ExternalSession {
-  id: string;
-  runtime: ExternalRuntime;
-  tmuxSession: string;
-  tmuxSocket: string;
-  title: string;
-  cwd: string | null;
-  runtimePid: number | null;
-  state: ExternalSessionState;
-  model: string | null;
-  effort: string | null;
-  firstSeenAt: number;
-  lastLiveAt: number;
-  endedAt: number | null;
-  output: string;
-  outputAt: number;
-  lineCount: number;
-}
+export type {
+  ExternalRuntime,
+  ExternalSession,
+  ExternalSessionState,
+} from "@blackbelt-technology/pi-dashboard-shared/external-session.js";
 
 export interface ExternalSessionCapture {
   id: string;

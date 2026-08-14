@@ -27,6 +27,7 @@ import { ArchiveBrowserView } from "./components/ArchiveBrowserView.js";
 import { useOpenSpecReader } from "./hooks/useOpenSpecReader.js";
 import type { OpenSpecArtifact } from "@blackbelt-technology/pi-dashboard-shared/types.js";
 import { SessionHeader } from "./components/SessionHeader.js";
+import { ExternalSessionDetail } from "./components/ExternalSessionDetail.js";
 import { ModelReasoningSheet } from "./components/ModelReasoningSheet.js";import { ServerSelector } from "./components/ServerSelector.js";
 import { Toast, useToast } from "./components/Toast.js";
 import { ConnectionStatusBanner } from "./components/ConnectionStatusBanner.js";
@@ -88,6 +89,9 @@ import type { ToolContext } from "./components/tool-renderers/index.js";
 import type { ContextUsageInfo } from "./components/SessionList.js";
 import { ApiContext, deriveApiBase, VITE_API_URL, setGlobalApiBase, getApiBase } from "./lib/api-context.js";
 import { SessionAssetsProvider } from "./lib/SessionAssetsContext.js";
+import { fetchExternalSessions, type ExternalSession } from "./lib/external-sessions-api.js";
+import { mapExternalSession, mergeExternalSessions } from "./lib/external-session-mapper.js";
+import { decodeSessionRouteId, isExternalSessionId } from "./lib/session-route.js";
 import { PluginContextProvider, applyPluginConfigUpdate } from "@blackbelt-technology/dashboard-plugin-runtime/context";
 import {
   ContentViewSlot,
@@ -186,14 +190,18 @@ export default function App() {
    * depth=1, and propagates through useContentViews / useOpenSpecActions
    * so content-view overlays close it before opening. */
   const [dashboardMatch] = useRoute("/dashboard");
-  const selectedId = match ? params?.id : undefined;
+  const selectedId = match
+    ? decodeSessionRouteId(params?.id, window.location.pathname)
+    : undefined;
   const selectedSessionIdRef = useRef<string | undefined>(selectedId);
   selectedSessionIdRef.current = selectedId;
 
   // Drives the server-side viewed-session tracker for unread state.
   // See change: session-card-unread-stripes.
   useViewDispatcher({
-    viewedSessionId: selectViewedSessionId(match, params ?? undefined),
+    viewedSessionId: isExternalSessionId(selectedId)
+      ? null
+      : selectViewedSessionId(match, selectedId ? { id: selectedId } : undefined),
     connectionStatus: status,
     send,
   });
@@ -214,6 +222,45 @@ export default function App() {
    * toggle wiring — both are W4.x discoverability features. */
   const [showMessageFilterControls, setShowMessageFilterControls] = useState(false);
   const [sessions, setSessions] = useState<Map<string, DashboardSession>>(new Map());
+  const [externalSessions, setExternalSessions] = useState<ExternalSession[]>([]);
+  const [externalSessionsLoaded, setExternalSessionsLoaded] = useState(false);
+  useEffect(() => {
+    let disposed = false;
+    let refreshing = false;
+    setExternalSessions([]);
+    setExternalSessionsLoaded(false);
+
+    const refresh = async () => {
+      if (refreshing) return;
+      refreshing = true;
+      try {
+        const next = await fetchExternalSessions();
+        if (!disposed) {
+          setExternalSessions(next);
+          setExternalSessionsLoaded(true);
+        }
+      } catch {
+        // Preserve the last successful snapshot on transient failures.
+      } finally {
+        refreshing = false;
+      }
+    };
+
+    void refresh();
+    const interval = window.setInterval(refresh, 2_000);
+    return () => {
+      disposed = true;
+      window.clearInterval(interval);
+    };
+  }, [apiBase]);
+  const externalDashboardSessions = useMemo(
+    () => externalSessions.map(mapExternalSession),
+    [externalSessions],
+  );
+  const externalSessionMap = useMemo(
+    () => new Map(externalDashboardSessions.map((session) => [session.id, session])),
+    [externalDashboardSessions],
+  );
   // Cold-load success oracle sources (build-2 P0 fix #7). `hasLoadedOnce` is
   // ONE derived boolean (no FSM): the calm-zero empty state must never show
   // until BOTH the session source (REST-success-incl-[] OR snapshot) AND the
@@ -450,10 +497,16 @@ export default function App() {
   // Redirect to / if session ID in URL is not found after sessions have loaded
   const sessionsLoaded = sessions.size > 0;
   useEffect(() => {
-    if (selectedId && sessionsLoaded && !sessions.has(selectedId)) {
+    if (
+      selectedId
+      && sessionsLoaded
+      && externalSessionsLoaded
+      && !sessions.has(selectedId)
+      && !externalSessionMap.has(selectedId)
+    ) {
       navigate("/", { replace: true });
     }
-  }, [selectedId, sessionsLoaded, sessions, navigate]);
+  }, [selectedId, sessionsLoaded, sessions, externalSessionsLoaded, externalSessionMap, navigate]);
 
   // Clear preview when session changes + lazy subscribe ended sessions
   const prevSelectedRef = useRef(selectedId);
@@ -465,7 +518,12 @@ export default function App() {
     // Lazy subscribe: load events for ended sessions when first selected.
     // Also re-subscribes the selected session after reconnect (status change
     // clears subscribedRef, and adding `status` here re-triggers the effect).
-    if (selectedId && !subscribedRef.current.has(selectedId) && status === "connected") {
+    if (
+      selectedId
+      && !isExternalSessionId(selectedId)
+      && !subscribedRef.current.has(selectedId)
+      && status === "connected"
+    ) {
       subscribedRef.current.add(selectedId);
       // Reset replay readiness on subscribe (build-2 fix-cycle MAJOR 2): the
       // session re-enters LOADING until the terminal `event_replay{isLast:true}`
@@ -638,7 +696,9 @@ export default function App() {
     ? sessionFlows.get(selectedId) ?? []
     : [];
 
-  const selectedSession = selectedId ? sessions.get(selectedId) : undefined;
+  const selectedSession = selectedId
+    ? sessions.get(selectedId) ?? externalSessionMap.get(selectedId)
+    : undefined;
   // Operator-addressed audience context for the selected session (coverage-
   // contract #1 — the shared operator-addressed classifier). B2: derive the
   // PERSISTED-AT-THE-TIME positive evidence (sessionFile / cwd / source) once
@@ -664,6 +724,7 @@ export default function App() {
   // in the StatusBar JSX). selectedId is captured per-render; the gates that
   // render these are inside the `selectedId ?` scope so it's always defined.
   const handleSelectModel = useCallback((modelStr: string) => {
+    if (!selectedId || isExternalSessionId(selectedId)) return;
     const slashIdx = modelStr.indexOf("/");
     if (slashIdx > 0) {
       const provider = modelStr.slice(0, slashIdx);
@@ -673,10 +734,12 @@ export default function App() {
   }, [send, selectedId]);
 
   const handleSelectThinkingLevel = useCallback((level: string) => {
+    if (!selectedId || isExternalSessionId(selectedId)) return;
     send({ type: "set_thinking_level", sessionId: selectedId, level });
   }, [send, selectedId]);
 
   const handleCycleBell = useCallback(() => {
+    if (!selectedId || isExternalSessionId(selectedId)) return;
     const states = ["off", "on", "auto"] as const;
     const current = selectedSession?.pushPrefs?.notifyCompletion ?? "off";
     const nextIdx = (states.indexOf(current) + 1) % states.length;
@@ -936,7 +999,11 @@ export default function App() {
   // ref means unrelated App re-renders (e.g. openspec_update, which touches zero
   // sessions) no longer mint a fresh array prop and storm the memoized
   // SessionCard list. See change: fix-session-list-rerender-storm.
-  const sessionsArr = useMemo(() => Array.from(sessions.values()), [sessions]);
+  const nativeSessionsArr = useMemo(() => Array.from(sessions.values()), [sessions]);
+  const sessionsArr = useMemo(
+    () => mergeExternalSessions(sessions, externalSessions),
+    [sessions, externalSessions],
+  );
   const terminalsArr = useMemo(() => Array.from(terminals.values()), [terminals]);
   // Alive-only fleet count (build-2 fix-cycle MAJOR 3): the LandingPage "N
   // active" line + Start-session CTA must count only non-ended sessions —
@@ -954,7 +1021,8 @@ export default function App() {
     const id = setInterval(() => setBriefNow(Date.now()), 30_000);
     return () => clearInterval(id);
   }, []);
-  const fleetBrief = useFleetBrief(sessionsArr, briefNow);
+  // External panes never enter notification/unread or plugin-send surfaces.
+  const fleetBrief = useFleetBrief(nativeSessionsArr, briefNow);
   // The ONE cold-load success oracle (build-2 P0 fix #7). Both sources must
   // settle successfully before we ever show a calm "no sessions" empty state.
   const hasLoadedOnce = deriveHasLoadedOnce({
@@ -1101,7 +1169,32 @@ export default function App() {
     </>
   );
 
+  const selectedExternalId = isExternalSessionId(selectedId) ? selectedId : undefined;
+  const selectedExternalRuntime = selectedExternalId?.startsWith("codex:")
+    ? "codex"
+    : "claude-code";
+  const selectedExternalTmuxSession = selectedExternalId
+    ? selectedExternalId.slice(selectedExternalId.indexOf(":") + 1)
+    : "";
+
   const sessionDetail = selectedId ? (
+    selectedExternalId ? (
+      <div className="flex-1 flex flex-col min-w-0 h-full">
+        {connectionBanner}
+        <ExternalSessionDetail
+          sessionId={selectedExternalId}
+          tmuxSession={selectedSession?.external?.tmuxSession ?? selectedExternalTmuxSession}
+          runtime={selectedSession?.external?.runtime ?? selectedExternalRuntime}
+          title={selectedSession ? getSessionDisplayName(selectedSession) : selectedExternalTmuxSession}
+          model={selectedSession?.model}
+          effort={selectedSession?.thinkingLevel}
+          state={selectedSession?.status === "ended" ? "ended" : "live"}
+          endedAt={selectedSession?.endedAt}
+          isMobile={isMobile}
+          onBack={isMobile ? () => navigate("/") : goBackDesktop}
+        />
+      </div>
+    ) : (
     <div className="flex-1 flex flex-col min-w-0 h-full">
       {connectionBanner}
       <SessionHeader
@@ -1616,6 +1709,7 @@ export default function App() {
         </>
       )}
     </div>
+    )
   ) : null;
 
   // Get terminals for a specific folder cwd
@@ -1650,7 +1744,7 @@ export default function App() {
     return null;
   }, [folderTermCwd, folderEditorCwd, getTerminalsForCwd, handleCreateTerminal, handleKillTerminal, handleRenameTerminal, handleTerminalTitle, handleEditorClose]);
 
-  const allSessionsList = useMemo(() => Array.from(sessions.values()), [sessions]);
+  const allSessionsList = nativeSessionsArr;
 
   // Outer chrome ErrorBoundary — defense-in-depth for first-party shell
   // components (sidebar, session list, content header, MobileShell). The
@@ -1927,7 +2021,7 @@ export default function App() {
             />
           ) : (
             /* Plugin slot: content-view (additive; rendered after existing routes, before sessionDetail fallback). Gate on registry claims so empty slot does NOT mask sessionDetail/LandingPage via `??`. */
-            (selectedId && selectedSession && _pluginRegistry.getClaims("content-view").length > 0
+            (selectedId && selectedSession && !selectedSession.external && _pluginRegistry.getClaims("content-view").length > 0
               ? <ContentViewSlot session={selectedSession} routeParams={{}} onClose={() => navigate("/")} />
               : null
             ) ?? sessionDetail ?? (

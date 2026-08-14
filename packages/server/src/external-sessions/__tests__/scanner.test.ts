@@ -8,6 +8,7 @@
  */
 import { describe, it, expect } from "vitest";
 import {
+  DEFAULT_RETENTION_MS,
   createExternalSessionRegistry,
   isExternalSessionLive,
   parseModelEffort,
@@ -50,9 +51,10 @@ describe("registry — discovery + transitions", () => {
     expect(list[0]!.output).toBe("line-1\nline-2");
     expect(list[0]!.firstSeenAt).toBe(5_000);
     expect(list[0]!.endedAt).toBeNull();
+    expect(list[0]!.outputChangedAt).toBeNull();
   });
 
-  it("still-present & live → updates output, outputAt, lastLiveAt", () => {
+  it("updates outputChangedAt only when captured output text differs", () => {
     let observations = [obs({ output: "v1", lineCount: 1 })];
     const c = clock();
     const reg = createExternalSessionRegistry({
@@ -64,6 +66,13 @@ describe("registry — discovery + transitions", () => {
     const first = reg.list()[0]!;
     expect(first.output).toBe("v1");
     const firstOutputAt = first.outputAt;
+    expect(first.outputChangedAt).toBeNull(); // first sample is neutral
+
+    c.advance(2_500);
+    reg.refresh();
+    const unchanged = reg.list()[0]!;
+    expect(unchanged.outputAt).toBeGreaterThan(firstOutputAt);
+    expect(unchanged.outputChangedAt).toBeNull();
 
     c.advance(2_500);
     observations = [obs({ output: "v1\nv2", lineCount: 2 })];
@@ -72,8 +81,13 @@ describe("registry — discovery + transitions", () => {
     expect(second.state).toBe("live");
     expect(second.output).toBe("v1\nv2");
     expect(second.lineCount).toBe(2);
-    expect(second.outputAt).toBeGreaterThan(firstOutputAt);
+    expect(second.outputChangedAt).toBe(c.now());
     expect(second.lastLiveAt).toBe(second.outputAt);
+
+    const changedAt = second.outputChangedAt;
+    c.advance(2_500);
+    reg.refresh();
+    expect(reg.list()[0]!.outputChangedAt).toBe(changedAt);
   });
 
   it("live → (predicate false) → ended: freezes output, keeps in list, sets endedAt", () => {
@@ -131,6 +145,64 @@ describe("registry — discovery + transitions", () => {
     expect(reg.list()).toHaveLength(0);
   });
 
+  it("uses a 24-hour default ended-session retention", () => {
+    expect(DEFAULT_RETENTION_MS).toBe(24 * 60 * 60 * 1_000);
+
+    let observations = [obs()];
+    let live = true;
+    const c = clock();
+    const reg = createExternalSessionRegistry({
+      scan: () => observations,
+      isLive: () => live,
+      now: c.now,
+    });
+    reg.refresh();
+
+    observations = [];
+    live = false;
+    c.advance(2_500);
+    reg.refresh();
+
+    c.advance(DEFAULT_RETENTION_MS - 1);
+    reg.refresh();
+    expect(reg.list()).toHaveLength(1);
+  });
+
+  it("does not prune an expired ended session while capture polling keeps its view lease active", () => {
+    let observations = [obs({ output: "frozen", lineCount: 1 })];
+    let live = true;
+    const c = clock();
+    const reg = createExternalSessionRegistry({
+      scan: () => observations,
+      isLive: () => live,
+      now: c.now,
+      retentionMs: 10_000,
+      viewGraceMs: 5_000,
+    });
+    reg.refresh();
+
+    observations = [];
+    live = false;
+    c.advance(2_500);
+    reg.refresh();
+
+    c.advance(9_999);
+    expect(reg.captureOne("codex:cx-gap2")?.state).toBe("ended");
+
+    c.advance(2); // retention elapsed, but detail capture touched the view lease
+    reg.refresh();
+    expect(reg.list()).toHaveLength(1);
+
+    c.advance(4_000);
+    expect(reg.captureOne("codex:cx-gap2")?.state).toBe("ended");
+    reg.refresh();
+    expect(reg.list()).toHaveLength(1);
+
+    c.advance(5_001); // polling stopped and the grace window elapsed
+    reg.refresh();
+    expect(reg.list()).toHaveLength(0);
+  });
+
   it("captureOne returns fresh output when live, and never re-reads a dead pane when ended", () => {
     let observations = [obs({ output: "old", lineCount: 1 })];
     let live = true;
@@ -150,6 +222,20 @@ describe("registry — discovery + transitions", () => {
     expect(liveCap?.state).toBe("live");
     expect(liveCap?.output).toBe("fresh-drill-in"); // live → fresh read
     expect(liveReads).toBe(1);
+    // Detail uses a 1000-line capture while refresh uses 200 lines. It must not
+    // replace or activity-stamp the canonical list sample solely because the
+    // capture depths differ.
+    expect(reg.list()[0]!.output).toBe("old");
+    expect(reg.list()[0]!.outputChangedAt).toBeNull();
+
+    c.advance(1_000);
+    reg.captureOne("codex:cx-gap2");
+    expect(reg.list()[0]!.outputChangedAt).toBeNull();
+
+    c.advance(1_000);
+    reg.refresh();
+    expect(reg.list()[0]!.output).toBe("old");
+    expect(reg.list()[0]!.outputChangedAt).toBeNull();
 
     observations = [];
     live = false;
@@ -158,7 +244,7 @@ describe("registry — discovery + transitions", () => {
     const endedCap = reg.captureOne("codex:cx-gap2");
     expect(endedCap?.state).toBe("ended");
     expect(endedCap?.output).toBe("fresh-drill-in"); // frozen at last capture
-    expect(liveReads).toBe(1); // did NOT re-read the dead pane
+    expect(liveReads).toBe(2); // did NOT re-read the dead pane after the two live reads
   });
 
   it("captureOne returns null for an unknown id", () => {
@@ -184,6 +270,7 @@ describe("isExternalSessionLive — the single discrete predicate", () => {
     endedAt: null,
     output: "x",
     outputAt: 0,
+    outputChangedAt: null,
     lineCount: 1,
   };
 

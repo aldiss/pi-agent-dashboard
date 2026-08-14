@@ -49,6 +49,8 @@ export interface ExternalSession {
   output: string;
   /** ms epoch the `output` field was last refreshed. */
   outputAt: number;
+  /** ms epoch the captured text last changed; null until a second, different sample exists. */
+  outputChangedAt: number | null;
   /** Line count of `output`. */
   lineCount: number;
 }

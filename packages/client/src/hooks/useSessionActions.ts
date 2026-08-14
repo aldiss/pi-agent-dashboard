@@ -8,6 +8,7 @@ import { encodePromptAnswer } from "../lib/prompt-answer-encoder.js";
 import type { DashboardSession } from "@blackbelt-technology/pi-dashboard-shared/types.js";
 import type { TerminalSession } from "@blackbelt-technology/pi-dashboard-shared/terminal-types.js";
 import type { ImageContent } from "@blackbelt-technology/pi-dashboard-shared/types.js";
+import { sessionDetailPath } from "../lib/session-route.js";
 
 export interface SessionActionDeps {
   selectedId: string | undefined;
@@ -183,7 +184,7 @@ export function useSessionActions(deps: SessionActionDeps) {
   }, [selectedId, send, setSessionStates]);
 
   const handleSelect = useCallback((id: string) => {
-    navigate(`/session/${id}`);
+    navigate(sessionDetailPath(id));
     setMobileOpen(false);
   }, [navigate, setMobileOpen]);
 
