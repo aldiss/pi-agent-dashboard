@@ -421,6 +421,47 @@ export function parseCodexTranscript(
 }
 
 /** Select by birth time, not mtime or newest-file ordering. */
+/**
+ * Claude Code names a project directory after the session's cwd with the path
+ * separators flattened — but it also flattens DOTS, so
+ * `/Users/x/.pi/orchestration-state` becomes `-Users-x--pi-orchestration-state`
+ * (note the double dash). Replacing only `/` produced `-Users-x-.pi-…`, which
+ * exists for no session whose path contains a dot, so every session under
+ * `~/.pi/...` silently fell back to the raw terminal.
+ *
+ * Rather than hard-coding a guess at Claude's full encoding, try the direct
+ * name first and otherwise match by comparing normalised forms of the real
+ * directory names: any run of non-alphanumerics collapses to a single marker on
+ * both sides, so future encoding tweaks (underscores, spaces) still resolve.
+ * Best-effort by design: when nothing on disk matches (or the fs is stubbed) it
+ * returns the directly-computed path and lets candidate listing come back empty,
+ * so the caller falls back to the raw capture instead of this deciding for it.
+ */
+export async function resolveClaudeProjectDir(
+  cwd: string,
+  projectsRoot: string = path.join(os.homedir(), ".claude", "projects"),
+): Promise<string> {
+  const direct = path.join(projectsRoot, cwd.replaceAll("/", "-").replaceAll(".", "-"));
+  try {
+    const s = await stat(direct);
+    if (s.isDirectory()) return direct;
+  } catch {
+    // fall through to the normalised scan
+  }
+  const normalise = (v: string): string => v.replace(/[^A-Za-z0-9]+/g, "-").replace(/-+$/g, "");
+  const want = normalise(cwd);
+  try {
+    const entries = await readdir(projectsRoot, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      if (normalise(entry.name) === want) return path.join(projectsRoot, entry.name);
+    }
+  } catch {
+    // projects root unreadable — fall through
+  }
+  return direct;
+}
+
 export function pickNearestTranscript(
   candidates: readonly TranscriptCandidate[],
   processStartMs: number,
@@ -602,8 +643,10 @@ export function createExternalSessionTranscriptReader(
       root = path.join(codexHome, "sessions");
     } else {
       if (!session.cwd) return null;
-      const cwdSlug = session.cwd.replaceAll("/", "-");
-      root = path.join(homedir(), ".claude", "projects", cwdSlug);
+      root = await resolveClaudeProjectDir(
+        session.cwd,
+        path.join(homedir(), ".claude", "projects"),
+      );
     }
 
     const candidates = await listCandidates(root, session.runtime);

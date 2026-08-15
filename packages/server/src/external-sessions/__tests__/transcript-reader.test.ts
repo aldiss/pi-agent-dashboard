@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ExternalSession } from "@blackbelt-technology/pi-dashboard-shared/external-session.js";
 import {
+  resolveClaudeProjectDir,
   createExternalSessionTranscriptReader,
   parseClaudeTranscript,
   parseCodexTranscript,
@@ -644,5 +645,32 @@ describe("readJsonlTail read-only behavior", () => {
     expect(second.records).toEqual(first.records);
     expect(after.size).toBe(before.size);
     expect(after.mtimeMs).toBe(before.mtimeMs);
+  });
+});
+
+describe("resolveClaudeProjectDir", () => {
+  // Regression: Claude Code flattens DOTS as well as slashes, so a cwd under
+  // ~/.pi/... resolved to a directory that never exists and every such session
+  // fell back to the raw terminal.
+  it("resolves a cwd containing a dot (dots flatten to dashes)", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "cc-projects-"));
+    const real = path.join(root, "-Users-x--pi-orchestration-state");
+    await mkdir(real);
+    expect(await resolveClaudeProjectDir("/Users/x/.pi/orchestration-state", root)).toBe(real);
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("resolves a plain cwd with no dots", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "cc-projects-"));
+    const real = path.join(root, "-Users-x");
+    await mkdir(real);
+    expect(await resolveClaudeProjectDir("/Users/x", root)).toBe(real);
+    await rm(root, { recursive: true, force: true });
+  });
+
+  it("falls back to the computed path when nothing matches, so candidate listing decides", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "cc-projects-"));
+    expect(await resolveClaudeProjectDir("/Users/x/nope", root)).toBe(path.join(root, "-Users-x-nope"));
+    await rm(root, { recursive: true, force: true });
   });
 });
