@@ -289,3 +289,65 @@ describe("activityTimestamp", () => {
     expect(Number.isFinite(activityTimestamp(mk({ status: "idle", startedAt: 1_000 })))).toBe(true);
   });
 });
+
+// ── ended + ask_user is NOT a standing operator obligation ──────────────────
+// Live defect: a dead `ask_user` modal (session ended, process gone) kept a
+// permanent purple Needs-You row in the fleet brief. `isNeedsYou` had no alive
+// gate on ask_user, and `deriveCardState` tested ask_user BEFORE ended.
+// Real row: id 01a006b8…, status=ended, hidden=true, currentTool=ask_user,
+// unseenServerError=false. An unseen ERROR still outlives the process; an
+// unanswered modal on a dead process does not — nobody can answer it.
+describe("ended + ask_user (dead modal must not be a permanent obligation)", () => {
+  const now = 100_000_000;
+  const staleHours = 24;
+
+  it("live ask_user is STILL needs-you (the fix must not disarm the real case)", () => {
+    expect(isNeedsYou(mk({ status: "idle", currentTool: "ask_user" }))).toBe(true);
+    expect(isNeedsYou(mk({ status: "active", currentTool: "ask_user" }))).toBe(true);
+  });
+
+  it("ended + ask_user is NOT needs-you", () => {
+    expect(isNeedsYou(mk({ status: "ended", endedAt: 5_000, currentTool: "ask_user" }))).toBe(false);
+  });
+
+  it("endedAt-set-but-stale-status + ask_user is NOT needs-you (FIX-C3 convention)", () => {
+    // A legacy/unprojected row can carry endedAt while status still reads idle.
+    // session-grouping already treats endedAt != null as ended; card-state must agree.
+    expect(isNeedsYou(mk({ status: "idle", endedAt: 5_000, currentTool: "ask_user" }))).toBe(false);
+  });
+
+  it("ended + unseenServerError is STILL needs-you (unchanged)", () => {
+    expect(isNeedsYou(mk({ status: "ended", endedAt: 5_000, unseenServerError: true }))).toBe(true);
+  });
+
+  it("ended + BOTH → needs, and the reason is server-error not ask-user", () => {
+    const s = mk({ status: "ended", endedAt: 5_000, currentTool: "ask_user", unseenServerError: true });
+    expect(isNeedsYou(s)).toBe(true);
+    expect(deriveCardState(s, now, staleHours)).toEqual({ ageBand: "needs", reason: "server-error" });
+  });
+
+  it("ended + ask_user derives dormant/ended, not needs/ask-user", () => {
+    const s = mk({ status: "ended", endedAt: 5_000, currentTool: "ask_user" });
+    expect(deriveCardState(s, now, staleHours)).toEqual({ ageBand: "dormant", reason: "ended" });
+  });
+
+  it("computeFleetBrief emits ZERO rows for an ended ask_user session", () => {
+    const items = computeFleetBrief(
+      [mk({ id: "pi7-write", status: "ended", endedAt: 5_000, hidden: true, currentTool: "ask_user" })],
+      [],
+    );
+    expect(items.filter((i) => i.id === "pi7-write")).toHaveLength(0);
+  });
+
+  it("computeFleetBrief still emits the live ask_user beside the dead one", () => {
+    const items = computeFleetBrief(
+      [
+        mk({ id: "dead", status: "ended", endedAt: 5_000, currentTool: "ask_user" }),
+        mk({ id: "alive", status: "idle", currentTool: "ask_user" }),
+      ],
+      [],
+    );
+    expect(items.map((i) => i.id)).toContain("alive");
+    expect(items.map((i) => i.id)).not.toContain("dead");
+  });
+});
