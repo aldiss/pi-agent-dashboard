@@ -16,11 +16,12 @@ import type { TokenPayload } from "./auth.js";
 // PendingLoadManager removed — server loads sessions directly via DirectoryService
 import { createHeadlessPidRegistry, type HeadlessPidRegistry } from "./headless-pid-registry.js";
 import { projectSession } from "./session-projection.js";
-import type { DashboardSession } from "@blackbelt-technology/pi-dashboard-shared/types.js";
+import type { DashboardEvent, DashboardSession } from "@blackbelt-technology/pi-dashboard-shared/types.js";
 import type { PendingForkRegistry } from "./pending-fork-registry.js";
 import type { SessionOrderManager } from "./session-order-manager.js";
 import type { PreferencesStore } from "./preferences-store.js";
 import { hasOpenSpecDir, type DirectoryService } from "./directory-service.js";
+import { extractTranslationRequest, type DashboardTranslator } from "./translator-service.js";
 
 /**
  * Pure helper: build the per-cwd `openspec_update` messages a freshly
@@ -166,6 +167,8 @@ export function createBrowserGateway(
   operatorSet?: import("./operator-set-tracker.js").OperatorSetTracker,
   /** Optional direct-dashboard guest→cell boundary. */
   cellAccess?: CellAccessController,
+  /** Read-only assistant-message rendering service. */
+  translator?: DashboardTranslator,
 ): BrowserGateway {
   // perMessageDeflate enabled: the sessions_snapshot frame is ~345 KB uncompressed
   // at ~380 sessions and re-ships on every (re)connect; gzip of the identical payload
@@ -191,6 +194,11 @@ export function createBrowserGateway(
   const visibleSessionIds = new Map<WebSocket, Set<string>>();
   // Track which sessions are mid-replay per WebSocket (suppress live events)
   const replayingSessions = new Map<WebSocket, Set<string>>();
+  // Per-browser delivery dedupe. Persisted entry ids are immutable, so one
+  // result per (session, entry) is sufficient even when replay batches overlap.
+  const translationDeliveries = new WeakMap<WebSocket, Set<string>>();
+  // Stage-1 gate: one enabled session per browser. Missing entry = OFF.
+  const translationEnabledSessions = new WeakMap<WebSocket, string>();
 
   // Track headless child processes with sessionId linkage
   const headlessPidRegistry = createHeadlessPidRegistry();
@@ -392,6 +400,47 @@ export function createBrowserGateway(
     return s ? projectSession(s, (sid) => piGateway.isSessionConnected(sid)) : undefined;
   };
 
+  function clearTranslationDeliveries(ws: WebSocket, sessionId: string): void {
+    const delivered = translationDeliveries.get(ws);
+    if (!delivered) return;
+    for (const key of delivered) {
+      if (key.startsWith(`${sessionId}:`)) delivered.delete(key);
+    }
+  }
+
+  function scheduleTranslationEvents(ws: WebSocket, sessionId: string, events: DashboardEvent[]): void {
+    if (!translator || translationEnabledSessions.get(ws) !== sessionId) return;
+    let delivered = translationDeliveries.get(ws);
+    if (!delivered) {
+      delivered = new Set<string>();
+      translationDeliveries.set(ws, delivered);
+    }
+    for (const event of events) {
+      const request = extractTranslationRequest(sessionId, event);
+      if (!request) continue;
+      const deliveryKey = `${request.sessionId}:${request.entryId}`;
+      if (delivered.has(deliveryKey)) continue;
+      delivered.add(deliveryKey);
+      void translator.translate(request).then((result) => {
+        if (translationEnabledSessions.get(ws) !== request.sessionId) return;
+        sendTo(ws, { type: "translation_result", sessionId: request.sessionId, ...result });
+      }).catch((error) => {
+        console.error(
+          `[browser-gw] translator failed outside result contract (session=${request.sessionId} entry=${request.entryId}):`,
+          error,
+        );
+      });
+    }
+  }
+
+  function scheduleTranslations(ws: WebSocket, msg: ServerToBrowserMessage): void {
+    if (msg.type === "event") {
+      scheduleTranslationEvents(ws, msg.sessionId, [msg.event]);
+    } else if (msg.type === "event_replay") {
+      scheduleTranslationEvents(ws, msg.sessionId, msg.events.map(({ event }) => event).reverse());
+    }
+  }
+
   function sendTo(ws: WebSocket, msg: ServerToBrowserMessage, origin: "core" | "plugin" = "core") {
     if (ws.readyState !== WebSocket.OPEN) return;
     let outgoing = msg;
@@ -438,6 +487,9 @@ export function createBrowserGateway(
       return;
     }
     ws.send(payload);
+    // Original event is already on the socket before any model work starts.
+    // Translation returns later as a sibling carrier and cannot delay rendering.
+    scheduleTranslations(ws, outgoing);
   }
 
   function broadcast(msg: ServerToBrowserMessage) {
@@ -688,7 +740,26 @@ export function createBrowserGateway(
             break;
           case "unsubscribe":
             subs.delete(msg.sessionId);
+            if (translationEnabledSessions.get(ws) === msg.sessionId) {
+              translationEnabledSessions.delete(ws);
+              clearTranslationDeliveries(ws, msg.sessionId);
+            }
             break;
+          case "set_session_translation": {
+            if (!subs.has(msg.sessionId)) break;
+            const current = translationEnabledSessions.get(ws);
+            if (msg.enabled) {
+              if (current && current !== msg.sessionId) clearTranslationDeliveries(ws, current);
+              translationEnabledSessions.set(ws, msg.sessionId);
+              if (current !== msg.sessionId) clearTranslationDeliveries(ws, msg.sessionId);
+              const events = eventStore.getEvents(msg.sessionId, 1).map(({ event }) => event).reverse();
+              scheduleTranslationEvents(ws, msg.sessionId, events);
+            } else if (current === msg.sessionId) {
+              translationEnabledSessions.delete(ws);
+              clearTranslationDeliveries(ws, msg.sessionId);
+            }
+            break;
+          }
           case "send_prompt":
             await handleSendPrompt(msg, ctx);
             break;

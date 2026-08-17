@@ -94,6 +94,106 @@ describe("ChatView", () => {
     expect(plainBtn).not.toBeNull();
   });
 
+  it("renders plain English in place and reveals the untouched original in one gesture", () => {
+    const state = createInitialState();
+    state.messages.push({
+      id: "assistant-1",
+      role: "assistant",
+      content: "The internal handoff remains blocked.",
+      translation: "The work transfer remains blocked.",
+      translationState: "ready",
+      entryId: "entry-a1",
+      timestamp: 1,
+    });
+
+    const { container } = render(
+      <ThemeProvider><ChatView state={state} toolContext={defaultToolContext} translationEnabled /></ThemeProvider>,
+    );
+
+    expect(container.textContent).toContain("The work transfer remains blocked.");
+    expect(container.textContent).not.toContain("The internal handoff remains blocked.");
+    const originalButton = container.querySelector('button[title="Show original"]');
+    expect(originalButton).not.toBeNull();
+
+    fireEvent.click(originalButton!);
+
+    expect(container.textContent).toContain("The internal handoff remains blocked.");
+    expect(container.querySelector('button[title="Show plain English"]')).not.toBeNull();
+  });
+
+  it("shows the original plus a quiet marker when translation fails", () => {
+    const state = createInitialState();
+    state.messages.push({
+      id: "assistant-1",
+      role: "assistant",
+      content: "The original remains visible.",
+      translationState: "failed",
+      translationFailureReason: "timeout",
+      entryId: "entry-a1",
+      timestamp: 1,
+    });
+
+    const { container } = render(
+      <ThemeProvider><ChatView state={state} toolContext={defaultToolContext} translationEnabled /></ThemeProvider>,
+    );
+
+    expect(container.textContent).toContain("The original remains visible.");
+    expect(container.querySelector('[data-testid="translation-unavailable"]')).not.toBeNull();
+    expect(container.querySelector('button[title="Show original"]')).not.toBeNull();
+  });
+
+  it("translation is OFF by default and makes no translated rendering visible", () => {
+    const state = createInitialState();
+    state.messages.push({
+      id: "assistant-1",
+      role: "assistant",
+      content: "The internal handoff remains blocked.",
+      translation: "The work transfer remains blocked.",
+      translationState: "ready",
+      entryId: "entry-a1",
+      timestamp: 1,
+    });
+
+    const { container } = render(
+      <ThemeProvider><ChatView sessionId="s1" state={state} toolContext={defaultToolContext} onTranslationToggle={vi.fn()} /></ThemeProvider>,
+    );
+
+    expect(container.textContent).toContain("The internal handoff remains blocked.");
+    expect(container.textContent).not.toContain("The work transfer remains blocked.");
+    expect(container.querySelector('[data-testid="session-translation-toggle"]')?.getAttribute("aria-pressed")).toBe("false");
+  });
+
+  it("disabling session translation restores the original", () => {
+    const state = createInitialState();
+    state.messages.push({
+      id: "assistant-1",
+      role: "assistant",
+      content: "The internal handoff remains blocked.",
+      translation: "The work transfer remains blocked.",
+      translationState: "ready",
+      entryId: "entry-a1",
+      timestamp: 1,
+    });
+    const onTranslationToggle = vi.fn();
+    const view = render(
+      <ThemeProvider>
+        <ChatView sessionId="s1" state={state} toolContext={defaultToolContext} translationEnabled onTranslationToggle={onTranslationToggle} />
+      </ThemeProvider>,
+    );
+    expect(view.container.textContent).toContain("The work transfer remains blocked.");
+
+    fireEvent.click(view.container.querySelector('[data-testid="session-translation-toggle"]')!);
+    expect(onTranslationToggle).toHaveBeenCalledWith(false);
+
+    view.rerender(
+      <ThemeProvider>
+        <ChatView sessionId="s1" state={state} toolContext={defaultToolContext} translationEnabled={false} onTranslationToggle={onTranslationToggle} />
+      </ThemeProvider>,
+    );
+    expect(view.container.textContent).toContain("The internal handoff remains blocked.");
+    expect(view.container.textContent).not.toContain("The work transfer remains blocked.");
+  });
+
   it("renders toolResult messages using ToolCallStep", () => {
     const state = stateWithToolMessage();
     const { container } = render(<ThemeProvider><ChatView state={state} toolContext={defaultToolContext} /></ThemeProvider>);

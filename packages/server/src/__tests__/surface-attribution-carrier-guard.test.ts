@@ -89,6 +89,7 @@ const ATTRIBUTION_LEDGER: Record<string, AttributionDisposition> = {
   unsubscribe: { kind: "exempt", rationale: "subscription bookkeeping; local" },
   session_view: { kind: "exempt", rationale: "viewed-state; local" },
   session_unview: { kind: "exempt", rationale: "viewed-state; local" },
+  set_session_translation: { kind: "exempt", rationale: "local read-only display preference; carries no operator-authored text; does not forward" },
   set_push_prefs: { kind: "exempt", rationale: "push prefs; local map" },
   reorder_sessions: { kind: "exempt", rationale: "order preference; local" },
   unpin_directory: { kind: "exempt", rationale: "directory pin preference; local" },

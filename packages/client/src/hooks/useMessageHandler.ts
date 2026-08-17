@@ -3,7 +3,7 @@
  * Extracted from App.tsx — maps each message type to the correct state setter.
  */
 import { useCallback, useRef } from "react";
-import { createInitialState, reduceEvent, addInteractiveRequest, resolveInteractiveRequest, dismissInteractiveRequest, cancelInteractiveRequest, markQueueEntryFailed, releaseOperatorBufferAsNeutral, OPERATOR_BUFFER_TIMEOUT_MS, type SessionState } from "../lib/event-reducer.js";
+import { applyTranslationResult, createInitialState, reduceEvent, addInteractiveRequest, resolveInteractiveRequest, dismissInteractiveRequest, cancelInteractiveRequest, markQueueEntryFailed, releaseOperatorBufferAsNeutral, OPERATOR_BUFFER_TIMEOUT_MS, type SessionState } from "../lib/event-reducer.js";
 import type { DashboardSession, CommandInfo, FlowInfo, FileEntry, OpenSpecData, OpenSpecGroup, ModelInfo, RoleInfo, PresenceParticipant } from "@blackbelt-technology/pi-dashboard-shared/types.js";
 import type { PendingOperatorInput } from "@blackbelt-technology/pi-dashboard-shared/browser-protocol.js";
 import { encodeFolderPath } from "../lib/folder-encoding.js";
@@ -286,6 +286,18 @@ export function useMessageHandler(
         }
         break;
       }
+
+      case "translation_result":
+        setSessionStates((prev) => {
+          const current = prev.get(msg.sessionId);
+          if (!current) return prev;
+          const updated = applyTranslationResult(current, msg);
+          if (updated === current) return prev;
+          const next = new Map(prev);
+          next.set(msg.sessionId, updated);
+          return next;
+        });
+        break;
 
       // AMEND #5 (f) delivery-aware-fail (2b): the server could not deliver the
       // send_prompt to the bridge (sent === false → bridge absent). This is the

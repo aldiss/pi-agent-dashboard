@@ -31,6 +31,14 @@ const OAUTH_PROVIDER_MAP: Record<string, string> = {
 /** Buffer before expiry to trigger preemptive refresh (30s). */
 const REFRESH_BUFFER_MS = 30_000;
 
+/** Derive credential-specific endpoint carried inside GitHub Copilot tokens. */
+export function deriveOAuthBaseUrl(provider: string, access: string): string | undefined {
+  if (provider !== "github-copilot") return undefined;
+  const proxyHost = access.match(/(?:^|;)proxy-ep=([A-Za-z0-9.-]+)(?:;|$)/)?.[1];
+  if (!proxyHost) return undefined;
+  return `https://${proxyHost.replace(/^proxy\./, "api.")}`;
+}
+
 export class InternalAuthStorage {
   private oauthModule: PiAiOAuthModule | null;
   private cachedAuth: AuthData | null = null;
@@ -43,7 +51,7 @@ export class InternalAuthStorage {
 
   async getApiKeyAndHeaders(
     model: any,
-  ): Promise<{ apiKey: string; headers: Record<string, string> }> {
+  ): Promise<{ apiKey: string; headers: Record<string, string>; baseUrl?: string }> {
     const auth = this.getAuth();
     const cred = auth[model.provider];
     if (!cred) {
@@ -58,7 +66,12 @@ export class InternalAuthStorage {
 
     if (cred.type === "oauth") {
       const oauthCred = await this.ensureFreshOAuth(model.provider, cred);
-      return { apiKey: oauthCred.access, headers: { ...modelHeaders } };
+      const baseUrl = deriveOAuthBaseUrl(model.provider, oauthCred.access);
+      return {
+        apiKey: oauthCred.access,
+        headers: { ...modelHeaders },
+        ...(baseUrl ? { baseUrl } : {}),
+      };
     }
 
     throw new Error(`Unknown credential type for provider "${model.provider}"`);

@@ -8,6 +8,7 @@ import { isArchitectEvent, reduceArchitectEvent } from "@blackbelt-technology/pi
 import { parseSkillBlock, type SkillBlock } from "@blackbelt-technology/pi-dashboard-shared/skill-block-parser.js";
 import { readAudienceStamp } from "./message-filter-classifier.js";
 import type { Audience } from "@blackbelt-technology/pi-dashboard-shared/vendor/operator-voice-audience/audience-core.js";
+import type { TranslationResultMessage } from "@blackbelt-technology/pi-dashboard-shared/browser-protocol.js";
 
 /**
  * Read the stamp-at-emit audience off a raw message envelope (`data.message`)
@@ -68,6 +69,12 @@ export interface ChatMessage {
   toolDetails?: Record<string, unknown>;
   /** Session entry ID (for fork-from-message) */
   entryId?: string;
+  /** Optional read-only rendering produced by the dashboard translator. */
+  translation?: string;
+  /** Translation state stays parallel to `content`; `content` remains the record. */
+  translationState?: "ready" | "unchanged" | "failed";
+  translationFailureReason?: string;
+  translationSourceHash?: string;
   /**
    * Bridge-stamped nonce that ties this ChatMessage to a later
    * entry_persisted event. Set on user message_start (where entryId is
@@ -374,6 +381,42 @@ export function createInitialState(): SessionState {
     subagents: new Map(),
     turnCount: 0,
   };
+}
+
+/**
+ * Attach a server-produced rendering to its finalized assistant row.
+ * Never substitutes `content`, so model context, fork, replay, and persistence
+ * continue to consume the stored original.
+ */
+export function applyTranslationResult(
+  state: SessionState,
+  result: TranslationResultMessage,
+): SessionState {
+  const index = state.messages.findIndex(
+    (message) => message.role === "assistant" && message.entryId === result.entryId,
+  );
+  if (index < 0) return state;
+
+  const current = state.messages[index];
+  const hasText = result.status === "translated" && result.text.length > 0;
+  const updated: ChatMessage = {
+    ...current,
+    translation: hasText ? result.text : undefined,
+    translationState: hasText
+      ? "ready"
+      : result.status === "unchanged"
+        ? "unchanged"
+        : "failed",
+    translationFailureReason: result.status === "failed"
+      ? result.reason
+      : result.status === "translated" && !hasText
+        ? "empty-output"
+        : undefined,
+    translationSourceHash: result.sourceHash,
+  };
+  const messages = state.messages.slice();
+  messages[index] = updated;
+  return { ...state, messages };
 }
 
 // ── door-3 operator-voice pre-render hold ────────────────────────────────────

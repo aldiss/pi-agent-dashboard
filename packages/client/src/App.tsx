@@ -222,6 +222,8 @@ export default function App() {
    * onCloseFilterControls) below. Sister-shape to chatViewRef-based search
    * toggle wiring — both are W4.x discoverability features. */
   const [showMessageFilterControls, setShowMessageFilterControls] = useState(false);
+  // Stage-1 translator gate: one enabled session per browser, OFF by default.
+  const [translationSessionId, setTranslationSessionId] = useState<string | null>(null);
   const [sessions, setSessions] = useState<Map<string, DashboardSession>>(new Map());
   const [externalSessions, setExternalSessions] = useState<ExternalSession[]>([]);
   const [externalCellGrouping, setExternalCellGrouping] = useState<
@@ -544,16 +546,34 @@ export default function App() {
         return next;
       });
       send({ type: "subscribe", sessionId: selectedId, lastSeq: maxSeqMapRef.current.get(selectedId) ?? 0 });
+      if (translationSessionId === selectedId) {
+        send({ type: "set_session_translation", sessionId: translationSessionId, enabled: true });
+      }
       // Request model list for this session if we don't have it yet (e.g. after page refresh)
       if (!modelsMap.has(selectedId)) {
         send({ type: "request_models", sessionId: selectedId });
       }
     }
-  }, [selectedId, send, status]);
+  }, [selectedId, send, status, translationSessionId]);
 
   const selectedState = selectedId
     ? sessionStates.get(selectedId) ?? createInitialState()
     : createInitialState();
+
+  const handleSessionTranslationToggle = useCallback((enabled: boolean) => {
+    if (!selectedId || isExternalSessionId(selectedId)) return;
+    if (enabled) {
+      setTranslationSessionId(selectedId);
+      if (status === "connected") {
+        send({ type: "set_session_translation", sessionId: selectedId, enabled: true });
+      }
+      return;
+    }
+    if (status === "connected") {
+      send({ type: "set_session_translation", sessionId: selectedId, enabled: false });
+    }
+    setTranslationSessionId((current) => current === selectedId ? null : current);
+  }, [selectedId, send, status]);
 
 
   // Per-session draft text + history recall for CommandInput.
@@ -1452,7 +1472,7 @@ export default function App() {
             </div>
           }>
             <SessionAssetsProvider assets={selectedSession?.assets}>
-            <ChatView ref={chatViewRef} sessionId={selectedId} state={selectedState} sessionCtx={sessionCtx} toolContext={toolContext} onCancelPending={handleCancelPending} onRespondToUi={handleRespondToUi} onRendered={handleRenderedAck} onAbort={handleAbort} onForceKill={handleForceKill} onForkFromMessage={selectedId ? (entryId) => handleResumeSession(selectedId, "fork", entryId) : undefined} onRetryAfterError={selectedId ? () => {
+            <ChatView ref={chatViewRef} sessionId={selectedId} state={selectedState} sessionCtx={sessionCtx} toolContext={toolContext} translationEnabled={translationSessionId === selectedId} onTranslationToggle={handleSessionTranslationToggle} onCancelPending={handleCancelPending} onRespondToUi={handleRespondToUi} onRendered={handleRenderedAck} onAbort={handleAbort} onForceKill={handleForceKill} onForkFromMessage={selectedId ? (entryId) => handleResumeSession(selectedId, "fork", entryId) : undefined} onRetryAfterError={selectedId ? () => {
               // Retry the last user prompt by re-sending it via send_prompt.
               // The previous behaviour (handleResumeSession with mode="continue")
               // no-ops on alive-but-errored sessions because the server short-

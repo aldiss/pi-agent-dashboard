@@ -34,7 +34,7 @@ export interface ModelProxyRouteDeps {
 export interface ModelProxyRegistry {
   getAvailable(): Promise<any[]>;
   find(provider: string, modelId: string): Promise<any | null>;
-  getApiKeyAndHeaders(model: any): Promise<{ apiKey: string; headers: Record<string, string> }>;
+  getApiKeyAndHeaders(model: any): Promise<{ apiKey: string; headers: Record<string, string>; baseUrl?: string }>;
 }
 
 /** Minimal interface for pi-ai's streamSimple. */
@@ -129,6 +129,7 @@ export function registerModelProxyRoutes(
       }
 
       const creds = await registry.getApiKeyAndHeaders(model);
+      const requestModel = creds.baseUrl ? { ...model, baseUrl: creds.baseUrl } : model;
       const controller = new AbortController();
 
       // Abort on client disconnect
@@ -140,7 +141,7 @@ export function registerModelProxyRoutes(
       }
 
       const streamOpts: any = {
-        model,
+        model: requestModel,
         messages,
         ...(systemPrompt ? { system: systemPrompt } : {}),
         ...(tools ? { tools } : {}),
@@ -254,6 +255,7 @@ export function registerModelProxyRoutes(
       }
 
       const creds = await registry.getApiKeyAndHeaders(model);
+      const requestModel = creds.baseUrl ? { ...model, baseUrl: creds.baseUrl } : model;
       const controller = new AbortController();
       request.raw.on("close", () => controller.abort());
 
@@ -263,7 +265,7 @@ export function registerModelProxyRoutes(
       }
 
       const streamOpts: any = {
-        model,
+        model: requestModel,
         messages,
         ...(systemPrompt ? { system: systemPrompt } : {}),
         ...(tools ? { tools } : {}),

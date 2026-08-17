@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { createInitialState, findLastUserPrompt, reduceEvent, toDisplayString, addInteractiveRequest, resolveInteractiveRequest, dismissInteractiveRequest, cancelInteractiveRequest, extractAgentEndError, type SessionState, type PendingPrompt, type ChatMessage } from "../event-reducer.js";
+import { applyTranslationResult, createInitialState, findLastUserPrompt, reduceEvent, toDisplayString, addInteractiveRequest, resolveInteractiveRequest, dismissInteractiveRequest, cancelInteractiveRequest, extractAgentEndError, type SessionState, type PendingPrompt, type ChatMessage } from "../event-reducer.js";
 import type { DashboardEvent } from "@blackbelt-technology/pi-dashboard-shared/types.js";
 
 function applyEvents(events: DashboardEvent[]): SessionState {
@@ -1851,6 +1851,66 @@ describe("turnIndex tracking", () => {
       },
     ]);
     expect(state.messages[0].entryId).toBeUndefined();
+  });
+});
+
+describe("translation render isolation", () => {
+  it("stores translation beside the message while session-log bytes and model context stay original", () => {
+    const original = "The internal handoff remains blocked until the registry read completes.";
+    const translated = "The work transfer remains blocked until the registry read completes.";
+    const sessionLogBytes = Buffer.from(
+      JSON.stringify({ type: "message", id: "entry-a1", message: { role: "assistant", content: original } }) + "\n",
+      "utf8",
+    );
+    const before = Buffer.from(sessionLogBytes);
+    const state = createInitialState();
+    state.messages.push({
+      id: "msg-1",
+      role: "assistant",
+      content: original,
+      entryId: "entry-a1",
+      timestamp: 1,
+    });
+
+    const next = applyTranslationResult(state, {
+      type: "translation_result",
+      sessionId: "session-1",
+      entryId: "entry-a1",
+      sourceHash: "abc123",
+      status: "translated",
+      text: translated,
+    });
+
+    expect(next.messages[0].content).toBe(original);
+    expect(next.messages[0].translation).toBe(translated);
+    expect(Buffer.compare(sessionLogBytes, before)).toBe(0);
+    const subsequentModelContext = next.messages.map((message) => message.content).join("\n");
+    expect(subsequentModelContext).toContain(original);
+    expect(subsequentModelContext).not.toContain(translated);
+  });
+
+  it("empty translated text is treated as failed and leaves the original visible", () => {
+    const state = createInitialState();
+    state.messages.push({
+      id: "msg-1",
+      role: "assistant",
+      content: "Original non-empty message",
+      entryId: "entry-a1",
+      timestamp: 1,
+    });
+
+    const next = applyTranslationResult(state, {
+      type: "translation_result",
+      sessionId: "session-1",
+      entryId: "entry-a1",
+      sourceHash: "abc123",
+      status: "translated",
+      text: "",
+    });
+
+    expect(next.messages[0].content).toBe("Original non-empty message");
+    expect(next.messages[0].translation).toBeUndefined();
+    expect(next.messages[0].translationState).toBe("failed");
   });
 });
 

@@ -151,6 +151,7 @@ export const WS_PASSTHROUGH_TYPES: ReadonlyMap<string, string> = new Map([
   ["unsubscribe", "subscription bookkeeping; local"],
   ["session_view", "viewed-state tracking; local (clears unread)"],
   ["session_unview", "viewed-state tracking; local"],
+  ["set_session_translation", "read-only display preference; local browser gate"],
   ["set_push_prefs", "per-session push prefs; local map, no forward"],
   ["reorder_sessions", "session ORDER preference; local, no forward"],
   ["unpin_directory", "directory pin preference; local, no forward"],

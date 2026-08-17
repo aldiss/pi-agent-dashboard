@@ -16,11 +16,15 @@ export interface StreamCompletionOpts {
   tools?: any[];
   maxTokens?: number;
   temperature?: number;
+  reasoning?: "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+  timeoutMs?: number;
+  maxRetries?: number;
+  maxRetryDelayMs?: number;
   signal?: AbortSignal;
 }
 
 export interface RegistryLike {
-  getApiKeyAndHeaders(model: any): Promise<{ apiKey: string; headers: Record<string, string> }>;
+  getApiKeyAndHeaders(model: any): Promise<{ apiKey: string; headers: Record<string, string>; baseUrl?: string }>;
 }
 
 /**
@@ -39,7 +43,8 @@ export async function streamCompletion(
   registryOverride?: RegistryLike,
 ): Promise<AsyncIterable<any>> {
   const registry = registryOverride ?? await getModelRegistry();
-  const { apiKey, headers } = await registry.getApiKeyAndHeaders(opts.model);
+  const { apiKey, headers, baseUrl } = await registry.getApiKeyAndHeaders(opts.model);
+  const requestModel = baseUrl ? { ...opts.model, baseUrl } : opts.model;
 
   const context: any = {
     messages: opts.messages,
@@ -52,8 +57,12 @@ export async function streamCompletion(
     headers,
     ...(opts.maxTokens != null ? { maxTokens: opts.maxTokens } : {}),
     ...(opts.temperature != null ? { temperature: opts.temperature } : {}),
+    ...(opts.reasoning != null ? { reasoning: opts.reasoning } : {}),
+    ...(opts.timeoutMs != null ? { timeoutMs: opts.timeoutMs } : {}),
+    ...(opts.maxRetries != null ? { maxRetries: opts.maxRetries } : {}),
+    ...(opts.maxRetryDelayMs != null ? { maxRetryDelayMs: opts.maxRetryDelayMs } : {}),
     ...(opts.signal ? { signal: opts.signal } : {}),
   };
 
-  return piAiStreamSimple(opts.model, context, options);
+  return piAiStreamSimple(requestModel, context, options);
 }

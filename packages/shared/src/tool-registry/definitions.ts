@@ -74,6 +74,22 @@ function moduleDefWithAliases(
   return { name: canonicalName, kind: "module", strategies, classify };
 }
 
+function piAiModuleDef(deps?: StrategyDeps): ToolDefinition {
+  const aliases = ["@earendil-works/pi-ai", "@mariozechner/pi-ai"];
+  const nestedAliases = [
+    path.join("@earendil-works", "pi-coding-agent", "node_modules", "@earendil-works", "pi-ai"),
+    path.join("@mariozechner", "pi-coding-agent", "node_modules", "@mariozechner", "pi-ai"),
+  ];
+  const entry = path.join("dist", "index.js");
+  const strategies: Strategy[] = [overrideStrategy("pi-ai", deps)];
+  for (const pkg of aliases) strategies.push(bareImportStrategy(pkg));
+  for (const pkg of aliases) strategies.push(managedModuleStrategy(pkg, entry, deps));
+  for (const pkg of nestedAliases) strategies.push(managedModuleStrategy(pkg, entry, deps));
+  for (const pkg of aliases) strategies.push(npmGlobalStrategy(pkg, entry, deps));
+  for (const pkg of nestedAliases) strategies.push(npmGlobalStrategy(pkg, entry, deps));
+  return { name: "pi-ai", kind: "module", strategies, classify };
+}
+
 // ── Build-time module definitions (electron, node-pty) ────────────────────
 
 /**
@@ -422,12 +438,7 @@ export function registerDefaultTools(registry: ToolRegistry, deps?: StrategyDeps
   // Aliases: @earendil-works/pi-ai (preferred) + @mariozechner/pi-ai (legacy fallback).
   // See change: add-dashboard-model-proxy.
   registry.register(
-    moduleDefWithAliases(
-      "pi-ai",
-      ["@earendil-works/pi-ai", "@mariozechner/pi-ai"],
-      path.join("dist", "index.js"),
-      deps,
-    ),
+    piAiModuleDef(deps),
   );
 
   // Build-time tools (see change: register-build-time-tools).
@@ -456,4 +467,5 @@ export function registerDefaultTools(registry: ToolRegistry, deps?: StrategyDeps
 export const _internals = {
   binaryDef,
   moduleDefWithAliases,
+  piAiModuleDef,
 };

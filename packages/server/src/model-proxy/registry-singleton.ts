@@ -8,7 +8,7 @@
  */
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { getDefaultRegistry, ModuleResolutionError } from "@blackbelt-technology/pi-dashboard-shared/tool-registry/index.js";
 import { InternalRegistry, type PiAiModule, type CustomProviderEntry, type CustomModelEntry } from "./internal-registry.js";
@@ -18,6 +18,114 @@ import { readAuthJson } from "../provider-auth-storage.js";
 let cachedRegistry: InternalRegistry | null = null;
 let cachedPiAi: PiAiModule | null = null;
 let lastError: string | null = null;
+
+type ModuleLoader = (href: string) => Promise<unknown>;
+
+function hasCompatSurface(value: unknown): value is PiAiModule {
+  if (!value || typeof value !== "object") return false;
+  const module = value as Record<string, unknown>;
+  return [
+    "registerBuiltInApiProviders",
+    "getModels",
+    "getProviders",
+    "getModel",
+    "registerApiProvider",
+    "unregisterApiProviders",
+    "streamSimple",
+  ].every((name) => typeof module[name] === "function");
+}
+
+/**
+ * pi-ai 0.83 moved the legacy model-proxy API from its root export to
+ * `dist/compat.js`. Older versions still expose it at `dist/index.js`.
+ */
+export async function normalizePiAiModule(
+  rootModule: unknown,
+  resolutionPath: string | null,
+  load: ModuleLoader = (href) => import(href),
+): Promise<PiAiModule> {
+  if (hasCompatSurface(rootModule)) return rootModule;
+  if (!resolutionPath) throw new Error("pi-ai compatibility surface unavailable: resolved module has no path");
+  const compatPath = join(dirname(resolutionPath), "compat.js");
+  let compatModule: unknown;
+  try {
+    compatModule = await load(pathToFileURL(compatPath).href);
+  } catch (error) {
+    throw new Error(
+      `pi-ai compatibility surface unavailable at ${compatPath}: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  if (!hasCompatSurface(compatModule)) {
+    throw new Error(`pi-ai compatibility surface unavailable at ${compatPath}`);
+  }
+  return compatModule;
+}
+
+function hasLegacyOAuthSurface(value: unknown): value is PiAiOAuthModule {
+  if (!value || typeof value !== "object") return false;
+  const module = value as Record<string, unknown>;
+  return typeof module.getOAuthProvider === "function" && typeof module.refreshOAuthToken === "function";
+}
+
+interface ModernOAuthFlow {
+  refresh(credential: Record<string, unknown>): Promise<Record<string, unknown>>;
+}
+
+interface ModernOAuthLoaders {
+  loadAnthropicOAuth?: () => Promise<ModernOAuthFlow>;
+  loadOpenAICodexOAuth?: () => Promise<ModernOAuthFlow>;
+  loadGitHubCopilotOAuth?: () => Promise<ModernOAuthFlow>;
+}
+
+/** Adapt pi-ai 0.83 OAuth loaders to the legacy refresh surface. */
+export async function normalizePiAiOAuthModule(
+  rootModule: unknown,
+  resolutionPath: string | null,
+  load: ModuleLoader = (href) => import(href),
+): Promise<PiAiOAuthModule | null> {
+  if (hasLegacyOAuthSurface(rootModule)) return rootModule;
+  if (!resolutionPath) return null;
+  const loadersPath = join(dirname(resolutionPath), "auth", "oauth", "load.js");
+  let loaders: ModernOAuthLoaders;
+  try {
+    loaders = await load(pathToFileURL(loadersPath).href) as ModernOAuthLoaders;
+  } catch {
+    return null;
+  }
+  const byProvider: Record<string, (() => Promise<ModernOAuthFlow>) | undefined> = {
+    anthropic: loaders.loadAnthropicOAuth,
+    "openai-codex": loaders.loadOpenAICodexOAuth,
+    "github-copilot": loaders.loadGitHubCopilotOAuth,
+  };
+
+  const refresh = async (providerId: string, credentials: any): Promise<any> => {
+    const loadFlow = byProvider[providerId];
+    if (!loadFlow) throw new Error(`No OAuth refresh loader for "${providerId}"`);
+    const flow = await loadFlow();
+    const refreshed = await flow.refresh({
+      type: "oauth",
+      access: credentials.accessToken,
+      refresh: credentials.refreshToken,
+      expires: credentials.expiresAt,
+      ...(credentials.enterpriseUrl ? { enterpriseUrl: credentials.enterpriseUrl } : {}),
+    });
+    return {
+      ...refreshed,
+      accessToken: refreshed.access,
+      refreshToken: refreshed.refresh,
+      expiresAt: refreshed.expires,
+    };
+  };
+
+  return {
+    getOAuthProvider(providerId) {
+      return byProvider[providerId]
+        ? { refreshToken: (credentials) => refresh(providerId, credentials) }
+        : undefined;
+    },
+    refreshOAuthToken: refresh,
+  };
+}
 
 // ── Disk readers ──────────────────────────────────────────────────────────────
 
@@ -52,17 +160,20 @@ export async function getModelRegistry(): Promise<InternalRegistry> {
   if (cachedRegistry) return cachedRegistry;
 
   try {
-    const { resolution, module: piAi } = await getDefaultRegistry().resolveModule<PiAiModule>("pi-ai");
+    const { resolution, module: rootModule } = await getDefaultRegistry().resolveModule<unknown>("pi-ai");
+    const piAi = await normalizePiAiModule(rootModule, resolution.path);
 
     // Resolve oauth subpath
     let oauthModule: PiAiOAuthModule | null = null;
     if (resolution.path) {
-      const oauthPath = resolution.path.replace(/\/dist\/index\.js$/, "/dist/oauth.js");
+      const oauthPath = join(dirname(resolution.path), "oauth.js");
+      let oauthRoot: unknown = null;
       try {
-        oauthModule = (await import(pathToFileURL(oauthPath).href)) as PiAiOAuthModule;
+        oauthRoot = await import(pathToFileURL(oauthPath).href);
       } catch {
         // OAuth subpath may not exist; non-fatal
       }
+      oauthModule = await normalizePiAiOAuthModule(oauthRoot, resolution.path);
     }
 
     const authStorage = new InternalAuthStorage(oauthModule);

@@ -156,6 +156,21 @@ describe("pi-coding-agent module definition", () => {
   });
 });
 
+describe("pi-ai module definition", () => {
+  it("resolves pi-ai nested under the managed pi-coding-agent package", () => {
+    const nested = path.join(
+      os.homedir(), ".pi-dashboard", "node_modules",
+      "@earendil-works", "pi-coding-agent", "node_modules",
+      "@earendil-works", "pi-ai", "dist", "index.js",
+    );
+    const r = freshRegistry({ exists: (candidate) => candidate === nested });
+    const res = r.resolve("pi-ai");
+    expect(res.ok).toBe(true);
+    expect(res.path).toBe(nested);
+    expect(res.source).toBe("managed");
+  });
+});
+
 describe("openspec binary definition", () => {
   it("finds openspec.cmd under managed bin on Windows", () => {
     const managed = path.join(os.homedir(), ".pi-dashboard", "node_modules", ".bin", "openspec.cmd");

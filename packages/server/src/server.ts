@@ -112,6 +112,7 @@ import { getPluginConfig as getPluginConfigFromFile } from "@blackbelt-technolog
 import { registerAllPluginBridges } from "@blackbelt-technology/pi-dashboard-shared/plugin-bridge-register.js";
 import { registerEditorProxy, handleEditorUpgrade } from "./editor-proxy.js";
 import { detectCodeServerBinary } from "./editor-detection.js";
+import { createTranslatorService } from "./translator-service.js";
 
 /**
  * A raw Node upgrade request carrying the principal captured at
@@ -738,7 +739,8 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
     }
   }
 
-  const browserGateway = createBrowserGateway(sessionManager, eventStore, piGateway, undefined, pendingForkRegistry, sessionOrderManager, preferencesStore, directoryService, terminalManager, pendingDashboardSpawns, config.maxWsBufferBytes, pendingAttachRegistry, pendingResumeIntents, pendingClientCorrelations, pushPrefsMap, () => config.push?.defaults, requireBrowserAuthAtStartup, config.authConfig?.operatorUsers, operatorSetTracker, cellAccess);
+  const translator = createTranslatorService();
+  const browserGateway = createBrowserGateway(sessionManager, eventStore, piGateway, undefined, pendingForkRegistry, sessionOrderManager, preferencesStore, directoryService, terminalManager, pendingDashboardSpawns, config.maxWsBufferBytes, pendingAttachRegistry, pendingResumeIntents, pendingClientCorrelations, pushPrefsMap, () => config.push?.defaults, requireBrowserAuthAtStartup, config.authConfig?.operatorUsers, operatorSetTracker, cellAccess, translator);
 
   let stopCellAccessRefresh = () => {};
   if (cellAccess.enabled) {

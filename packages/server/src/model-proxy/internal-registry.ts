@@ -80,7 +80,7 @@ export class InternalRegistry {
     return available.find((m: any) => m.provider === provider && m.id === modelId) ?? null;
   }
 
-  async getApiKeyAndHeaders(model: any): Promise<{ apiKey: string; headers: Record<string, string> }> {
+  async getApiKeyAndHeaders(model: any): Promise<{ apiKey: string; headers: Record<string, string>; baseUrl?: string }> {
     return this.authStorage.getApiKeyAndHeaders(model);
   }
 

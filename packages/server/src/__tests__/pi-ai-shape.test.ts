@@ -13,6 +13,7 @@
  */
 import { describe, it, expect, beforeAll } from "vitest";
 import { getDefaultRegistry } from "@blackbelt-technology/pi-dashboard-shared/tool-registry/index.js";
+import { normalizePiAiModule, normalizePiAiOAuthModule } from "../model-proxy/registry-singleton.js";
 
 const REQUIRE = process.env.MODEL_PROXY_REQUIRE_PI_AI === "1";
 
@@ -23,7 +24,7 @@ let resolveError: Error | null = null;
 beforeAll(async () => {
   try {
     const result = await getDefaultRegistry().resolveModule<Record<string, unknown>>("pi-ai");
-    piAi = result.module;
+    piAi = await normalizePiAiModule(result.module, result.resolution.path) as unknown as Record<string, unknown>;
 
     // Resolve oauth subpath — pi-ai exports it from dist/oauth.js
     const resolution = result.resolution;
@@ -31,7 +32,8 @@ beforeAll(async () => {
       const oauthPath = resolution.path.replace(/\/dist\/index\.js$/, "/dist/oauth.js");
       try {
         const { pathToFileURL } = await import("node:url");
-        piAiOAuth = (await import(pathToFileURL(oauthPath).href)) as Record<string, unknown>;
+        const oauthRoot = await import(pathToFileURL(oauthPath).href);
+        piAiOAuth = await normalizePiAiOAuthModule(oauthRoot, resolution.path) as unknown as Record<string, unknown> | null;
       } catch {
         // OAuth subpath may not exist in all versions
       }
@@ -114,21 +116,6 @@ describe("pi-ai shape precondition", () => {
   // --- OAuth exports from pi-ai/oauth (dist/oauth.js) ---
 
   describe("oauth exports", () => {
-    it("exports refreshAnthropicToken (Anthropic OAuth)", () => {
-      if (!piAiOAuth) return;
-      expect(typeof piAiOAuth.refreshAnthropicToken).toBe("function");
-    });
-
-    it("exports refreshOpenAICodexToken (Codex OAuth)", () => {
-      if (!piAiOAuth) return;
-      expect(typeof piAiOAuth.refreshOpenAICodexToken).toBe("function");
-    });
-
-    it("exports refreshGitHubCopilotToken (GitHub Copilot OAuth)", () => {
-      if (!piAiOAuth) return;
-      expect(typeof piAiOAuth.refreshGitHubCopilotToken).toBe("function");
-    });
-
     it("exports getOAuthProvider (generic provider lookup)", () => {
       if (!piAiOAuth) return;
       expect(typeof piAiOAuth.getOAuthProvider).toBe("function");
@@ -139,9 +126,12 @@ describe("pi-ai shape precondition", () => {
       expect(typeof piAiOAuth.refreshOAuthToken).toBe("function");
     });
 
-    it("exports getOAuthApiKey (get API key from credentials)", () => {
+    it("exposes refresh adapters for every model-proxy OAuth provider", () => {
       if (!piAiOAuth) return;
-      expect(typeof piAiOAuth.getOAuthApiKey).toBe("function");
+      const getProvider = piAiOAuth.getOAuthProvider as (id: string) => { refreshToken?: unknown } | undefined;
+      for (const id of ["anthropic", "openai-codex", "github-copilot"]) {
+        expect(typeof getProvider(id)?.refreshToken).toBe("function");
+      }
     });
   });
 });

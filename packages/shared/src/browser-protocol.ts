@@ -75,6 +75,35 @@ export interface EventReplayMessage {
   isLast: boolean;
 }
 
+/**
+ * Read-only rendering result for one finalized assistant entry.
+ * `text` travels beside the original event and never replaces it.
+ */
+export type TranslationResultMessage =
+  | {
+      type: "translation_result";
+      sessionId: string;
+      entryId: string;
+      sourceHash: string;
+      status: "translated";
+      text: string;
+    }
+  | {
+      type: "translation_result";
+      sessionId: string;
+      entryId: string;
+      sourceHash: string;
+      status: "unchanged";
+    }
+  | {
+      type: "translation_result";
+      sessionId: string;
+      entryId: string;
+      sourceHash: string;
+      status: "failed";
+      reason: string;
+    };
+
 export interface BrowserCommandsListMessage {
   type: "commands_list";
   sessionId: string;
@@ -615,6 +644,7 @@ export type ServerToBrowserMessage =
   | PresenceUpdateMessage
   | EventMessage
   | EventReplayMessage
+  | TranslationResultMessage
   | BrowserCommandsListMessage
   | BrowserFlowsListMessage
   | BrowserExtensionUiRequestMessage
@@ -1051,6 +1081,13 @@ export interface SessionUnviewBrowserMessage {
   sessionId: string;
 }
 
+/** Stage-1 per-browser gate. One enabled session replaces any prior one. */
+export interface SetSessionTranslationBrowserMessage {
+  type: "set_session_translation";
+  sessionId: string;
+  enabled: boolean;
+}
+
 export interface UiManagementBrowserMessage {
   type: "ui_management";
   sessionId: string;
@@ -1105,5 +1142,6 @@ export type BrowserToServerMessage =
   | UiManagementBrowserMessage
   | SessionViewBrowserMessage
   | SessionUnviewBrowserMessage
+  | SetSessionTranslationBrowserMessage
   | KillProcessBrowserMessage
   | SetPushPrefsBrowserMessage;

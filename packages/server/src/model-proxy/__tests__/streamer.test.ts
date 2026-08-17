@@ -50,7 +50,7 @@ describe("streamCompletion", () => {
     const tools = [{ name: "search" }];
     const signal = new AbortController().signal;
 
-    await streamCompletion({ model, messages, system: "Be helpful", tools, maxTokens: 100, temperature: 0.7, signal }, streamSimple as any, registry);
+    await streamCompletion({ model, messages, system: "Be helpful", tools, maxTokens: 100, temperature: 0.7, reasoning: "minimal", timeoutMs: 5000, maxRetries: 0, signal }, streamSimple as any, registry);
 
     const [modelArg, contextArg, optionsArg] = streamSimple.mock.calls[0];
     expect(modelArg).toEqual(model);
@@ -59,7 +59,30 @@ describe("streamCompletion", () => {
     expect(contextArg.tools).toEqual(tools);
     expect(optionsArg.maxTokens).toBe(100);
     expect(optionsArg.temperature).toBe(0.7);
+    expect(optionsArg.reasoning).toBe("minimal");
+    expect(optionsArg.timeoutMs).toBe(5000);
+    expect(optionsArg.maxRetries).toBe(0);
     expect(optionsArg.signal).toBe(signal);
+  });
+
+  it("applies a credential-specific base URL without mutating the catalog model", async () => {
+    const model = makeModel();
+    const registry = {
+      getApiKeyAndHeaders: vi.fn().mockResolvedValue({
+        apiKey: "copilot-token",
+        headers: {},
+        baseUrl: "https://api.enterprise.githubcopilot.com",
+      }),
+    };
+    const streamSimple = vi.fn().mockReturnValue(fakeStream([]));
+
+    await streamCompletion({ model, messages: [] }, streamSimple as any, registry);
+
+    expect(streamSimple.mock.calls[0][0]).toEqual({
+      ...model,
+      baseUrl: "https://api.enterprise.githubcopilot.com",
+    });
+    expect(model).not.toHaveProperty("baseUrl");
   });
 
   it("omits systemPrompt when not provided", async () => {

@@ -117,6 +117,9 @@ interface Props {
    */
   showFilterControls?: boolean;
   onCloseFilterControls?: () => void;
+  /** Stage-1 session gate. Defaults OFF. */
+  translationEnabled?: boolean;
+  onTranslationToggle?: (enabled: boolean) => void;
   /**
    * Loading ≠ empty (build-2 P0 fix #8). When the server could NOT load this
    * session's transcript (`session_state` failure — `dataUnavailable:true`),
@@ -152,12 +155,45 @@ const ImageAttachments = React.memo(function ImageAttachments({ images }: { imag
   );
 });
 
-const MessageBubble = React.memo(function MessageBubble({ content, className, timestamp, entryId, onFork, isPinned, onTogglePin }: { content: string; className: string; timestamp?: number; entryId?: string; onFork?: (entryId: string) => void; isPinned?: boolean; onTogglePin?: (entryId: string) => void }) {
+interface MessageBubbleProps {
+  content: string;
+  className: string;
+  timestamp?: number;
+  entryId?: string;
+  onFork?: (entryId: string) => void;
+  isPinned?: boolean;
+  onTogglePin?: (entryId: string) => void;
+  translation?: string;
+  translationState?: "ready" | "unchanged" | "failed";
+  translationFailureReason?: string;
+  translationEligible?: boolean;
+}
+
+const MessageBubble = React.memo(function MessageBubble({
+  content,
+  className,
+  timestamp,
+  entryId,
+  onFork,
+  isPinned,
+  onTogglePin,
+  translation,
+  translationState,
+  translationFailureReason,
+  translationEligible = false,
+}: MessageBubbleProps) {
   const contentRef = useRef<HTMLDivElement>(null);
+  const [showOriginal, setShowOriginal] = useState(false);
+  const hasTranslation = translationState === "ready" && !!translation;
+  const displayContent = hasTranslation && !showOriginal ? translation : content;
+
+  useEffect(() => {
+    setShowOriginal(false);
+  }, [entryId, translation]);
 
   const getPlainText = useCallback(() => {
-    return contentRef.current?.innerText ?? content;
-  }, [content]);
+    return contentRef.current?.innerText ?? displayContent;
+  }, [displayContent]);
 
   return (
     <div
@@ -165,13 +201,33 @@ const MessageBubble = React.memo(function MessageBubble({ content, className, ti
       {...(entryId ? { "data-entry-id": entryId } : {})}
     >
       <div ref={contentRef}>
-        <MarkdownContent content={content} />
+        <MarkdownContent content={displayContent} />
       </div>
       <div className="border-t border-[var(--border-secondary)] mt-2 pt-1.5 flex justify-end items-center gap-0.5 opacity-50 hover:opacity-100 transition-opacity">
         {timestamp != null && (
           <span className="text-[10px] text-[var(--text-tertiary)] mr-auto">{formatMessageTime(timestamp)}</span>
         )}
-        <CopyButton text={content} icon={<Icon path={mdiContentCopy} size={0.6} />} title="Copy as Markdown" />
+        {translationEligible && (
+          <button
+            type="button"
+            onClick={() => { if (hasTranslation) setShowOriginal((value) => !value); }}
+            title={hasTranslation && showOriginal ? "Show plain English" : "Show original"}
+            aria-pressed={hasTranslation ? showOriginal : true}
+            className="px-1.5 py-0.5 rounded text-[10px] hover:bg-[var(--bg-secondary)] text-[var(--text-secondary)] disabled:cursor-default"
+          >
+            {hasTranslation && showOriginal ? "Plain English" : "Original"}
+          </button>
+        )}
+        {translationEligible && translationState === "failed" && (
+          <span
+            data-testid="translation-unavailable"
+            title={translationFailureReason ? `Translation unavailable: ${translationFailureReason}` : "Translation unavailable"}
+            className="text-[10px] text-[var(--text-tertiary)]"
+          >
+            translation unavailable
+          </span>
+        )}
+        <CopyButton text={displayContent} icon={<Icon path={mdiContentCopy} size={0.6} />} title="Copy as Markdown" />
         <CopyButton text={getPlainText()} icon={<Icon path={mdiTextBox} size={0.6} />} title="Copy as plain text" />
         {entryId && onFork && (
           <button
@@ -335,7 +391,7 @@ export interface ChatViewHandle {
   toggleSearch: () => void;
 }
 
-export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ sessionId, state, toolContext, sessionCtx, onCancelPending, onRespondToUi, onRendered, onAbort, onForceKill, onForkFromMessage, onDismissError, onRetryAfterError, onRetryQueued, onDismissQueued, showFilterControls, onCloseFilterControls, dataUnavailable }, ref) {
+export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ sessionId, state, toolContext, sessionCtx, onCancelPending, onRespondToUi, onRendered, onAbort, onForceKill, onForkFromMessage, onDismissError, onRetryAfterError, onRetryQueued, onDismissQueued, showFilterControls, onCloseFilterControls, translationEnabled = false, onTranslationToggle, dataUnavailable }, ref) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const isNearBottom = useRef(true);
   const reducedMotion = useReducedMotion() ?? false;
@@ -716,6 +772,19 @@ export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ se
 
   return (
     <div className="flex-1 relative overflow-hidden flex flex-col">
+    {sessionId && onTranslationToggle && (
+      <div className="px-3 py-1.5 border-b border-[var(--border-subtle)] bg-[var(--bg-secondary)] flex justify-end">
+        <button
+          type="button"
+          data-testid="session-translation-toggle"
+          aria-pressed={translationEnabled}
+          onClick={() => onTranslationToggle(!translationEnabled)}
+          className="px-2 py-1 rounded text-xs text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]"
+        >
+          Plain English: {translationEnabled ? "On" : "Off"}
+        </button>
+      </div>
+    )}
     {showFilterControls && (
       <MessageFilterControls
         sessionId={sessionId ?? ""}
@@ -1068,7 +1137,10 @@ export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ se
         }
 
         // assistant
-        const bMax = hasMermaid(msg.content) ? bubbleWide : bubbleMax;
+        const translatedContent = translationEnabled && msg.translationState === "ready" && msg.translation
+          ? msg.translation
+          : msg.content;
+        const bMax = hasMermaid(translatedContent) ? bubbleWide : bubbleMax;
         return (
           <div
             key={msg.id}
@@ -1083,6 +1155,10 @@ export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ se
               onFork={onForkFromMessage}
               isPinned={msg.entryId ? pinnedEntryIds.has(msg.entryId) : false}
               onTogglePin={handleTogglePin}
+              translation={translationEnabled ? msg.translation : undefined}
+              translationState={translationEnabled ? msg.translationState : undefined}
+              translationFailureReason={translationEnabled ? msg.translationFailureReason : undefined}
+              translationEligible={translationEnabled}
             />
           </div>
         );

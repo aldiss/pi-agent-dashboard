@@ -13,6 +13,9 @@ import type {
   BrowserPromptCancelMessage,
   BrowserExtUiDecoratorMessage,
   BrowserAssetRegisterMessage,
+  TranslationResultMessage,
+  SetSessionTranslationBrowserMessage,
+  BrowserToServerMessage,
 } from "../browser-protocol.js";
 import type {
   ExtensionToServerMessage,
@@ -36,6 +39,8 @@ type _ExtUiDecoratorInBrowserUnion   = AssertExtends<BrowserExtUiDecoratorMessag
 // the server→browser union (so the client's reducer arm survives esbuild).
 type _AssetRegisterInExtensionUnion = AssertExtends<AssetRegisterMessage, ExtensionToServerMessage>;
 type _AssetRegisterInBrowserUnion   = AssertExtends<BrowserAssetRegisterMessage, ServerToBrowserMessage>;
+type _TranslationResultInBrowserUnion = AssertExtends<TranslationResultMessage, ServerToBrowserMessage>;
+type _SetSessionTranslationInBrowserUnion = AssertExtends<SetSessionTranslationBrowserMessage, BrowserToServerMessage>;
 
 // Runtime verification that the type discriminants are reachable in a switch
 function extractPromptType(msg: ServerToBrowserMessage): string | null {
@@ -163,5 +168,31 @@ describe("asset_register is a member of both protocol unions", () => {
     expect(msg.type).toBe("asset_register");
     expect(msg.hash).toBe("abc1234567890123");
     expect(msg.mimeType).toBe("image/svg+xml");
+  });
+});
+
+describe("translation_result is a typed server-to-browser carrier", () => {
+  it("keeps the result switch arm reachable in production builds", () => {
+    const msg: TranslationResultMessage = {
+      type: "translation_result",
+      sessionId: "s1",
+      entryId: "entry-a1",
+      sourceHash: "abc123",
+      status: "translated",
+      text: "Plain English",
+    };
+    const throughUnion: ServerToBrowserMessage = msg;
+    expect(throughUnion.type).toBe("translation_result");
+  });
+});
+
+describe("set_session_translation is a typed browser-to-server carrier", () => {
+  it("keeps the stage-1 gate switch arm reachable", () => {
+    const msg: BrowserToServerMessage = {
+      type: "set_session_translation",
+      sessionId: "s1",
+      enabled: true,
+    };
+    expect(msg.type).toBe("set_session_translation");
   });
 });

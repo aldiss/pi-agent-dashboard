@@ -30,6 +30,7 @@ const GUEST_SESSION_MESSAGE_TYPES = new Set<string>([
   "ui_management",
   "session_view",
   "session_unview",
+  "set_session_translation",
 ]);
 
 const GUEST_SERVER_SESSION_TYPES = new Set<string>([
@@ -38,6 +39,7 @@ const GUEST_SERVER_SESSION_TYPES = new Set<string>([
   "presence_update",
   "event",
   "event_replay",
+  "translation_result",
   "commands_list",
   "flows_list",
   "extension_ui_request",
