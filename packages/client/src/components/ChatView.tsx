@@ -185,6 +185,16 @@ const MessageBubble = React.memo(function MessageBubble({
   const contentRef = useRef<HTMLDivElement>(null);
   const [showOriginal, setShowOriginal] = useState(false);
   const hasTranslation = translationState === "ready" && !!translation;
+  const visibleTranslationState = translationEligible
+    ? hasTranslation
+      ? "ready"
+      : translationState === "unchanged" || translationState === "failed"
+        ? translationState
+        : "pending"
+    : undefined;
+  const failureReason = translationFailureReason === "timeout"
+    ? "timed out"
+    : translationFailureReason?.replace(/[-_]+/g, " ") ?? "unknown reason";
   const displayContent = hasTranslation && !showOriginal ? translation : content;
 
   useEffect(() => {
@@ -203,29 +213,32 @@ const MessageBubble = React.memo(function MessageBubble({
       <div ref={contentRef}>
         <MarkdownContent content={displayContent} />
       </div>
-      <div className="border-t border-[var(--border-secondary)] mt-2 pt-1.5 flex justify-end items-center gap-0.5 opacity-50 hover:opacity-100 transition-opacity">
+      <div className="border-t border-[var(--border-secondary)] mt-2 pt-1.5 flex justify-end items-center gap-0.5">
         {timestamp != null && (
           <span className="text-[10px] text-[var(--text-tertiary)] mr-auto">{formatMessageTime(timestamp)}</span>
         )}
-        {translationEligible && (
+        {visibleTranslationState && (
+          <span
+            data-translation-status={visibleTranslationState}
+            {...(visibleTranslationState === "failed" ? { "data-testid": "translation-unavailable" } : {})}
+            className="text-xs text-[var(--text-secondary)] mr-1"
+          >
+            {visibleTranslationState === "pending" && "Plain English: waiting…"}
+            {visibleTranslationState === "unchanged" && "Plain English: already plain"}
+            {visibleTranslationState === "ready" && "Plain English: applied"}
+            {visibleTranslationState === "failed" && `Plain English failed: ${failureReason}`}
+          </span>
+        )}
+        {hasTranslation && (
           <button
             type="button"
-            onClick={() => { if (hasTranslation) setShowOriginal((value) => !value); }}
-            title={hasTranslation && showOriginal ? "Show plain English" : "Show original"}
-            aria-pressed={hasTranslation ? showOriginal : true}
-            className="px-1.5 py-0.5 rounded text-[10px] hover:bg-[var(--bg-secondary)] text-[var(--text-secondary)] disabled:cursor-default"
+            onClick={() => setShowOriginal((value) => !value)}
+            title={showOriginal ? "Show plain English" : "Show original"}
+            aria-pressed={showOriginal}
+            className="px-1.5 py-0.5 rounded text-[10px] hover:bg-[var(--bg-secondary)] text-[var(--text-secondary)]"
           >
-            {hasTranslation && showOriginal ? "Plain English" : "Original"}
+            {showOriginal ? "Show Plain English" : "Show original"}
           </button>
-        )}
-        {translationEligible && translationState === "failed" && (
-          <span
-            data-testid="translation-unavailable"
-            title={translationFailureReason ? `Translation unavailable: ${translationFailureReason}` : "Translation unavailable"}
-            className="text-[10px] text-[var(--text-tertiary)]"
-          >
-            translation unavailable
-          </span>
         )}
         <CopyButton text={displayContent} icon={<Icon path={mdiContentCopy} size={0.6} />} title="Copy as Markdown" />
         <CopyButton text={getPlainText()} icon={<Icon path={mdiTextBox} size={0.6} />} title="Copy as plain text" />
@@ -375,6 +388,7 @@ function hasMermaid(content: string): boolean {
 }
 
 const SCROLL_THRESHOLD = 50;
+const TRANSLATION_HISTORY_LIMIT = 20;
 
 // Per-session scroll state, persisted across session switches
 const scrollStateMap = new Map<string, { scrollTop: number; nearBottom: boolean }>();
@@ -432,6 +446,53 @@ export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ se
     if (programmaticTimeout.current) clearTimeout(programmaticTimeout.current);
   }, []);
   const [showScrollButton, setShowScrollButton] = useState(false);
+  const [translationSchedule, setTranslationSchedule] = useState<{
+    sessionId: string | undefined;
+    entryIds: Set<string>;
+  }>(() => ({ sessionId, entryIds: new Set() }));
+  const translationTrackingRef = useRef<{
+    sessionId: string | undefined;
+    enabled: boolean;
+    knownEntryIds: Set<string>;
+  }>({ sessionId, enabled: false, knownEntryIds: new Set() });
+  useEffect(() => {
+    const assistantEntryIds = state.messages.flatMap((message) =>
+      message.role === "assistant" && message.entryId ? [message.entryId] : []
+    );
+    const tracking = translationTrackingRef.current;
+
+    if (!translationEnabled) {
+      translationTrackingRef.current = { sessionId, enabled: false, knownEntryIds: new Set() };
+      setTranslationSchedule((current) =>
+        current.sessionId === sessionId && current.entryIds.size === 0
+          ? current
+          : { sessionId, entryIds: new Set() }
+      );
+      return;
+    }
+
+    if (!tracking.enabled || tracking.sessionId !== sessionId) {
+      translationTrackingRef.current = {
+        sessionId,
+        enabled: true,
+        knownEntryIds: new Set(assistantEntryIds),
+      };
+      setTranslationSchedule({
+        sessionId,
+        entryIds: new Set(assistantEntryIds.slice(-TRANSLATION_HISTORY_LIMIT)),
+      });
+      return;
+    }
+
+    const liveEntryIds = assistantEntryIds.filter((entryId) => !tracking.knownEntryIds.has(entryId));
+    if (liveEntryIds.length === 0) return;
+    for (const entryId of liveEntryIds) tracking.knownEntryIds.add(entryId);
+    setTranslationSchedule((current) => {
+      const entryIds = current.sessionId === sessionId ? new Set(current.entryIds) : new Set<string>();
+      for (const entryId of liveEntryIds) entryIds.add(entryId);
+      return { sessionId, entryIds };
+    });
+  }, [sessionId, state.messages, translationEnabled]);
   // Search overlay active-state. Owned by ChatView so a session switch (or
   // an unmount) tears the overlay down with the parent — sister to the
   // scrollStateMap discipline above. ChatSearch handles its own query +
@@ -1140,6 +1201,9 @@ export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ se
         const translatedContent = translationEnabled && msg.translationState === "ready" && msg.translation
           ? msg.translation
           : msg.content;
+        const hasTerminalTranslationState = msg.translationState === "ready"
+          || msg.translationState === "unchanged"
+          || msg.translationState === "failed";
         const bMax = hasMermaid(translatedContent) ? bubbleWide : bubbleMax;
         return (
           <div
@@ -1158,7 +1222,10 @@ export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ se
               translation={translationEnabled ? msg.translation : undefined}
               translationState={translationEnabled ? msg.translationState : undefined}
               translationFailureReason={translationEnabled ? msg.translationFailureReason : undefined}
-              translationEligible={translationEnabled}
+              translationEligible={translationEnabled && !!msg.entryId && (
+                hasTerminalTranslationState
+                || (translationSchedule.sessionId === sessionId && translationSchedule.entryIds.has(msg.entryId))
+              )}
             />
           </div>
         );

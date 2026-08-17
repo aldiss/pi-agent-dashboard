@@ -121,7 +121,7 @@ describe("ChatView", () => {
     expect(container.querySelector('button[title="Show plain English"]')).not.toBeNull();
   });
 
-  it("shows the original plus a quiet marker when translation fails", () => {
+  it("shows the original plus a readable reason when translation fails", () => {
     const state = createInitialState();
     state.messages.push({
       id: "assistant-1",
@@ -138,8 +138,8 @@ describe("ChatView", () => {
     );
 
     expect(container.textContent).toContain("The original remains visible.");
-    expect(container.querySelector('[data-testid="translation-unavailable"]')).not.toBeNull();
-    expect(container.querySelector('button[title="Show original"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="translation-unavailable"]')?.textContent).toMatch(/failed.*timed out/i);
+    expect(container.querySelector('button[title="Show original"]')).toBeNull();
   });
 
   it("translation is OFF by default and makes no translated rendering visible", () => {
@@ -192,6 +192,110 @@ describe("ChatView", () => {
     );
     expect(view.container.textContent).toContain("The internal handoff remains blocked.");
     expect(view.container.textContent).not.toContain("The work transfer remains blocked.");
+  });
+
+  it("shows distinct immediate pending, unchanged, applied, and failed states without inert Original buttons", () => {
+    const state = createInitialState();
+    state.messages.push(
+      { id: "pending", role: "assistant", content: "Pending original message long enough for translation.", entryId: "entry-pending", timestamp: 1 },
+      { id: "unchanged", role: "assistant", content: "Already plain original message.", translationState: "unchanged", entryId: "entry-unchanged", timestamp: 2 },
+      { id: "ready", role: "assistant", content: "Applied original message.", translation: "Applied plain-English message.", translationState: "ready", entryId: "entry-ready", timestamp: 3 },
+      { id: "failed", role: "assistant", content: "Failed original message.", translationState: "failed", translationFailureReason: "timeout", entryId: "entry-failed", timestamp: 4 },
+    );
+
+    const { container } = render(
+      <ThemeProvider><ChatView sessionId="s1" state={state} toolContext={defaultToolContext} translationEnabled onTranslationToggle={vi.fn()} /></ThemeProvider>,
+    );
+
+    expect(container.querySelector('[data-translation-status="pending"]')?.textContent).toMatch(/waiting/i);
+    expect(container.querySelector('[data-translation-status="unchanged"]')?.textContent).toMatch(/already plain/i);
+    expect(container.querySelector('[data-translation-status="ready"]')?.textContent).toMatch(/applied/i);
+    expect(container.querySelector('[data-translation-status="failed"]')?.textContent).toMatch(/failed.*timed out/i);
+    expect(container.querySelectorAll('button[title="Show original"]')).toHaveLength(1);
+  });
+
+  it("limits history waiting to the newest 20 and advances a future live row from pending to applied", async () => {
+    const historyState = createInitialState();
+    historyState.replayComplete = true;
+    historyState.messages.push(
+      ...Array.from({ length: 30 }, (_, index) => ({
+        id: `history-${index}`,
+        role: "assistant" as const,
+        content: `Historical assistant message ${index}`,
+        entryId: `entry-history-${index}`,
+        timestamp: index,
+      })),
+    );
+
+    const view = render(
+      <ThemeProvider>
+        <ChatView sessionId="s1" state={historyState} toolContext={defaultToolContext} translationEnabled onTranslationToggle={vi.fn()} />
+      </ThemeProvider>,
+    );
+
+    await vi.waitFor(() => {
+      expect(view.container.querySelectorAll('[data-translation-status="pending"]')).toHaveLength(20);
+    });
+    for (let index = 0; index < 10; index += 1) {
+      expect(
+        view.container.querySelector(`[data-entry-id="entry-history-${index}"] [data-translation-status="pending"]`),
+      ).toBeNull();
+    }
+    for (let index = 10; index < 30; index += 1) {
+      expect(
+        view.container.querySelector(`[data-entry-id="entry-history-${index}"] [data-translation-status="pending"]`),
+      ).not.toBeNull();
+    }
+
+    const livePendingState = {
+      ...historyState,
+      messages: [
+        ...historyState.messages,
+        {
+          id: "live-30",
+          role: "assistant" as const,
+          content: "Future live assistant message",
+          entryId: "entry-live-30",
+          timestamp: 30,
+        },
+      ],
+    };
+    view.rerender(
+      <ThemeProvider>
+        <ChatView sessionId="s1" state={livePendingState} toolContext={defaultToolContext} translationEnabled onTranslationToggle={vi.fn()} />
+      </ThemeProvider>,
+    );
+
+    await vi.waitFor(() => {
+      expect(
+        view.container.querySelector('[data-entry-id="entry-live-30"] [data-translation-status="pending"]'),
+      ).not.toBeNull();
+      expect(view.container.querySelectorAll('[data-translation-status="pending"]')).toHaveLength(21);
+    });
+
+    const liveReadyState = {
+      ...livePendingState,
+      messages: livePendingState.messages.map((message) => message.id === "live-30"
+        ? {
+            ...message,
+            translation: "Future live plain-English message",
+            translationState: "ready" as const,
+          }
+        : message),
+    };
+    view.rerender(
+      <ThemeProvider>
+        <ChatView sessionId="s1" state={liveReadyState} toolContext={defaultToolContext} translationEnabled onTranslationToggle={vi.fn()} />
+      </ThemeProvider>,
+    );
+
+    await vi.waitFor(() => {
+      const liveRow = view.container.querySelector('[data-entry-id="entry-live-30"]')!;
+      expect(liveRow.querySelector('[data-translation-status="pending"]')).toBeNull();
+      expect(liveRow.querySelector('[data-translation-status="ready"]')?.textContent).toMatch(/applied/i);
+      expect(liveRow.textContent).toContain("Future live plain-English message");
+      expect(view.container.querySelectorAll('[data-translation-status="pending"]')).toHaveLength(20);
+    });
   });
 
   it("renders toolResult messages using ToolCallStep", () => {

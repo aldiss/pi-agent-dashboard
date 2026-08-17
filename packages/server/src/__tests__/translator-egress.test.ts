@@ -55,10 +55,11 @@ function assistantEnd(entryId: string, text = "The internal handoff remains bloc
 function makeGatewayWithTranslator(
   sessionManager: ReturnType<typeof createMemorySessionManager>,
   translator: DashboardTranslator,
+  eventStore = createMemoryEventStore(() => false),
 ) {
   return createBrowserGateway(
     sessionManager,
-    createMemoryEventStore(() => false),
+    eventStore,
     makeStubPiGateway(),
     undefined, // pending load manager
     undefined, // pending fork registry
@@ -232,6 +233,42 @@ describe("dashboard translation at browser egress", () => {
     expect(translate).toHaveBeenCalledTimes(1);
     expect(translate.mock.calls[0][0]).toMatchObject({ sessionId: "s2", entryId: "entry-s2" });
     expect(sentMessages(ws).filter((message) => message.type === "translation_result")).toHaveLength(1);
+  });
+
+  it("bounds enable history to 20 newest-first messages and continues live", async () => {
+    const sessionManager = createMemorySessionManager();
+    sessionManager.restore({ id: "s1", cwd: "/repo", source: "tui", status: "active", startedAt: 1, hidden: false } as never);
+    const eventStore = createMemoryEventStore(() => false);
+    for (let i = 1; i <= 30; i++) {
+      eventStore.insertEvent("s1", assistantEnd(`entry-${i}`, `Historical assistant message ${i} with enough text to remain eligible for translation.`));
+    }
+    const translate = vi.fn(async (request) => ({
+      status: "translated" as const,
+      entryId: request.entryId,
+      sourceHash: `hash-${request.entryId}`,
+      text: `plain-${request.entryId}`,
+    }));
+    const gateway = makeGatewayWithTranslator(sessionManager, { translate }, eventStore);
+    const ws = makeFakeWs();
+    gateway.wss.emit("connection", ws, {});
+    ws.emit("message", Buffer.from(JSON.stringify({ type: "subscribe", sessionId: "s1" })));
+    ws.emit("message", Buffer.from(JSON.stringify({ type: "set_session_translation", sessionId: "s1", enabled: true })));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(translate).toHaveBeenCalledTimes(20);
+    expect(translate.mock.calls.map(([request]) => request.entryId)).toEqual(
+      Array.from({ length: 20 }, (_, index) => `entry-${30 - index}`),
+    );
+
+    gateway.broadcastEvent("s1", 31, assistantEnd("entry-live", "Future live assistant message with enough text to remain eligible for translation."));
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(translate).toHaveBeenCalledTimes(21);
+    expect(translate.mock.calls[20][0]).toMatchObject({ entryId: "entry-live" });
+    expect(sentMessages(ws)).toContainEqual(expect.objectContaining({
+      type: "translation_result",
+      entryId: "entry-live",
+      status: "translated",
+    }));
   });
 
   it("does not invoke translation for ask-user or non-assistant events", async () => {

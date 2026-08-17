@@ -752,7 +752,11 @@ export function createBrowserGateway(
               if (current && current !== msg.sessionId) clearTranslationDeliveries(ws, current);
               translationEnabledSessions.set(ws, msg.sessionId);
               if (current !== msg.sessionId) clearTranslationDeliveries(ws, msg.sessionId);
-              const events = eventStore.getEvents(msg.sessionId, 1).map(({ event }) => event).reverse();
+              const events = eventStore.getEvents(msg.sessionId, 1)
+                .map(({ event }) => event)
+                .reverse()
+                .filter((event) => extractTranslationRequest(msg.sessionId, event))
+                .slice(0, 20);
               scheduleTranslationEvents(ws, msg.sessionId, events);
             } else if (current === msg.sessionId) {
               translationEnabledSessions.delete(ws);
