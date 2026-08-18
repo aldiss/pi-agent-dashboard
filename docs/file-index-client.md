@@ -8,6 +8,10 @@
 
 | File | Purpose |
 |------|---------|
+| `packages/client/src/components/ChatView.tsx` | Renders warned translation candidate. Shows bounded warning labels. Keeps original one gesture away. |
+| `packages/client/src/components/__tests__/ChatView.test.tsx` | Pins warned candidate display, readable uncertainty, original toggle, and disabled-state warning suppression. |
+| `packages/client/src/lib/__tests__/event-reducer.test.ts` | Pins warning storage beside translation. Preserves original content, session-log bytes, and model context. |
+| `packages/client/src/lib/event-reducer.ts` | Stores `TranslationWarningCode[]` beside rendered translation. Leaves `content` unchanged. |
 | `src/client/components/ProcessList.tsx` | Session card process list with elapsed time + red ✕ kill button |
 | `src/client/components/BranchPicker.tsx` | Typeahead branch picker with keyboard navigation |
 | `src/client/components/BranchSwitchDialog.tsx` | Checkout orchestration: dirty-state stash, pop prompt |

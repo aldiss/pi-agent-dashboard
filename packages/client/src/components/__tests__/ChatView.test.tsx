@@ -121,6 +121,40 @@ describe("ChatView", () => {
     expect(container.querySelector('button[title="Show plain English"]')).not.toBeNull();
   });
 
+  it("renders a warned candidate with readable uncertainty and keeps the original one gesture away", () => {
+    const state = createInitialState();
+    state.messages.push({
+      id: "assistant-1",
+      role: "assistant",
+      content: "The original says 12 checks remain blocked.",
+      translation: "Twelve checks are still blocked.",
+      translationState: "ready",
+      translationWarnings: ["numbers-changed", "meaning-judge-rejected"],
+      entryId: "entry-a1",
+      timestamp: 1,
+    });
+
+    const { container } = render(
+      <ThemeProvider><ChatView state={state} toolContext={defaultToolContext} translationEnabled /></ThemeProvider>,
+    );
+
+    expect(container.textContent).toContain("Twelve checks are still blocked.");
+    expect(container.textContent).not.toContain("The original says 12 checks remain blocked.");
+    const warning = container.querySelector('[data-testid="translation-warning"]');
+    expect(warning?.textContent).toMatch(/uncertain/i);
+    expect(warning?.textContent).toMatch(/number/i);
+    expect(warning?.textContent).toMatch(/meaning/i);
+    expect(warning?.getAttribute("data-warning-codes")?.split(/\s+/)).toEqual([
+      "numbers-changed",
+      "meaning-judge-rejected",
+    ]);
+
+    fireEvent.click(container.querySelector('button[title="Show original"]')!);
+
+    expect(container.textContent).toContain("The original says 12 checks remain blocked.");
+    expect(container.querySelector('button[title="Show plain English"]')).not.toBeNull();
+  });
+
   it("shows the original plus a readable reason when translation fails", () => {
     const state = createInitialState();
     state.messages.push({
@@ -150,6 +184,7 @@ describe("ChatView", () => {
       content: "The internal handoff remains blocked.",
       translation: "The work transfer remains blocked.",
       translationState: "ready",
+      translationWarnings: ["negation-changed"],
       entryId: "entry-a1",
       timestamp: 1,
     });
@@ -160,6 +195,7 @@ describe("ChatView", () => {
 
     expect(container.textContent).toContain("The internal handoff remains blocked.");
     expect(container.textContent).not.toContain("The work transfer remains blocked.");
+    expect(container.querySelector('[data-testid="translation-warning"]')).toBeNull();
     expect(container.querySelector('[data-testid="session-translation-toggle"]')?.getAttribute("aria-pressed")).toBe("false");
   });
 

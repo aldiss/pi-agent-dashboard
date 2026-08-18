@@ -8,7 +8,8 @@
 
 | File | Purpose |
 |------|---------|
-| `packages/shared/src/browser-protocol.ts` | Defines exact `ping`/`pong` carriers. Keeps `sessions_snapshot` in server→browser union for live replacement snapshots. |
+| `packages/shared/src/__tests__/browser-protocol-types.test.ts` | Pins bounded translation warning vocabulary. Pins warnings only on rendered `translation_result`. |
+| `packages/shared/src/browser-protocol.ts` | Defines exact `ping`/`pong` carriers. Keeps `sessions_snapshot` in server→browser union for live replacement snapshots. Defines bounded `TRANSLATION_WARNING_CODES`. Carries warnings only on translated `translation_result`. |
 | `packages/shared/src/config.ts` | Defines and validates `auth.guestCellGrants`. Enforces browser-auth/operator coupling and fail-closed startup parsing. |
 | `packages/shared/src/external-session.ts` | Defines external tmux session and normalized transcript payloads. Defines `ExternalSessionOwner`, `ExternalSessionDriver`, and `ExternalSessionsResponse` for `{ sessions, owners, drivers }`. Carries `outputChangedAt`, source, entry kinds, tool correlation, truncation, and transcript path. |
 | `packages/shared/src/session-meta.ts` | Persists optional server-derived `SessionMeta.accessCellId`. |

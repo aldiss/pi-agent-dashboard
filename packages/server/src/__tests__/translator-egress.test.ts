@@ -151,6 +151,10 @@ describe("dashboard translation at browser egress", () => {
         entryId: request.entryId,
         sourceHash: "hash-1",
         text: "The work transfer remains blocked.",
+        warnings: ["numbers-changed", "meaning-judge-rejected"] as [
+          "numbers-changed",
+          "meaning-judge-rejected",
+        ],
       })),
     };
     const gateway = makeGatewayWithTranslator(sessionManager, translator);
@@ -174,6 +178,7 @@ describe("dashboard translation at browser egress", () => {
       entryId: "entry-a1",
       status: "translated",
       text: "The work transfer remains blocked.",
+      warnings: ["numbers-changed", "meaning-judge-rejected"],
     });
     expect(JSON.stringify(event)).toBe(before);
     expect(readFileSync(sessionFile)).toEqual(storedBytes);

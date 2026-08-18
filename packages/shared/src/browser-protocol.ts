@@ -79,6 +79,16 @@ export interface EventReplayMessage {
  * Read-only rendering result for one finalized assistant entry.
  * `text` travels beside the original event and never replaces it.
  */
+export const TRANSLATION_WARNING_CODES = [
+  "numbers-changed",
+  "negation-changed",
+  "negation-attachment-changed",
+  "known-pattern",
+  "meaning-judge-rejected",
+] as const;
+
+export type TranslationWarningCode = typeof TRANSLATION_WARNING_CODES[number];
+
 export type TranslationResultMessage =
   | {
       type: "translation_result";
@@ -87,6 +97,7 @@ export type TranslationResultMessage =
       sourceHash: string;
       status: "translated";
       text: string;
+      warnings?: TranslationWarningCode[];
     }
   | {
       type: "translation_result";

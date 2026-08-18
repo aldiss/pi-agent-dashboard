@@ -6,6 +6,7 @@
  * types were not in the ServerToBrowserMessage union.
  */
 import { describe, it, expect } from "vitest";
+import { TRANSLATION_WARNING_CODES } from "../browser-protocol.js";
 import type {
   ServerToBrowserMessage,
   BrowserPromptRequestMessage,
@@ -16,6 +17,7 @@ import type {
   TranslationResultMessage,
   SetSessionTranslationBrowserMessage,
   BrowserToServerMessage,
+  TranslationWarningCode,
 } from "../browser-protocol.js";
 import type {
   ExtensionToServerMessage,
@@ -183,6 +185,35 @@ describe("translation_result is a typed server-to-browser carrier", () => {
     };
     const throughUnion: ServerToBrowserMessage = msg;
     expect(throughUnion.type).toBe("translation_result");
+  });
+
+  it("exports the complete bounded warning-code vocabulary", () => {
+    const expected = [
+      "numbers-changed",
+      "negation-changed",
+      "negation-attachment-changed",
+      "known-pattern",
+      "meaning-judge-rejected",
+    ] as const satisfies readonly TranslationWarningCode[];
+
+    expect(TRANSLATION_WARNING_CODES).toEqual(expected);
+  });
+
+  it("carries named warnings only on a rendered translation", () => {
+    const msg: TranslationResultMessage = {
+      type: "translation_result",
+      sessionId: "s1",
+      entryId: "entry-a1",
+      sourceHash: "abc123",
+      status: "translated",
+      text: "Plain English with operator review needed.",
+      warnings: ["numbers-changed", "meaning-judge-rejected"],
+    };
+    const parsed = JSON.parse(JSON.stringify(msg)) as TranslationResultMessage;
+
+    expect(parsed.status).toBe("translated");
+    if (parsed.status !== "translated") throw new Error("expected translated carrier");
+    expect(parsed.warnings).toEqual(["numbers-changed", "meaning-judge-rejected"]);
   });
 });
 

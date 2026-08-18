@@ -1879,10 +1879,15 @@ describe("translation render isolation", () => {
       sourceHash: "abc123",
       status: "translated",
       text: translated,
+      warnings: ["numbers-changed", "meaning-judge-rejected"],
     });
 
     expect(next.messages[0].content).toBe(original);
     expect(next.messages[0].translation).toBe(translated);
+    expect(next.messages[0].translationWarnings).toEqual([
+      "numbers-changed",
+      "meaning-judge-rejected",
+    ]);
     expect(Buffer.compare(sessionLogBytes, before)).toBe(0);
     const subsequentModelContext = next.messages.map((message) => message.content).join("\n");
     expect(subsequentModelContext).toContain(original);

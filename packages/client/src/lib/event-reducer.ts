@@ -8,7 +8,7 @@ import { isArchitectEvent, reduceArchitectEvent } from "@blackbelt-technology/pi
 import { parseSkillBlock, type SkillBlock } from "@blackbelt-technology/pi-dashboard-shared/skill-block-parser.js";
 import { readAudienceStamp } from "./message-filter-classifier.js";
 import type { Audience } from "@blackbelt-technology/pi-dashboard-shared/vendor/operator-voice-audience/audience-core.js";
-import type { TranslationResultMessage } from "@blackbelt-technology/pi-dashboard-shared/browser-protocol.js";
+import type { TranslationResultMessage, TranslationWarningCode } from "@blackbelt-technology/pi-dashboard-shared/browser-protocol.js";
 
 /**
  * Read the stamp-at-emit audience off a raw message envelope (`data.message`)
@@ -73,6 +73,7 @@ export interface ChatMessage {
   translation?: string;
   /** Translation state stays parallel to `content`; `content` remains the record. */
   translationState?: "ready" | "unchanged" | "failed";
+  translationWarnings?: TranslationWarningCode[];
   translationFailureReason?: string;
   translationSourceHash?: string;
   /**
@@ -402,6 +403,9 @@ export function applyTranslationResult(
   const updated: ChatMessage = {
     ...current,
     translation: hasText ? result.text : undefined,
+    translationWarnings: hasText && result.status === "translated"
+      ? result.warnings
+      : undefined,
     translationState: hasText
       ? "ready"
       : result.status === "unchanged"

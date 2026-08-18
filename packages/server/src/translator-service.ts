@@ -1,21 +1,41 @@
 import { createHash } from "node:crypto";
 import { diffWordsWithSpace } from "diff";
+import type { TranslationWarningCode } from "@blackbelt-technology/pi-dashboard-shared/browser-protocol.js";
 import { createSemaphore } from "@blackbelt-technology/pi-dashboard-shared/semaphore.js";
 import type { DashboardEvent } from "@blackbelt-technology/pi-dashboard-shared/types.js";
 import { getModelRegistry, getStreamSimpleFn } from "./model-proxy/registry-singleton.js";
 import { streamCompletion } from "./model-proxy/streamer.js";
 
-export const TRANSLATOR_VERSION = "dashboard-plain-english-v2";
+export const TRANSLATOR_VERSION = "dashboard-plain-english-v3";
 export const TRANSLATOR_MIN_CHARS = 80;
 export const TRANSLATOR_TIMEOUT_MS = 30_000;
 export const JUDGE_SCHEMA_VERSION = "meaning-judge-five-booleans-v1";
 
 const TRANSLATOR_PROMPT = `Rewrite the agent reply in plain English for a human operator.
+Do both at the same time: make the explanation substantially deeper and less technical, and preserve the same meaning, facts, decisions, severity, and force.
+Do not count one-for-one synonym swaps as a rewrite. Explain concrete actors, actions, causes, dependencies, and consequences that the reply itself establishes.
+Do not guess what an unexplained name or acronym means. When CC clearly names the coding agent, write Claude Code; never invent labels such as "content check" or "language check" for it.
+Preserve Lane, Statewright, Rotationwright, Joan, and other capitalized people or agent names exactly as proper names. Never reinterpret a name as a role or common noun.
+Translate recurring technical concepts by their concrete effect when the reply supports it:
+- module-private or not exported means usable only inside the current code file, so other code cannot call it directly;
+- wrap a function means observe or intercept its real calls without replacing the function;
+- Stage 1 means the first rewrite step;
+- tracked or untracked means included or not included in version control;
+- replay means rerunning recorded inputs, never merely repeating an action;
+- a catch means the error handler; swallowing an error means hiding the failure;
+- shadow mode observes without enforcing, while enforcing mode actively applies the rule;
+- IFF means only if, delta means measured difference, repo means version-controlled project, and landing means integrating changes;
+- a frozen production surface means production files temporarily prohibited from change.
+Keep Phase A and Phase B as phase names; never reinterpret Phase A as Stage 1 or as a rewrite step.
+If a label such as C2-C18 has no stated meaning, call it the named build or check. Never invent numbered steps from its digits.
+Preserve separate evidence sources and attribution. Never make an API, file, check, or person appear to supply a fact that came from another source.
+After protected technical rules, add their concrete meaning. For example, explain shadow→enforcing IFF delta < 5% as switching from observation to active enforcement only if the measured difference is under 5%.
+Every technical token that remains must be explained at first use so a reader understands what it does and why it matters. Preserve the token itself when protected.
 Return only the rewritten reply. Keep its Markdown structure.
 Preserve the same facts, decisions, severity, and force. Never soften blocked, failed, refused, stuck, or unresolved work.
 Preserve every negation and every number exactly. Do not round, spell out, add, remove, or move them.
 Digits inside ledger ids, section references, and tenure ids are identifiers, not factual numbers. Remove those ids and their digits completely; never turn them into numbered records, rules, or sections.
-Preservation tokens beginning __PI_TRANSLATOR_ are immutable evidence. Copy each token exactly once.
+Preservation tokens beginning __PI_TRANSLATOR_ are immutable evidence. Copy each token exactly once, in its original sentence and syntactic position. If protected technical evidence needs explanation, explain it beside the token without changing or moving it.
 Rewrite internal ledger ids, section references, role jargon, and invented internal nouns into ordinary words. Do not copy ids such as dl-15176, tenure-2, or §10.
 Assume the reader has no project documentation. Replace every internal track name, role label, process metaphor, abbreviated label, and coined hyphenated term with its concrete meaning in this reply.
 Do not preserve an internal label merely for fidelity. Keep the fact it represented, expressed in ordinary language.
@@ -25,7 +45,7 @@ Replace letter-number rule labels and lettered track labels with their stated me
 Do not output any unprotected coined hyphenated term. Do not use opaque workflow nouns such as Track, Packet, Ledger, Gate, seat, rotation, or banked as labels; say architecture choice, document, recorded history, required decision, role, handoff, or the concrete action instead.
 Example shape: "Track Quartz is blocked at door-2; exact-fetch found 12-day ghosts (dl-88, §4)." becomes "The architecture choice is blocked at eligibility check 2; exact retrieval found stale records 12 days old."
 Add no reassurance, confidence, summary judgement, conclusion, or advice.
-If the reply is already plain, return it byte-for-byte unchanged.
+Treat a reply as already plain only when it contains no unexplained technical token, internal label, acronym, code identifier, or workflow metaphor. Then return it byte-for-byte unchanged.
 Before returning, check the entire reply: it must contain no section symbol, no ledger or tenure id, no unexplained track/door/record label, no internal acronym, and no coined hyphenated term. Preservation tokens are the only exception.`;
 
 const JUDGE_FIELDS = ["meaning", "facts", "decisions", "severity", "plainness"] as const;
@@ -60,7 +80,7 @@ export interface ServedModelPair {
 }
 
 export type TranslationResult = (
-  | { status: "translated"; entryId: string; text: string; sourceHash: string }
+  | { status: "translated"; entryId: string; text: string; sourceHash: string; warnings?: TranslationWarningCode[] }
   | { status: "unchanged"; entryId: string; sourceHash: string }
   | { status: "failed"; entryId: string; sourceHash: string; reason: string }
 ) & { servedModels: ServedModelPair };
@@ -128,7 +148,79 @@ export type TranslationSafetyIssue =
   | "quoted-evidence-changed"
   | "added-reassurance"
   | "negation-attachment-changed"
+  | "negated-direct-capability-changed"
   | "action-changed";
+
+export const TRANSLATOR_SECURITY_DETECTOR_KIND = "deterministic" as const;
+export const TRANSLATOR_SECURITY_DETECTOR_VERSION = "evaluator-instruction-v1";
+
+export const TRANSLATOR_SECURITY_DETECTION_CODES = [
+  "forced-safe-verdict",
+  "evaluator-override",
+  "forced-judge-verdict",
+] as const;
+
+export type TranslatorSecurityDetectionCode = typeof TRANSLATOR_SECURITY_DETECTION_CODES[number];
+
+export interface TranslatorSecurityDetection {
+  kind: typeof TRANSLATOR_SECURITY_DETECTOR_KIND;
+  version: string;
+  hardFail: boolean;
+  codes: TranslatorSecurityDetectionCode[];
+}
+
+const TRANSLATOR_SECURITY_PATTERNS: ReadonlyArray<{
+  code: TranslatorSecurityDetectionCode;
+  pattern: RegExp;
+}> = [
+  {
+    code: "forced-safe-verdict",
+    pattern: /\b(?:security|safety|prompt[- ]?injection|injection)\s+(?:detector|classifier|scanner|filter|guard|check)\b[\s\S]{0,240}\b(?:report|return|mark|label|classify|declare|treat|respond|output|say)\b[\s\S]{0,120}\b(?:safe|clean|benign|allowed|not\s+(?:an?\s+)?injection)\b/i,
+  },
+  {
+    code: "forced-safe-verdict",
+    pattern: /["']?\b(?:detected|injection|unsafe|threat|security[-_ ](?:issue|risk))\b["']?\s*[:=]\s*(?:false|0|no|null)\b/i,
+  },
+  {
+    code: "evaluator-override",
+    pattern: /\b(?:security\s+(?:detector|classifier|scanner|filter|guard|check)|meaning\s+judge|judge|evaluator|reviewer)\b[\s\S]{0,240}\b(?:ignore|disregard|override|bypass)\b[\s\S]{0,160}\b(?:instruction|system|policy|rubric|rule|safeguard|guardrail|check)s?\b/i,
+  },
+  {
+    code: "evaluator-override",
+    pattern: /\b(?:ignore|disregard|override|bypass)\b[\s\S]{0,160}\b(?:instruction|system|policy|rubric|rule|safeguard|guardrail|check)s?\b[\s\S]{0,240}\b(?:security\s+(?:detector|classifier|scanner|filter|guard|check)|meaning\s+judge|judge|evaluator|reviewer)\b/i,
+  },
+  {
+    code: "forced-judge-verdict",
+    pattern: /\b(?:meaning\s+judge|judge|evaluator|reviewer)\b[\s\S]{0,240}\b(?:approve|return|report|set|mark|label|classify|output)\b[\s\S]{0,240}(?:\ball\s+(?:five|5)\s+(?:fields|booleans)\b|["']?meaning["']?\s*[:=]\s*true[\s\S]{0,160}["']?facts["']?\s*[:=]\s*true[\s\S]{0,160}["']?decisions["']?\s*[:=]\s*true[\s\S]{0,160}["']?severity["']?\s*[:=]\s*true[\s\S]{0,160}["']?plainness["']?\s*[:=]\s*true)/i,
+  },
+];
+
+/**
+ * Deterministic detector for explicit attempts to control an evaluator verdict.
+ * It covers bounded evaluator/forced-safe instruction shapes, not arbitrary
+ * natural-language prompt injection.
+ */
+export function detectTranslatorInjection(original: string, candidate: string): TranslatorSecurityDetection {
+  const codes = new Set<TranslatorSecurityDetectionCode>();
+  for (const text of [original, candidate]) {
+    for (const { code, pattern } of TRANSLATOR_SECURITY_PATTERNS) {
+      if (pattern.test(text)) codes.add(code);
+    }
+  }
+  return {
+    kind: TRANSLATOR_SECURITY_DETECTOR_KIND,
+    version: TRANSLATOR_SECURITY_DETECTOR_VERSION,
+    hardFail: codes.size > 0,
+    codes: Array.from(codes),
+  };
+}
+
+const WARNING_CODE_BY_SAFETY_ISSUE: Partial<Record<TranslationSafetyIssue, TranslationWarningCode>> = {
+  "numbers-changed": "numbers-changed",
+  "negation-changed": "negation-changed",
+  "negation-attachment-changed": "negation-attachment-changed",
+  "known-pattern": "known-pattern",
+};
 
 class TranslatorFailure extends Error {
   constructor(readonly code: string) {
@@ -305,6 +397,13 @@ function negationAttachments(text: string): string[] {
   return signatures.sort();
 }
 
+function negatedDirectCapabilities(text: string): string[] {
+  return Array.from(
+    text.toLowerCase().matchAll(/\b(?:cannot|can't)\s+(?:be\s+)?([a-z][a-z-]*)\s+directly\b/g),
+    (match) => match[1],
+  ).sort();
+}
+
 function sameStrings(left: string[], right: string[]): boolean {
   return left.length === right.length && left.every((value, index) => value === right[index]);
 }
@@ -385,6 +484,15 @@ export function translationSafetyIssues(source: string, output: string): Transla
   if (sourceAttachments.length > 0 && !sameStrings(sourceAttachments, outputAttachments)) {
     issues.push("negation-attachment-changed");
   }
+  const sourceDirectCapabilities = negatedDirectCapabilities(source);
+  const outputDirectCapabilities = negatedDirectCapabilities(output);
+  if (
+    sourceDirectCapabilities.length > 0
+    && outputDirectCapabilities.length > 0
+    && !sameStrings(sourceDirectCapabilities, outputDirectCapabilities)
+  ) {
+    issues.push("negated-direct-capability-changed");
+  }
   if (checkChangedSpanActions(source, output).some((check) => !check.sameAction)) {
     issues.push("action-changed");
   }
@@ -448,11 +556,13 @@ export function parseJudgeVerdict(text: string): JudgeVerdict | null {
   };
 }
 
-function judgeVerdictPasses(verdict: JudgeVerdict): boolean {
-  return JUDGE_FIELDS.every((field) => verdict[field]);
-}
-
 export function selectTranslatorModel(models: readonly any[]): any | null {
+  const strongerCopilotMini = models.find((model) =>
+    model?.provider === "github-copilot" && model?.id === "gpt-5.4-mini",
+  ) ?? models.find((model) =>
+    model?.provider === "github-copilot" && model?.id === "gpt-5-mini",
+  );
+  if (strongerCopilotMini) return strongerCopilotMini;
   const catalogued4oMini = models.find((model) =>
     model?.provider === "github-copilot" && model?.id === "gpt-4o-mini",
   );
@@ -657,7 +767,7 @@ async function runModelProxy(request: ModelRunRequest): Promise<ModelRunResult> 
 }
 
 type PipelineResult = (
-  | { status: "translated"; text: string; sourceHash: string }
+  | { status: "translated"; text: string; sourceHash: string; warnings?: TranslationWarningCode[] }
   | { status: "unchanged"; sourceHash: string }
   | { status: "failed"; sourceHash: string; reason: string }
 ) & { servedModels: ServedModelPair };
@@ -734,16 +844,25 @@ export function createTranslatorService(options: TranslatorServiceOptions = {}):
   }
 
   function finishWithVerdict(
-    pass: boolean,
+    verdict: JudgeVerdict,
     source: string,
     candidate: string,
     sourceHash: string,
     servedModels: ServedModelPair,
+    warnings: TranslationWarningCode[],
   ): PipelineResult {
-    if (!pass) return { status: "failed", sourceHash, reason: "judge-rejected", servedModels };
-    if (candidate === source) return { status: "unchanged", sourceHash, servedModels };
-    translatedOutputHashes.add(sha256(candidate));
-    return { status: "translated", sourceHash, text: candidate, servedModels };
+    if (!JUDGE_FIELDS.every((field) => verdict[field])) warnings.push("meaning-judge-rejected");
+    if (candidate === source && warnings.length === 0) {
+      return { status: "unchanged", sourceHash, servedModels };
+    }
+    if (candidate !== source) translatedOutputHashes.add(sha256(candidate));
+    return {
+      status: "translated",
+      sourceHash,
+      text: candidate,
+      servedModels,
+      ...(warnings.length > 0 ? { warnings: [...warnings] } : {}),
+    };
   }
 
   async function translateOnce(text: string, sourceHash: string): Promise<PipelineResult> {
@@ -761,19 +880,28 @@ export function createTranslatorService(options: TranslatorServiceOptions = {}):
       const output = restoreProtectedSpans(completedModelOutput(stage1Result), protectedText);
       if (output.trim().length === 0) throw new TranslatorFailure("empty-output");
 
-      // Deterministic floors always run before identity, cache, or judge disposition.
+      if (!servedModels.stage1) throw new TranslatorFailure("served-identity");
+      const stage1Family = modelFamily(servedModels.stage1);
+      if (!stage1Family) throw new TranslatorFailure("served-identity");
+
+      const securityDetection = detectTranslatorInjection(text, output);
+      if (securityDetection.hardFail) throw new TranslatorFailure("security-injection-detected");
+
+      // Deterministic floors always run before ordinary judge disposition.
       const issues = translationSafetyIssues(text, output);
       if (issues.includes("action-changed")) {
         emitDiagnostic({ sourceHash, issueCode: "action-changed", translatorVersion: version });
       }
-      const blockingIssues = issues.filter((issue) => issue !== "action-changed");
+      const warnings = issues.flatMap((issue) => {
+        const warning = WARNING_CODE_BY_SAFETY_ISSUE[issue];
+        return warning ? [warning] : [];
+      });
+      const blockingIssues = issues.filter((issue) =>
+        issue !== "action-changed" && WARNING_CODE_BY_SAFETY_ISSUE[issue] === undefined,
+      );
       if (blockingIssues.length > 0) {
-        throw new TranslatorFailure(blockingIssues.includes("known-pattern") ? "known-pattern" : `safety-check:${blockingIssues[0]}`);
+        throw new TranslatorFailure(`safety-check:${blockingIssues[0]}`);
       }
-
-      if (!servedModels.stage1) throw new TranslatorFailure("served-identity");
-      const stage1Family = modelFamily(servedModels.stage1);
-      if (!stage1Family) throw new TranslatorFailure("served-identity");
 
       let stage2Result: ModelRunResult;
       try {
@@ -794,9 +922,8 @@ export function createTranslatorService(options: TranslatorServiceOptions = {}):
         }
         const verdict = parseJudgeVerdict(judgeText);
         if (!verdict) throw new TranslatorFailure("judge-invalid");
-        const pass = judgeVerdictPasses(verdict);
         noteValidJudgeVerdict();
-        return finishWithVerdict(pass, text, output, sourceHash, servedModels);
+        return finishWithVerdict(verdict, text, output, sourceHash, servedModels, warnings);
       } catch (error) {
         noteInvalidJudgeAttempt();
         throw error;
@@ -823,7 +950,7 @@ export function createTranslatorService(options: TranslatorServiceOptions = {}):
         return { status: "unchanged", entryId: request.entryId, sourceHash, servedModels: noModels };
       }
 
-      const key = `${sourceHash}:${version}`;
+      const key = `${sourceHash}:${version}:${TRANSLATOR_SECURITY_DETECTOR_KIND}:${TRANSLATOR_SECURITY_DETECTOR_VERSION}`;
       let pending = inFlight.get(key);
       if (!pending) {
         pending = semaphore.run(() => translateOnce(request.text, sourceHash));

@@ -1,5 +1,6 @@
 import React, { useRef, useEffect, useCallback, useState, useMemo, forwardRef, useImperativeHandle } from "react";
 
+import type { TranslationWarningCode } from "@blackbelt-technology/pi-dashboard-shared/browser-protocol.js";
 import { Icon } from "@mdi/react";
 import { mdiContentCopy, mdiTextBox, mdiChevronDown, mdiSourceFork } from "@mdi/js";
 import { m, useReducedMotion } from "motion/react";
@@ -165,6 +166,7 @@ interface MessageBubbleProps {
   onTogglePin?: (entryId: string) => void;
   translation?: string;
   translationState?: "ready" | "unchanged" | "failed";
+  translationWarnings?: TranslationWarningCode[];
   translationFailureReason?: string;
   translationEligible?: boolean;
 }
@@ -179,6 +181,7 @@ const MessageBubble = React.memo(function MessageBubble({
   onTogglePin,
   translation,
   translationState,
+  translationWarnings,
   translationFailureReason,
   translationEligible = false,
 }: MessageBubbleProps) {
@@ -196,6 +199,13 @@ const MessageBubble = React.memo(function MessageBubble({
     ? "timed out"
     : translationFailureReason?.replace(/[-_]+/g, " ") ?? "unknown reason";
   const displayContent = hasTranslation && !showOriginal ? translation : content;
+  const warningLabels: Record<TranslationWarningCode, string> = {
+    "numbers-changed": "numbers may have changed",
+    "negation-changed": "negation may have changed",
+    "negation-attachment-changed": "negation may apply to different text",
+    "known-pattern": "internal wording may remain",
+    "meaning-judge-rejected": "meaning may differ",
+  };
 
   useEffect(() => {
     setShowOriginal(false);
@@ -227,6 +237,15 @@ const MessageBubble = React.memo(function MessageBubble({
             {visibleTranslationState === "unchanged" && "Plain English: already plain"}
             {visibleTranslationState === "ready" && "Plain English: applied"}
             {visibleTranslationState === "failed" && `Plain English failed: ${failureReason}`}
+          </span>
+        )}
+        {hasTranslation && translationWarnings && translationWarnings.length > 0 && (
+          <span
+            data-testid="translation-warning"
+            data-warning-codes={translationWarnings.join(" ")}
+            className="text-xs text-amber-600 dark:text-amber-400 mr-1"
+          >
+            Plain English uncertain: {translationWarnings.map((code) => warningLabels[code]).join("; ")}
           </span>
         )}
         {hasTranslation && (
@@ -1221,6 +1240,7 @@ export const ChatView = forwardRef<ChatViewHandle, Props>(function ChatView({ se
               onTogglePin={handleTogglePin}
               translation={translationEnabled ? msg.translation : undefined}
               translationState={translationEnabled ? msg.translationState : undefined}
+              translationWarnings={translationEnabled ? msg.translationWarnings : undefined}
               translationFailureReason={translationEnabled ? msg.translationFailureReason : undefined}
               translationEligible={translationEnabled && !!msg.entryId && (
                 hasTerminalTranslationState
