@@ -739,7 +739,7 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
     }
   }
 
-  const translator = createTranslatorService();
+  const translator = createTranslatorService({ enableDepthRungSelection: true });
   const browserGateway = createBrowserGateway(sessionManager, eventStore, piGateway, undefined, pendingForkRegistry, sessionOrderManager, preferencesStore, directoryService, terminalManager, pendingDashboardSpawns, config.maxWsBufferBytes, pendingAttachRegistry, pendingResumeIntents, pendingClientCorrelations, pushPrefsMap, () => config.push?.defaults, requireBrowserAuthAtStartup, config.authConfig?.operatorUsers, operatorSetTracker, cellAccess, translator);
 
   let stopCellAccessRefresh = () => {};

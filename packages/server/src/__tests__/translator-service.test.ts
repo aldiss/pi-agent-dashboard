@@ -14,7 +14,9 @@ import {
   selectJudgeModel,
   selectTranslatorModel,
   translationSafetyIssues,
+  type ModelRunRequest,
 } from "../translator-service.js";
+import type { DepthRung, TranslationSelectionEvidence } from "../translator-selection.js";
 
 const LONG_SOURCE =
   "The internal handoff remains blocked because the registry read did not complete after 16 attempts.";
@@ -122,6 +124,120 @@ describe("dashboard translator service", () => {
     expect(system).toMatch(/separate evidence sources/i);
     expect(system).toMatch(/already plain[\s\S]*unexplained technical/i);
     expect(system).toMatch(/shadow[\s\S]*difference is under 5%/i);
+  });
+
+  it("composes the Stage 1 contract onto every rung and scopes each added structural licence", async () => {
+    const requests: ModelRunRequest[] = [];
+    const service = createTranslatorService({
+      enableDepthRungSelection: true,
+      runModel: async (request: ModelRunRequest) => {
+        requests.push(request);
+        return request.text;
+      },
+      persistEvidence: async () => {},
+    });
+
+    await service.translate({ entryId: "composed-contracts", sessionId: "s1", text: LONG_SOURCE });
+
+    expect(requests.map((request) => request.rung)).toEqual(["substitute", "explain", "revoice"]);
+    for (const { system } of requests) {
+      expect(system).toMatch(/substantially[\s\S]*less technical/i);
+      expect(system).toMatch(/do not guess what an unexplained name or acronym means/i);
+      expect(system).toMatch(/Lane[\s\S]*proper names/i);
+      expect(system).toMatch(/Preserve every negation and every number exactly/i);
+      expect(system).toMatch(/__PI_TRANSLATOR_/);
+    }
+
+    const [substitute, explain, revoice] = requests;
+    expect(explain.system.startsWith(`${substitute.system}\n\n`)).toBe(true);
+    expect(revoice.system.startsWith(`${substitute.system}\n\n`)).toBe(true);
+    expect(substitute.system).not.toMatch(/structural licence/i);
+    expect(explain.system.slice(substitute.system.length)).toMatch(
+      /Rung 2 structural licence:[\s\S]*overrides only[\s\S]*one short explanatory clause[\s\S]*split one sentence into two[\s\S]*not otherwise reorder, move, or drop/i,
+    );
+    expect(revoice.system.slice(substitute.system.length)).toMatch(
+      /Rung 3 structural licence:[\s\S]*overrides only[\s\S]*restructure freely[\s\S]*every proposition, every quantity and every negation[\s\S]*Nothing may be dropped as too technical to express/i,
+    );
+  });
+
+  it("generates all three composed rungs, selects rung 2 as the deepest survivor, and persists the decision", async () => {
+    const source = "The exact-fetch packet-transfer remains blocked because the registry read did not complete after sixteen attempts and the operator still needs the full result.";
+    const outputs: Record<DepthRung, string> = {
+      substitute: source.replace("exact-fetch", "retrieval"),
+      explain: source.replace("exact-fetch", "exact retrieval").replace("packet-transfer", "work transfer"),
+      revoice: "The operator still needs the full result because the registry read did not complete after sixteen attempts, so the work transfer remains blocked.",
+    };
+    const requests: ModelRunRequest[] = [];
+    const persistEvidence = vi.fn(async (_evidence: TranslationSelectionEvidence): Promise<void> => {});
+    const service = createTranslatorService({
+      enableDepthRungSelection: true,
+      runModel: async (request: ModelRunRequest) => {
+        requests.push(request);
+        return outputs[request.rung ?? "substitute"];
+      },
+      persistEvidence,
+    });
+
+    const result = await service.translate({ entryId: "selection", sessionId: "s", text: source });
+
+    expect(requests.map(({ stage, rung, promptVersion }) => ({ stage, rung, promptVersion }))).toEqual([
+      { stage: "rewrite", rung: "substitute", promptVersion: "depth-rung-substitute-v2" },
+      { stage: "rewrite", rung: "explain", promptVersion: "depth-rung-explain-v2" },
+      { stage: "rewrite", rung: "revoice", promptVersion: "depth-rung-revoice-v2" },
+    ]);
+    expect(result).toMatchObject({ status: "translated", text: outputs.explain });
+    expect(persistEvidence).toHaveBeenCalledOnce();
+    expect(persistEvidence.mock.calls[0][0]).toMatchObject({
+      sourceText: source,
+      candidates: [
+        { rung: "substitute", rawText: outputs.substitute, selectable: true },
+        { rung: "explain", rawText: outputs.explain, selectable: true },
+        {
+          rung: "revoice",
+          rawText: outputs.revoice,
+          selectable: false,
+          score: expect.objectContaining({
+            depth: expect.any(Number),
+            coverage: expect.any(Number),
+            hardIssues: expect.any(Array),
+          }),
+        },
+      ],
+      decision: { kind: "selected", rung: "explain", reason: "deepest-faithful-survivor" },
+    });
+  });
+
+  it("generates every rung and falls back to the original when no shippable candidate clears the bar", async () => {
+    const source = "The internal handoff includes registry synchronization details for the operator and requires a complete explanation before review.";
+    const runModel = vi.fn(async (_request: ModelRunRequest): Promise<string> => "Completely unrelated prose.");
+    const runJudge = vi.fn(async (_request: ModelRunRequest): Promise<string> => "unused");
+    const persistEvidence = vi.fn(async () => {});
+    const service = createProductionTranslatorService({
+      enableDepthRungSelection: true,
+      minChars: 0,
+      runModel: async (request: ModelRunRequest) => ({
+        text: await runModel(request),
+        finishReason: "stop",
+        served: TEST_REWRITE_IDENTITY,
+      }),
+      runJudge,
+      persistEvidence,
+      onDiagnostic: () => {},
+    });
+
+    const result = await service.translate({ entryId: "fallback", sessionId: "s", text: source });
+
+    expect(runModel).toHaveBeenCalledTimes(3);
+    expect(runJudge).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ status: "unchanged" });
+    expect(displayTextForTranslation(source, result)).toBe(source);
+    expect(persistEvidence).toHaveBeenCalledWith(expect.objectContaining({
+      decision: {
+        kind: "original",
+        text: source,
+        reason: "no-shippable-candidate-cleared-faithfulness-bar",
+      },
+    }));
   });
 
   it("skips messages under 80 characters without invoking the model", async () => {

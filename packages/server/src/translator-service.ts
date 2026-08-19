@@ -5,10 +5,48 @@ import { createSemaphore } from "@blackbelt-technology/pi-dashboard-shared/semap
 import type { DashboardEvent } from "@blackbelt-technology/pi-dashboard-shared/types.js";
 import { getModelRegistry, getStreamSimpleFn } from "./model-proxy/registry-singleton.js";
 import { streamCompletion } from "./model-proxy/streamer.js";
+import {
+  CLAIM_EVALUATION_PROMPT_VERSION,
+  CLAIM_EVALUATION_SYSTEM_PROMPT,
+  CLAIM_EXTRACTION_CATEGORIES,
+  CLAIM_EXTRACTION_PROMPT_VERSION,
+  CLAIM_EXTRACTION_SYSTEM_PROMPT,
+  CLAIM_QA_VERSION,
+  buildClaimBatchExtractionInput,
+  buildSingleClaimEvaluationInput,
+  evaluateClaimEntailment,
+  parseSingleCandidateClaimAnswer,
+  parseSourceClaimBatch,
+  type CandidateClaimEvaluation,
+  type ClaimEntailmentResult,
+  type SourceClaim,
+} from "./translator-claim-entailment.js";
+import {
+  TRANSLATOR_CLAIM_SELECTION_VERSION,
+  TRANSLATOR_DEPTH_PREFERENCE_THRESHOLD,
+  TRANSLATOR_MIN_COVERAGE,
+  TRANSLATOR_SCORING_VERSION,
+  TRANSLATOR_SELECTION_VERSION,
+  admitClaimEntailedRevoice,
+  appendTranslationSelectionEvidence,
+  composeTranslatorCandidateContracts,
+  defaultTranslationSelectionEvidencePath,
+  scoreTranslationCandidate,
+  selectTranslationCandidate,
+  selectTranslationCandidateWithClaimEntailedRevoice,
+  type ClaimEntailedRevoiceCandidate,
+  type DepthRung,
+  type ScoredTranslationCandidate,
+  type ShippableDepthRung,
+  type TranslationCandidateScore,
+  type TranslationSelectionEvidence,
+} from "./translator-selection.js";
 
 export const TRANSLATOR_VERSION = "dashboard-plain-english-v3";
 export const TRANSLATOR_MIN_CHARS = 80;
 export const TRANSLATOR_TIMEOUT_MS = 30_000;
+const CLAIM_EXTRACTION_COMPLETION_BUDGET = 512;
+const CLAIM_EVALUATION_COMPLETION_BUDGET = 256;
 export const JUDGE_SCHEMA_VERSION = "meaning-judge-five-booleans-v1";
 
 const TRANSLATOR_PROMPT = `Rewrite the agent reply in plain English for a human operator.
@@ -47,6 +85,8 @@ Example shape: "Track Quartz is blocked at door-2; exact-fetch found 12-day ghos
 Add no reassurance, confidence, summary judgement, conclusion, or advice.
 Treat a reply as already plain only when it contains no unexplained technical token, internal label, acronym, code identifier, or workflow metaphor. Then return it byte-for-byte unchanged.
 Before returning, check the entire reply: it must contain no section symbol, no ledger or tenure id, no unexplained track/door/record label, no internal acronym, and no coined hyphenated term. Preservation tokens are the only exception.`;
+
+const TRANSLATOR_CANDIDATE_CONTRACTS = composeTranslatorCandidateContracts(TRANSLATOR_PROMPT);
 
 const JUDGE_FIELDS = ["meaning", "facts", "decisions", "severity", "plainness"] as const;
 const JUDGE_SYSTEM_PROMPT = `You are an independent meaning judge. You have no tools.
@@ -90,7 +130,9 @@ export interface DashboardTranslator {
 }
 
 export interface ModelRunRequest {
-  stage: "rewrite" | "judge";
+  stage: "rewrite" | "claim-extract" | "claim-evaluate" | "judge";
+  rung?: DepthRung;
+  promptVersion?: string;
   text: string;
   system: string;
   signal: AbortSignal;
@@ -99,10 +141,30 @@ export interface ModelRunRequest {
   excludeFamily?: ModelFamily;
 }
 
+export interface RawProviderUsage {
+  promptTokens: number;
+  completionTokens: number;
+  reasoningTokens: number | null;
+  totalTokens: number;
+}
+
+export interface ClaimProviderCallEvidence {
+  wireReasoningEffort: string | null;
+  rawUsage: RawProviderUsage | null;
+}
+
+export type ClaimStage = Extract<ModelRunRequest["stage"], "claim-extract" | "claim-evaluate">;
+
+export type ClaimTransportDiagnosticCode =
+  | "claim-reasoning-effort-unverified"
+  | "claim-usage-unverifiable"
+  | "claim-hidden-reasoning-detected";
+
 export interface ModelRunResult {
   text: string;
   finishReason: string;
   served?: ServedModelIdentity;
+  claimTransport?: ClaimProviderCallEvidence;
 }
 
 export type TranslatorModelRunner = (request: ModelRunRequest) => Promise<string | ModelRunResult>;
@@ -110,18 +172,23 @@ export type TranslatorModelRunner = (request: ModelRunRequest) => Promise<string
 export interface TranslatorServiceOptions {
   runModel?: TranslatorModelRunner;
   runJudge?: TranslatorModelRunner;
+  runEntailment?: TranslatorModelRunner;
   version?: string;
   minChars?: number;
   timeoutMs?: number;
   maxConcurrent?: number;
+  enableDepthRungSelection?: boolean;
+  enableRevoiceClaimGate?: boolean;
   onDiagnostic?: (diagnostic: TranslatorDiagnostic) => void;
   onCircuitHealth?: (signal: TranslatorCircuitHealthSignal) => void;
+  persistEvidence?: (evidence: TranslationSelectionEvidence) => void | Promise<void>;
 }
 
 export interface TranslatorDiagnostic {
   sourceHash: string;
-  issueCode: TranslationSafetyIssue;
+  issueCode: TranslationSafetyIssue | ClaimTransportDiagnosticCode;
   translatorVersion: string;
+  stage?: ClaimStage;
 }
 
 export interface TranslatorCircuitHealthSignal {
@@ -225,6 +292,26 @@ const WARNING_CODE_BY_SAFETY_ISSUE: Partial<Record<TranslationSafetyIssue, Trans
 class TranslatorFailure extends Error {
   constructor(readonly code: string) {
     super(code);
+  }
+}
+
+class ClaimStageFailure extends TranslatorFailure {
+  constructor(
+    code: string,
+    readonly stage: ClaimStage,
+    readonly records: ClaimCallTransportRecord[],
+  ) {
+    super(code);
+  }
+}
+
+class ClaimTransportFailure extends ClaimStageFailure {
+  constructor(
+    readonly diagnosticCode: ClaimTransportDiagnosticCode,
+    stage: ClaimStage,
+    records: ClaimCallTransportRecord[],
+  ) {
+    super(diagnosticCode, stage, records);
   }
 }
 
@@ -509,6 +596,103 @@ export interface JudgeVerdict {
   plainness: boolean;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isClaimStage(stage: ModelRunRequest["stage"]): stage is ClaimStage {
+  return stage === "claim-extract" || stage === "claim-evaluate";
+}
+
+export interface TranslatorModelDescriptor {
+  provider?: unknown;
+  id?: unknown;
+  api?: unknown;
+  reasoning?: unknown;
+  compat?: unknown;
+  [key: string]: unknown;
+}
+
+export function withClaimStageReasoningEffort(
+  model: TranslatorModelDescriptor,
+  stage: ModelRunRequest["stage"],
+): TranslatorModelDescriptor {
+  if (!isClaimStage(stage)
+    || model.provider !== "github-copilot"
+    || model.id !== "gemini-3.5-flash"
+    || model.api !== "openai-completions"
+    || model.reasoning !== true) {
+    return model;
+  }
+  const compat = isRecord(model.compat) ? model.compat : {};
+  return {
+    ...model,
+    compat: {
+      ...compat,
+      supportsReasoningEffort: true,
+    },
+  };
+}
+
+export interface ClaimCallTransportRecord extends ClaimProviderCallEvidence {
+  hiddenResidualTokens: number | null;
+  guardDisposition: "passed" | ClaimTransportDiagnosticCode;
+  stage?: ClaimStage;
+  servedIdentity?: ServedModelIdentity | null;
+  finishReason?: string;
+}
+
+export type ClaimTransportGuardResult =
+  | { pass: true; record: ClaimCallTransportRecord & { hiddenResidualTokens: 0; guardDisposition: "passed" } }
+  | { pass: false; reason: ClaimTransportDiagnosticCode; record: ClaimCallTransportRecord };
+
+function isTokenCount(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+export function validateClaimProviderCall(evidence: ClaimProviderCallEvidence): ClaimTransportGuardResult {
+  if (evidence.wireReasoningEffort !== "minimal") {
+    return {
+      pass: false,
+      reason: "claim-reasoning-effort-unverified",
+      record: { ...evidence, hiddenResidualTokens: null, guardDisposition: "claim-reasoning-effort-unverified" },
+    };
+  }
+  const usage = evidence.rawUsage;
+  if (!usage
+    || !isTokenCount(usage.promptTokens)
+    || !isTokenCount(usage.completionTokens)
+    || !isTokenCount(usage.totalTokens)
+    || (usage.reasoningTokens !== null && !isTokenCount(usage.reasoningTokens))) {
+    return {
+      pass: false,
+      reason: "claim-usage-unverifiable",
+      record: { ...evidence, hiddenResidualTokens: null, guardDisposition: "claim-usage-unverifiable" },
+    };
+  }
+  const arithmeticResidual = usage.totalTokens - usage.promptTokens - usage.completionTokens;
+  if (!isTokenCount(arithmeticResidual)
+    || (usage.reasoningTokens !== null && usage.reasoningTokens !== arithmeticResidual)) {
+    return {
+      pass: false,
+      reason: "claim-usage-unverifiable",
+      record: { ...evidence, hiddenResidualTokens: null, guardDisposition: "claim-usage-unverifiable" },
+    };
+  }
+  const hiddenResidualTokens = usage.reasoningTokens ?? arithmeticResidual;
+  if (hiddenResidualTokens !== 0) {
+    return {
+      pass: false,
+      reason: "claim-hidden-reasoning-detected",
+      record: { ...evidence, hiddenResidualTokens, guardDisposition: "claim-hidden-reasoning-detected" },
+    };
+  }
+  return {
+    pass: true,
+    record: { ...evidence, hiddenResidualTokens: 0, guardDisposition: "passed" },
+  };
+}
+
 function isIdentityPart(value: unknown): value is string {
   return typeof value === "string"
     && value.length > 0
@@ -662,25 +846,16 @@ function collectResponseModels(value: unknown, models: Set<string>): void {
   }
 }
 
-async function identityFromProviderResponse(response: Response): Promise<ServedModelIdentity | null> {
-  let provider: string;
-  try {
-    provider = new URL(response.url).hostname.toLowerCase();
-  } catch {
-    return null;
-  }
-  if (!isIdentityPart(provider)) return null;
+interface ProviderResponseObservation {
+  identity: ServedModelIdentity | null;
+  rawUsage: RawProviderUsage | null;
+}
 
-  let body: string;
-  try {
-    body = await response.clone().text();
-  } catch {
-    return null;
-  }
-  const models = new Set<string>();
-  const parse = (serialized: string) => {
+function parseProviderPayloads(body: string): unknown[] {
+  const payloads: unknown[] = [];
+  const parse = (serialized: string): void => {
     try {
-      collectResponseModels(JSON.parse(serialized), models);
+      payloads.push(JSON.parse(serialized) as unknown);
     } catch {
       // Strictly ignore non-JSON SSE fields.
     }
@@ -691,7 +866,97 @@ async function identityFromProviderResponse(response: Response): Promise<ServedM
     const serialized = line.replace(/^data:\s*/, "").trim();
     if (serialized && serialized !== "[DONE]" && line.startsWith("data:")) parse(serialized);
   }
-  return models.size === 1 ? { provider, model: [...models][0] } : null;
+  return payloads;
+}
+
+function rawUsageRecord(value: Record<string, unknown>): RawProviderUsage | null {
+  const promptTokens = value.prompt_tokens;
+  const completionTokens = value.completion_tokens;
+  const totalTokens = value.total_tokens;
+  if (typeof promptTokens !== "number" || typeof completionTokens !== "number" || typeof totalTokens !== "number") {
+    return null;
+  }
+  const directReasoning = value.reasoning_tokens;
+  const completionDetails = isRecord(value.completion_tokens_details) ? value.completion_tokens_details.reasoning_tokens : undefined;
+  const outputDetails = isRecord(value.output_tokens_details) ? value.output_tokens_details.reasoning_tokens : undefined;
+  const reportedReasoning = [directReasoning, completionDetails, outputDetails]
+    .filter((candidate): candidate is number => typeof candidate === "number");
+  const distinctReasoning = new Set(reportedReasoning);
+  if (distinctReasoning.size > 1) return null;
+  return {
+    promptTokens,
+    completionTokens,
+    reasoningTokens: distinctReasoning.size === 1 ? [...distinctReasoning][0] ?? null : null,
+    totalTokens,
+  };
+}
+
+function collectRawUsageRecords(value: unknown, usages: RawProviderUsage[]): void {
+  if (Array.isArray(value)) {
+    for (const child of value) collectRawUsageRecords(child, usages);
+    return;
+  }
+  if (!isRecord(value)) return;
+  for (const [key, child] of Object.entries(value)) {
+    if (key === "usage" && isRecord(child)) {
+      const usage = rawUsageRecord(child);
+      if (usage && (usage.promptTokens !== 0 || usage.completionTokens !== 0 || usage.totalTokens !== 0)) usages.push(usage);
+    }
+    collectRawUsageRecords(child, usages);
+  }
+}
+
+function rawUsageFromProviderPayloads(payloads: readonly unknown[]): RawProviderUsage | null {
+  const usages: RawProviderUsage[] = [];
+  for (const payload of payloads) collectRawUsageRecords(payload, usages);
+  const distinct = new Map(usages.map((usage) => [JSON.stringify(usage), usage]));
+  return distinct.size === 1 ? [...distinct.values()][0] ?? null : null;
+}
+
+async function providerRequestBody(input: string | URL | Request, init?: RequestInit): Promise<string | null> {
+  if (typeof init?.body === "string") return init.body;
+  if (input instanceof Request) {
+    try {
+      return await input.clone().text();
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+async function wireReasoningEffort(input: string | URL | Request, init?: RequestInit): Promise<string | null> {
+  const body = await providerRequestBody(input, init);
+  if (body === null) return null;
+  try {
+    const parsed: unknown = JSON.parse(body);
+    return isRecord(parsed) && typeof parsed.reasoning_effort === "string" ? parsed.reasoning_effort : null;
+  } catch {
+    return null;
+  }
+}
+
+async function observeProviderResponse(response: Response): Promise<ProviderResponseObservation> {
+  let provider: string | null = null;
+  try {
+    provider = new URL(response.url).hostname.toLowerCase();
+  } catch {
+    provider = null;
+  }
+
+  let body: string;
+  try {
+    body = await response.clone().text();
+  } catch {
+    return { identity: null, rawUsage: null };
+  }
+  const payloads = parseProviderPayloads(body);
+  const models = new Set<string>();
+  for (const payload of payloads) collectResponseModels(payload, models);
+  const identity = isIdentityPart(provider) && models.size === 1
+    ? { provider, model: [...models][0] ?? "" }
+    : null;
+  return { identity, rawUsage: rawUsageFromProviderPayloads(payloads) };
 }
 
 async function runModelProxy(request: ModelRunRequest): Promise<ModelRunResult> {
@@ -702,20 +967,23 @@ async function runModelProxy(request: ModelRunRequest): Promise<ModelRunResult> 
     throw new TranslatorFailure("model-unavailable");
   }
   const models = await registry.getAvailable();
-  const model = request.stage === "judge"
-    ? selectJudgeModel(models, request.excludeFamily ?? "openai")
-    : selectTranslatorModel(models);
-  if (!model) throw new TranslatorFailure(request.stage === "judge" ? "judge-model-unavailable" : "no-small-model");
+  const model = request.stage === "rewrite"
+    ? selectTranslatorModel(models)
+    : selectJudgeModel(models, request.excludeFamily ?? "openai");
+  if (!model) throw new TranslatorFailure(request.stage === "rewrite" ? "no-small-model" : "judge-model-unavailable");
+  const requestModel = withClaimStageReasoningEffort(model, request.stage);
   const streamSimple = getStreamSimpleFn();
   if (!streamSimple) throw new TranslatorFailure("model-unavailable");
-  const responseIdentities: Array<Promise<ServedModelIdentity | null>> = [];
+  const responseObservations: Array<Promise<ProviderResponseObservation>> = [];
+  const claimWireEfforts: Array<string | null> = [];
   const capturingStreamSimple = ((requestModel: any, context: any, streamOptions: any = {}) => {
     const baseFetch = streamOptions.fetch ?? globalThis.fetch;
     return streamSimple(requestModel, context, {
       ...streamOptions,
       fetch: async (input: any, init: any) => {
+        if (isClaimStage(request.stage)) claimWireEfforts.push(await wireReasoningEffort(input, init));
         const response = await baseFetch(input, init);
-        responseIdentities.push(identityFromProviderResponse(response));
+        responseObservations.push(observeProviderResponse(response));
         return response;
       },
     });
@@ -723,18 +991,18 @@ async function runModelProxy(request: ModelRunRequest): Promise<ModelRunResult> 
 
   const iterable = await streamCompletion(
     {
-      model,
+      model: requestModel,
       system: request.system,
       messages: [{
         role: "user",
-        content: request.stage === "judge"
-          ? request.text
-          : `<agent_reply>\n${request.text}\n</agent_reply>\nReturn only the plain-English rewrite. Final check: zero section symbols, ledger ids, unexplained internal labels, or coined terms; copy every preservation token exactly once.`,
+        content: request.stage === "rewrite"
+          ? `<agent_reply>\n${request.text}\n</agent_reply>\nReturn only the plain-English rewrite. Final check: zero section symbols, ledger ids, unexplained internal labels, or coined terms; copy every preservation token exactly once.`
+          : request.text,
         timestamp: Date.now(),
       }],
       maxTokens: request.maxTokens,
-      ...(model.reasoning === true ? {} : { temperature: 0 }),
-      ...(model.reasoning === true ? { reasoning: "minimal" as const } : {}),
+      ...(requestModel.reasoning === true ? {} : { temperature: 0 }),
+      ...(requestModel.reasoning === true ? { reasoning: "minimal" as const } : {}),
       timeoutMs: request.timeoutMs,
       maxRetries: 0,
       signal: request.signal,
@@ -756,14 +1024,27 @@ async function runModelProxy(request: ModelRunRequest): Promise<ModelRunResult> 
       throw new TranslatorFailure("model-error");
     }
   }
-  const observedIdentities = (await Promise.all(responseIdentities))
+  const observations = await Promise.all(responseObservations);
+  const observedIdentities = observations
+    .map((observation) => observation.identity)
     .filter((identity): identity is ServedModelIdentity => identity !== null);
   const distinctIdentities = new Map(observedIdentities.map((identity) => [
     `${identity.provider}\u0000${identity.model}`,
     identity,
   ]));
   const served = distinctIdentities.size === 1 ? [...distinctIdentities.values()][0] : undefined;
-  return { text: finalText || deltas, finishReason, ...(served ? { served } : {}) };
+  const claimTransport = isClaimStage(request.stage)
+    ? {
+        wireReasoningEffort: claimWireEfforts.length === 1 ? claimWireEfforts[0] ?? null : null,
+        rawUsage: observations.length === 1 ? observations[0]?.rawUsage ?? null : null,
+      }
+    : null;
+  return {
+    text: finalText || deltas,
+    finishReason,
+    ...(served ? { served } : {}),
+    ...(claimTransport ? { claimTransport } : {}),
+  };
 }
 
 type PipelineResult = (
@@ -771,6 +1052,69 @@ type PipelineResult = (
   | { status: "unchanged"; sourceHash: string }
   | { status: "failed"; sourceHash: string; reason: string }
 ) & { servedModels: ServedModelPair };
+
+interface GeneratedRungEvidence {
+  rung: DepthRung;
+  promptVersion: string;
+  systemPrompt: string;
+  selectable: boolean;
+  rawText: string;
+  text: string | null;
+  finishReason: string;
+  servedIdentity: ServedModelIdentity | null;
+  error: string | null;
+  securityDetection: TranslatorSecurityDetection | null;
+  score: TranslationCandidateScore | null;
+}
+
+interface ClaimExtractionRecord {
+  rawTexts: string[];
+  finishReasons: string[];
+  servedIdentity: ServedModelIdentity;
+  servedIdentities: ServedModelIdentity[];
+  servedFamily: ModelFamily;
+  transports: ClaimCallTransportRecord[];
+  claims: SourceClaim[];
+}
+
+interface ClaimEvaluationRecord {
+  rawTexts: string[];
+  finishReasons: string[];
+  servedIdentity: ServedModelIdentity;
+  servedIdentities: ServedModelIdentity[];
+  servedFamily: ModelFamily;
+  transports: ClaimCallTransportRecord[];
+  evaluation: CandidateClaimEvaluation;
+  entailment: ClaimEntailmentResult;
+}
+
+interface ClaimGateEvidence {
+  status: "not-run" | "passed" | "failed";
+  revoiceEligible: boolean;
+  reason: string | null;
+  issues: string[];
+  claimQaVersion: string;
+  claimCount: number;
+  extractionPromptVersion: string;
+  evaluationPromptVersion: string;
+  extractionIdentity: ServedModelIdentity | null;
+  evaluationIdentity: ServedModelIdentity | null;
+  extractionFinishReason: string | null;
+  evaluationFinishReason: string | null;
+  extractionIdentities: ServedModelIdentity[];
+  evaluationIdentities: ServedModelIdentity[];
+  extractionFinishReasons: string[];
+  evaluationFinishReasons: string[];
+  extractionTransports: ClaimCallTransportRecord[];
+  evaluationTransports: ClaimCallTransportRecord[];
+  claims: SourceClaim[];
+  candidateEvaluation: CandidateClaimEvaluation | null;
+}
+
+interface ClaimGateOutcome {
+  evidence: ClaimGateEvidence;
+  admitted: ClaimEntailedRevoiceCandidate | null;
+}
 
 function attachEntry(entryId: string, result: PipelineResult): TranslationResult {
   return {
@@ -786,11 +1130,18 @@ function attachEntry(entryId: string, result: PipelineResult): TranslationResult
 export function createTranslatorService(options: TranslatorServiceOptions = {}): DashboardTranslator {
   const runModel = options.runModel ?? runModelProxy;
   const runJudge = options.runJudge ?? runModelProxy;
+  const runEntailment = options.runEntailment ?? runModelProxy;
   const version = options.version ?? TRANSLATOR_VERSION;
   const minChars = options.minChars ?? TRANSLATOR_MIN_CHARS;
   const timeoutMs = options.timeoutMs ?? TRANSLATOR_TIMEOUT_MS;
+  const enableDepthRungSelection = options.enableDepthRungSelection === true;
+  const enableRevoiceClaimGate = enableDepthRungSelection && options.enableRevoiceClaimGate === true;
+  const persistEvidence = options.persistEvidence ?? ((evidence: TranslationSelectionEvidence) => {
+    appendTranslationSelectionEvidence(defaultTranslationSelectionEvidencePath(), evidence);
+  });
   const semaphore = createSemaphore(options.maxConcurrent ?? 2);
   const inFlight = new Map<string, Promise<PipelineResult>>();
+  const claimExtractionCache = new Map<string, Promise<ClaimExtractionRecord>>();
   const translatedOutputHashes = new Set<string>();
   const emitDiagnostic = options.onDiagnostic ?? ((diagnostic: TranslatorDiagnostic) => {
     console.warn(`[translator] diagnostic ${JSON.stringify(diagnostic)}`);
@@ -841,6 +1192,346 @@ export function createTranslatorService(options: TranslatorServiceOptions = {}):
     }
     if (result.text.trim().length === 0) throw new TranslatorFailure("empty-output");
     return result.text;
+  }
+
+  function independentEvaluatorIdentity(
+    result: ModelRunResult,
+    stage1Family: ModelFamily,
+  ): { identity: ServedModelIdentity; family: ModelFamily } {
+    const identity = parseServedIdentity(result.served);
+    if (!identity) throw new TranslatorFailure("served-identity");
+    const family = modelFamily(identity);
+    if (!family) throw new TranslatorFailure("served-identity");
+    if (family === stage1Family) throw new TranslatorFailure("same-family");
+    if (!isAllowedJudgeIdentity(identity)) throw new TranslatorFailure("served-identity");
+    return { identity, family };
+  }
+
+  function verifiedClaimTransport(
+    result: ModelRunResult,
+    stage: ClaimStage,
+    priorRecords: readonly ClaimCallTransportRecord[],
+  ): ClaimCallTransportRecord {
+    if (result.claimTransport === undefined) {
+      const record: ClaimCallTransportRecord = {
+        wireReasoningEffort: null,
+        rawUsage: null,
+        hiddenResidualTokens: null,
+        guardDisposition: "claim-usage-unverifiable",
+        stage,
+        servedIdentity: parseServedIdentity(result.served),
+        finishReason: result.finishReason,
+      };
+      throw new ClaimTransportFailure("claim-usage-unverifiable", stage, [...priorRecords, record]);
+    }
+    const guard = validateClaimProviderCall(result.claimTransport);
+    const record: ClaimCallTransportRecord = {
+      ...guard.record,
+      stage,
+      servedIdentity: parseServedIdentity(result.served),
+      finishReason: result.finishReason,
+    };
+    if (!guard.pass) {
+      throw new ClaimTransportFailure(guard.reason, stage, [...priorRecords, record]);
+    }
+    return record;
+  }
+
+  function throwClaimStageFailure(
+    error: unknown,
+    stage: ClaimStage,
+    records: readonly ClaimCallTransportRecord[],
+  ): never {
+    if (error instanceof ClaimStageFailure) throw error;
+    if (error instanceof TranslatorFailure) throw new ClaimStageFailure(error.code, stage, [...records]);
+    throw error;
+  }
+
+  async function extractSourceClaims(
+    source: string,
+    sourceHash: string,
+    stage1Family: ModelFamily,
+  ): Promise<ClaimExtractionRecord> {
+    const cacheKey = [
+      sourceHash,
+      stage1Family,
+      CLAIM_QA_VERSION,
+      CLAIM_EXTRACTION_PROMPT_VERSION,
+      TRANSLATOR_SECURITY_DETECTOR_VERSION,
+    ].join(":");
+    let pending = claimExtractionCache.get(cacheKey);
+    if (!pending) {
+      pending = (async () => {
+        const rawTexts: string[] = [];
+        const finishReasons: string[] = [];
+        const servedIdentities: ServedModelIdentity[] = [];
+        const transports: ClaimCallTransportRecord[] = [];
+        const claims: SourceClaim[] = [];
+        let servedFamily: ModelFamily | null = null;
+        for (const category of CLAIM_EXTRACTION_CATEGORIES) {
+          try {
+            const result = await runStage(runEntailment, {
+              stage: "claim-extract",
+              promptVersion: CLAIM_EXTRACTION_PROMPT_VERSION,
+              text: buildClaimBatchExtractionInput(source, category),
+              system: CLAIM_EXTRACTION_SYSTEM_PROMPT,
+              maxTokens: CLAIM_EXTRACTION_COMPLETION_BUDGET,
+              timeoutMs,
+              excludeFamily: stage1Family,
+            });
+            const transport = verifiedClaimTransport(result, "claim-extract", transports);
+            transports.push(transport);
+            const rawText = completedModelOutput(result);
+            const served = independentEvaluatorIdentity(result, stage1Family);
+            const batch = parseSourceClaimBatch(rawText);
+            if (!batch) throw new TranslatorFailure("claim-extraction-invalid");
+            if (batch.overflow) throw new TranslatorFailure("claim-extraction-overflow");
+            rawTexts.push(rawText);
+            finishReasons.push(result.finishReason);
+            servedIdentities.push(served.identity);
+            servedFamily ??= served.family;
+            for (const item of batch.claims) {
+              claims.push({ id: `c${claims.length + 1}`, category, question: item.question, answer: item.answer });
+            }
+          } catch (error) {
+            throwClaimStageFailure(error, "claim-extract", transports);
+          }
+        }
+        const firstIdentity = servedIdentities[0];
+        if (claims.length === 0 || !servedFamily || !firstIdentity) throw new TranslatorFailure("claim-extraction-empty");
+        return {
+          rawTexts,
+          finishReasons,
+          servedIdentity: firstIdentity,
+          servedIdentities,
+          servedFamily,
+          transports,
+          claims,
+        };
+      })();
+      claimExtractionCache.set(cacheKey, pending);
+      if (claimExtractionCache.size > 128) {
+        const oldest = claimExtractionCache.keys().next().value;
+        if (typeof oldest === "string" && oldest !== cacheKey) claimExtractionCache.delete(oldest);
+      }
+    }
+    try {
+      return await pending;
+    } catch (error) {
+      if (claimExtractionCache.get(cacheKey) === pending) claimExtractionCache.delete(cacheKey);
+      throw error;
+    }
+  }
+
+  async function evaluateCandidateClaims(
+    sourceClaims: readonly SourceClaim[],
+    candidate: string,
+    stage1Family: ModelFamily,
+  ): Promise<ClaimEvaluationRecord> {
+    const rawTexts: string[] = [];
+    const finishReasons: string[] = [];
+    const servedIdentities: ServedModelIdentity[] = [];
+    const transports: ClaimCallTransportRecord[] = [];
+    const answers: CandidateClaimEvaluation["answers"] = [];
+    let evaluatorInstructionDetected = false;
+    let servedFamily: ModelFamily | null = null;
+    for (const claim of sourceClaims) {
+      try {
+        const result = await runStage(runEntailment, {
+          stage: "claim-evaluate",
+          promptVersion: CLAIM_EVALUATION_PROMPT_VERSION,
+          text: buildSingleClaimEvaluationInput(claim, candidate),
+          system: CLAIM_EVALUATION_SYSTEM_PROMPT,
+          maxTokens: CLAIM_EVALUATION_COMPLETION_BUDGET,
+          timeoutMs,
+          excludeFamily: stage1Family,
+        });
+        const transport = verifiedClaimTransport(result, "claim-evaluate", transports);
+        transports.push(transport);
+        const rawText = completedModelOutput(result);
+        const served = independentEvaluatorIdentity(result, stage1Family);
+        const parsed = parseSingleCandidateClaimAnswer(rawText);
+        if (!parsed) throw new TranslatorFailure("claim-evaluation-invalid");
+        rawTexts.push(rawText);
+        finishReasons.push(result.finishReason);
+        servedIdentities.push(served.identity);
+        servedFamily ??= served.family;
+        evaluatorInstructionDetected ||= parsed.evaluatorInstructionDetected;
+        answers.push({ id: claim.id, answer: parsed.answer });
+      } catch (error) {
+        throwClaimStageFailure(error, "claim-evaluate", transports);
+      }
+    }
+    const firstIdentity = servedIdentities[0];
+    if (!servedFamily || !firstIdentity) throw new TranslatorFailure("claim-evaluation-invalid");
+    const evaluation: CandidateClaimEvaluation = { evaluatorInstructionDetected, answers };
+    return {
+      rawTexts,
+      finishReasons,
+      servedIdentity: firstIdentity,
+      servedIdentities,
+      servedFamily,
+      transports,
+      evaluation,
+      entailment: evaluateClaimEntailment(sourceClaims, evaluation),
+    };
+  }
+
+  function emptyClaimGateEvidence(reason: string, issues: string[] = []): ClaimGateEvidence {
+    return {
+      status: "not-run",
+      revoiceEligible: false,
+      reason,
+      issues,
+      claimQaVersion: CLAIM_QA_VERSION,
+      claimCount: 0,
+      extractionPromptVersion: CLAIM_EXTRACTION_PROMPT_VERSION,
+      evaluationPromptVersion: CLAIM_EVALUATION_PROMPT_VERSION,
+      extractionIdentity: null,
+      evaluationIdentity: null,
+      extractionFinishReason: null,
+      evaluationFinishReason: null,
+      extractionIdentities: [],
+      evaluationIdentities: [],
+      extractionFinishReasons: [],
+      evaluationFinishReasons: [],
+      extractionTransports: [],
+      evaluationTransports: [],
+      claims: [],
+      candidateEvaluation: null,
+    };
+  }
+
+  function optionalClaimFailureReason(error: unknown): string {
+    const code = error instanceof TranslatorFailure
+      ? error.code
+      : error instanceof Error
+        ? error.message
+        : "model-error";
+    if (code === "served-identity") return "served-identity-missing";
+    if (code === "same-family") return "served-identity-mismatch";
+    if (code === "aborted") return "timeout";
+    if (new Set(["judge-model-unavailable", "model-unavailable", "no-small-model"]).has(code)) {
+      return "unavailable-model";
+    }
+    return code;
+  }
+
+  function emitClaimTransportFailure(error: unknown, sourceHash: string): void {
+    if (!(error instanceof ClaimTransportFailure)) return;
+    emitDiagnostic({
+      sourceHash,
+      issueCode: error.diagnosticCode,
+      translatorVersion: version,
+      stage: error.stage,
+    });
+  }
+
+  async function runRevoiceClaimGate(
+    source: string,
+    sourceHash: string,
+    revoice: ScoredTranslationCandidate<"revoice"> | null,
+  ): Promise<ClaimGateOutcome> {
+    if (!revoice) {
+      return { evidence: emptyClaimGateEvidence("revoice-candidate-unavailable"), admitted: null };
+    }
+    if (revoice.score.hardIssues.length > 0) {
+      const gateIssues = revoice.score.hardIssues.includes("security-injection-detected")
+        ? ["security-injection-detected"]
+        : [...revoice.score.hardIssues];
+      return {
+        evidence: emptyClaimGateEvidence("deterministic-hard-issue", gateIssues),
+        admitted: null,
+      };
+    }
+    if (!revoice.servedIdentity) {
+      return {
+        evidence: { ...emptyClaimGateEvidence("served-identity-missing"), status: "failed" },
+        admitted: null,
+      };
+    }
+    const stage1Family = modelFamily(revoice.servedIdentity);
+    if (!stage1Family) {
+      return {
+        evidence: { ...emptyClaimGateEvidence("served-identity-missing"), status: "failed" },
+        admitted: null,
+      };
+    }
+    let extraction: ClaimExtractionRecord;
+    try {
+      extraction = await extractSourceClaims(source, sourceHash, stage1Family);
+    } catch (error) {
+      const reason = optionalClaimFailureReason(error);
+      emitClaimTransportFailure(error, sourceHash);
+      return {
+        evidence: {
+          ...emptyClaimGateEvidence(reason),
+          status: "failed",
+          extractionTransports: error instanceof ClaimStageFailure && error.stage === "claim-extract"
+            ? error.records
+            : [],
+        },
+        admitted: null,
+      };
+    }
+    let evaluation: ClaimEvaluationRecord;
+    try {
+      evaluation = await evaluateCandidateClaims(extraction.claims, revoice.text, stage1Family);
+    } catch (error) {
+      const reason = optionalClaimFailureReason(error);
+      emitClaimTransportFailure(error, sourceHash);
+      return {
+        evidence: {
+          ...emptyClaimGateEvidence(reason),
+          status: "failed",
+          claimCount: extraction.claims.length,
+          extractionIdentity: extraction.servedIdentity,
+          extractionFinishReason: extraction.finishReasons[0] ?? null,
+          extractionIdentities: extraction.servedIdentities,
+          extractionFinishReasons: extraction.finishReasons,
+          extractionTransports: extraction.transports,
+          evaluationTransports: error instanceof ClaimStageFailure && error.stage === "claim-evaluate"
+            ? error.records
+            : [],
+          claims: extraction.claims,
+        },
+        admitted: null,
+      };
+    }
+    const passed = evaluation.entailment.pass;
+    const evidence: ClaimGateEvidence = {
+      status: passed ? "passed" : "failed",
+      revoiceEligible: passed,
+      reason: passed ? null : "claim-entailment-mismatch",
+      issues: [...evaluation.entailment.issues],
+      claimQaVersion: CLAIM_QA_VERSION,
+      claimCount: extraction.claims.length,
+      extractionPromptVersion: CLAIM_EXTRACTION_PROMPT_VERSION,
+      evaluationPromptVersion: CLAIM_EVALUATION_PROMPT_VERSION,
+      extractionIdentity: extraction.servedIdentity,
+      evaluationIdentity: evaluation.servedIdentity,
+      extractionFinishReason: extraction.finishReasons[0] ?? null,
+      evaluationFinishReason: evaluation.finishReasons[0] ?? null,
+      extractionIdentities: extraction.servedIdentities,
+      evaluationIdentities: evaluation.servedIdentities,
+      extractionFinishReasons: extraction.finishReasons,
+      evaluationFinishReasons: evaluation.finishReasons,
+      extractionTransports: extraction.transports,
+      evaluationTransports: evaluation.transports,
+      claims: extraction.claims,
+      candidateEvaluation: evaluation.evaluation,
+    };
+    if (!passed) return { evidence, admitted: null };
+    return {
+      evidence,
+      admitted: admitClaimEntailedRevoice(revoice, {
+        status: "passed",
+        claimQaVersion: CLAIM_QA_VERSION,
+        claimCount: extraction.claims.length,
+        extractionIdentity: extraction.servedIdentity,
+        evaluationIdentity: evaluation.servedIdentity,
+      }),
+    };
   }
 
   function finishWithVerdict(
@@ -936,6 +1627,192 @@ export function createTranslatorService(options: TranslatorServiceOptions = {}):
     }
   }
 
+  async function generateRung(
+    contract: typeof TRANSLATOR_CANDIDATE_CONTRACTS[number],
+    text: string,
+    protectedText: ProtectedText,
+  ): Promise<GeneratedRungEvidence> {
+    let rawText = "";
+    let finishReason = "incomplete";
+    let servedIdentity: ServedModelIdentity | null = null;
+    try {
+      const result = await runStage(runModel, {
+        stage: "rewrite",
+        rung: contract.rung,
+        promptVersion: contract.version,
+        text: protectedText.text,
+        system: contract.systemPrompt,
+        maxTokens: Math.min(4_096, Math.max(2_048, Math.ceil(text.length / 2) + 1_024)),
+        timeoutMs,
+      });
+      rawText = typeof result.text === "string" ? result.text : "";
+      finishReason = result.finishReason;
+      servedIdentity = parseServedIdentity(result.served);
+      const output = restoreProtectedSpans(completedModelOutput(result), protectedText);
+      if (!servedIdentity || !modelFamily(servedIdentity)) throw new TranslatorFailure("served-identity");
+      const securityDetection = detectTranslatorInjection(text, output);
+      const issues: string[] = translationSafetyIssues(text, output);
+      if (securityDetection.hardFail) issues.push("security-injection-detected");
+      return {
+        ...contract,
+        promptVersion: contract.version,
+        rawText,
+        text: output,
+        finishReason,
+        servedIdentity,
+        error: null,
+        securityDetection,
+        score: scoreTranslationCandidate(text, output, issues),
+      };
+    } catch (error) {
+      return {
+        ...contract,
+        promptVersion: contract.version,
+        rawText,
+        text: null,
+        finishReason,
+        servedIdentity,
+        error: error instanceof TranslatorFailure ? error.code : "model-error",
+        securityDetection: null,
+        score: null,
+      };
+    }
+  }
+
+  async function translateWithDepthRungSelection(text: string, sourceHash: string): Promise<PipelineResult> {
+    const protectedText = maskProtectedSpans(text);
+    const servedModels: ServedModelPair = { stage1: null, stage2: null };
+    const generated: GeneratedRungEvidence[] = [];
+    for (const contract of TRANSLATOR_CANDIDATE_CONTRACTS) {
+      generated.push(await generateRung(contract, text, protectedText));
+    }
+
+    const shippable = generated
+      .filter((candidate): candidate is GeneratedRungEvidence & {
+        rung: ShippableDepthRung;
+        text: string;
+        servedIdentity: ServedModelIdentity;
+        score: TranslationCandidateScore;
+      } => candidate.selectable && candidate.text !== null && candidate.servedIdentity !== null && candidate.score !== null)
+      .map((candidate): ScoredTranslationCandidate<ShippableDepthRung> => ({
+        rung: candidate.rung,
+        rawText: candidate.rawText,
+        text: candidate.text,
+        servedIdentity: candidate.servedIdentity,
+        finishReason: candidate.finishReason,
+        score: candidate.score,
+      }));
+    const evidenceRecord = generated.find((candidate) => candidate.rung === "revoice");
+    const evidenceOnly = evidenceRecord?.text && evidenceRecord.servedIdentity && evidenceRecord.score
+      ? {
+          rung: "revoice" as const,
+          rawText: evidenceRecord.rawText,
+          text: evidenceRecord.text,
+          servedIdentity: evidenceRecord.servedIdentity,
+          finishReason: evidenceRecord.finishReason,
+          score: evidenceRecord.score,
+        }
+      : null;
+    const candidateSet = { shippable, evidenceOnly };
+    const claimGate = enableRevoiceClaimGate
+      ? await runRevoiceClaimGate(text, sourceHash, evidenceOnly)
+      : null;
+    const decision = claimGate
+      ? selectTranslationCandidateWithClaimEntailedRevoice(text, candidateSet, claimGate.admitted)
+      : selectTranslationCandidate(text, candidateSet);
+    const evidence: TranslationSelectionEvidence = {
+      schemaVersion: "translator-selection-evidence-v1",
+      recordedAt: new Date().toISOString(),
+      sourceHash,
+      sourceText: text,
+      translatorVersion: version,
+      scoringVersion: TRANSLATOR_SCORING_VERSION,
+      selectionVersion: enableRevoiceClaimGate ? TRANSLATOR_CLAIM_SELECTION_VERSION : TRANSLATOR_SELECTION_VERSION,
+      minCoverage: TRANSLATOR_MIN_COVERAGE,
+      depthPreferenceThreshold: TRANSLATOR_DEPTH_PREFERENCE_THRESHOLD,
+      detectorKind: TRANSLATOR_SECURITY_DETECTOR_KIND,
+      detectorVersion: TRANSLATOR_SECURITY_DETECTOR_VERSION,
+      contracts: TRANSLATOR_CANDIDATE_CONTRACTS,
+      candidates: generated,
+      ...(claimGate ? { claimEntailment: claimGate.evidence } : {}),
+      decision: decision.kind === "selected"
+        ? { kind: decision.kind, rung: decision.rung, text: decision.text, reason: decision.reason, score: decision.score }
+        : decision,
+    };
+    try {
+      await persistEvidence(evidence);
+    } catch {
+      return { status: "failed", sourceHash, reason: "evidence-persist-failed", servedModels };
+    }
+
+    if (decision.kind === "original") {
+      const productionFailures = generated.filter((candidate) => candidate.selectable).map((candidate) => {
+        if (candidate.error) return candidate.error;
+        const issue = candidate.score?.hardIssues[0];
+        return issue === "security-injection-detected"
+          ? issue
+          : issue ? `safety-check:${issue}` : null;
+      });
+      const firstFailure = productionFailures[0];
+      if (firstFailure !== undefined
+        && firstFailure !== null
+        && productionFailures.every((reason) => reason !== null)) {
+        servedModels.stage1 = generated.find((candidate) => candidate.selectable && candidate.servedIdentity)?.servedIdentity ?? null;
+        return { status: "failed", sourceHash, reason: firstFailure, servedModels };
+      }
+      return { status: "unchanged", sourceHash, servedModels };
+    }
+
+    const selected = decision.candidate;
+    const selectedIdentity = selected.servedIdentity;
+    if (!selectedIdentity) return { status: "failed", sourceHash, reason: "served-identity", servedModels };
+    servedModels.stage1 = selectedIdentity;
+    const stage1Family = modelFamily(selectedIdentity);
+    if (!stage1Family) return { status: "failed", sourceHash, reason: "served-identity", servedModels };
+    const issues = selected.score.detectedIssues.filter(
+      (issue): issue is TranslationSafetyIssue => issue !== "security-injection-detected",
+    );
+    if (issues.includes("action-changed")) {
+      emitDiagnostic({ sourceHash, issueCode: "action-changed", translatorVersion: version });
+    }
+    const warnings = issues.flatMap((issue) => {
+      const warning = WARNING_CODE_BY_SAFETY_ISSUE[issue];
+      return warning ? [warning] : [];
+    });
+    const blockingIssues = issues.filter((issue) =>
+      issue !== "action-changed" && WARNING_CODE_BY_SAFETY_ISSUE[issue] === undefined,
+    );
+    if (blockingIssues.length > 0) {
+      return { status: "failed", sourceHash, reason: `safety-check:${blockingIssues[0]}`, servedModels };
+    }
+
+    try {
+      const stage2Result = await runStage(runJudge, {
+        stage: "judge",
+        text: JSON.stringify({ original: text, candidate: selected.text }),
+        system: JUDGE_SYSTEM_PROMPT,
+        maxTokens: 2_048,
+        timeoutMs,
+        excludeFamily: stage1Family,
+      });
+      const judgeText = completedModelOutput(stage2Result);
+      servedModels.stage2 = parseServedIdentity(stage2Result.served);
+      if (!servedModels.stage2) throw new TranslatorFailure("served-identity");
+      const stage2Family = modelFamily(servedModels.stage2);
+      if (!stage2Family || stage2Family === stage1Family || !isAllowedJudgeIdentity(servedModels.stage2)) {
+        throw new TranslatorFailure(stage2Family === stage1Family ? "same-family" : "served-identity");
+      }
+      const verdict = parseJudgeVerdict(judgeText);
+      if (!verdict) throw new TranslatorFailure("judge-invalid");
+      noteValidJudgeVerdict();
+      return finishWithVerdict(verdict, text, selected.text, sourceHash, servedModels, warnings);
+    } catch (error) {
+      noteInvalidJudgeAttempt();
+      const reason = error instanceof TranslatorFailure ? error.code : "model-error";
+      return { status: "failed", sourceHash, reason, servedModels };
+    }
+  }
+
   return {
     async translate(request: TranslationRequest): Promise<TranslationResult> {
       const sourceHash = sha256(request.text);
@@ -950,10 +1827,16 @@ export function createTranslatorService(options: TranslatorServiceOptions = {}):
         return { status: "unchanged", entryId: request.entryId, sourceHash, servedModels: noModels };
       }
 
-      const key = `${sourceHash}:${version}:${TRANSLATOR_SECURITY_DETECTOR_KIND}:${TRANSLATOR_SECURITY_DETECTOR_VERSION}`;
+      const key = enableRevoiceClaimGate
+        ? `${sourceHash}:${version}:${TRANSLATOR_SCORING_VERSION}:${TRANSLATOR_CLAIM_SELECTION_VERSION}:${CLAIM_QA_VERSION}:${CLAIM_EXTRACTION_PROMPT_VERSION}:${CLAIM_EVALUATION_PROMPT_VERSION}:${TRANSLATOR_SECURITY_DETECTOR_KIND}:${TRANSLATOR_SECURITY_DETECTOR_VERSION}`
+        : enableDepthRungSelection
+          ? `${sourceHash}:${version}:${TRANSLATOR_SCORING_VERSION}:${TRANSLATOR_SELECTION_VERSION}:${TRANSLATOR_SECURITY_DETECTOR_KIND}:${TRANSLATOR_SECURITY_DETECTOR_VERSION}`
+          : `${sourceHash}:${version}:${TRANSLATOR_SECURITY_DETECTOR_KIND}:${TRANSLATOR_SECURITY_DETECTOR_VERSION}`;
       let pending = inFlight.get(key);
       if (!pending) {
-        pending = semaphore.run(() => translateOnce(request.text, sourceHash));
+        pending = semaphore.run(() => enableDepthRungSelection
+          ? translateWithDepthRungSelection(request.text, sourceHash)
+          : translateOnce(request.text, sourceHash));
         inFlight.set(key, pending);
       }
       try {
