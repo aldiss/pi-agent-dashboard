@@ -1136,9 +1136,8 @@ export function createTranslatorService(options: TranslatorServiceOptions = {}):
   const timeoutMs = options.timeoutMs ?? TRANSLATOR_TIMEOUT_MS;
   const enableDepthRungSelection = options.enableDepthRungSelection === true;
   const enableRevoiceClaimGate = enableDepthRungSelection && options.enableRevoiceClaimGate === true;
-  const persistEvidence = options.persistEvidence ?? ((evidence: TranslationSelectionEvidence) => {
-    appendTranslationSelectionEvidence(defaultTranslationSelectionEvidencePath(), evidence);
-  });
+  const persistEvidence = options.persistEvidence ?? ((evidence: TranslationSelectionEvidence) =>
+    appendTranslationSelectionEvidence(defaultTranslationSelectionEvidencePath(), evidence));
   const semaphore = createSemaphore(options.maxConcurrent ?? 2);
   const inFlight = new Map<string, Promise<PipelineResult>>();
   const claimExtractionCache = new Map<string, Promise<ClaimExtractionRecord>>();

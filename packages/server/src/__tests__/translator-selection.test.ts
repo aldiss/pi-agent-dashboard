@@ -13,6 +13,7 @@ import {
   type DepthRung,
   type ScoredTranslationCandidate,
   type TranslationCandidateSet,
+  type TranslationSelectionEvidence,
 } from "../translator-selection.js";
 
 function candidate<Rung extends DepthRung>(
@@ -142,20 +143,45 @@ describe("translation rung scoring and evidence", () => {
     expect(score.hardIssues).toEqual([]);
   });
 
-  it("appends private line-delimited evidence that can be replayed without a model", () => {
+  it("persists only the sanitized v2 evidence projection", async () => {
     const dir = mkdtempSync(join(tmpdir(), "translator-selection-evidence-"));
     const path = join(dir, "selection.jsonl");
     try {
       const evidence = {
         schemaVersion: "translator-selection-evidence-v1",
+        sourceHash: "a".repeat(64),
         sourceText: "original",
         candidates: [{ rung: "substitute", rawText: "candidate", score: { depth: 1, coverage: 1, hardIssues: [] } }],
         decision: { kind: "selected", rung: "substitute", reason: "deepest-faithful-survivor" },
-      } as any;
+      } satisfies TranslationSelectionEvidence;
 
-      appendTranslationSelectionEvidence(path, evidence);
+      await appendTranslationSelectionEvidence(path, evidence);
 
-      expect(readFileSync(path, "utf8").trim().split("\n").map((line) => JSON.parse(line))).toEqual([evidence]);
+      expect(readFileSync(path, "utf8").trim().split("\n").map((line) => JSON.parse(line))).toEqual([{
+        schemaVersion: "translator-selection-evidence-v2",
+        sourceHash: "a".repeat(64),
+        candidates: [{
+          rung: "substitute",
+          promptVersion: null,
+          finishReason: null,
+          servedIdentity: null,
+          error: null,
+          securityCodes: [],
+          score: {
+            depth: 1,
+            coverage: 1,
+            sourceDepth: null,
+            candidateDepth: null,
+            detectedIssues: [],
+            hardIssues: [],
+          },
+        }],
+        claimEntailment: null,
+        decision: {
+          rung: "substitute",
+          reason: "deepest-faithful-survivor",
+        },
+      }]);
       expect(statSync(path).mode & 0o777).toBe(0o600);
     } finally {
       rmSync(dir, { recursive: true, force: true });

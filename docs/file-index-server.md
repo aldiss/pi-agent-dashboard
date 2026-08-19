@@ -19,6 +19,7 @@
 | `packages/server/src/__tests__/cell-access.test.ts` | Tests registry-derived cell identity, exact log/session joins, no CWD/PID authority, selector union, and absent-map legacy mode. |
 | `packages/server/src/__tests__/translator-egress.test.ts` | Pins original-first separate `translation_result`. Pins warning carrier. Preserves event bytes and session file. |
 | `packages/server/src/__tests__/translator-frozen-cohort-live.ts` | Runs hash-pinned 12-message live cohort. Reports VoiceGuard-2, Repowright, and Statewright separately. Pins hash-verified reconstructed `b10658ceb417` pair as necessary must-accept control. Pins hash-verified strongly corroborated reconstructed `36723d6a9dfb` pair as necessary must-reject control. |
+| `packages/server/src/__tests__/translator-selection-evidence-privacy.test.ts` | Pins sanitized v2 planted-token control. Pins byte/hash-preserving quarantine. Exercises enforced 10 MiB one-archive rotation. Pins 0700/0600 modes. |
 | `packages/server/src/__tests__/translator-service.test.ts` | Pins deterministic detector kind and version. Pins four injection hard-fail arms outside all-five-true judge. Pins clean acceptance control. Pins exact warning codes and remaining hard floors. |
 | `packages/server/src/browser-gateway.ts` | Applies final WS filtering. Tracks plugin origin. Sends principal-filtered replacement snapshots after registry or `allowedUsers` changes. |
 | `packages/server/src/browser-handlers/handler-context.ts` | Carries `CellAccessController` through browser handlers. |
