@@ -18,7 +18,7 @@
  * mirroring the audience-registry fold.
  */
 import { readFileSync, watch, type FSWatcher } from "node:fs";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import os from "node:os";
 import type { ExternalSessionDriver } from "@blackbelt-technology/pi-dashboard-shared/external-session.js";
 
@@ -32,6 +32,13 @@ export const DRIVER_REGISTRY_PATH = join(
 
 /** Short cache TTL — one scan reuses a single read across many sessions. */
 export const DEFAULT_DRIVER_REGISTRY_TTL_MS = 5000;
+
+/**
+ * Trailing-debounce window for the directory watch. One atomic replacement can
+ * emit `rename` + `change` for the same basename; 20ms folds them into a single
+ * `onChange` while staying far below the gap between two real registry writes.
+ */
+const WATCH_COALESCE_MS = 20;
 
 /**
  * Candidate lookup keys for a session name, most-specific first.
@@ -156,6 +163,7 @@ export function createDriverRegistry(opts: DriverRegistryOptions = {}): DriverRe
   let cached: DriverRegistrySnapshot | undefined;
   let cachedAt = 0;
   let watcher: FSWatcher | undefined;
+  let coalesceTimer: ReturnType<typeof setTimeout> | undefined;
 
   function readAndIndex(): DriverRegistrySnapshot {
     try {
@@ -198,18 +206,40 @@ export function createDriverRegistry(opts: DriverRegistryOptions = {}): DriverRe
 
   function startWatch(onChange: () => void): void {
     if (watcher) return;
+    const targetName = basename(registryPath);
     try {
-      watcher = watch(registryPath, () => {
-        invalidate();
-        onChange();
+      // Watch the DIRECTORY, not the file. Every writer of this registry replaces
+      // it atomically (temp file + rename over the path), which unlinks the inode
+      // a file-watch is bound to — so a file-watch fires once and goes deaf to
+      // every later write. The directory watch survives the replacement.
+      watcher = watch(dirname(registryPath), (_event, filename) => {
+        // `filename` may be null/undefined on some platforms and events. Null
+        // means "cannot tell which entry changed", not "not ours" — dropping it
+        // would reintroduce the silent-miss this fix exists to close, so treat it
+        // as a possible hit and invalidate.
+        if (filename != null && basename(String(filename)) !== targetName) return;
+        // One atomic replacement can emit several events (rename + change).
+        // Coalesce them into a single onChange with a short trailing debounce;
+        // a genuine second replacement lands well outside this window.
+        if (coalesceTimer) clearTimeout(coalesceTimer);
+        coalesceTimer = setTimeout(() => {
+          coalesceTimer = undefined;
+          invalidate();
+          onChange();
+        }, WATCH_COALESCE_MS);
+        if (typeof coalesceTimer.unref === "function") coalesceTimer.unref();
       });
     } catch {
-      // The registry may not exist yet; a later create won't be watched, but the
-      // TTL re-read still picks up content once present. Coarse + cheap.
+      // The registry directory may not exist yet; a later create won't be watched,
+      // but the TTL re-read still picks up content once present. Coarse + cheap.
     }
   }
 
   function stopWatch(): void {
+    if (coalesceTimer) {
+      clearTimeout(coalesceTimer);
+      coalesceTimer = undefined;
+    }
     watcher?.close();
     watcher = undefined;
   }

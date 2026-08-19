@@ -6,7 +6,10 @@
  * whose tmux name diverges from its key; `Docket-2` ended-in-registry but live
  * on the dashboard with a status-suffixed name).
  */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, afterEach } from "vitest";
+import { mkdtempSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import os from "node:os";
 import {
   createDriverRegistry,
   driverLookupKeys,
@@ -185,5 +188,228 @@ describe("createDriverRegistry", () => {
     const reg = createDriverRegistry({ registryPath: "/no/such/path/registry.json" });
     expect(() => reg.startWatch(() => {})).not.toThrow();
     expect(() => reg.stopWatch()).not.toThrow();
+  });
+});
+
+/**
+ * Watch durability over ATOMIC REPLACEMENT.
+ *
+ * Every writer of this registry replaces it temp-file + rename, which unlinks the
+ * inode. A file-bound watch therefore fires exactly once and goes deaf — the
+ * defect these tests pin. They use a real temp dir and real renames (an in-place
+ * `writeFileSync` keeps the inode and would pass against the broken code), and
+ * they FREEZE the clock with a long TTL so the only thing that can move the
+ * observed state is the watch itself, never a TTL re-read.
+ */
+describe("createDriverRegistry — watch survives atomic replacement", () => {
+  const tmpDirs: string[] = [];
+  const registries: Array<{ stopWatch: () => void }> = [];
+
+  afterEach(() => {
+    for (const r of registries.splice(0)) r.stopWatch();
+    for (const d of tmpDirs.splice(0)) rmSync(d, { recursive: true, force: true });
+  });
+
+  function tmpDir(): string {
+    const dir = mkdtempSync(join(os.tmpdir(), "driver-registry-watch-"));
+    tmpDirs.push(dir);
+    return dir;
+  }
+
+  /** Real atomic replace: write a sibling temp file, then rename over the target. */
+  function atomicWrite(path: string, contents: string): void {
+    const tmp = `${path}.tmp.${process.pid}`;
+    writeFileSync(tmp, contents);
+    renameSync(tmp, path);
+  }
+
+  function payload(...names: string[]): string {
+    const drivers: Record<string, unknown> = {};
+    for (const n of names) drivers[n] = { real_name: n, state: "alive", tmux: null, cell: null };
+    return JSON.stringify({ schema_version: 1, drivers });
+  }
+
+  /** Frozen clock + 10-minute TTL: the cache never lapses inside a test. */
+  function mkWatched(registryPath: string) {
+    const reg = createDriverRegistry({ registryPath, ttlMs: 600_000, now: () => 1_000_000 });
+    registries.push(reg);
+    return reg;
+  }
+
+  async function waitFor(predicate: () => boolean, timeoutMs = 4000): Promise<void> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (predicate()) return;
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    throw new Error(`waitFor timed out after ${timeoutMs}ms`);
+  }
+
+  const settle = (ms = 200) => new Promise((r) => setTimeout(r, ms));
+
+  /**
+   * Drain the platform's watch lookback before counting callbacks.
+   *
+   * macOS FSEvents redelivers events from just BEFORE a watch was installed
+   * (measured own-hand: a watch created after the setup write still receives that
+   * write's `rename`). That is a platform artifact of test setup, not a filter
+   * miss — the unrelated-file writes below carry their own basenames and are
+   * correctly rejected. Settle, then zero, so a count measures only what the test
+   * does after this point.
+   */
+  const drainLookback = (reset: () => void) => settle(250).then(reset);
+
+  it("reflects the SECOND atomic replacement, not just the first", async () => {
+    const dir = tmpDir();
+    const path = join(dir, "cell-driver-registry.json");
+    atomicWrite(path, payload("Alpha"));
+
+    const reg = mkWatched(path);
+    let changes = 0;
+    reg.startWatch(() => {
+      changes++;
+    });
+    await drainLookback(() => {
+      changes = 0;
+    });
+
+    expect(reg.isRegisteredDriver("Alpha")).toBe(true);
+
+    // First replacement — passes even against the broken file-watch.
+    atomicWrite(path, payload("Beta"));
+    await waitFor(() => reg.isRegisteredDriver("Beta"));
+    expect(reg.isRegisteredDriver("Alpha")).toBe(false);
+
+    // Second replacement — the whole point. The inode the first watch was bound
+    // to is already gone; only a directory watch still sees this.
+    atomicWrite(path, payload("Gamma"));
+    await waitFor(() => reg.isRegisteredDriver("Gamma"));
+    expect(reg.isRegisteredDriver("Beta")).toBe(false);
+    expect(changes).toBeGreaterThanOrEqual(2);
+  });
+
+  it("keeps firing across many replacements (fifth write still lands)", async () => {
+    const dir = tmpDir();
+    const path = join(dir, "cell-driver-registry.json");
+    atomicWrite(path, payload("Seed"));
+
+    const reg = mkWatched(path);
+    reg.startWatch(() => {});
+
+    for (const name of ["One", "Two", "Three", "Four", "Five"]) {
+      atomicWrite(path, payload(name));
+      await waitFor(() => reg.isRegisteredDriver(name));
+    }
+    expect(reg.isRegisteredDriver("Five")).toBe(true);
+    expect(reg.isRegisteredDriver("Seed")).toBe(false);
+  });
+
+  it("coalesces one replacement into a single onChange", async () => {
+    const dir = tmpDir();
+    const path = join(dir, "cell-driver-registry.json");
+    atomicWrite(path, payload("Alpha"));
+
+    const reg = mkWatched(path);
+    let changes = 0;
+    reg.startWatch(() => {
+      changes++;
+    });
+    await drainLookback(() => {
+      changes = 0;
+    });
+
+    atomicWrite(path, payload("Beta"));
+    await waitFor(() => reg.isRegisteredDriver("Beta"));
+    await settle(); // let any trailing rename/change event arrive
+    expect(changes).toBe(1);
+  });
+
+  it("ignores unrelated files in the same directory", async () => {
+    const dir = tmpDir();
+    const path = join(dir, "cell-driver-registry.json");
+    atomicWrite(path, payload("Alpha"));
+
+    const reg = mkWatched(path);
+    let changes = 0;
+    reg.startWatch(() => {
+      changes++;
+    });
+    await drainLookback(() => {
+      changes = 0;
+    });
+
+    // A sibling registry, an atomic writer's temp file, and an editor swap file.
+    atomicWrite(join(dir, "role-registry.json"), payload("Other"));
+    writeFileSync(join(dir, `cell-driver-registry.json.tmp.${process.pid + 1}`), "scratch");
+    writeFileSync(join(dir, ".cell-driver-registry.json.swp"), "scratch");
+    await settle(400);
+
+    expect(changes).toBe(0);
+    expect(reg.isRegisteredDriver("Alpha")).toBe(true);
+  });
+
+  it("does not leak watchers across repeated start/stop cycles", async () => {
+    const dir = tmpDir();
+    const path = join(dir, "cell-driver-registry.json");
+    atomicWrite(path, payload("Alpha"));
+
+    const reg = mkWatched(path);
+    let changes = 0;
+    const onChange = () => {
+      changes++;
+    };
+
+    // startWatch is idempotent: three calls must not install three watchers.
+    reg.startWatch(onChange);
+    reg.startWatch(onChange);
+    reg.startWatch(onChange);
+    await drainLookback(() => {
+      changes = 0;
+    });
+
+    atomicWrite(path, payload("Beta"));
+    await waitFor(() => changes > 0);
+    await settle();
+    expect(changes).toBe(1);
+
+    // stopWatch clears the single watcher it owns. Had the extra startWatch calls
+    // leaked watchers, they would still be live here and keep firing.
+    reg.stopWatch();
+    changes = 0;
+    atomicWrite(path, payload("Gamma"));
+    await settle(400);
+    expect(changes).toBe(0);
+
+    // Repeated cycles leave nothing behind either.
+    for (let i = 0; i < 3; i++) {
+      reg.startWatch(onChange);
+      reg.stopWatch();
+    }
+    changes = 0;
+    atomicWrite(path, payload("Delta"));
+    await settle(400);
+    expect(changes).toBe(0);
+  });
+
+  it("watches a registry created after startWatch (directory exists, file does not)", async () => {
+    const dir = tmpDir();
+    const path = join(dir, "cell-driver-registry.json");
+
+    const reg = mkWatched(path);
+    reg.startWatch(() => {});
+    expect(reg.isRegisteredDriver("Alpha")).toBe(false);
+
+    atomicWrite(path, payload("Alpha"));
+    await waitFor(() => reg.isRegisteredDriver("Alpha"));
+  });
+
+  it("startWatch on a missing DIRECTORY degrades without throwing", () => {
+    const dir = tmpDir();
+    const reg = mkWatched(join(dir, "nope", "cell-driver-registry.json"));
+    expect(() => reg.startWatch(() => {})).not.toThrow();
+    expect(() => reg.stopWatch()).not.toThrow();
+    // And a later create is simply missed — the TTL re-read still covers it.
+    mkdirSync(join(dir, "nope"));
+    expect(reg.isRegisteredDriver("Alpha")).toBe(false);
   });
 });

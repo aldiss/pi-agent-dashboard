@@ -1,10 +1,52 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { WebSocket } from "ws";
 import type { AuthConfig } from "@blackbelt-technology/pi-dashboard-shared/config.js";
 import { signToken, COOKIE_NAME } from "../auth.js";
 import { createTestServer, type TestServerHandle } from "../test-support/test-server.js";
+
+/**
+ * Own the HOME this file writes under, before ANY `.pi` path is computed.
+ *
+ * Several modules in the server's import graph freeze a `~/.pi` path into a
+ * module-level const at import time (`shared/config.ts` CONFIG_DIR/CONFIG_FILE,
+ * `driver-registry.ts` DRIVER_REGISTRY_PATH, `preferences-store.ts`
+ * PREFERENCES_FILE). ESM evaluates every import BEFORE the module body, so a
+ * plain top-level assignment here would land too late and those consts would
+ * capture the ambient home. `vi.hoisted` is lifted above the imports, so the
+ * redirect happens first.
+ *
+ * The block is deliberately SYNCHRONOUS: an async hoisted callback is not
+ * awaited before the import graph evaluates, so any `await` inside it loses the
+ * race and the frozen consts capture the ambient home instead. `fs` is reached
+ * via `process.getBuiltinModule` (Node 22.3+) because neither `import` nor
+ * `require` is available synchronously at hoist time.
+ *
+ * This matters beyond the fixture writes below: the `PUT /api/config` exercised
+ * by this test makes the SERVER write `<HOME>/.pi/dashboard/config.json`. The
+ * redirect keeps that write inside the test-owned tree.
+ *
+ * Self-contained on purpose: it must hold even under a custom or mis-scoped
+ * Vitest config that omits the repository's global HOME guard.
+ */
+const testHome = vi.hoisted(() => {
+  const nodeFs = process.getBuiltinModule("node:fs");
+  const nodeOs = process.getBuiltinModule("node:os");
+  const nodePath = process.getBuiltinModule("node:path");
+  const previousHome = process.env.HOME;
+  const root = nodeFs.mkdtempSync(nodePath.join(nodeOs.tmpdir(), "pi-cell-e2e-"));
+  process.env.HOME = root;
+  return { previousHome, root };
+});
+
+afterAll(() => {
+  if (testHome.previousHome === undefined) delete process.env.HOME;
+  else process.env.HOME = testHome.previousHome;
+  // Only ever the tree this file created under tmpdir.
+  fs.rmSync(testHome.root, { recursive: true, force: true });
+});
 
 const SECRET = "cell-e2e-test-secret";
 const authConfig: AuthConfig = {
@@ -70,7 +112,12 @@ describe("direct dashboard cell boundary — assembled REST + WS loop", () => {
   });
 
   it("guest sees/co-drives cell A only; operator sees all; outside probes match missing; background state is untouched", async () => {
-    const home = process.env.HOME!;
+    const home = testHome.root;
+    // Fail loudly rather than write outside the test-owned tree if the redirect
+    // above ever stops taking effect.
+    expect(home.startsWith(os.tmpdir())).toBe(true);
+    expect(home).not.toBe(os.userInfo().homedir);
+    expect(process.env.HOME).toBe(home);
     const registryPath = path.join(home, ".pi", "orchestration-state", "cell-driver-registry.json");
     const messengerDir = path.join(home, ".pi", "agent", "messenger", "registry");
     fs.mkdirSync(path.dirname(registryPath), { recursive: true });
