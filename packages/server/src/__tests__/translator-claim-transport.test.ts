@@ -190,15 +190,22 @@ describe("claim transport guard", () => {
       reason: "claim-usage-unverifiable",
       stage: "claim-evaluate" as const,
     },
-  ])("contains $label and proves the zero-residual positive control", async ({ transport, reason, stage }) => {
-    const conservative = await runFixedPath(false, ZERO_RESIDUAL);
+  ])("warns on $label and proves the zero-residual positive control", async ({ transport, reason, stage }) => {
     const guarded = await runFixedPath(true, (request) => request.stage === stage ? transport : ZERO_RESIDUAL);
     const positiveControl = await runFixedPath(true, ZERO_RESIDUAL);
 
-    expect(guarded.result).toEqual(conservative.result);
-    expect(guarded.decision).toEqual(conservative.decision);
-    expect(guarded.result).toMatchObject({ status: "translated", text: EXPLAIN });
-    expect(guarded.claimEvidence).toMatchObject({ status: "failed", revoiceEligible: false, reason });
+    expect(guarded.result).toMatchObject({
+      status: "translated",
+      text: REVOICE,
+    });
+    expect(guarded.result.status === "translated" ? guarded.result.warnings ?? [] : [])
+      .toContain("meaning-judge-rejected");
+    expect(guarded.decision).toMatchObject({
+      kind: "selected",
+      rung: "revoice",
+      warningCodeCounts: { "meaning-judge-rejected": 1 },
+    });
+    expect(guarded.claimEvidence).toMatchObject({ status: "warning", revoiceEligible: true, reason });
     expect(guarded.diagnostics).toHaveLength(1);
     expect(guarded.diagnostics[0]).toMatchObject({ issueCode: reason, stage });
 

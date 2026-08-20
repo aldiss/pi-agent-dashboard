@@ -170,24 +170,29 @@ async function runFixedCandidatePath(claimGate: boolean, failure?: FailureCase):
   };
 }
 
-describe("optional claim-gate containment equivalence", () => {
-  it.each(FAILURE_CASES)("contains $label to revoice and preserves the exact conservative result", async (failure) => {
+describe("optional claim-verifier warning containment", () => {
+  it.each(FAILURE_CASES)("keeps revoice eligible with a warning for $label", async (failure) => {
     const disabled = await runFixedCandidatePath(false);
     const failedOptionalGate = await runFixedCandidatePath(true, failure);
 
-    expect(failedOptionalGate.result).toEqual(disabled.result);
-    expect(failedOptionalGate.decision).toEqual(disabled.decision);
+    expect(failedOptionalGate.result).not.toEqual(disabled.result);
     expect(failedOptionalGate.gateReason).toBe(failure.expectedGateReason);
-    expect(failedOptionalGate.result).toMatchObject({ status: "translated", text: EXPLAIN });
+    expect(failedOptionalGate.result).toMatchObject({
+      status: "translated",
+      text: REVOICE,
+    });
+    expect(failedOptionalGate.result.status === "translated"
+      ? failedOptionalGate.result.warnings ?? []
+      : []).toContain("meaning-judge-rejected");
     expect(failedOptionalGate.decision).toEqual({
       kind: "selected",
-      rung: "explain",
+      rung: "revoice",
       reason: "deepest-faithful-survivor",
-      text: EXPLAIN,
+      text: REVOICE,
     });
   });
 
-  it("enumerates every optional-arm failure with zero operator-visible failed states", async () => {
+  it("enumerates every verifier failure as a warned revoice with zero failed states", async () => {
     const enumeration = [];
     for (const failure of FAILURE_CASES) {
       const outcome = await runFixedCandidatePath(true, failure);
@@ -196,11 +201,17 @@ describe("optional claim-gate containment equivalence", () => {
         gateReason: outcome.gateReason,
         operatorStatus: outcome.result.status,
         operatorReason: outcome.result.status === "failed" ? outcome.result.reason : null,
+        meaningWarning: outcome.result.status === "translated"
+          && outcome.result.warnings?.includes("meaning-judge-rejected") === true,
         selectedRung: outcome.decision.rung,
       });
     }
     console.log(`[optional-claim-gate-operator-enumeration] ${JSON.stringify(enumeration)}`);
     expect(enumeration).toHaveLength(FAILURE_CASES.length);
-    expect(enumeration.every((row) => row.operatorStatus !== "failed" && row.operatorReason === null)).toBe(true);
+    expect(enumeration.every((row) =>
+      row.operatorStatus === "translated"
+      && row.operatorReason === null
+      && row.meaningWarning
+      && row.selectedRung === "revoice")).toBe(true);
   });
 });

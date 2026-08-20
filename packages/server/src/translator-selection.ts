@@ -22,7 +22,7 @@ const lockfile = require("proper-lockfile") as typeof import("proper-lockfile");
 
 export const TRANSLATOR_SCORING_VERSION = "depth-coverage-conservative-hard-issues-v2";
 export const TRANSLATOR_SELECTION_VERSION = "depth-rung-selection-v1";
-export const TRANSLATOR_CLAIM_SELECTION_VERSION = "claim-entailed-revoice-selection-v1";
+export const TRANSLATOR_CLAIM_SELECTION_VERSION = "claim-reviewed-revoice-warning-selection-v1";
 export const TRANSLATOR_SELECTION_EVIDENCE_SCHEMA_VERSION = "translator-selection-evidence-v2" as const;
 export const TRANSLATOR_SELECTION_EVIDENCE_MAX_BYTES = 10 * 1024 * 1024;
 // PROVISIONAL: uncalibrated coverage floor; awaits operator-labelled pairs. Used only by default-off selection.
@@ -32,7 +32,7 @@ export const TRANSLATOR_DEPTH_PREFERENCE_THRESHOLD = 0;
 
 export type DepthRung = "substitute" | "explain" | "revoice";
 export type ShippableDepthRung = Exclude<DepthRung, "revoice">;
-const CLAIM_ENTAILED_REVOICE = Symbol("claim-entailed-revoice");
+const CLAIM_REVIEWED_REVOICE = Symbol("claim-reviewed-revoice");
 
 export const TRANSLATOR_RUNG_2_STRUCTURAL_LICENCE =
   "Rung 2 structural licence: All instructions above remain in force. This licence overrides only sentence-structure and original-position requirements, and only to add one short explanatory clause at the explained term's first appearance and to split one sentence into two. Do not otherwise reorder, move, or drop content. Preserve every proposition, quantity, negation including its scope and attachment, attribution, decision, blocker, uncertainty, Markdown element, and preservation token; copy each preservation token exactly once.";
@@ -99,18 +99,29 @@ export interface TranslationCandidateSet {
   evidenceOnly: ScoredTranslationCandidate<"revoice"> | null;
 }
 
-export interface ClaimEntailmentAdmission {
-  status: "passed";
+interface ClaimReviewAdmissionBase {
   claimQaVersion: string;
   claimCount: number;
-  extractionIdentity: CandidateModelIdentity;
-  evaluationIdentity: CandidateModelIdentity;
 }
 
-export interface ClaimEntailedRevoiceCandidate extends ScoredTranslationCandidate<"revoice"> {
+export type ClaimReviewAdmission =
+  | (ClaimReviewAdmissionBase & {
+      status: "passed";
+      warningCode: null;
+      extractionIdentity: CandidateModelIdentity;
+      evaluationIdentity: CandidateModelIdentity;
+    })
+  | (ClaimReviewAdmissionBase & {
+      status: "warning";
+      warningCode: "meaning-judge-rejected";
+      extractionIdentity: CandidateModelIdentity | null;
+      evaluationIdentity: CandidateModelIdentity | null;
+    });
+
+export interface ClaimReviewedRevoiceCandidate extends ScoredTranslationCandidate<"revoice"> {
   servedIdentity: CandidateModelIdentity;
-  claimEntailment: ClaimEntailmentAdmission;
-  readonly [CLAIM_ENTAILED_REVOICE]: true;
+  claimReview: ClaimReviewAdmission;
+  readonly [CLAIM_REVIEWED_REVOICE]: true;
 }
 
 export type TranslationSelectionDecision =
@@ -128,7 +139,7 @@ export type TranslationSelectionDecision =
       reason: "no-shippable-candidate-cleared-faithfulness-bar";
     };
 
-export type ClaimEntailedTranslationSelectionDecision =
+export type ClaimReviewedTranslationSelectionDecision =
   | {
       kind: "selected";
       rung: DepthRung;
@@ -224,7 +235,7 @@ function clearsFaithfulnessBar(candidate: ScoredTranslationCandidate): boolean {
     && candidate.score.hardIssues.length === 0;
 }
 
-function clearsClaimEntailedRevoiceBar(candidate: ClaimEntailedRevoiceCandidate): boolean {
+function clearsClaimReviewedRevoiceBar(candidate: ClaimReviewedRevoiceCandidate): boolean {
   return Number.isFinite(candidate.score.depth) && candidate.score.hardIssues.length === 0;
 }
 
@@ -240,16 +251,16 @@ function deepestCandidate<Rung extends DepthRung>(
   );
 }
 
-export function admitClaimEntailedRevoice(
+export function admitClaimReviewedRevoice(
   candidate: ScoredTranslationCandidate<"revoice">,
-  claimEntailment: ClaimEntailmentAdmission,
-): ClaimEntailedRevoiceCandidate {
-  if (!candidate.servedIdentity) throw new Error("claim-entailed-revoice-missing-served-identity");
+  claimReview: ClaimReviewAdmission,
+): ClaimReviewedRevoiceCandidate {
+  if (!candidate.servedIdentity) throw new Error("claim-reviewed-revoice-missing-served-identity");
   return {
     ...candidate,
     servedIdentity: candidate.servedIdentity,
-    claimEntailment,
-    [CLAIM_ENTAILED_REVOICE]: true,
+    claimReview,
+    [CLAIM_REVIEWED_REVOICE]: true,
   };
 }
 
@@ -272,14 +283,14 @@ export function selectTranslationCandidate(
   };
 }
 
-export function selectTranslationCandidateWithClaimEntailedRevoice(
+export function selectTranslationCandidateWithClaimReviewedRevoice(
   original: string,
   candidates: TranslationCandidateSet,
-  revoice: ClaimEntailedRevoiceCandidate | null,
-): ClaimEntailedTranslationSelectionDecision {
+  revoice: ClaimReviewedRevoiceCandidate | null,
+): ClaimReviewedTranslationSelectionDecision {
   const conservative = candidates.shippable.filter(clearsFaithfulnessBar);
   const survivors: ScoredTranslationCandidate<DepthRung>[] = [...conservative];
-  if (revoice && clearsClaimEntailedRevoiceBar(revoice)) survivors.push(revoice);
+  if (revoice && clearsClaimReviewedRevoiceBar(revoice)) survivors.push(revoice);
   const selected = deepestCandidate(survivors);
   if (!selected) {
     return { kind: "original", text: original, reason: "no-shippable-candidate-cleared-faithfulness-bar" };
@@ -374,6 +385,9 @@ export interface PersistedTranslationSelectionEvidenceV2 {
   decision: {
     rung: DepthRung | null;
     reason: string | null;
+    warningCodeCounts?: {
+      "meaning-judge-rejected": number;
+    };
   };
 }
 
@@ -394,6 +408,7 @@ const CANDIDATE_ERROR_CODES = new Set([
 ]);
 const CLAIM_REASON_CODES = new Set([
   "claim-entailment-mismatch",
+  "claim-evaluator-instruction",
   "claim-evaluation-invalid",
   "claim-extraction-empty",
   "claim-extraction-invalid",
@@ -681,9 +696,16 @@ function persistedDecision(value: unknown): PersistedTranslationSelectionEvidenc
   const reason = typeof value.reason === "string" && DECISION_REASONS.has(value.reason)
     ? value.reason
     : null;
+  const warningCodeCounts = isRecord(value.warningCodeCounts)
+    && typeof value.warningCodeCounts["meaning-judge-rejected"] === "number"
+    && Number.isSafeInteger(value.warningCodeCounts["meaning-judge-rejected"])
+    && value.warningCodeCounts["meaning-judge-rejected"] > 0
+    ? { "meaning-judge-rejected": value.warningCodeCounts["meaning-judge-rejected"] }
+    : null;
   return {
     rung: isDepthRung(value.rung) ? value.rung : null,
     reason,
+    ...(warningCodeCounts ? { warningCodeCounts } : {}),
   };
 }
 

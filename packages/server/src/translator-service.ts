@@ -27,14 +27,14 @@ import {
   TRANSLATOR_MIN_COVERAGE,
   TRANSLATOR_SCORING_VERSION,
   TRANSLATOR_SELECTION_VERSION,
-  admitClaimEntailedRevoice,
+  admitClaimReviewedRevoice,
   appendTranslationSelectionEvidence,
   composeTranslatorCandidateContracts,
   defaultTranslationSelectionEvidencePath,
   scoreTranslationCandidate,
   selectTranslationCandidate,
-  selectTranslationCandidateWithClaimEntailedRevoice,
-  type ClaimEntailedRevoiceCandidate,
+  selectTranslationCandidateWithClaimReviewedRevoice,
+  type ClaimReviewedRevoiceCandidate,
   type DepthRung,
   type ScoredTranslationCandidate,
   type ShippableDepthRung,
@@ -288,6 +288,12 @@ const WARNING_CODE_BY_SAFETY_ISSUE: Partial<Record<TranslationSafetyIssue, Trans
   "negation-attachment-changed": "negation-attachment-changed",
   "known-pattern": "known-pattern",
 };
+const CLAIM_WARNING_CODE = "meaning-judge-rejected" as const satisfies TranslationWarningCode;
+const HARD_REVOICE_GENERATION_ERRORS = new Set([
+  "preservation-token",
+  "security-injection-detected",
+  "unexpected-preservation-token",
+]);
 
 class TranslatorFailure extends Error {
   constructor(readonly code: string) {
@@ -1089,7 +1095,7 @@ interface ClaimEvaluationRecord {
 }
 
 interface ClaimGateEvidence {
-  status: "not-run" | "passed" | "failed";
+  status: "not-run" | "passed" | "warning" | "failed";
   revoiceEligible: boolean;
   reason: string | null;
   issues: string[];
@@ -1113,7 +1119,9 @@ interface ClaimGateEvidence {
 
 interface ClaimGateOutcome {
   evidence: ClaimGateEvidence;
-  admitted: ClaimEntailedRevoiceCandidate | null;
+  admitted: ClaimReviewedRevoiceCandidate | null;
+  warningCode: typeof CLAIM_WARNING_CODE | null;
+  disposition: "reviewed" | "conservative-fallback" | "hard-original";
 }
 
 function attachEntry(entryId: string, result: PipelineResult): TranslationResult {
@@ -1345,6 +1353,10 @@ export function createTranslatorService(options: TranslatorServiceOptions = {}):
           timeoutMs,
           excludeFamily: stage1Family,
         });
+        const rejectOnlyInstructionProbe = parseSingleCandidateClaimAnswer(result.text);
+        if (rejectOnlyInstructionProbe?.evaluatorInstructionDetected) {
+          throw new ClaimStageFailure("claim-evaluator-instruction", "claim-evaluate", [...transports]);
+        }
         const transport = verifiedClaimTransport(result, "claim-evaluate", transports);
         transports.push(transport);
         const rawText = completedModelOutput(result);
@@ -1426,13 +1438,50 @@ export function createTranslatorService(options: TranslatorServiceOptions = {}):
     });
   }
 
+  function warningClaimGateOutcome(
+    revoice: ScoredTranslationCandidate<"revoice">,
+    evidence: ClaimGateEvidence,
+  ): ClaimGateOutcome {
+    const warningEvidence: ClaimGateEvidence = {
+      ...evidence,
+      status: "warning",
+      revoiceEligible: true,
+    };
+    return {
+      evidence: warningEvidence,
+      admitted: admitClaimReviewedRevoice(revoice, {
+        status: "warning",
+        warningCode: CLAIM_WARNING_CODE,
+        claimQaVersion: CLAIM_QA_VERSION,
+        claimCount: warningEvidence.claimCount,
+        extractionIdentity: warningEvidence.extractionIdentity,
+        evaluationIdentity: warningEvidence.evaluationIdentity,
+      }),
+      warningCode: CLAIM_WARNING_CODE,
+      disposition: "reviewed",
+    };
+  }
+
   async function runRevoiceClaimGate(
     source: string,
     sourceHash: string,
     revoice: ScoredTranslationCandidate<"revoice"> | null,
+    revoiceError: string | null,
   ): Promise<ClaimGateOutcome> {
     if (!revoice) {
-      return { evidence: emptyClaimGateEvidence("revoice-candidate-unavailable"), admitted: null };
+      const hardOriginal = revoiceError !== null && HARD_REVOICE_GENERATION_ERRORS.has(revoiceError);
+      return {
+        evidence: hardOriginal
+          ? emptyClaimGateEvidence("deterministic-hard-issue", [
+              revoiceError === "security-injection-detected"
+                ? "security-injection-detected"
+                : "quoted-evidence-changed",
+            ])
+          : emptyClaimGateEvidence("revoice-candidate-unavailable"),
+        admitted: null,
+        warningCode: null,
+        disposition: hardOriginal ? "hard-original" : "conservative-fallback",
+      };
     }
     if (revoice.score.hardIssues.length > 0) {
       const gateIssues = revoice.score.hardIssues.includes("security-injection-detected")
@@ -1441,12 +1490,16 @@ export function createTranslatorService(options: TranslatorServiceOptions = {}):
       return {
         evidence: emptyClaimGateEvidence("deterministic-hard-issue", gateIssues),
         admitted: null,
+        warningCode: null,
+        disposition: "hard-original",
       };
     }
     if (!revoice.servedIdentity) {
       return {
         evidence: { ...emptyClaimGateEvidence("served-identity-missing"), status: "failed" },
         admitted: null,
+        warningCode: null,
+        disposition: "conservative-fallback",
       };
     }
     const stage1Family = modelFamily(revoice.servedIdentity);
@@ -1454,6 +1507,8 @@ export function createTranslatorService(options: TranslatorServiceOptions = {}):
       return {
         evidence: { ...emptyClaimGateEvidence("served-identity-missing"), status: "failed" },
         admitted: null,
+        warningCode: null,
+        disposition: "conservative-fallback",
       };
     }
     let extraction: ClaimExtractionRecord;
@@ -1462,16 +1517,22 @@ export function createTranslatorService(options: TranslatorServiceOptions = {}):
     } catch (error) {
       const reason = optionalClaimFailureReason(error);
       emitClaimTransportFailure(error, sourceHash);
-      return {
-        evidence: {
-          ...emptyClaimGateEvidence(reason),
-          status: "failed",
-          extractionTransports: error instanceof ClaimStageFailure && error.stage === "claim-extract"
-            ? error.records
-            : [],
-        },
-        admitted: null,
+      const evidence: ClaimGateEvidence = {
+        ...emptyClaimGateEvidence(reason),
+        status: "failed",
+        extractionTransports: error instanceof ClaimStageFailure && error.stage === "claim-extract"
+          ? error.records
+          : [],
       };
+      if (reason === "claim-extraction-overflow") {
+        return {
+          evidence,
+          admitted: null,
+          warningCode: null,
+          disposition: "conservative-fallback",
+        };
+      }
+      return warningClaimGateOutcome(revoice, evidence);
     }
     let evaluation: ClaimEvaluationRecord;
     try {
@@ -1479,29 +1540,43 @@ export function createTranslatorService(options: TranslatorServiceOptions = {}):
     } catch (error) {
       const reason = optionalClaimFailureReason(error);
       emitClaimTransportFailure(error, sourceHash);
-      return {
-        evidence: {
-          ...emptyClaimGateEvidence(reason),
-          status: "failed",
-          claimCount: extraction.claims.length,
-          extractionIdentity: extraction.servedIdentity,
-          extractionFinishReason: extraction.finishReasons[0] ?? null,
-          extractionIdentities: extraction.servedIdentities,
-          extractionFinishReasons: extraction.finishReasons,
-          extractionTransports: extraction.transports,
-          evaluationTransports: error instanceof ClaimStageFailure && error.stage === "claim-evaluate"
-            ? error.records
-            : [],
-          claims: extraction.claims,
-        },
-        admitted: null,
+      const evaluatorInstructionDetected = reason === "claim-evaluator-instruction";
+      const evidence: ClaimGateEvidence = {
+        ...emptyClaimGateEvidence(reason),
+        status: "failed",
+        issues: evaluatorInstructionDetected ? ["claim-evaluator-instruction"] : [],
+        claimCount: extraction.claims.length,
+        extractionIdentity: extraction.servedIdentity,
+        extractionFinishReason: extraction.finishReasons[0] ?? null,
+        extractionIdentities: extraction.servedIdentities,
+        extractionFinishReasons: extraction.finishReasons,
+        extractionTransports: extraction.transports,
+        evaluationTransports: error instanceof ClaimStageFailure && error.stage === "claim-evaluate"
+          ? error.records
+          : [],
+        claims: extraction.claims,
       };
+      if (evaluatorInstructionDetected) {
+        return {
+          evidence,
+          admitted: null,
+          warningCode: null,
+          disposition: "hard-original",
+        };
+      }
+      return warningClaimGateOutcome(revoice, evidence);
     }
     const passed = evaluation.entailment.pass;
+    const evaluatorInstructionDetected =
+      evaluation.entailment.issues.includes("claim-evaluator-instruction");
     const evidence: ClaimGateEvidence = {
-      status: passed ? "passed" : "failed",
-      revoiceEligible: passed,
-      reason: passed ? null : "claim-entailment-mismatch",
+      status: passed ? "passed" : evaluatorInstructionDetected ? "failed" : "warning",
+      revoiceEligible: passed || !evaluatorInstructionDetected,
+      reason: passed
+        ? null
+        : evaluatorInstructionDetected
+          ? "claim-evaluator-instruction"
+          : "claim-entailment-mismatch",
       issues: [...evaluation.entailment.issues],
       claimQaVersion: CLAIM_QA_VERSION,
       claimCount: extraction.claims.length,
@@ -1520,16 +1595,27 @@ export function createTranslatorService(options: TranslatorServiceOptions = {}):
       claims: extraction.claims,
       candidateEvaluation: evaluation.evaluation,
     };
-    if (!passed) return { evidence, admitted: null };
+    if (evaluatorInstructionDetected) {
+      return {
+        evidence,
+        admitted: null,
+        warningCode: null,
+        disposition: "hard-original",
+      };
+    }
+    if (!passed) return warningClaimGateOutcome(revoice, evidence);
     return {
       evidence,
-      admitted: admitClaimEntailedRevoice(revoice, {
+      admitted: admitClaimReviewedRevoice(revoice, {
         status: "passed",
+        warningCode: null,
         claimQaVersion: CLAIM_QA_VERSION,
         claimCount: extraction.claims.length,
         extractionIdentity: extraction.servedIdentity,
         evaluationIdentity: evaluation.servedIdentity,
       }),
+      warningCode: null,
+      disposition: "reviewed",
     };
   }
 
@@ -1541,8 +1627,11 @@ export function createTranslatorService(options: TranslatorServiceOptions = {}):
     servedModels: ServedModelPair,
     warnings: TranslationWarningCode[],
   ): PipelineResult {
-    if (!JUDGE_FIELDS.every((field) => verdict[field])) warnings.push("meaning-judge-rejected");
-    if (candidate === source && warnings.length === 0) {
+    if (!JUDGE_FIELDS.every((field) => verdict[field]) && !warnings.includes("meaning-judge-rejected")) {
+      warnings.push("meaning-judge-rejected");
+    }
+    const uniqueWarnings = Array.from(new Set(warnings));
+    if (candidate === source && uniqueWarnings.length === 0) {
       return { status: "unchanged", sourceHash, servedModels };
     }
     if (candidate !== source) translatedOutputHashes.add(sha256(candidate));
@@ -1551,7 +1640,7 @@ export function createTranslatorService(options: TranslatorServiceOptions = {}):
       sourceHash,
       text: candidate,
       servedModels,
-      ...(warnings.length > 0 ? { warnings: [...warnings] } : {}),
+      ...(uniqueWarnings.length > 0 ? { warnings: uniqueWarnings } : {}),
     };
   }
 
@@ -1714,11 +1803,22 @@ export function createTranslatorService(options: TranslatorServiceOptions = {}):
       : null;
     const candidateSet = { shippable, evidenceOnly };
     const claimGate = enableRevoiceClaimGate
-      ? await runRevoiceClaimGate(text, sourceHash, evidenceOnly)
+      ? await runRevoiceClaimGate(text, sourceHash, evidenceOnly, evidenceRecord?.error ?? null)
       : null;
-    const decision = claimGate
-      ? selectTranslationCandidateWithClaimEntailedRevoice(text, candidateSet, claimGate.admitted)
-      : selectTranslationCandidate(text, candidateSet);
+    const decision = claimGate?.disposition === "hard-original"
+      ? {
+          kind: "original" as const,
+          text,
+          reason: "no-shippable-candidate-cleared-faithfulness-bar" as const,
+        }
+      : claimGate
+        ? selectTranslationCandidateWithClaimReviewedRevoice(text, candidateSet, claimGate.admitted)
+        : selectTranslationCandidate(text, candidateSet);
+    const selectedClaimWarnings: TranslationWarningCode[] = decision.kind === "selected"
+      && decision.rung === "revoice"
+      && claimGate?.warningCode
+      ? [claimGate.warningCode]
+      : [];
     const evidence: TranslationSelectionEvidence = {
       schemaVersion: "translator-selection-evidence-v1",
       recordedAt: new Date().toISOString(),
@@ -1735,7 +1835,16 @@ export function createTranslatorService(options: TranslatorServiceOptions = {}):
       candidates: generated,
       ...(claimGate ? { claimEntailment: claimGate.evidence } : {}),
       decision: decision.kind === "selected"
-        ? { kind: decision.kind, rung: decision.rung, text: decision.text, reason: decision.reason, score: decision.score }
+        ? {
+            kind: decision.kind,
+            rung: decision.rung,
+            text: decision.text,
+            reason: decision.reason,
+            score: decision.score,
+            ...(selectedClaimWarnings.length > 0
+              ? { warningCodeCounts: { [CLAIM_WARNING_CODE]: selectedClaimWarnings.length } }
+              : {}),
+          }
         : decision,
     };
     try {
@@ -1774,10 +1883,13 @@ export function createTranslatorService(options: TranslatorServiceOptions = {}):
     if (issues.includes("action-changed")) {
       emitDiagnostic({ sourceHash, issueCode: "action-changed", translatorVersion: version });
     }
-    const warnings = issues.flatMap((issue) => {
-      const warning = WARNING_CODE_BY_SAFETY_ISSUE[issue];
-      return warning ? [warning] : [];
-    });
+    const warnings = [
+      ...selectedClaimWarnings,
+      ...issues.flatMap((issue) => {
+        const warning = WARNING_CODE_BY_SAFETY_ISSUE[issue];
+        return warning ? [warning] : [];
+      }),
+    ];
     const blockingIssues = issues.filter((issue) =>
       issue !== "action-changed" && WARNING_CODE_BY_SAFETY_ISSUE[issue] === undefined,
     );

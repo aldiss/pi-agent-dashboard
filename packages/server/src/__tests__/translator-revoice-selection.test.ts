@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
-  admitClaimEntailedRevoice,
-  selectTranslationCandidateWithClaimEntailedRevoice,
-  type ClaimEntailmentAdmission,
+  admitClaimReviewedRevoice,
+  selectTranslationCandidateWithClaimReviewedRevoice,
+  type ClaimReviewAdmission,
   type DepthRung,
   type ScoredTranslationCandidate,
   type TranslationCandidateSet,
@@ -32,42 +32,43 @@ function candidate<Rung extends DepthRung>(
   };
 }
 
-const admission: ClaimEntailmentAdmission = {
+const admission: ClaimReviewAdmission = {
   status: "passed",
+  warningCode: null,
   claimQaVersion: "claim-question-answer-v1",
   claimCount: 5,
   extractionIdentity: { provider: "api.enterprise.githubcopilot.com", model: "gemini-3.5-flash" },
   evaluationIdentity: { provider: "api.enterprise.githubcopilot.com", model: "gemini-3.5-flash" },
 };
 
-describe("claim-entailed revoice selection", () => {
-  it("lets a claim-entailed revoice win without lexical coverage veto", () => {
+describe("claim-reviewed revoice selection", () => {
+  it("lets an exactly matched revoice win without lexical coverage veto", () => {
     const revoice = candidate("revoice", "deep faithful rewrite", 0.9, 0.2);
     const candidates: TranslationCandidateSet = {
       shippable: [candidate("substitute", "safe shallow rewrite", 0.1, 0.95)],
       evidenceOnly: revoice,
     };
 
-    const decision = selectTranslationCandidateWithClaimEntailedRevoice(
+    const decision = selectTranslationCandidateWithClaimReviewedRevoice(
       "original",
       candidates,
-      admitClaimEntailedRevoice(revoice, admission),
+      admitClaimReviewedRevoice(revoice, admission),
     );
 
     expect(decision).toMatchObject({ kind: "selected", rung: "revoice", text: "deep faithful rewrite" });
   });
 
-  it("keeps deterministic hard issues fatal even after claim entailment passes", () => {
+  it("keeps deterministic hard issues fatal even after claim review passes", () => {
     const revoice = candidate("revoice", "unsafe rewrite", 1, 1, ["quoted-evidence-changed"]);
     const candidates: TranslationCandidateSet = {
       shippable: [candidate("substitute", "below coverage", 0.1, 0.4)],
       evidenceOnly: revoice,
     };
 
-    const decision = selectTranslationCandidateWithClaimEntailedRevoice(
+    const decision = selectTranslationCandidateWithClaimReviewedRevoice(
       "original",
       candidates,
-      admitClaimEntailedRevoice(revoice, admission),
+      admitClaimReviewedRevoice(revoice, admission),
     );
 
     expect(decision).toEqual({

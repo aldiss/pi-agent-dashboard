@@ -23,7 +23,8 @@ const SOURCE_TOKEN = "PRIVATE_SOURCE_TOKEN_7fc0d2";
 const CANDIDATE_TOKEN = "PRIVATE_CANDIDATE_TOKEN_39ab81";
 const SYSTEM_TOKEN = "PRIVATE_SYSTEM_TOKEN_bcf219";
 const RAW_MODEL_TOKEN = "PRIVATE_RAW_MODEL_TOKEN_5a771e";
-const PRIVATE_TOKENS = [SOURCE_TOKEN, CANDIDATE_TOKEN, SYSTEM_TOKEN, RAW_MODEL_TOKEN] as const;
+const WARNING_TOKEN = "PRIVATE_WARNING_TOKEN_a84f20";
+const PRIVATE_TOKENS = [SOURCE_TOKEN, CANDIDATE_TOKEN, SYSTEM_TOKEN, RAW_MODEL_TOKEN, WARNING_TOKEN] as const;
 const REWRITE_IDENTITY = { provider: "github-copilot", model: "gpt-5.4-mini-2026-03-17" };
 const CLAIM_IDENTITY = { provider: "github-copilot", model: "gemini-3.5-flash" };
 
@@ -74,7 +75,7 @@ function fixtureEvidence(
     sourceText: `source ${SOURCE_TOKEN}`,
     translatorVersion: "dashboard-plain-english-v3",
     scoringVersion: "depth-coverage-conservative-hard-issues-v2",
-    selectionVersion: "claim-entailed-revoice-selection-v1",
+    selectionVersion: "claim-reviewed-revoice-warning-selection-v1",
     minCoverage: 0.85,
     depthPreferenceThreshold: 0,
     detectorKind: "deterministic",
@@ -140,6 +141,11 @@ function fixtureEvidence(
       text: `decision ${CANDIDATE_TOKEN}`,
       reason: "deepest-faithful-survivor",
       score: scoreEvidence(),
+      warningCodeCounts: {
+        "meaning-judge-rejected": 1,
+        [WARNING_TOKEN]: 99,
+      },
+      warnings: [WARNING_TOKEN],
     },
   };
 }
@@ -225,11 +231,13 @@ describe("production translation selection evidence privacy and retention", () =
         "answer",
         "answers",
         "rawTexts",
+        "warnings",
       ]) {
         expect(persisted).not.toContain(`"${forbiddenKey}":`);
       }
       expect(persisted).toContain('"residualCount":1');
       expect(persisted).toContain('"finishReason":"unknown"');
+      expect(persisted).toContain('"warningCodeCounts":{"meaning-judge-rejected":1}');
     });
   });
 
