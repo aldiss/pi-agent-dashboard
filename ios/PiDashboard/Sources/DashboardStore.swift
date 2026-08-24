@@ -108,6 +108,10 @@ final class DashboardStore {
 
     private let client = DashboardClient()
     private var consumeTask: Task<Void, Never>?
+    /// Set when the stream is about to be restarted while a chat is on screen, and
+    /// consumed inside the stream task once the socket actually exists. See
+    /// `resubscribeIfPending` for why the timing is load-bearing.
+    private var pendingResubscribe = false
     private var bootstrapTask: Task<Void, Never>?
     private var didBootstrap = false
     private var base: URL?
@@ -237,6 +241,9 @@ final class DashboardStore {
         consumeTask = Task { [weak self] in
             guard let self else { return }
             let stream = await self.client.connect(base: base, cookie: cookie.isEmpty ? nil : cookie)
+            // The socket EXISTS from here on (the actor installs it before returning),
+            // so this is the earliest point a subscribe can actually land.
+            await self.resubscribeIfPending()
             for await message in stream {
                 if Task.isCancelled { return }
                 self.apply(message)
@@ -253,12 +260,22 @@ final class DashboardStore {
         let delay = min(pow(2.0, Double(reconnectAttempt)), 30) // 2,4,8,…cap 30s
         try? await Task.sleep(for: .seconds(delay))
         if Task.isCancelled { return }
-        startStream(base: base)
         // Re-subscribe AND re-view the on-screen session so BOTH live events and the
-        // viewed-state resume after a reconnect (DF#4: the old path only re-subscribed,
-        // so `session_view` was never re-sent and the server thought nobody was
-        // watching). `openSession` does subscribe + session_view together.
-        if let sid = viewedSessionId { await openSession(sid) }
+        // viewed-state resume after a reconnect. ARMED here, FIRED inside the stream
+        // task: issuing it here raced the new socket, so `subscribe` (sent first) was
+        // rejected with `.notConnected` and dropped, while `session_view` (sent one
+        // line later) landed — leaving the server believing someone was watching a
+        // session it was no longer streaming to, and the chat frozen forever.
+        pendingResubscribe = viewedSessionId != nil
+        startStream(base: base)
+    }
+
+    /// Re-issue the on-screen chat's subscription once a socket is established.
+    /// `openSession` does subscribe + session_view together.
+    private func resubscribeIfPending() async {
+        guard pendingResubscribe, let sid = viewedSessionId else { return }
+        pendingResubscribe = false
+        await openSession(sid)
     }
 
     /// Foreground revalidation (DF#4): when the app returns to `.active` the socket
@@ -269,8 +286,8 @@ final class DashboardStore {
     func revalidate() {
         guard !isUITest, hasEnteredDashboard, let base else { return }
         phase = .reconnecting
+        pendingResubscribe = viewedSessionId != nil
         startStream(base: base)
-        if let sid = viewedSessionId { Task { await openSession(sid) } }
     }
 
     func disconnect() {
@@ -552,7 +569,12 @@ final class DashboardStore {
         } else {
             expectingFullReplay.remove(sid)
         }
-        await safeSend(.subscribe(sessionId: sid, lastSeq: last))
+        // A dropped subscribe is otherwise invisible: the socket rejects sends with
+        // `.notConnected` until it exists and accepts everything after, so a loss here
+        // leaves the chat silently unsubscribed. Re-arm for the next established socket.
+        if await safeSend(.subscribe(sessionId: sid, lastSeq: last)) == false {
+            pendingResubscribe = true
+        }
     }
 
     func chatState(_ sid: String) -> ChatSessionState { chatStates[sid] ?? ChatSessionState() }
@@ -776,9 +798,14 @@ final class DashboardStore {
     /// Epoch-ms timestamp for optimistic rows (matches the server event timebase).
     private func nowMs() -> Double { Date().timeIntervalSince1970 * 1000 }
 
-    private func safeSend(_ message: ClientMessage) async {
-        guard !isUITest else { return }
-        do { try await client.send(message) } catch { /* surfaced via banner/phase */ }
+    /// Send a control frame, reporting whether it actually reached the socket. A drop
+    /// is NOT reflected by the banner or `phase` (the socket is often live again
+    /// milliseconds later), so callers that must not lose a frame re-arm it — see
+    /// `subscribe`. Returns false only when the socket was absent or the write failed.
+    @discardableResult
+    private func safeSend(_ message: ClientMessage) async -> Bool {
+        guard !isUITest else { return true }
+        do { try await client.send(message); return true } catch { return false }
     }
 
     // MARK: UITest fixtures

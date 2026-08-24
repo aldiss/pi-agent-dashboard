@@ -49,6 +49,11 @@ struct ChatView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            // The chat is a PUSHED destination, so MainView's banner (which lives with
+            // the session list) is off-screen here — without this the chat could sit on
+            // "thinking…" through a drop/reconnect with no indication anything was
+            // wrong. Self-hides while connected.
+            ConnectionBanner()
             sendFailureBanner
             if showFilterControls {
                 MessageFilterControls(
