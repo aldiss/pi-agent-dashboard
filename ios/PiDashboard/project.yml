@@ -56,6 +56,11 @@ targets:
           - UIInterfaceOrientationPortrait
         NSPhotoLibraryUsageDescription: "Attach photos from your library to a pi session message."
         NSMicrophoneUsageDescription: "Record voice to dictate a message to your pi session."
+        # App Store Connect asks the export-compliance question on every upload unless
+        # this is declared. The app's only cryptography is HTTPS to the dashboard (and
+        # the OAuth cookie it carries), which is exempt — so declaring false answers it
+        # once, here, instead of by hand at each upload.
+        ITSAppUsesNonExemptEncryption: false
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
           NSAllowsLocalNetworking: true
