@@ -106,6 +106,19 @@ final class StuckSendingTests: XCTestCase {
         XCTAssertEqual(confirmed.markingOptimisticFailed(nonce: "absent"), confirmed)
     }
 
+    func testConnectionDropFailsAllPendingLocalSendsButNotConfirmedOnes() {
+        var state = ChatSessionState()
+            .appendingOptimisticUser(text: "idle", timestamp: 1, nonce: "m1")
+            .enqueueingOptimistic(text: "queued", nonce: "q1")
+        state.queued.append(QueuedMessage(
+            queueNonce: "q2", text: "already accepted", status: .confirmed))
+
+        state = state.failingPendingLocalSends()
+        XCTAssertEqual(state.messages[0].delivery, .failed)
+        XCTAssertEqual(state.queued.first { $0.queueNonce == "q1" }?.status, .failed)
+        XCTAssertEqual(state.queued.first { $0.queueNonce == "q2" }?.status, .confirmed)
+    }
+
     /// A real echo arriving after the no-ack deadline recovers the failed row in
     /// place; it must not append a second copy of the operator's message.
     func testLateAcknowledgementRecoversFailedBubble() {

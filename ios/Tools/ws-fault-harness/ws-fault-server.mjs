@@ -29,6 +29,8 @@ const LATE_ECHO = args.lateEcho === "on";
 const RESET_CYCLE = args.resetCycle === "on";
 const PROMPT_CYCLE = args.promptCycle === "on";
 const PROMPT_DUPLICATE = args.promptDuplicate === "on";
+const QUEUE_CYCLE = args.queueCycle === "on";
+const QUEUE_LATE_ACK = args.queueLateAck === "on";
 let connectionCount = 0;
 
 const t0 = Date.now();
@@ -166,6 +168,14 @@ server.on("upgrade", (req, socket) => {
     }
     trace({ ev: "rx", type: msg.type, sessionId: msg.sessionId });
     if (msg.type === "ping" && APP_PONG) send({ type: "pong" });
+    if (msg.type === "send_prompt" && QUEUE_LATE_ACK) {
+      setTimeout(() => send({
+        type: "event", sessionId: msg.sessionId, seq: 2,
+        event: { eventType: "message_enqueued", timestamp: Date.now(), data: {
+          queueNonce: msg.queueNonce, text: msg.text, source: "dashboard",
+        } },
+      }), 10_000);
+    }
     if (msg.type === "prompt_response") {
       trace({ ev: "rx_prompt_response", promptId: msg.promptId,
               answer: msg.answer, cancelled: msg.cancelled, source: msg.source });
@@ -193,6 +203,10 @@ server.on("upgrade", (req, socket) => {
         });
       } else {
         send({ type: "event_replay", sessionId: msg.sessionId, events: [], isLast: true });
+      }
+      if (QUEUE_CYCLE && connectionNumber === 1) {
+        send({ type: "event", sessionId: msg.sessionId, seq: 1,
+          event: { eventType: "agent_start", timestamp: Date.now(), data: {} } });
       }
       if (PROMPT_CYCLE && connectionNumber === 1) {
         const prompt = {

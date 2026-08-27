@@ -120,6 +120,8 @@ final class DashboardStore {
     private(set) var viewedSessionId: String?
 
     private let client = DashboardClient()
+    private let idleAckDeadline: Duration
+    private let queueAckDeadline: Duration
     private var consumeTask: Task<Void, Never>?
     /// Set when the stream is about to be restarted while a chat is on screen, and
     /// consumed inside the stream task once the socket actually exists. See
@@ -152,7 +154,10 @@ final class DashboardStore {
     /// the voice sidecar's REST calls (transcribe/health) so they carry operator identity.
     var connectionCookie: String? { cookie.isEmpty ? nil : cookie }
 
-    init() {
+    init(idleAckDeadline: Duration = .seconds(30),
+         queueAckDeadline: Duration = .seconds(90)) {
+        self.idleAckDeadline = idleAckDeadline
+        self.queueAckDeadline = queueAckDeadline
         let args = ProcessInfo.processInfo.arguments
         isComposerOverflowProbe = args.contains(UITestFixtures.composerOverflowLaunchArg)
         // The overflow probe implies fixture mode (it injects the same fixture data).
@@ -268,6 +273,7 @@ final class DashboardStore {
 
     private func scheduleReconnect(base: URL) async {
         guard hasEnteredDashboard else { phase = .failed("Disconnected"); return }
+        failPendingOperationsOnDisconnect()
         phase = .reconnecting
         reconnectAttempt += 1
         let delay = min(pow(2.0, Double(reconnectAttempt)), 30) // 2,4,8,…cap 30s
@@ -459,7 +465,7 @@ final class DashboardStore {
                 // A no-ack deadline is uncertainty, not proof of loss. If this real
                 // event recovers the SAME failed optimistic row, retract the stale
                 // failure banner. Unrelated events/failures leave it untouched.
-                let recoveredNonces = Set(before.messages.compactMap { previous -> String? in
+                var recoveredNonces = Set(before.messages.compactMap { previous -> String? in
                     guard previous.delivery == .failed,
                           previous.id.hasPrefix("optim-"),
                           after.messages.contains(where: {
@@ -467,11 +473,20 @@ final class DashboardStore {
                           }) else { return nil }
                     return String(previous.id.dropFirst("optim-".count))
                 })
+                // Queued recovery can be failed→confirmed (`message_enqueued`) OR
+                // removal (`message_start` dispatch). Both retract only that nonce's
+                // failure, never unrelated traffic.
+                recoveredNonces.formUnion(before.queued.compactMap { previous -> String? in
+                    guard previous.status == .failed else { return nil }
+                    let current = after.queued.first { $0.queueNonce == previous.queueNonce }
+                    return current == nil || current?.status == .confirmed
+                        ? previous.queueNonce : nil
+                })
                 let stillFailed = after.messages.contains {
                     $0.id.hasPrefix("optim-") && $0.delivery == .failed
                 } || after.queued.contains { $0.status == .failed }
-                if case .message(let ownerNonce) = sendFailureOwners[sid],
-                   ownerNonce.map(recoveredNonces.contains) ?? (!recoveredNonces.isEmpty && !stillFailed) {
+                if !stillFailed, case .message(let ownerNonce) = sendFailureOwners[sid],
+                   ownerNonce.map(recoveredNonces.contains) ?? !recoveredNonces.isEmpty {
                     clearSendFailure(sid)
                 }
             }
@@ -778,8 +793,9 @@ final class DashboardStore {
         // that row in the reducer instead of appending a duplicate.
         if !isStreaming {
             Task { [weak self] in
-                try? await Task.sleep(for: .seconds(30))
-                guard let self, var state = self.chatStates[sid],
+                guard let self else { return }
+                try? await Task.sleep(for: self.idleAckDeadline)
+                guard var state = self.chatStates[sid],
                       state.messages.contains(where: {
                           $0.id == "optim-\(nonce)" && $0.delivery == .pending
                       }) else { return }
@@ -787,6 +803,20 @@ final class DashboardStore {
                 self.chatStates[sid] = state
                 self.setSendFailure(
                     sid, reason: "Message wasn't confirmed — check the connection and send again.",
+                    owner: .message(nonce))
+            }
+        } else {
+            Task { [weak self] in
+                guard let self else { return }
+                try? await Task.sleep(for: self.queueAckDeadline)
+                guard var state = self.chatStates[sid],
+                      state.queued.contains(where: {
+                          $0.queueNonce == nonce && $0.status == .pending
+                      }) else { return }
+                state = state.markingQueuedFailed(nonce: nonce)
+                self.chatStates[sid] = state
+                self.setSendFailure(
+                    sid, reason: "Queued message wasn't confirmed — check the connection and try again.",
                     owner: .message(nonce))
             }
         }
@@ -887,7 +917,7 @@ final class DashboardStore {
         guard !isUITest, var state = chatStates[sid],
               let entry = state.queued.first(where: { $0.queueNonce == nonce && $0.status == .failed })
         else { return }
-        state.queued.removeAll { $0.queueNonce == nonce }
+        state = state.supersedingQueued(nonce: nonce)
         chatStates[sid] = state
         await sendPrompt(sid, text: entry.text, images: entry.images.isEmpty ? nil : entry.images)
     }
@@ -909,6 +939,34 @@ final class DashboardStore {
     /// Set the session's thinking/reasoning level (off/minimal/low/medium/high/xhigh).
     func setThinkingLevel(_ sid: String, level: String) async {
         await safeSend(.setThinkingLevel(sessionId: sid, level: level))
+    }
+
+    /// A socket close is a real delivery signal. Fail all locally pending sends and
+    /// re-enable in-flight prompt responses immediately; don't wait for their long
+    /// connected-path deadlines. Late acknowledgements can still recover in place.
+    private func failPendingOperationsOnDisconnect() {
+        for (sid, state) in Array(chatStates) {
+            let messageNonces = state.messages.compactMap { message -> String? in
+                guard message.id.hasPrefix("optim-"), message.delivery == .pending else { return nil }
+                return String(message.id.dropFirst("optim-".count))
+            }
+            let queueNonces = state.queued.compactMap {
+                $0.status == .pending ? $0.queueNonce : nil
+            }
+            guard let ownerNonce = queueNonces.last ?? messageNonces.last else { continue }
+            chatStates[sid] = state.failingPendingLocalSends()
+            setSendFailure(
+                sid, reason: "Connection dropped before the message was confirmed.",
+                owner: .message(ownerNonce))
+        }
+
+        let promptKeys = promptResponsesInFlight
+        promptResponsesInFlight.removeAll()
+        for key in promptKeys {
+            setSendFailure(
+                key.sessionId, reason: "Connection dropped before your response was confirmed.",
+                owner: .prompt(key.promptId))
+        }
     }
 
     /// Flip the matching optimistic bubble OR queued card (by nonce) to failed +

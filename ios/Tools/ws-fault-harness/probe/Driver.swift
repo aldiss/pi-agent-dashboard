@@ -16,7 +16,10 @@ struct RealStoreProbe {
         let start = Date()
         func el() -> String { String(format: "%.2f", Date().timeIntervalSince(start)) }
 
-        let store = DashboardStore()
+        // Production defaults are 30s idle / 90s queued. Short probe deadlines
+        // exercise the same store branches without making each harness mode minutes long.
+        let store = DashboardStore(
+            idleAckDeadline: .seconds(5), queueAckDeadline: .seconds(8))
         store.serverURLString = url
         await store.connect()
         if openDelay > 0 { try? await Task.sleep(for: .seconds(openDelay)) }
@@ -84,7 +87,9 @@ struct RealStoreProbe {
         let failure = store.sendFailures["sess-probe-1"] ?? "none"
         let contents = finalState.messages.map(\.content).joined(separator: "|")
         let promptCount = store.prompts("sess-probe-1").count
-        print("[store \(el())s] final: phase=\(store.phase) sessions=\(store.sessions.count) delivery=\(delivery) other=\(otherDelivery) failure=\(failure) prompts=\(promptCount) contents=\(contents)")
+        let queuedDelivery = finalState.queued.first { $0.text == "loss probe" }
+            .map { String(describing: $0.status) } ?? "absent"
+        print("[store \(el())s] final: phase=\(store.phase) sessions=\(store.sessions.count) delivery=\(delivery) other=\(otherDelivery) queue=\(queuedDelivery) failure=\(failure) prompts=\(promptCount) contents=\(contents)")
         exit(0)
     }
 }

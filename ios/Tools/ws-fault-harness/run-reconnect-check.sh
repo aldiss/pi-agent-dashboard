@@ -19,9 +19,13 @@
 #        ./run-reconnect-check.sh reset-replay # old seq 100 -> reset -> replay 1/live 2
 #        ./run-reconnect-check.sh prompt-cycle # request -> answer B -> authoritative dismiss
 #        ./run-reconnect-check.sh prompt-duplicate # recursive second id renders/submits once
+#        ./run-reconnect-check.sh queue-loss # connected/no ack -> slow failure
+#        ./run-reconnect-check.sh queue-drop # socket close -> failure before deadline
+#        ./run-reconnect-check.sh queue-recover # late bridge ack recovers card + banner
 set -euo pipefail
 
 MODE="${1:-close}"
+QUEUE_LATE_ACK=off
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP="$HERE/../../PiDashboard/Sources"
 KIT="$HERE/../../PiDashboardKit"
@@ -30,14 +34,17 @@ PORT="${PORT:-8899}"
 trap 'kill ${SRV_PID:-0} 2>/dev/null || true; rm -rf "$WORK"' EXIT
 
 case "$MODE" in
-  close)        SERVER_MODE=close; FAULT_AT=8; BUDGET=30;  SEND_AT=-1; LATE_ECHO=off; RESET_CYCLE=off; PROMPT_CYCLE=off; PROMPT_DUPLICATE=off; PROMPT_ANSWER=none; COMPETING=single; LABEL="server drops the socket every 8s" ;;
-  stall)        SERVER_MODE=stall; FAULT_AT=5; BUDGET=120; SEND_AT=-1; LATE_ECHO=off; RESET_CYCLE=off; PROMPT_CYCLE=off; PROMPT_DUPLICATE=off; PROMPT_ANSWER=none; COMPETING=single; LABEL="socket goes silently half-open (keepalive must catch it)" ;;
-  send-loss)    SERVER_MODE=stall; FAULT_AT=5; BUDGET=45;  SEND_AT=10; LATE_ECHO=off; RESET_CYCLE=off; PROMPT_CYCLE=off; PROMPT_DUPLICATE=off; PROMPT_ANSWER=none; COMPETING=single; LABEL="send into a silently half-open socket" ;;
-  send-recover)         SERVER_MODE=stall; FAULT_AT=5; BUDGET=48; SEND_AT=10; LATE_ECHO=on;  RESET_CYCLE=off; PROMPT_CYCLE=off; PROMPT_DUPLICATE=off; PROMPT_ANSWER=none; COMPETING=single;    LABEL="late server echo recovers an uncertain send" ;;
-  send-partial-recover) SERVER_MODE=stall; FAULT_AT=5; BUDGET=50; SEND_AT=10; LATE_ECHO=on;  RESET_CYCLE=off; PROMPT_CYCLE=off; PROMPT_DUPLICATE=off; PROMPT_ANSWER=none; COMPETING=competing; LABEL="one recovered send must not hide another failure" ;;
-  reset-replay)         SERVER_MODE=close; FAULT_AT=8; BUDGET=18; SEND_AT=-1; LATE_ECHO=off; RESET_CYCLE=on;  PROMPT_CYCLE=off; PROMPT_DUPLICATE=off; PROMPT_ANSWER=none; COMPETING=single;    LABEL="server seq 100 resets and rebuilds from seq 1" ;;
-  prompt-cycle)         SERVER_MODE=alive; FAULT_AT=8; BUDGET=8; SEND_AT=-1; LATE_ECHO=off; RESET_CYCLE=off; PROMPT_CYCLE=on;  PROMPT_DUPLICATE=off; PROMPT_ANSWER=B; COMPETING=single; LABEL="PromptBus request, response, and dismiss" ;;
-  prompt-duplicate)     SERVER_MODE=alive; FAULT_AT=8; BUDGET=8; SEND_AT=-1; LATE_ECHO=off; RESET_CYCLE=off; PROMPT_CYCLE=on;  PROMPT_DUPLICATE=on;  PROMPT_ANSWER=B; COMPETING=single; LABEL="duplicate PromptBus ids collapse to one control" ;;
+  close)        SERVER_MODE=close; FAULT_AT=8; BUDGET=30;  SEND_AT=-1; LATE_ECHO=off; RESET_CYCLE=off; PROMPT_CYCLE=off; PROMPT_DUPLICATE=off; QUEUE_CYCLE=off; PROMPT_ANSWER=none; COMPETING=single; LABEL="server drops the socket every 8s" ;;
+  stall)        SERVER_MODE=stall; FAULT_AT=5; BUDGET=120; SEND_AT=-1; LATE_ECHO=off; RESET_CYCLE=off; PROMPT_CYCLE=off; PROMPT_DUPLICATE=off; QUEUE_CYCLE=off; PROMPT_ANSWER=none; COMPETING=single; LABEL="socket goes silently half-open (keepalive must catch it)" ;;
+  send-loss)    SERVER_MODE=stall; FAULT_AT=5; BUDGET=45;  SEND_AT=10; LATE_ECHO=off; RESET_CYCLE=off; PROMPT_CYCLE=off; PROMPT_DUPLICATE=off; QUEUE_CYCLE=off; PROMPT_ANSWER=none; COMPETING=single; LABEL="send into a silently half-open socket" ;;
+  send-recover)         SERVER_MODE=stall; FAULT_AT=5; BUDGET=48; SEND_AT=10; LATE_ECHO=on;  RESET_CYCLE=off; PROMPT_CYCLE=off; PROMPT_DUPLICATE=off; QUEUE_CYCLE=off; PROMPT_ANSWER=none; COMPETING=single;    LABEL="late server echo recovers an uncertain send" ;;
+  send-partial-recover) SERVER_MODE=stall; FAULT_AT=5; BUDGET=50; SEND_AT=10; LATE_ECHO=on;  RESET_CYCLE=off; PROMPT_CYCLE=off; PROMPT_DUPLICATE=off; QUEUE_CYCLE=off; PROMPT_ANSWER=none; COMPETING=competing; LABEL="one recovered send must not hide another failure" ;;
+  reset-replay)         SERVER_MODE=close; FAULT_AT=8; BUDGET=18; SEND_AT=-1; LATE_ECHO=off; RESET_CYCLE=on;  PROMPT_CYCLE=off; PROMPT_DUPLICATE=off; QUEUE_CYCLE=off; PROMPT_ANSWER=none; COMPETING=single;    LABEL="server seq 100 resets and rebuilds from seq 1" ;;
+  prompt-cycle)         SERVER_MODE=alive; FAULT_AT=8; BUDGET=8; SEND_AT=-1; LATE_ECHO=off; RESET_CYCLE=off; PROMPT_CYCLE=on;  PROMPT_DUPLICATE=off; QUEUE_CYCLE=off; PROMPT_ANSWER=B; COMPETING=single; LABEL="PromptBus request, response, and dismiss" ;;
+  prompt-duplicate)     SERVER_MODE=alive; FAULT_AT=8; BUDGET=8; SEND_AT=-1; LATE_ECHO=off; RESET_CYCLE=off; PROMPT_CYCLE=on;  PROMPT_DUPLICATE=on;  QUEUE_CYCLE=off; PROMPT_ANSWER=B; COMPETING=single; LABEL="duplicate PromptBus ids collapse to one control" ;;
+  queue-loss)           SERVER_MODE=stall; FAULT_AT=4; BUDGET=15; SEND_AT=5; LATE_ECHO=off; RESET_CYCLE=off; PROMPT_CYCLE=off; PROMPT_DUPLICATE=off; QUEUE_CYCLE=on; PROMPT_ANSWER=none; COMPETING=single; LABEL="queued follow-up receives no bridge acknowledgement" ;;
+  queue-drop)           SERVER_MODE=close; FAULT_AT=6; BUDGET=10; SEND_AT=5; LATE_ECHO=off; RESET_CYCLE=off; PROMPT_CYCLE=off; PROMPT_DUPLICATE=off; QUEUE_CYCLE=on; PROMPT_ANSWER=none; COMPETING=single; LABEL="socket closes before queued-send deadline" ;;
+  queue-recover)        SERVER_MODE=alive; FAULT_AT=8; BUDGET=16; SEND_AT=3; LATE_ECHO=off; RESET_CYCLE=off; PROMPT_CYCLE=off; PROMPT_DUPLICATE=off; QUEUE_CYCLE=on; QUEUE_LATE_ACK=on; PROMPT_ANSWER=none; COMPETING=single; LABEL="late bridge acknowledgement recovers queued card" ;;
   *) echo "unknown mode '$MODE' (want: close | stall | send-loss | send-recover | send-partial-recover | reset-replay | prompt-cycle | prompt-duplicate)" >&2; exit 2 ;;
 esac
 
@@ -64,7 +71,7 @@ echo "building probe against $APP/DashboardStore.swift"
 [ -x "$WORK/.build/debug/StoreProbe" ] || { echo "PROBE BUILD FAILED (no binary)" >&2; exit 1; }
 
 TRACE="$WORK/trace.jsonl"
-node "$HERE/ws-fault-server.mjs" --mode="$SERVER_MODE" --after="$FAULT_AT" --port="$PORT" --lateEcho="$LATE_ECHO" --resetCycle="$RESET_CYCLE" --promptCycle="$PROMPT_CYCLE" --promptDuplicate="$PROMPT_DUPLICATE" --trace="$TRACE" >"$WORK/srv.log" 2>&1 &
+node "$HERE/ws-fault-server.mjs" --mode="$SERVER_MODE" --after="$FAULT_AT" --port="$PORT" --lateEcho="$LATE_ECHO" --resetCycle="$RESET_CYCLE" --promptCycle="$PROMPT_CYCLE" --promptDuplicate="$PROMPT_DUPLICATE" --queueCycle="$QUEUE_CYCLE" --queueLateAck="$QUEUE_LATE_ACK" --trace="$TRACE" >"$WORK/srv.log" 2>&1 &
 SRV_PID=$!
 sleep 1
 
@@ -81,7 +88,8 @@ echo "connections=$CONNECTIONS  subscribe frames received=$SUBSCRIBES"
 
 # The check can fail two ways, and both matter: no reconnect at all (nothing was
 # exercised), or reconnects that left the chat unsubscribed (the regression).
-if [[ "$MODE" != prompt-* ]] && [ "$CONNECTIONS" -lt 2 ]; then
+if [[ "$MODE" != prompt-* && "$MODE" != queue-loss && "$MODE" != queue-recover ]] \
+    && [ "$CONNECTIONS" -lt 2 ]; then
   echo "FAIL: only $CONNECTIONS connection(s) — the drop never triggered a reconnect," >&2
   echo "      so this run proves nothing. Check the fault server log: $WORK/srv.log" >&2
   exit 1
@@ -120,6 +128,20 @@ elif [ "$MODE" = "reset-replay" ]; then
     exit 1
   fi
   echo "PASS: reset discarded seq-100 history and accepted replay 1 + live 2."
+elif [ "$MODE" = "queue-recover" ]; then
+  if ! grep -q 'queue=confirmed' "$PROBE_OUT" || ! grep -q 'failure=none' "$PROBE_OUT"; then
+    echo "FAIL: late queue acknowledgement did not recover card + banner." >&2
+    grep 'final:' "$PROBE_OUT" >&2 || true
+    exit 1
+  fi
+  echo "PASS: late queue acknowledgement confirmed card and retracted its banner."
+elif [[ "$MODE" == queue-* ]]; then
+  if ! grep -q 'queue=failed' "$PROBE_OUT" || grep -q 'failure=none' "$PROBE_OUT"; then
+    echo "FAIL: unacknowledged queued follow-up did not become visible failure." >&2
+    grep 'final:' "$PROBE_OUT" >&2 || true
+    exit 1
+  fi
+  echo "PASS: unacknowledged queued follow-up became failed; banner remains visible."
 elif [[ "$MODE" == prompt-* ]]; then
   RESPONSE_COUNT=$(grep -c '"ev":"rx_prompt_response"' "$TRACE" || true)
   if ! grep -q 'prompts=0' "$PROBE_OUT" \

@@ -151,6 +151,9 @@ public struct ChatSessionState: Sendable, Equatable {
     /// Follow-up messages held for the agent's next turn (send-while-streaming).
     /// Head = next to dispatch. Mirrors the PWA per-session `queue[]`.
     public var queued: [QueuedMessage] = []
+    /// Old nonces replaced by Retry. Late confirmations/snapshots for them are inert
+    /// so a slow first attempt cannot resurrect beside its fresh retry.
+    public var supersededQueueNonces: Set<String> = []
     /// True once the current assistant message's streaming text has been flushed
     /// into a permanent row (mirrors `streamingTextFlushed`). Reset at each
     /// assistant message_start and message_end.
@@ -226,6 +229,21 @@ public struct ChatSessionState: Sendable, Equatable {
         messages.contains { $0.role == .user && $0.delivery == .pending }
     }
 
+    /// Mark every locally pending send uncertain when the transport drops. Late
+    /// application-level acknowledgements may still recover each row/card in place.
+    public func failingPendingLocalSends() -> ChatSessionState {
+        var next = self
+        for index in next.messages.indices
+            where next.messages[index].id.hasPrefix("optim-")
+                && next.messages[index].delivery == .pending {
+            next.messages[index].delivery = .failed
+        }
+        for index in next.queued.indices where next.queued[index].status == .pending {
+            next.queued[index].status = .failed
+        }
+        return next
+    }
+
     /// Start an authoritative replay without deleting local intent that the server
     /// may not know about yet. Confirmed history is rebuilt from replay; only
     /// pending/failed optimistic rows and the follow-up queue survive so later
@@ -237,10 +255,20 @@ public struct ChatSessionState: Sendable, Equatable {
                 && ($0.delivery == .pending || $0.delivery == .failed)
         }
         reset.queued = queued
+        reset.supersededQueueNonces = supersededQueueNonces
         return reset
     }
 
     // MARK: Follow-up queue (send-while-streaming)
+
+    /// Remove a failed queued attempt and remember its nonce so late evidence for
+    /// that old attempt cannot resurrect it after Retry creates a fresh nonce.
+    public func supersedingQueued(nonce: String) -> ChatSessionState {
+        var next = self
+        next.queued.removeAll { $0.queueNonce == nonce }
+        next.supersededQueueNonces.insert(nonce)
+        return next
+    }
 
     /// Append a `pending` queued follow-up — called the instant Send is tapped while
     /// the agent is streaming. The bridge's `message_enqueued(queueNonce)` confirms
@@ -313,28 +341,29 @@ public struct ChatSessionState: Sendable, Equatable {
                 // queued[] (it becomes the committed user bubble below). Absent
                 // queueNonce = a turn-initiating message (no dequeue).
                 let dispatchedNonce = data["queueNonce"]?.stringValue
-                var dequeued = false
-                if let dispatched = dispatchedNonce {
+                // Old attempts can genuinely dispatch after Retry. Render that history,
+                // but treat its superseded nonce as already handled so the same-text
+                // fallback cannot remove the fresh retry card.
+                var dequeued = dispatchedNonce.map(next.supersededQueueNonces.contains) ?? false
+                if let dispatched = dispatchedNonce, !dequeued {
                     let before = next.queued.count
                     next.queued.removeAll { $0.queueNonce == dispatched }
                     dequeued = next.queued.count < before
                 }
-                // SAFETY-NET (nonce drift/absent): the bridge dispatched a CONFIRMED
-                // queued follow-up but its message_start echo carried no matching nonce
-                // (nonce absent, or drifted through a skill/whitespace envelope). Without
-                // this the confirmed card lingers as a phantom "1 queued" forever (the
-                // operator's report). Drop the confirmed entry whose trimmed text matches
-                // the dispatched message text. Confirmed-only + first-match so a
-                // still-pending optimistic (not yet acked) or an unrelated card is safe.
+                // SAFETY-NET (nonce drift/absent): the bridge dispatched a confirmed
+                // OR timeout-failed queued follow-up but its message_start echo carried
+                // no matching nonce. Without this the card lingers after real delivery.
+                // Drop the first confirmed/failed same-text entry; a still-pending
+                // optimistic row remains protected because it may be a later send.
                 if !dequeued {
                     // Compared through `reconcileKey`: the queued card holds the text the
                     // operator typed while the dispatch echo arrives wrapped in the
                     // `<speaker …>` envelope, so a raw comparison never matches and the
-                    // confirmed card lingers as the phantom "1 queued" this guards.
+                    // card lingers as the phantom "1 queued" this guards.
                     let dispatchedText = SpeakerEnvelope.reconcileKey(text)
                     if !dispatchedText.isEmpty,
                        let qi = next.queued.firstIndex(where: {
-                           $0.status == .confirmed
+                           ($0.status == .confirmed || $0.status == .failed)
                                && SpeakerEnvelope.reconcileKey($0.text) == dispatchedText
                        }) {
                         next.queued.remove(at: qi)
@@ -575,6 +604,7 @@ public struct ChatSessionState: Sendable, Equatable {
             // → append a fresh confirmed card. Idempotent: an already-confirmed nonce
             // is left as-is. Mirrors the PWA message_enqueued arm (MVP subset).
             if let nonce = data["queueNonce"]?.stringValue {
+                guard !next.supersededQueueNonces.contains(nonce) else { break }
                 let source: QueueSource = data["source"]?.stringValue == "tui" ? .tui : .dashboard
                 let text = data["text"]?.stringValue ?? ""
                 let images = ChatSessionState.extractImages(data["images"]) ?? []
@@ -586,9 +616,26 @@ public struct ChatSessionState: Sendable, Equatable {
                         if !images.isEmpty { next.queued[idx].images = images }
                     }
                 } else {
-                    next.queued.append(QueuedMessage(
-                        queueNonce: nonce, text: text, images: images,
-                        source: source, status: .confirmed))
+                    // Bridge/proxy nonce drift: re-key only a SOLE same-text/source
+                    // local candidate. Multiple identical sends stay distinct rather
+                    // than guessing which one this acknowledgement belongs to.
+                    let key = SpeakerEnvelope.reconcileKey(text)
+                    let candidates = next.queued.indices.filter { index in
+                        let item = next.queued[index]
+                        return source == .dashboard && item.source == .dashboard
+                            && item.status != .confirmed && !key.isEmpty
+                            && SpeakerEnvelope.reconcileKey(item.text) == key
+                    }
+                    if candidates.count == 1, let idx = candidates.first {
+                        next.queued[idx].queueNonce = nonce
+                        next.queued[idx].status = .confirmed
+                        if !text.isEmpty { next.queued[idx].text = text }
+                        if !images.isEmpty { next.queued[idx].images = images }
+                    } else {
+                        next.queued.append(QueuedMessage(
+                            queueNonce: nonce, text: text, images: images,
+                            source: source, status: .confirmed))
+                    }
                 }
             }
 
@@ -606,9 +653,24 @@ public struct ChatSessionState: Sendable, Equatable {
             for (i, entry) in followUp.enumerated() {
                 guard let obj = entry.objectValue else { continue }
                 let nonce = obj["queueNonce"]?.stringValue ?? "snap-\(Int(ts))-\(i)"
+                guard !next.supersededQueueNonces.contains(nonce) else { continue }
                 let source: QueueSource = obj["source"]?.stringValue == "tui" ? .tui : .dashboard
-                let text = obj["text"]?.stringValue ?? priorByNonce[nonce]?.text ?? ""
-                let prior = priorByNonce[nonce]
+                let incomingText = obj["text"]?.stringValue ?? ""
+                var prior = priorByNonce[nonce]
+                if prior == nil, source == .dashboard, !incomingText.isEmpty {
+                    let key = SpeakerEnvelope.reconcileKey(incomingText)
+                    let candidates = next.queued.filter {
+                        $0.source == .dashboard && $0.status != .confirmed
+                            && !coveredNonces.contains($0.queueNonce)
+                            && !next.supersededQueueNonces.contains($0.queueNonce)
+                            && SpeakerEnvelope.reconcileKey($0.text) == key
+                    }
+                    if candidates.count == 1 {
+                        prior = candidates[0]
+                        coveredNonces.insert(candidates[0].queueNonce)
+                    }
+                }
+                let text = incomingText.isEmpty ? (prior?.text ?? "") : incomingText
                 confirmed.append(QueuedMessage(
                     queueNonce: nonce, text: text, images: prior?.images ?? [],
                     source: source, status: .confirmed))
@@ -617,7 +679,9 @@ public struct ChatSessionState: Sendable, Equatable {
             // Preserve genuinely-newer not-yet-acked entries (pending/failed) that the
             // snapshot doesn't cover, in their existing order, at the tail.
             let preserved = next.queued.filter {
-                $0.status != .confirmed && !coveredNonces.contains($0.queueNonce)
+                $0.status != .confirmed
+                    && !coveredNonces.contains($0.queueNonce)
+                    && !next.supersededQueueNonces.contains($0.queueNonce)
             }
             next.queued = confirmed + preserved
 

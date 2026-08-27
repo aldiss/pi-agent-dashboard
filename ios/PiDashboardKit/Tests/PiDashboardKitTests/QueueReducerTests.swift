@@ -70,6 +70,27 @@ final class QueueReducerTests: XCTestCase {
         XCTAssertEqual(s.queued.count, 1)
     }
 
+    func testLateAckForSupersededRetryNonceIsInert() {
+        var s = ChatSessionState()
+            .enqueueingOptimistic(text: "retry me", nonce: "old")
+            .markingQueuedFailed(nonce: "old")
+            .supersedingQueued(nonce: "old")
+            .enqueueingOptimistic(text: "retry me", nonce: "new")
+        s = s.reduce(enqueued("old", "retry me"))
+        XCTAssertEqual(s.queued.map(\.queueNonce), ["new"])
+        XCTAssertEqual(s.queued[0].status, .pending)
+    }
+
+    func testNonceDriftRekeysSoleSameTextDashboardEntry() {
+        var s = ChatSessionState()
+            .enqueueingOptimistic(text: "same body", nonce: "local")
+            .markingQueuedFailed(nonce: "local")
+        s = s.reduce(enqueued("bridge", "same body"))
+        XCTAssertEqual(s.queued.count, 1)
+        XCTAssertEqual(s.queued[0].queueNonce, "bridge")
+        XCTAssertEqual(s.queued[0].status, .confirmed)
+    }
+
     // MARK: queue_state (authoritative atomic-replace)
 
     func testQueueStateAtomicReplacesConfirmedInOrder() {
@@ -111,6 +132,30 @@ final class QueueReducerTests: XCTestCase {
         s = s.reduce(enqueued("n1", "a"))
         s = s.reduce(queueState([], total: 0))
         XCTAssertTrue(s.queued.isEmpty)
+    }
+
+    func testQueueStateIgnoresSupersededNonce() {
+        var s = ChatSessionState()
+            .enqueueingOptimistic(text: "old", nonce: "old")
+            .markingQueuedFailed(nonce: "old")
+            .supersedingQueued(nonce: "old")
+            .enqueueingOptimistic(text: "new", nonce: "new")
+        s = s.reduce(queueState([
+            (nonce: "old", text: "old", source: "dashboard"),
+        ], total: 1))
+        XCTAssertEqual(s.queued.map(\.queueNonce), ["new"])
+    }
+
+    func testQueueStateNonceMismatchRekeysSoleSameTextEntryWithoutDuplicate() {
+        var s = ChatSessionState()
+            .enqueueingOptimistic(text: "same", nonce: "local")
+            .markingQueuedFailed(nonce: "local")
+        s = s.reduce(queueState([
+            (nonce: "bridge", text: "same", source: "dashboard"),
+        ], total: 1))
+        XCTAssertEqual(s.queued.count, 1)
+        XCTAssertEqual(s.queued[0].queueNonce, "bridge")
+        XCTAssertEqual(s.queued[0].status, .confirmed)
     }
 
     // MARK: dequeue via message_start(queueNonce)
@@ -171,8 +216,32 @@ final class QueueReducerTests: XCTestCase {
         XCTAssertEqual(s.queued.count, 0, "drifted nonce falls back to text-match")
     }
 
-    /// The safety-net is CONFIRMED-only: a still-`pending` optimistic (not yet acked)
-    /// is NOT dropped by a same-text dispatch (it may be a different, later send).
+    func testSupersededOldDispatchDoesNotRemoveFreshRetryCard() {
+        var s = ChatSessionState()
+            .enqueueingOptimistic(text: "same", nonce: "old")
+            .markingQueuedFailed(nonce: "old")
+            .supersedingQueued(nonce: "old")
+            .enqueueingOptimistic(text: "same", nonce: "new")
+        s = s.reduce(enqueued("new", "same")) // fresh retry accepted, still queued
+        s = s.reduce(userStart("same", nonce: "old")) // old attempt finally dispatches
+        XCTAssertEqual(s.queued.map(\.queueNonce), ["new"],
+                       "superseded dispatch must not consume fresh same-text retry")
+        XCTAssertEqual(s.queued[0].status, .confirmed)
+        XCTAssertEqual(s.messages.filter { $0.role == .user }.count, 1,
+                       "actual old dispatch still belongs in committed history")
+    }
+
+    func testDequeueClearsTimeoutFailedEntryWhenEchoNonceAbsent() {
+        var s = ChatSessionState()
+            .enqueueingOptimistic(text: "late delivery", nonce: "n1")
+            .markingQueuedFailed(nonce: "n1")
+        s = s.reduce(userStart("late delivery", nonce: nil))
+        XCTAssertTrue(s.queued.isEmpty)
+        XCTAssertEqual(s.messages.filter { $0.role == .user }.count, 1)
+    }
+
+    /// The safety-net excludes still-`pending` optimistic entries: a same-text
+    /// dispatch may be a different, later send.
     func testDequeueSafetyNetLeavesPendingUntouched() {
         var s = ChatSessionState().enqueueingOptimistic(text: "same text", nonce: "n1") // pending, not confirmed
         s = s.reduce(userStart("same text", nonce: nil))
