@@ -1,11 +1,10 @@
 import XCTest
 @testable import PiDashboardKit
 
-/// DF#1 — stuck "Sending…" fix. The optimistic user bubble (`optim-<nonce>`,
-/// `.pending`) must be confirmed by the `queueNonce` the protocol carries, NOT only
-/// by fragile trimmed-text match. Trimmed-text stays as a fallback; a store-side
-/// ~10s ack safety-net (tested via `reconcilePendingToConfirmed`) catches the case
-/// where no echo ever matches. Pure — `swift test`, no simulator.
+/// Delivery-truth contract. An optimistic user bubble (`optim-<nonce>`, `.pending`)
+/// is confirmed only by an application-level echo — never by elapsed time after a
+/// local WebSocket write. A no-ack deadline marks the exact row failed; a late genuine
+/// echo recovers it in place. Pure — `swift test`, no simulator.
 final class StuckSendingTests: XCTestCase {
 
     /// A user `message_start` echo carrying a `queueNonce` (the live dispatch shape).
@@ -84,38 +83,38 @@ final class StuckSendingTests: XCTestCase {
         XCTAssertEqual(s.messages[0].delivery, .confirmed, "text-match fallback still works")
     }
 
-    // MARK: ack safety-net (reconcilePendingToConfirmed)
+    // MARK: no-ack deadline
 
-    /// The safety-net flips a still-pending `optim-<nonce>` bubble to `.confirmed`
-    /// WITHOUT failing it (the message was sent — never false-mark failed).
-    func testReconcilePendingToConfirmed() {
-        var s = ChatSessionState().appendingOptimisticUser(
-            text: "sent but no echo", timestamp: 1, nonce: "n1")
-        s = s.reconcilePendingToConfirmed(nonce: "n1")
-        XCTAssertEqual(s.messages[0].delivery, .confirmed)
-        XCTAssertFalse(s.hasPendingOptimisticUser)
-    }
-
-    /// The safety-net is a no-op on an already-confirmed bubble (idempotent) and when
-    /// the nonce is absent — it never resurrects or mis-touches other rows.
-    func testReconcileIsIdempotentAndScoped() {
-        // Already confirmed → unchanged.
-        var s = ChatSessionState().appendingOptimisticUser(text: "x", timestamp: 1, nonce: "n1")
-        s = s.reconcilePendingToConfirmed(nonce: "n1")
-        let after = s.reconcilePendingToConfirmed(nonce: "n1")
-        XCTAssertEqual(after, s)
-        // Absent nonce → no-op.
-        let fresh = ChatSessionState().appendingOptimisticUser(text: "y", timestamp: 1, nonce: "n1")
-        XCTAssertEqual(fresh.reconcilePendingToConfirmed(nonce: "does-not-exist"), fresh)
-    }
-
-    /// The safety-net must NOT revive a `.failed` bubble (a genuine send failure
-    /// stays failed; reconcile only touches `.pending`).
-    func testReconcileDoesNotReviveFailed() {
+    /// A send with no application-level acknowledgement becomes failed, never
+    /// falsely confirmed merely because bytes entered the local socket buffer.
+    func testNoAckMarksExactPendingBubbleFailed() {
         var s = ChatSessionState()
-            .appendingOptimisticUser(text: "z", timestamp: 1, nonce: "n1")
-            .markingLatestOptimisticFailed()
-        s = s.reconcilePendingToConfirmed(nonce: "n1")
-        XCTAssertEqual(s.messages[0].delivery, .failed, "failed stays failed")
+            .appendingOptimisticUser(text: "first", timestamp: 1, nonce: "n1")
+            .appendingOptimisticUser(text: "second", timestamp: 2, nonce: "n2")
+        s = s.markingOptimisticFailed(nonce: "n1")
+        XCTAssertEqual(s.messages.first { $0.id == "optim-n1" }?.delivery, .failed)
+        XCTAssertEqual(s.messages.first { $0.id == "optim-n2" }?.delivery, .pending,
+                       "deadline must not fail a different send")
+    }
+
+    /// Confirmed/unknown rows are immutable under the failure deadline.
+    func testNoAckFailureIsIdempotentAndScoped() {
+        var confirmed = ChatSessionState().appendingOptimisticUser(
+            text: "x", timestamp: 1, nonce: "n1")
+        confirmed = confirmed.reduce(userEchoWithNonce("x", nonce: "n1"))
+        XCTAssertEqual(confirmed.markingOptimisticFailed(nonce: "n1"), confirmed)
+        XCTAssertEqual(confirmed.markingOptimisticFailed(nonce: "absent"), confirmed)
+    }
+
+    /// A real echo arriving after the no-ack deadline recovers the failed row in
+    /// place; it must not append a second copy of the operator's message.
+    func testLateAcknowledgementRecoversFailedBubble() {
+        var s = ChatSessionState()
+            .appendingOptimisticUser(text: "late", timestamp: 1, nonce: "n1")
+            .markingOptimisticFailed(nonce: "n1")
+        s = s.reduce(userEchoWithNonce("late", nonce: "n1", ts: 50))
+        XCTAssertEqual(s.messages.count, 1)
+        XCTAssertEqual(s.messages[0].delivery, .confirmed)
+        XCTAssertEqual(s.messages[0].timestamp, 50)
     }
 }

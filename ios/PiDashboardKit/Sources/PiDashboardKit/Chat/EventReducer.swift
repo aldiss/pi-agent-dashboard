@@ -191,13 +191,14 @@ public struct ChatSessionState: Sendable, Equatable {
     /// `optim-<nonce>` id, NOT by fragile text. The primary reconcile path: the
     /// server's `message_start`/`message_enqueued` echo carries the client-minted
     /// `queueNonce`, so we clear "Sending…" on the RIGHT bubble even when two sends
-    /// share identical text. Adopts the server timestamp + any images it carried.
+    /// share identical text. A late genuine echo may recover a row already marked
+    /// failed by the no-ack deadline. Adopts the server timestamp + images.
     /// Returns `(state, matched)` — `matched == false` means no such optimistic
     /// bubble (caller falls back to text-match / appends). Pure.
     public func confirmingOptimisticUser(nonce: String, timestamp: Double,
                                          images: [ImageContent] = []) -> (state: ChatSessionState, matched: Bool) {
         guard let idx = messages.firstIndex(where: {
-            $0.id == "optim-\(nonce)" && $0.role == .user && $0.delivery == .pending
+            $0.id == "optim-\(nonce)" && $0.role == .user && $0.delivery != .confirmed
         }) else { return (self, false) }
         var next = self
         next.messages[idx].delivery = .confirmed
@@ -206,24 +207,37 @@ public struct ChatSessionState: Sendable, Equatable {
         return (next, true)
     }
 
-    /// Ack safety-net reconcile: flip a STILL-`pending` `optim-<nonce>` bubble to
-    /// `.confirmed` WITHOUT failing it. Called by the store ~10s after a send that
-    /// threw no error but whose server echo never text/nonce-matched (bridge
-    /// committed straight to work, whitespace/skill-envelope drift, …). The message
-    /// WAS sent, so never mark `.failed` here. Idempotent: no-op if already
-    /// confirmed / absent. Pure.
-    public func reconcilePendingToConfirmed(nonce: String) -> ChatSessionState {
+    /// Mark the exact optimistic bubble failed when no application-level echo
+    /// arrives before the delivery deadline. A WebSocket write completing only means
+    /// bytes entered the local socket buffer; it is not server/bridge acceptance.
+    /// Confirmed/absent rows remain unchanged. A later genuine echo can recover the
+    /// failed row via `confirmingOptimisticUser` or the semantic fallback.
+    public func markingOptimisticFailed(nonce: String) -> ChatSessionState {
         guard let idx = messages.firstIndex(where: {
             $0.id == "optim-\(nonce)" && $0.role == .user && $0.delivery == .pending
         }) else { return self }
         var next = self
-        next.messages[idx].delivery = .confirmed
+        next.messages[idx].delivery = .failed
         return next
     }
 
     /// Whether any optimistic user bubble is still awaiting confirmation.
     public var hasPendingOptimisticUser: Bool {
         messages.contains { $0.role == .user && $0.delivery == .pending }
+    }
+
+    /// Start an authoritative replay without deleting local intent that the server
+    /// may not know about yet. Confirmed history is rebuilt from replay; only
+    /// pending/failed optimistic rows and the follow-up queue survive so later
+    /// acknowledgements can reconcile them instead of making them disappear.
+    public func resetPreservingLocalIntent() -> ChatSessionState {
+        var reset = ChatSessionState()
+        reset.messages = messages.filter {
+            $0.role == .user && $0.id.hasPrefix("optim-")
+                && ($0.delivery == .pending || $0.delivery == .failed)
+        }
+        reset.queued = queued
+        return reset
     }
 
     // MARK: Follow-up queue (send-while-streaming)
@@ -313,11 +327,15 @@ public struct ChatSessionState: Sendable, Equatable {
                 // the dispatched message text. Confirmed-only + first-match so a
                 // still-pending optimistic (not yet acked) or an unrelated card is safe.
                 if !dequeued {
-                    let dispatchedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                    // Compared through `reconcileKey`: the queued card holds the text the
+                    // operator typed while the dispatch echo arrives wrapped in the
+                    // `<speaker …>` envelope, so a raw comparison never matches and the
+                    // confirmed card lingers as the phantom "1 queued" this guards.
+                    let dispatchedText = SpeakerEnvelope.reconcileKey(text)
                     if !dispatchedText.isEmpty,
                        let qi = next.queued.firstIndex(where: {
                            $0.status == .confirmed
-                               && $0.text.trimmingCharacters(in: .whitespacesAndNewlines) == dispatchedText
+                               && SpeakerEnvelope.reconcileKey($0.text) == dispatchedText
                        }) {
                         next.queued.remove(at: qi)
                     }
@@ -333,13 +351,20 @@ public struct ChatSessionState: Sendable, Equatable {
                 }
                 // DEDUP (fallback): no nonce match — the server echoes a dashboard-
                 // sent prompt back as message_start(role:user). If we already rendered
-                // it optimistically (pending, identical trimmed content), CONFIRM that
-                // row in place instead of appending a second identical bubble. Match
-                // the most recent pending user row so repeated identical sends pair 1:1.
-                let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                // it optimistically (pending, identical content), CONFIRM that row in
+                // place instead of appending a second identical bubble. Match the most
+                // recent pending user row so repeated identical sends pair 1:1.
+                //
+                // Compared through `SpeakerEnvelope.reconcileKey`, NOT raw text: the
+                // optimistic row holds what the operator typed, while the server echoes
+                // it back wrapped in the `<speaker …>` envelope. Raw-text comparison
+                // could never match those, so the echo was appended as a second bubble
+                // that rendered the envelope and its auth nonce verbatim.
+                let trimmed = SpeakerEnvelope.reconcileKey(text)
                 if let idx = next.messages.lastIndex(where: {
-                    $0.role == .user && $0.delivery == .pending
-                        && $0.content.trimmingCharacters(in: .whitespacesAndNewlines) == trimmed
+                    $0.role == .user && $0.id.hasPrefix("optim-")
+                        && ($0.delivery == .pending || $0.delivery == .failed)
+                        && SpeakerEnvelope.reconcileKey($0.content) == trimmed
                 }) {
                     next.messages[idx].delivery = .confirmed
                     // Adopt the server timestamp + any images it carried (authoritative).
@@ -353,15 +378,19 @@ public struct ChatSessionState: Sendable, Equatable {
             }
 
         case "message_update":
+            var handledThinking = false
             if let ev = data["assistantMessageEvent"]?.objectValue,
                let type = ev["type"]?.stringValue {
                 switch type {
                 case "thinking_start":
+                    handledThinking = true
                     next.streamingThinking = ""
                     next.thinkingStartedAt = ts
                 case "thinking_delta":
+                    handledThinking = true
                     next.streamingThinking += ev["delta"]?.stringValue ?? ""
                 case "thinking_end":
+                    handledThinking = true
                     if !next.streamingThinking.isEmpty {
                         let started = next.thinkingStartedAt
                         next.messages.append(ChatMessage(
@@ -371,10 +400,14 @@ public struct ChatSessionState: Sendable, Equatable {
                     }
                     next.streamingThinking = ""
                     next.thinkingStartedAt = nil
-                default: break
+                default:
+                    // Real text-delta frames can carry assistantMessageEvent too.
+                    // Only thinking events are terminal here; other types must fall
+                    // through to the message snapshot below so text streams live.
+                    break
                 }
-                break
             }
+            if handledThinking { break }
             if next.messageRole(data) == "assistant", !next.streamingTextFlushed {
                 let (text, _) = ChatSessionState.extractMessageTextAndImages(data["message"])
                 next.streamingText = text

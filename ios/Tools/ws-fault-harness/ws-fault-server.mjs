@@ -25,6 +25,9 @@ const AFTER_MS = Number(args.after ?? 3) * 1000;
 const PORT = Number(args.port ?? 8791);
 const TRACE = args.trace ?? "/tmp/portico5/trace.jsonl";
 const APP_PONG = args.pong !== "off";
+const LATE_ECHO = args.lateEcho === "on";
+const RESET_CYCLE = args.resetCycle === "on";
+let connectionCount = 0;
 
 const t0 = Date.now();
 const el = () => ((Date.now() - t0) / 1000).toFixed(2);
@@ -115,6 +118,7 @@ const server = http.createServer((req, res) => {
 });
 
 server.on("upgrade", (req, socket) => {
+  const connectionNumber = ++connectionCount;
   const key = req.headers["sec-websocket-key"];
   const accept = crypto.createHash("sha1").update(key + GUID).digest("base64");
   socket.write(
@@ -161,7 +165,47 @@ server.on("upgrade", (req, socket) => {
     trace({ ev: "rx", type: msg.type, sessionId: msg.sessionId });
     if (msg.type === "ping" && APP_PONG) send({ type: "pong" });
     if (msg.type === "subscribe") {
-      send({ type: "event_replay", sessionId: msg.sessionId, events: [], isLast: true });
+      if (RESET_CYCLE && connectionNumber === 1) {
+        // Establish an old server sequence namespace at 100.
+        send({
+          type: "event", sessionId: msg.sessionId, seq: 100,
+          event: { eventType: "message_start", timestamp: Date.now(),
+            data: { message: { role: "user", content: "before reset" } } },
+        });
+      } else if (RESET_CYCLE) {
+        // Rebuilt server starts at seq 1. Native must clear its old cursor and
+        // accept both the replay and the following live event.
+        send({ type: "session_state_reset", sessionId: msg.sessionId });
+        send({ type: "event_replay", sessionId: msg.sessionId, isLast: true, events: [
+          { seq: 1, event: { eventType: "message_start", timestamp: Date.now(),
+            data: { message: { role: "user", content: "after reset replay" } } } },
+        ] });
+        send({ type: "event", sessionId: msg.sessionId, seq: 2,
+          event: { eventType: "message_start", timestamp: Date.now(),
+            data: { message: { role: "user", content: "after reset live" } } },
+        });
+      } else {
+        send({ type: "event_replay", sessionId: msg.sessionId, events: [], isLast: true });
+      }
+      // After recovery, deliver the real server echo that the black-holed first
+      // socket could not acknowledge. No queueNonce: this matches persisted replay.
+      if (!RESET_CYCLE && LATE_ECHO && connectionNumber > 1) {
+        send({
+          type: "event",
+          sessionId: msg.sessionId,
+          seq: 1,
+          event: {
+            eventType: "message_start",
+            timestamp: Date.now(),
+            data: {
+              message: {
+                role: "user",
+                content: '<speaker id="probe" name="Probe" nonce="late-secret">\nloss probe\n</speaker nonce="late-secret">',
+              },
+            },
+          },
+        });
+      }
     }
   });
 

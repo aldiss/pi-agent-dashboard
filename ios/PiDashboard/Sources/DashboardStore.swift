@@ -72,6 +72,9 @@ final class DashboardStore {
     /// Live events + further replay chunks for these sessions buffer until the fold
     /// publishes, so nothing clobbers the historical reduce or lands out of order.
     private var replayInFlight: Set<String> = []
+    /// Invalidates a detached fold when the server resets that session underneath it.
+    /// A stale fold must never overwrite the new authoritative replay/local intent.
+    private var replayGeneration: [String: Int] = [:]
     private var bufferedDuringReplay: [String: [DashboardEvent]] = [:]
     /// Replay batches at/under this size fold synchronously (cheap); larger ones go
     /// off-main to keep the UI responsive on open.
@@ -271,11 +274,14 @@ final class DashboardStore {
     }
 
     /// Re-issue the on-screen chat's subscription once a socket is established.
-    /// `openSession` does subscribe + session_view together.
+    /// Do NOT call `openSession`: that is a user-navigation action and clears send
+    /// failure UI. A transport reconnect must preserve unresolved delivery failures
+    /// until their own acknowledgement recovers them.
     private func resubscribeIfPending() async {
         guard pendingResubscribe, let sid = viewedSessionId else { return }
         pendingResubscribe = false
-        await openSession(sid)
+        await subscribe(sid)
+        await safeSend(.sessionView(sessionId: sid))
     }
 
     /// Foreground revalidation (DF#4): when the app returns to `.active` the socket
@@ -303,6 +309,7 @@ final class DashboardStore {
         expectingFullReplay.removeAll()
         bufferedDuringReplay.removeAll()
         replayInFlight.removeAll()
+        replayGeneration.removeAll()
     }
 
     /// Evict all per-session chat/seq/replay caches for one session (Cluster 1). Used
@@ -314,6 +321,7 @@ final class DashboardStore {
         expectingFullReplay.remove(sid)
         bufferedDuringReplay.removeValue(forKey: sid)
         replayInFlight.remove(sid)
+        replayGeneration.removeValue(forKey: sid)
     }
 
     // MARK: Message application
@@ -371,22 +379,27 @@ final class DashboardStore {
             pinnedDirectories = paths
 
         case .eventReplay(let sid, let events, let isLast):
-            let evs = events.map(\.event)
-            let batchMax = events.map(\.seq).max()
             // Reset-before-authoritative-replay (Cluster 1): if we subscribed with
             // lastSeq:nil, this replay is the FULL history — clear the session state +
             // seq FIRST so it can't duplicate onto existing rows. Only the first batch
             // resets; a chunked full replay (isLast:false…true) keeps building.
             let resetFirst = expectingFullReplay.contains(sid)
             if resetFirst {
-                chatStates[sid] = ChatSessionState()
+                chatStates[sid] = (chatStates[sid] ?? ChatSessionState())
+                    .resetPreservingLocalIntent()
                 lastSeenSeq[sid] = nil
                 bufferedDuringReplay[sid] = nil
+                // Invalidate any detached fold started before this authoritative reset.
+                replayGeneration[sid, default: 0] += 1
+                replayInFlight.remove(sid)
                 expectingFullReplay.remove(sid) // consumed — later chunks append
             }
-            // Adopt the batch's max seq (monotonic) so live dedup + the next resume
-            // pick up from the right point.
-            lastSeenSeq[sid] = SeqLifecycle.advance(lastSeen: lastSeenSeq[sid], batchMaxSeq: batchMax)
+            // Resume batches can overlap the cursor during reconnect races. Filter
+            // them through the SAME monotonic rule as live events so replaying
+            // `[4,6,7]` after seq 5 applies only 6/7, never duplicates 4.
+            let accepted = SeqLifecycle.acceptNew(events: events, lastSeen: lastSeenSeq[sid])
+            let evs = accepted.events.map(\.event)
+            lastSeenSeq[sid] = accepted.lastSeen
             _ = isLast // (chunked-replay boundary; state simply accumulates across chunks)
 
             if replayInFlight.contains(sid) {
@@ -406,9 +419,10 @@ final class DashboardStore {
                 // onto the freshly-reset state — no duplication.)
                 replayInFlight.insert(sid)
                 let base = chatStates[sid] ?? ChatSessionState()
+                let generation = replayGeneration[sid, default: 0]
                 Task.detached(priority: .userInitiated) { [weak self] in
                     let reduced = base.reduce(events: evs)
-                    await self?.publishReplay(sid: sid, reduced: reduced)
+                    await self?.publishReplay(sid: sid, reduced: reduced, generation: generation)
                 }
             }
 
@@ -422,7 +436,22 @@ final class DashboardStore {
                 // AFTER the historical fold (correct order), never onto stale state.
                 bufferedDuringReplay[sid, default: []].append(event)
             } else {
-                chatStates[sid] = (chatStates[sid] ?? ChatSessionState()).reduce(event)
+                let before = chatStates[sid] ?? ChatSessionState()
+                let after = before.reduce(event)
+                chatStates[sid] = after
+                // A no-ack deadline is uncertainty, not proof of loss. If this real
+                // event recovers the SAME failed optimistic row, retract the stale
+                // failure banner. Unrelated events/failures leave it untouched.
+                let recovered = before.messages.contains { previous in
+                    previous.delivery == .failed && previous.id.hasPrefix("optim-")
+                        && after.messages.contains {
+                            $0.id == previous.id && $0.delivery == .confirmed
+                        }
+                }
+                let stillFailed = after.messages.contains {
+                    $0.id.hasPrefix("optim-") && $0.delivery == .failed
+                } || after.queued.contains { $0.status == .failed }
+                if recovered && !stillFailed { sendFailures.removeValue(forKey: sid) }
             }
 
         case .sendPromptFailed(let sid, let queueNonce, let reason):
@@ -437,7 +466,17 @@ final class DashboardStore {
             availableModels[sid] = models
 
         case .sessionStateReset(let sid):
-            chatStates[sid] = ChatSessionState()
+            // Server reset means the old sequence namespace is gone. Keep only local
+            // intent, clear the stale cursor/buffers, and treat the next replay as
+            // authoritative. Otherwise a pre-restart cursor (e.g. 100) makes native
+            // discard every new event 1...100 after the server restarts at seq 1.
+            chatStates[sid] = (chatStates[sid] ?? ChatSessionState())
+                .resetPreservingLocalIntent()
+            lastSeenSeq[sid] = nil
+            expectingFullReplay.insert(sid)
+            bufferedDuringReplay.removeValue(forKey: sid)
+            replayGeneration[sid, default: 0] += 1
+            replayInFlight.remove(sid)
 
         case .resumeResult(let sid, let success, let message, _):
             // Authoritative resume outcome (Cluster 2): clear the pending spinner on
@@ -478,7 +517,8 @@ final class DashboardStore {
     /// live events / further replay chunks that arrived DURING the fold (in arrival
     /// order) onto the reduced state, so the final transcript = history + everything
     /// that landed meanwhile, correctly ordered. Clears the in-flight guard.
-    private func publishReplay(sid: String, reduced: ChatSessionState) {
+    private func publishReplay(sid: String, reduced: ChatSessionState, generation: Int) {
+        guard replayGeneration[sid, default: 0] == generation else { return }
         var state = reduced
         if let buffered = bufferedDuringReplay[sid], !buffered.isEmpty {
             state = state.reduce(events: buffered)
@@ -640,23 +680,22 @@ final class DashboardStore {
             return
         }
 
-        // 3) ACK SAFETY-NET (DF#1): the send left the socket with no error, but the
-        // server's user `message_start` echo may never nonce/text-match this bubble
-        // (bridge committed straight to work, whitespace/skill drift) — leaving it
-        // stuck "Sending…". After a grace window, if the `optim-<nonce>` bubble is
-        // STILL pending, reconcile it to CONFIRMED (the message WAS sent — never
-        // false-mark failed here; only a throw / `send_prompt_failed` fails it). The
-        // streaming/queued path has its own `message_enqueued`/`queue_state`
-        // reconciliation, so this net targets the non-streaming bubble.
+        // 3) NO-ACK DEADLINE: `URLSessionWebSocketTask.send` returning only means
+        // bytes entered the local socket buffer — a half-open path can report success
+        // while the server receives nothing. Never promote delivery on elapsed time.
+        // If no application-level `message_start` echo arrives within 30 seconds,
+        // mark the exact bubble failed and explain why. A late genuine echo recovers
+        // that row in the reducer instead of appending a duplicate.
         if !isStreaming {
             Task { [weak self] in
-                try? await Task.sleep(for: .seconds(10))
-                guard let self else { return }
-                guard var st = self.chatStates[sid],
-                      st.messages.contains(where: { $0.id == "optim-\(nonce)" && $0.delivery == .pending })
-                else { return }
-                st = st.reconcilePendingToConfirmed(nonce: nonce)
-                self.chatStates[sid] = st
+                try? await Task.sleep(for: .seconds(30))
+                guard let self, var state = self.chatStates[sid],
+                      state.messages.contains(where: {
+                          $0.id == "optim-\(nonce)" && $0.delivery == .pending
+                      }) else { return }
+                state = state.markingOptimisticFailed(nonce: nonce)
+                self.chatStates[sid] = state
+                self.sendFailures[sid] = "Message wasn't confirmed — check the connection and send again."
             }
         }
     }
@@ -787,6 +826,8 @@ final class DashboardStore {
         if var state = chatStates[sid] {
             if let nonce, state.queued.contains(where: { $0.queueNonce == nonce }) {
                 state = state.markingQueuedFailed(nonce: nonce)
+            } else if let nonce {
+                state = state.markingOptimisticFailed(nonce: nonce)
             } else {
                 state = state.markingLatestOptimisticFailed()
             }

@@ -51,6 +51,26 @@ final class EventReducerTests: XCTestCase {
         XCTAssertEqual(s.streamingText, "")
     }
 
+    /// Real pi text updates carry BOTH the cumulative message snapshot and an
+    /// `assistantMessageEvent(type:text_delta)`. That event is not thinking chrome;
+    /// it must fall through so the live text appears before `message_end`.
+    func testTextDeltaAssistantEventStillStreamsMessageSnapshot() {
+        var s = ChatSessionState()
+        s = s.reduce(ev("message_update", [
+            "assistantMessageEvent": .object([
+                "type": .string("text_delta"), "delta": .string("answer"),
+            ]),
+            "message": .object([
+                "role": .string("assistant"),
+                "content": .array([.object([
+                    "type": .string("text"), "text": .string("partial answer"),
+                ])]),
+            ]),
+        ]))
+        XCTAssertEqual(s.streamingText, "partial answer")
+        XCTAssertTrue(s.messages.isEmpty, "live delta is not committed until message_end")
+    }
+
     func testThinkingBlockCommitsOnThinkingEnd() {
         var s = ChatSessionState()
         s = s.reduce(ev("message_update", ["assistantMessageEvent": .object(["type": .string("thinking_start")])], 10))

@@ -33,6 +33,25 @@ struct RealStoreProbe {
                 store.revalidate()
             }
         }
+
+        // arg 5: send an idle prompt at this elapsed second. Used by `send-loss`
+        // mode after the server has black-holed the socket: URLSession accepts the
+        // bytes locally, but no application-level acknowledgement can arrive.
+        let sendAt = CommandLine.arguments.count > 5 ? Double(CommandLine.arguments[5])! : -1
+        let competingSend = CommandLine.arguments.count > 6 && CommandLine.arguments[6] == "competing"
+        if sendAt > 0 {
+            Task { @MainActor in
+                let remaining = max(0, sendAt - Date().timeIntervalSince(start))
+                try? await Task.sleep(for: .seconds(remaining))
+                print("[store \(el())s] sending into fault window")
+                await store.sendPrompt("sess-probe-1", text: "loss probe", images: nil)
+                if competingSend {
+                    try? await Task.sleep(for: .seconds(1))
+                    print("[store \(el())s] sending competing failure")
+                    await store.sendPrompt("sess-probe-1", text: "other loss", images: nil)
+                }
+            }
+        }
         var lastPhase = "\(store.phase)"
         let deadline = Date().addingTimeInterval(budget)
         while Date() < deadline {
@@ -40,7 +59,14 @@ struct RealStoreProbe {
             if p != lastPhase { print("[store \(el())s] phase -> \(p)"); lastPhase = p }
             try? await Task.sleep(for: .milliseconds(120))
         }
-        print("[store \(el())s] final: phase=\(store.phase) sessions=\(store.sessions.count)")
+        let finalState = store.chatState("sess-probe-1")
+        let probe = finalState.messages.first { $0.content == "loss probe" }
+        let other = finalState.messages.first { $0.content == "other loss" }
+        let delivery = probe?.delivery.map { String(describing: $0) } ?? "absent"
+        let otherDelivery = other?.delivery.map { String(describing: $0) } ?? "absent"
+        let failure = store.sendFailures["sess-probe-1"] ?? "none"
+        let contents = finalState.messages.map(\.content).joined(separator: "|")
+        print("[store \(el())s] final: phase=\(store.phase) sessions=\(store.sessions.count) delivery=\(delivery) other=\(otherDelivery) failure=\(failure) contents=\(contents)")
         exit(0)
     }
 }

@@ -74,17 +74,29 @@ final class SeqLifecycleTests: XCTestCase {
                        "reset-before-replay → no duplication")
     }
 
-    /// End-to-end rule sketch: on reopen we resume with lastSeq, so the server sends
-    /// only NEW events (not a full replay) — no reset, and dedup drops any overlap.
-    func testResumePathAppliesOnlyNewSeqs() {
-        var lastSeen: Int? = 5
-        // Server (resume) sends seq 4 (overlap, already applied), 6, 7 (new).
-        var applied: [Int] = []
-        for seq in [4, 6, 7] where SeqLifecycle.shouldApply(seq: seq, lastSeen: lastSeen) {
-            applied.append(seq)
-            lastSeen = SeqLifecycle.advance(lastSeen: lastSeen, appliedSeq: seq)
+    /// The exact helper DashboardStore uses for replay overlap: `[4,6,7]` after
+    /// seq 5 applies only 6/7, and repeating the batch applies nothing.
+    func testAcceptNewReplayDropsOverlapAndRepeatedBatch() {
+        func seq(_ value: Int) -> SequencedEvent {
+            SequencedEvent(seq: value, event: DashboardEvent(eventType: "raw", timestamp: 0))
         }
-        XCTAssertEqual(applied, [6, 7], "overlap seq 4 dropped; only new seqs applied")
-        XCTAssertEqual(lastSeen, 7)
+        let first = SeqLifecycle.acceptNew(events: [seq(4), seq(6), seq(7)], lastSeen: 5)
+        XCTAssertEqual(first.events.map(\.seq), [6, 7])
+        XCTAssertEqual(first.lastSeen, 7)
+
+        let repeated = SeqLifecycle.acceptNew(events: [seq(4), seq(6), seq(7)], lastSeen: first.lastSeen)
+        XCTAssertTrue(repeated.events.isEmpty)
+        XCTAssertEqual(repeated.lastSeen, 7)
+    }
+
+    /// Out-of-order entries inside one replay must not rewind or re-apply after a
+    /// newer event has advanced the cursor.
+    func testAcceptNewReplayIsMonotonicWithinBatch() {
+        func seq(_ value: Int) -> SequencedEvent {
+            SequencedEvent(seq: value, event: DashboardEvent(eventType: "raw", timestamp: 0))
+        }
+        let result = SeqLifecycle.acceptNew(events: [seq(6), seq(5), seq(8), seq(7)], lastSeen: 4)
+        XCTAssertEqual(result.events.map(\.seq), [6, 8])
+        XCTAssertEqual(result.lastSeen, 8)
     }
 }

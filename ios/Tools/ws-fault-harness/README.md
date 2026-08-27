@@ -5,13 +5,17 @@ and checks what the **server actually received** — not what the client believe
 sent. Command line only: no simulator, no signing, no network, no npm install.
 
 ```bash
-./run-reconnect-check.sh          # drop + reconnect  (~35s)
-./run-reconnect-check.sh stall    # silent half-open  (~2min)
+./run-reconnect-check.sh                       # drop + reconnect (~35s)
+./run-reconnect-check.sh stall                 # silent half-open (~2min)
+./run-reconnect-check.sh send-loss             # unacknowledged send becomes failed
+./run-reconnect-check.sh send-recover          # late echo recovers row + banner
+./run-reconnect-check.sh send-partial-recover  # other failed send keeps its banner
+./run-reconnect-check.sh reset-replay           # seq 100 → reset → replay 1/live 2
 ```
 
-Exit 0 = every connection re-subscribed the open chat. Exit 1 = it didn't, or the
-fault never triggered a reconnect (a run that proves nothing fails loudly rather
-than passing quietly).
+Exit 0 = the selected invariant holds. Exit 1 = behavior failed, or the fault never
+exercised the expected path. A run that proves nothing fails loudly rather than
+passing quietly.
 
 ## Why it exists
 
@@ -23,6 +27,11 @@ looked connected, the session list kept updating, and the open chat received not
 
 Measured on build 1: 4 reconnects → 4 `session_view` frames, 1 `subscribe`. Fixed in
 `da6cd5f`: 4 of 4.
+
+Later modes cover composed failures found after that fix: a half-open socket accepts
+bytes locally while the server receives nothing; full replay must preserve the failed
+local row; a late wrapped echo must recover it without hiding another failed send;
+and `session_state_reset` must clear the old sequence namespace.
 
 ## Why the shape
 
@@ -43,9 +52,9 @@ Measured on build 1: 4 reconnects → 4 `session_view` frames, 1 `subscribe`. Fi
 | file | purpose |
 |---|---|
 | `ws-fault-server.mjs` | Dependency-free WS server; modes `alive` / `close` / `destroy` / `stall`; logs every client frame to JSONL |
-| `probe/Driver.swift` | Connects, opens a chat, optionally simulates a foreground return (`revalidate()`), reports phase transitions |
-| `probe/AuthCookieStoreStub.swift` | Keychain stand-in — the real one would prompt from a CLI |
-| `run-reconnect-check.sh` | Builds the throwaway package, runs the fault, asserts connections == subscribes |
+| `probe/Driver.swift` | Connects, opens chat, sends fault-window probes, reports phase/delivery/content state |
+| `probe/AuthCookieStoreStub.swift` | Keychain stand-in — real store would prompt from CLI |
+| `run-reconnect-check.sh` | Builds throwaway package, runs selected fault, asserts server + store invariants |
 
 ## Verifying the check itself
 

@@ -107,11 +107,16 @@ struct ChatMessageRow: View {
 
     // MARK: user
 
+    private var userDisplayContent: String {
+        SpeakerEnvelope.stripForDisplay(message.content)
+    }
+
     private var userBubble: some View {
         VStack(alignment: .trailing, spacing: 6) {
             if !message.images.isEmpty { imageStrip }
-            if !message.content.isEmpty {
-                MarkdownText(content: message.content)
+            if !userDisplayContent.isEmpty {
+                // Display-only: stored agent-facing content remains wrapped.
+                MarkdownText(content: userDisplayContent)
                     .padding(.horizontal, 14).padding(.vertical, 10)
                     .background(theme.bgSurface)
                     .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))

@@ -32,6 +32,21 @@ public enum SeqLifecycle {
         return seq > lastSeen
     }
 
+    /// Filter an incremental replay through the same monotonic guard used for live
+    /// events. Servers normally send only events after `lastSeq`, but reconnect races
+    /// can overlap batches; applying that overlap duplicates transcript rows.
+    public static func acceptNew(
+        events: [SequencedEvent], lastSeen: Int?
+    ) -> (events: [SequencedEvent], lastSeen: Int?) {
+        var cursor = lastSeen
+        var accepted: [SequencedEvent] = []
+        for event in events where shouldApply(seq: event.seq, lastSeen: cursor) {
+            accepted.append(event)
+            cursor = advance(lastSeen: cursor, appliedSeq: event.seq)
+        }
+        return (accepted, cursor)
+    }
+
     /// The new last-seen seq after considering `seq` — monotonic max, never rewinds.
     public static func advance(lastSeen: Int?, appliedSeq seq: Int) -> Int {
         max(lastSeen ?? Int.min, seq)

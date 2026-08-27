@@ -84,15 +84,15 @@ final class OptimisticEchoTests: XCTestCase {
         XCTAssertEqual(after, s) // unchanged — nothing pending to fail
     }
 
-    func testFailedBubbleIsNotConfirmedByLateEcho() {
-        // Once failed, a late echo of the same text appends a fresh normal row
-        // rather than resurrecting the failed bubble (dedup only matches `pending`).
+    func testFailedBubbleIsRecoveredByLateEcho() {
+        // A timeout means "not confirmed", not proof of non-delivery. A late genuine
+        // echo recovers the same optimistic row instead of rendering the message twice.
         var s = ChatSessionState()
             .appendingOptimisticUser(text: "ping", timestamp: 1, nonce: "n1")
             .markingLatestOptimisticFailed()
         s = s.reduce(userEcho("ping", 5))
-        XCTAssertEqual(s.messages.filter { $0.role == .user }.count, 2)
-        XCTAssertEqual(s.messages[0].delivery, .failed)
-        XCTAssertNil(s.messages[1].delivery)
+        XCTAssertEqual(s.messages.filter { $0.role == .user }.count, 1)
+        XCTAssertEqual(s.messages[0].delivery, .confirmed)
+        XCTAssertEqual(s.messages[0].timestamp, 5)
     }
 }
