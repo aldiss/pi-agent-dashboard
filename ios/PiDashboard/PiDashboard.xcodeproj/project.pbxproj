@@ -33,6 +33,7 @@
 		865857C3A0688F3EE2F4B4C8 /* SessionCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = A93A4B604656E8A542B7B73E /* SessionCard.swift */; };
 		86F2C88D9BF91D349B574E5B /* Motion.swift in Sources */ = {isa = PBXBuildFile; fileRef = 19F1945BC33F24A9A0BC27DB /* Motion.swift */; };
 		89F8E6A9031C6083872C3F83 /* ModelPickerSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = E445C6A12C6404BD5773EEC0 /* ModelPickerSheet.swift */; };
+		8B20AF7CC9577F5FF471E0D3 /* PromptCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE6DDD3FC28159EB53712006 /* PromptCard.swift */; };
 		8E3B1822942067B1FEE37BF8 /* StatusRowUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B73F0A8807085D688E51FCF3 /* StatusRowUITests.swift */; };
 		959F4C13F743B19AEC4C0552 /* PiDashboardKit in Frameworks */ = {isa = PBXBuildFile; productRef = 224E9033201C8C3494146C74 /* PiDashboardKit */; };
 		9EE5DE6ECE1016DC1A273212 /* MarkdownUI in Frameworks */ = {isa = PBXBuildFile; productRef = FC88110419B4ED8F9AF20E36 /* MarkdownUI */; };
@@ -96,6 +97,7 @@
 		A954BDAFB57AB690873828A0 /* DashboardStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DashboardStore.swift; sourceTree = "<group>"; };
 		AC57C9E2540DF731122C968A /* AuthCookieStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthCookieStore.swift; sourceTree = "<group>"; };
 		ACDA7C90B73D0A62B058CEF2 /* ComposerFocusUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerFocusUITests.swift; sourceTree = "<group>"; };
+		AE6DDD3FC28159EB53712006 /* PromptCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PromptCard.swift; sourceTree = "<group>"; };
 		AF81475CC6A56181C6CBC160 /* PiDashboard.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = PiDashboard.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		B73F0A8807085D688E51FCF3 /* StatusRowUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusRowUITests.swift; sourceTree = "<group>"; };
 		CAD4E65D6AA348F9D8AE7C49 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
@@ -198,6 +200,7 @@
 				E445C6A12C6404BD5773EEC0 /* ModelPickerSheet.swift */,
 				19F1945BC33F24A9A0BC27DB /* Motion.swift */,
 				6323A4CD1D5D5E96C36D013E /* PiDashboardApp.swift */,
+				AE6DDD3FC28159EB53712006 /* PromptCard.swift */,
 				A93A4B604656E8A542B7B73E /* SessionCard.swift */,
 				E5F5803D5828966CE9A74F48 /* SessionListView.swift */,
 				EC56E67F8F238CBAEF8EA661 /* SettingsView.swift */,
@@ -374,6 +377,7 @@
 				89F8E6A9031C6083872C3F83 /* ModelPickerSheet.swift in Sources */,
 				86F2C88D9BF91D349B574E5B /* Motion.swift in Sources */,
 				4629962F0A5B108C7641BB24 /* PiDashboardApp.swift in Sources */,
+				8B20AF7CC9577F5FF471E0D3 /* PromptCard.swift in Sources */,
 				865857C3A0688F3EE2F4B4C8 /* SessionCard.swift in Sources */,
 				E4148970E220A0E61D482587 /* SessionListView.swift in Sources */,
 				80A17EE86CA67FFB48751A91 /* SettingsView.swift in Sources */,

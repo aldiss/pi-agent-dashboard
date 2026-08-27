@@ -26,6 +26,9 @@ public enum ServerMessage: Sendable {
     /// Hard spawn failure companion to `spawn_result{success:false}` — carries a
     /// `code` classifier + (unused here) stderr tail. Correlated by `cwd`.
     case spawnError(cwd: String, message: String, code: String?)
+    case promptRequest(DashboardPromptRequest)
+    case promptDismiss(sessionId: String, promptId: String)
+    case promptCancel(sessionId: String, promptId: String)
     case unknown(type: String)
 
     /// The wire `type` discriminator (for routing / logging).
@@ -45,6 +48,9 @@ public enum ServerMessage: Sendable {
         case .resumeResult: return "resume_result"
         case .spawnResult: return "spawn_result"
         case .spawnError: return "spawn_error"
+        case .promptRequest: return "prompt_request"
+        case .promptDismiss: return "prompt_dismiss"
+        case .promptCancel: return "prompt_cancel"
         case .unknown(let t): return t
         }
     }
@@ -54,7 +60,7 @@ extension ServerMessage: Decodable {
     private enum K: String, CodingKey {
         case type, sessions, orders, session, spawnRequestId, sessionId, updates
         case seq, event, events, isLast, cwd, sessionIds, paths, queueNonce, reason, models
-        case success, message, requestId, code
+        case success, message, requestId, code, promptId, prompt, component, placement
     }
 
     public init(from decoder: Decoder) throws {
@@ -119,6 +125,21 @@ extension ServerMessage: Decodable {
                 cwd: try c.decode(String.self, forKey: .cwd),
                 message: try c.decodeIfPresent(String.self, forKey: .message) ?? "",
                 code: try c.decodeIfPresent(String.self, forKey: .code))
+        case "prompt_request":
+            self = .promptRequest(DashboardPromptRequest(
+                sessionId: try c.decode(String.self, forKey: .sessionId),
+                promptId: try c.decode(String.self, forKey: .promptId),
+                prompt: try c.decode(DashboardPromptSpec.self, forKey: .prompt),
+                component: try c.decode(DashboardPromptComponent.self, forKey: .component),
+                placement: try c.decodeIfPresent(String.self, forKey: .placement) ?? "inline"))
+        case "prompt_dismiss":
+            self = .promptDismiss(
+                sessionId: try c.decode(String.self, forKey: .sessionId),
+                promptId: try c.decode(String.self, forKey: .promptId))
+        case "prompt_cancel":
+            self = .promptCancel(
+                sessionId: try c.decode(String.self, forKey: .sessionId),
+                promptId: try c.decode(String.self, forKey: .promptId))
         default:
             self = .unknown(type: type)
         }
@@ -144,6 +165,8 @@ public enum ClientMessage: Sendable, Encodable {
     case shutdown(sessionId: String)
     case forceKill(sessionId: String)
     case spawnSession(cwd: String, requestId: String?)
+    case promptResponse(sessionId: String, promptId: String, answer: String?,
+                        cancelled: Bool, source: String)
 
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: DynamicKey.self)
@@ -188,6 +211,13 @@ public enum ClientMessage: Sendable, Encodable {
             try c.encode("spawn_session", forKey: DynamicKey("type"))
             try c.encode(cwd, forKey: DynamicKey("cwd"))
             try c.encodeIfPresent(reqId, forKey: DynamicKey("requestId"))
+        case .promptResponse(let sid, let promptId, let answer, let cancelled, let source):
+            try c.encode("prompt_response", forKey: DynamicKey("type"))
+            try c.encode(sid, forKey: DynamicKey("sessionId"))
+            try c.encode(promptId, forKey: DynamicKey("promptId"))
+            try c.encodeIfPresent(answer, forKey: DynamicKey("answer"))
+            try c.encode(cancelled, forKey: DynamicKey("cancelled"))
+            try c.encode(source, forKey: DynamicKey("source"))
         }
     }
 

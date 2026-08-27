@@ -17,6 +17,8 @@
 #        ./run-reconnect-check.sh send-recover # late real echo recovers row + banner
 #        ./run-reconnect-check.sh send-partial-recover # other failed send keeps banner
 #        ./run-reconnect-check.sh reset-replay # old seq 100 -> reset -> replay 1/live 2
+#        ./run-reconnect-check.sh prompt-cycle # request -> answer B -> authoritative dismiss
+#        ./run-reconnect-check.sh prompt-duplicate # recursive second id renders/submits once
 set -euo pipefail
 
 MODE="${1:-close}"
@@ -28,13 +30,15 @@ PORT="${PORT:-8899}"
 trap 'kill ${SRV_PID:-0} 2>/dev/null || true; rm -rf "$WORK"' EXIT
 
 case "$MODE" in
-  close)        SERVER_MODE=close; FAULT_AT=8; BUDGET=30;  SEND_AT=-1; LATE_ECHO=off; RESET_CYCLE=off; COMPETING=single; LABEL="server drops the socket every 8s" ;;
-  stall)        SERVER_MODE=stall; FAULT_AT=5; BUDGET=120; SEND_AT=-1; LATE_ECHO=off; RESET_CYCLE=off; COMPETING=single; LABEL="socket goes silently half-open (keepalive must catch it)" ;;
-  send-loss)    SERVER_MODE=stall; FAULT_AT=5; BUDGET=45;  SEND_AT=10; LATE_ECHO=off; RESET_CYCLE=off; COMPETING=single; LABEL="send into a silently half-open socket" ;;
-  send-recover)         SERVER_MODE=stall; FAULT_AT=5; BUDGET=48; SEND_AT=10; LATE_ECHO=on;  RESET_CYCLE=off; COMPETING=single;    LABEL="late server echo recovers an uncertain send" ;;
-  send-partial-recover) SERVER_MODE=stall; FAULT_AT=5; BUDGET=50; SEND_AT=10; LATE_ECHO=on;  RESET_CYCLE=off; COMPETING=competing; LABEL="one recovered send must not hide another failure" ;;
-  reset-replay)         SERVER_MODE=close; FAULT_AT=8; BUDGET=18; SEND_AT=-1; LATE_ECHO=off; RESET_CYCLE=on;  COMPETING=single;    LABEL="server seq 100 resets and rebuilds from seq 1" ;;
-  *) echo "unknown mode '$MODE' (want: close | stall | send-loss | send-recover | send-partial-recover | reset-replay)" >&2; exit 2 ;;
+  close)        SERVER_MODE=close; FAULT_AT=8; BUDGET=30;  SEND_AT=-1; LATE_ECHO=off; RESET_CYCLE=off; PROMPT_CYCLE=off; PROMPT_DUPLICATE=off; PROMPT_ANSWER=none; COMPETING=single; LABEL="server drops the socket every 8s" ;;
+  stall)        SERVER_MODE=stall; FAULT_AT=5; BUDGET=120; SEND_AT=-1; LATE_ECHO=off; RESET_CYCLE=off; PROMPT_CYCLE=off; PROMPT_DUPLICATE=off; PROMPT_ANSWER=none; COMPETING=single; LABEL="socket goes silently half-open (keepalive must catch it)" ;;
+  send-loss)    SERVER_MODE=stall; FAULT_AT=5; BUDGET=45;  SEND_AT=10; LATE_ECHO=off; RESET_CYCLE=off; PROMPT_CYCLE=off; PROMPT_DUPLICATE=off; PROMPT_ANSWER=none; COMPETING=single; LABEL="send into a silently half-open socket" ;;
+  send-recover)         SERVER_MODE=stall; FAULT_AT=5; BUDGET=48; SEND_AT=10; LATE_ECHO=on;  RESET_CYCLE=off; PROMPT_CYCLE=off; PROMPT_DUPLICATE=off; PROMPT_ANSWER=none; COMPETING=single;    LABEL="late server echo recovers an uncertain send" ;;
+  send-partial-recover) SERVER_MODE=stall; FAULT_AT=5; BUDGET=50; SEND_AT=10; LATE_ECHO=on;  RESET_CYCLE=off; PROMPT_CYCLE=off; PROMPT_DUPLICATE=off; PROMPT_ANSWER=none; COMPETING=competing; LABEL="one recovered send must not hide another failure" ;;
+  reset-replay)         SERVER_MODE=close; FAULT_AT=8; BUDGET=18; SEND_AT=-1; LATE_ECHO=off; RESET_CYCLE=on;  PROMPT_CYCLE=off; PROMPT_DUPLICATE=off; PROMPT_ANSWER=none; COMPETING=single;    LABEL="server seq 100 resets and rebuilds from seq 1" ;;
+  prompt-cycle)         SERVER_MODE=alive; FAULT_AT=8; BUDGET=8; SEND_AT=-1; LATE_ECHO=off; RESET_CYCLE=off; PROMPT_CYCLE=on;  PROMPT_DUPLICATE=off; PROMPT_ANSWER=B; COMPETING=single; LABEL="PromptBus request, response, and dismiss" ;;
+  prompt-duplicate)     SERVER_MODE=alive; FAULT_AT=8; BUDGET=8; SEND_AT=-1; LATE_ECHO=off; RESET_CYCLE=off; PROMPT_CYCLE=on;  PROMPT_DUPLICATE=on;  PROMPT_ANSWER=B; COMPETING=single; LABEL="duplicate PromptBus ids collapse to one control" ;;
+  *) echo "unknown mode '$MODE' (want: close | stall | send-loss | send-recover | send-partial-recover | reset-replay | prompt-cycle | prompt-duplicate)" >&2; exit 2 ;;
 esac
 
 # Build a throwaway package around the REAL store sources (symlinked, never copied —
@@ -60,13 +64,13 @@ echo "building probe against $APP/DashboardStore.swift"
 [ -x "$WORK/.build/debug/StoreProbe" ] || { echo "PROBE BUILD FAILED (no binary)" >&2; exit 1; }
 
 TRACE="$WORK/trace.jsonl"
-node "$HERE/ws-fault-server.mjs" --mode="$SERVER_MODE" --after="$FAULT_AT" --port="$PORT" --lateEcho="$LATE_ECHO" --resetCycle="$RESET_CYCLE" --trace="$TRACE" >"$WORK/srv.log" 2>&1 &
+node "$HERE/ws-fault-server.mjs" --mode="$SERVER_MODE" --after="$FAULT_AT" --port="$PORT" --lateEcho="$LATE_ECHO" --resetCycle="$RESET_CYCLE" --promptCycle="$PROMPT_CYCLE" --promptDuplicate="$PROMPT_DUPLICATE" --trace="$TRACE" >"$WORK/srv.log" 2>&1 &
 SRV_PID=$!
 sleep 1
 
 echo "running: $LABEL (${BUDGET}s)"
 PROBE_OUT="$WORK/probe.log"
-"$WORK/.build/debug/StoreProbe" "http://127.0.0.1:$PORT" "$BUDGET" 2 -1 "$SEND_AT" "$COMPETING" | tee "$PROBE_OUT" | grep -E "phase ->|sending into|competing failure|final" || true
+"$WORK/.build/debug/StoreProbe" "http://127.0.0.1:$PORT" "$BUDGET" 2 -1 "$SEND_AT" "$COMPETING" "$PROMPT_ANSWER" | tee "$PROBE_OUT" | grep -E "phase ->|sending into|competing failure|responding to prompt|final" || true
 kill $SRV_PID 2>/dev/null || true
 sleep 0.3
 
@@ -77,7 +81,7 @@ echo "connections=$CONNECTIONS  subscribe frames received=$SUBSCRIBES"
 
 # The check can fail two ways, and both matter: no reconnect at all (nothing was
 # exercised), or reconnects that left the chat unsubscribed (the regression).
-if [ "$CONNECTIONS" -lt 2 ]; then
+if [[ "$MODE" != prompt-* ]] && [ "$CONNECTIONS" -lt 2 ]; then
   echo "FAIL: only $CONNECTIONS connection(s) — the drop never triggered a reconnect," >&2
   echo "      so this run proves nothing. Check the fault server log: $WORK/srv.log" >&2
   exit 1
@@ -116,6 +120,17 @@ elif [ "$MODE" = "reset-replay" ]; then
     exit 1
   fi
   echo "PASS: reset discarded seq-100 history and accepted replay 1 + live 2."
+elif [[ "$MODE" == prompt-* ]]; then
+  RESPONSE_COUNT=$(grep -c '"ev":"rx_prompt_response"' "$TRACE" || true)
+  if ! grep -q 'prompts=0' "$PROBE_OUT" \
+      || ! grep -q '"ev":"rx_prompt_response".*"answer":"B".*"cancelled":false.*"source":"dashboard-default"' "$TRACE" \
+      || [ "$RESPONSE_COUNT" -ne 1 ]; then
+    echo "FAIL: PromptBus request did not resolve through exactly one native response + server dismiss." >&2
+    grep 'final:' "$PROBE_OUT" >&2 || true
+    grep 'rx_prompt_response' "$TRACE" >&2 || true
+    exit 1
+  fi
+  echo "PASS: prompt appeared once, native answered B once, server dismissed it, prompt count returned to zero."
 else
   echo "PASS: every connection re-subscribed the open chat."
 fi

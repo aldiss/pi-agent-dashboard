@@ -11,6 +11,8 @@ sent. Command line only: no simulator, no signing, no network, no npm install.
 ./run-reconnect-check.sh send-recover          # late echo recovers row + banner
 ./run-reconnect-check.sh send-partial-recover  # other failed send keeps its banner
 ./run-reconnect-check.sh reset-replay           # seq 100 → reset → replay 1/live 2
+./run-reconnect-check.sh prompt-cycle           # request → answer B → server dismiss
+./run-reconnect-check.sh prompt-duplicate       # recursive second id renders/submits once
 ```
 
 Exit 0 = the selected invariant holds. Exit 1 = behavior failed, or the fault never
@@ -31,7 +33,8 @@ Measured on build 1: 4 reconnects → 4 `session_view` frames, 1 `subscribe`. Fi
 Later modes cover composed failures found after that fix: a half-open socket accepts
 bytes locally while the server receives nothing; full replay must preserve the failed
 local row; a late wrapped echo must recover it without hiding another failed send;
-and `session_state_reset` must clear the old sequence namespace.
+`session_state_reset` must clear the old sequence namespace; and a PromptBus request
+must remain visible until its answer receives an authoritative dismiss.
 
 ## Why the shape
 

@@ -52,6 +52,23 @@ struct RealStoreProbe {
                 }
             }
         }
+
+        // arg 7: answer the first PromptBus request once it arrives.
+        let promptAnswer = CommandLine.arguments.count > 7 ? CommandLine.arguments[7] : "none"
+        if promptAnswer != "none" {
+            Task { @MainActor in
+                for _ in 0..<50 {
+                    if let prompt = store.prompts("sess-probe-1").first {
+                        print("[store \(el())s] responding to prompt \(prompt.promptId)")
+                        await store.respondToPrompt(
+                            "sess-probe-1", promptId: prompt.promptId,
+                            answer: promptAnswer, cancelled: false)
+                        return
+                    }
+                    try? await Task.sleep(for: .milliseconds(100))
+                }
+            }
+        }
         var lastPhase = "\(store.phase)"
         let deadline = Date().addingTimeInterval(budget)
         while Date() < deadline {
@@ -66,7 +83,8 @@ struct RealStoreProbe {
         let otherDelivery = other?.delivery.map { String(describing: $0) } ?? "absent"
         let failure = store.sendFailures["sess-probe-1"] ?? "none"
         let contents = finalState.messages.map(\.content).joined(separator: "|")
-        print("[store \(el())s] final: phase=\(store.phase) sessions=\(store.sessions.count) delivery=\(delivery) other=\(otherDelivery) failure=\(failure) contents=\(contents)")
+        let promptCount = store.prompts("sess-probe-1").count
+        print("[store \(el())s] final: phase=\(store.phase) sessions=\(store.sessions.count) delivery=\(delivery) other=\(otherDelivery) failure=\(failure) prompts=\(promptCount) contents=\(contents)")
         exit(0)
     }
 }

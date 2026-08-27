@@ -35,6 +35,7 @@ struct ChatView: View {
 
     private var state: ChatSessionState { store.chatState(sessionId) }
     private var session: DashboardSession? { store.sessions[sessionId] }
+    private var prompts: [DashboardPromptRequest] { store.prompts(sessionId) }
 
     /// The rows actually rendered: the reduced messages passed through the active
     /// message-type filter (tool spam / thinking / raw lifecycle hidden by default).
@@ -242,22 +243,47 @@ struct ChatView: View {
                     // Spacing 16 (was 10) so messages don't crowd — with the sender
                     // headers + assistant card (round 3.3) each row reads as a block.
                     LazyVStack(alignment: .leading, spacing: 16) {
-                        if state.messages.isEmpty {
+                        if state.messages.isEmpty && prompts.isEmpty && !state.isStreaming {
                             emptyState
-                        } else if filteredMessages.isEmpty {
-                            filteredEmptyState
                         } else {
-                            if windowed.hiddenCount > 0 {
-                                loadEarlierHeader(windowed.hiddenCount)
-                            }
-                            ForEach(windowed.rows) { message in
-                                if message.id == unreadSummary.firstUnreadId
-                                    && unreadSummary.firstUnreadId != windowed.rows.first?.id {
-                                    unreadDivider
+                            if !state.messages.isEmpty {
+                                if filteredMessages.isEmpty {
+                                    filteredEmptyState
+                                } else {
+                                    if windowed.hiddenCount > 0 {
+                                        loadEarlierHeader(windowed.hiddenCount)
+                                    }
+                                    ForEach(windowed.rows) { message in
+                                        if message.id == unreadSummary.firstUnreadId
+                                            && unreadSummary.firstUnreadId != windowed.rows.first?.id {
+                                            unreadDivider
+                                        }
+                                        ChatMessageRow(message: message) { ui in lightboxImage = ui }
+                                            .id(message.id)
+                                    }
                                 }
-                                ChatMessageRow(message: message) { ui in lightboxImage = ui }
-                                    .id(message.id)
                             }
+
+                            // PromptBus requests are real operator-blocking controls,
+                            // not raw/debug rows. Render even when history is empty or
+                            // filtered so ask_user can never disappear from the phone.
+                            ForEach(prompts) { prompt in
+                                PromptCard(
+                                    request: prompt,
+                                    isResponding: store.isPromptResponding(
+                                        sessionId: sessionId, promptId: prompt.promptId)
+                                ) { answer, cancelled in
+                                    Task {
+                                        await store.respondToPrompt(
+                                            sessionId, promptId: prompt.promptId,
+                                            answer: answer, cancelled: cancelled)
+                                    }
+                                }
+                                .id("prompt-\(prompt.promptId)")
+                            }
+
+                            // Keep live activity visible even with no committed rows or
+                            // when the active filter hides every historical message.
                             if state.isStreaming { streamingIndicator }
                             // Bottom sentinel: zero-height scroll anchor + a geometry
                             // probe reporting its position in the fixed viewport space.
@@ -296,6 +322,7 @@ struct ChatView: View {
                 // when already near the bottom, so a manual scroll-up to read history
                 // is never fought (and NEVER on open — see restoreOnOpen).
                 .onChange(of: state.messages.count) { _, _ in autoFollow(proxy) }
+                .onChange(of: prompts.count) { _, _ in autoFollow(proxy) }
                 .onChange(of: state.streamingText) { _, _ in autoFollow(proxy) }
             }
             .coordinateSpace(name: "chat-viewport")

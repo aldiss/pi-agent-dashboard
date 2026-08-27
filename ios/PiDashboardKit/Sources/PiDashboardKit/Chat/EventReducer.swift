@@ -2,9 +2,9 @@ import Foundation
 
 /// The role a rendered chat row plays. Faithful subset of the `ChatMessage.role`
 /// union in `packages/client/src/lib/event-reducer.ts` (the MVP renders text /
-/// thinking / tool call+result / turn separators / bash output / raw events;
-/// interactive-UI, command-feedback queue cards and flow/architect panels are
-/// deferred per DESIGN.md §7).
+/// thinking / tool call+result / turn separators / bash output / raw events).
+/// PromptBus interactive controls are store-owned `DashboardPromptRequest` values,
+/// not transcript roles; flow/architect panels remain outside this reducer.
 public enum ChatRole: String, Sendable, Equatable {
     case user, assistant, toolResult, thinking, bashOutput, commandFeedback, turnSeparator, rawEvent
 }

@@ -87,8 +87,13 @@ final class DashboardStore {
     /// subscribed with `lastSeq: nil`) → reset state before reducing so history can't
     /// duplicate. A resume replay (subscribed with a real lastSeq) is NOT in this set.
     private var expectingFullReplay: Set<String> = []
-    /// sessionId → last send failure reason (bridge absent), surfaced in ChatView.
+    /// sessionId → last send/prompt-response failure surfaced in ChatView.
     private(set) var sendFailures: [String: String] = [:]
+    private enum SendFailureOwner: Equatable {
+        case message(String?) // queue/optimistic nonce; nil when server omitted it
+        case prompt(String)
+    }
+    private var sendFailureOwners: [String: SendFailureOwner] = [:]
     /// Sessions with an in-flight abort (optimistic "stopping…" state). Cleared when
     /// the server confirms the stop via a status→idle/ended `session_updated` delta.
     private(set) var aborting: Set<String> = []
@@ -106,6 +111,11 @@ final class DashboardStore {
     private(set) var actionError: String?
     /// sessionId → available models (populated by `models_list` after requestModels).
     private(set) var availableModels: [String: [ModelInfo]] = [:]
+    /// PromptBus requests waiting for this operator. Kept until authoritative
+    /// prompt_dismiss/prompt_cancel; a local socket write is not completion.
+    private(set) var pendingPrompts: [String: [DashboardPromptRequest]] = [:]
+    private struct PromptKey: Hashable { let sessionId: String; let promptId: String }
+    private var promptResponsesInFlight: Set<PromptKey> = []
     /// sessionId currently on screen — drives session_view/unview.
     private(set) var viewedSessionId: String?
 
@@ -310,6 +320,9 @@ final class DashboardStore {
         bufferedDuringReplay.removeAll()
         replayInFlight.removeAll()
         replayGeneration.removeAll()
+        pendingPrompts.removeAll()
+        promptResponsesInFlight.removeAll()
+        sendFailureOwners.removeAll()
     }
 
     /// Evict all per-session chat/seq/replay caches for one session (Cluster 1). Used
@@ -322,6 +335,10 @@ final class DashboardStore {
         bufferedDuringReplay.removeValue(forKey: sid)
         replayInFlight.remove(sid)
         replayGeneration.removeValue(forKey: sid)
+        pendingPrompts.removeValue(forKey: sid)
+        promptResponsesInFlight = Set(promptResponsesInFlight.filter { $0.sessionId != sid })
+        sendFailures.removeValue(forKey: sid)
+        sendFailureOwners.removeValue(forKey: sid)
     }
 
     // MARK: Message application
@@ -442,16 +459,21 @@ final class DashboardStore {
                 // A no-ack deadline is uncertainty, not proof of loss. If this real
                 // event recovers the SAME failed optimistic row, retract the stale
                 // failure banner. Unrelated events/failures leave it untouched.
-                let recovered = before.messages.contains { previous in
-                    previous.delivery == .failed && previous.id.hasPrefix("optim-")
-                        && after.messages.contains {
-                            $0.id == previous.id && $0.delivery == .confirmed
-                        }
-                }
+                let recoveredNonces = Set(before.messages.compactMap { previous -> String? in
+                    guard previous.delivery == .failed,
+                          previous.id.hasPrefix("optim-"),
+                          after.messages.contains(where: {
+                              $0.id == previous.id && $0.delivery == .confirmed
+                          }) else { return nil }
+                    return String(previous.id.dropFirst("optim-".count))
+                })
                 let stillFailed = after.messages.contains {
                     $0.id.hasPrefix("optim-") && $0.delivery == .failed
                 } || after.queued.contains { $0.status == .failed }
-                if recovered && !stillFailed { sendFailures.removeValue(forKey: sid) }
+                if case .message(let ownerNonce) = sendFailureOwners[sid],
+                   ownerNonce.map(recoveredNonces.contains) ?? (!recoveredNonces.isEmpty && !stillFailed) {
+                    clearSendFailure(sid)
+                }
             }
 
         case .sendPromptFailed(let sid, let queueNonce, let reason):
@@ -504,6 +526,24 @@ final class DashboardStore {
             spawning.remove(cwd)
             let detail = message.isEmpty ? "Spawn failed." : message
             actionError = code.map { "\(detail) (\($0))" } ?? detail
+
+        case .promptRequest(let request):
+            var requests = pendingPrompts[request.sessionId] ?? []
+            if let index = requests.firstIndex(where: { $0.promptId == request.promptId }) {
+                requests[index] = request // idempotent replay/update in place
+            } else if !requests.contains(where: {
+                // Recursive proxy paths can mint a second id for the same pending
+                // dialog. PWA suppresses it by method + title; native must not render
+                // two controls that can submit the operator's answer twice.
+                $0.prompt.method == request.prompt.method
+                    && $0.prompt.question == request.prompt.question
+            }) {
+                requests.append(request)
+            }
+            pendingPrompts[request.sessionId] = requests
+
+        case .promptDismiss(let sid, let promptId), .promptCancel(let sid, let promptId):
+            removePrompt(sessionId: sid, promptId: promptId)
 
         case .unknown:
             break
@@ -585,7 +625,7 @@ final class DashboardStore {
     /// this session before, else a full replay) + mark viewed (session_view).
     func openSession(_ sid: String) async {
         viewedSessionId = sid
-        sendFailures.removeValue(forKey: sid)
+        clearSendFailure(sid)
         await subscribe(sid)
         await safeSend(.sessionView(sessionId: sid))
     }
@@ -618,6 +658,56 @@ final class DashboardStore {
     }
 
     func chatState(_ sid: String) -> ChatSessionState { chatStates[sid] ?? ChatSessionState() }
+
+    // MARK: PromptBus
+
+    func prompts(_ sid: String) -> [DashboardPromptRequest] {
+        pendingPrompts[sid] ?? []
+    }
+
+    func isPromptResponding(sessionId: String, promptId: String) -> Bool {
+        promptResponsesInFlight.contains(PromptKey(sessionId: sessionId, promptId: promptId))
+    }
+
+    /// Send an answer but keep the prompt visible until the PromptBus authoritatively
+    /// dismisses/cancels it. This prevents a half-open socket from silently swallowing
+    /// the operator's decision while native removes the only response control.
+    func respondToPrompt(_ sid: String, promptId: String,
+                         answer: String?, cancelled: Bool) async {
+        guard pendingPrompts[sid]?.contains(where: { $0.promptId == promptId }) == true else { return }
+        let key = PromptKey(sessionId: sid, promptId: promptId)
+        guard !promptResponsesInFlight.contains(key) else { return }
+        promptResponsesInFlight.insert(key)
+        do {
+            try await client.send(.promptResponse(
+                sessionId: sid, promptId: promptId, answer: answer,
+                cancelled: cancelled, source: "dashboard-default"))
+        } catch {
+            promptResponsesInFlight.remove(key)
+            setSendFailure(sid, reason: "Couldn't send your response — not connected.",
+                           owner: .prompt(promptId))
+            return
+        }
+
+        // `prompt_dismiss` is the acknowledgement. If it never arrives, re-enable
+        // the prompt and show the uncertainty instead of leaving a permanent spinner.
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(30))
+            guard let self, self.promptResponsesInFlight.remove(key) != nil,
+                  self.pendingPrompts[sid]?.contains(where: { $0.promptId == promptId }) == true
+            else { return }
+            self.setSendFailure(
+                sid, reason: "Response wasn't confirmed — check the connection and try again.",
+                owner: .prompt(promptId))
+        }
+    }
+
+    private func removePrompt(sessionId: String, promptId: String) {
+        pendingPrompts[sessionId]?.removeAll { $0.promptId == promptId }
+        if pendingPrompts[sessionId]?.isEmpty == true { pendingPrompts.removeValue(forKey: sessionId) }
+        promptResponsesInFlight.remove(PromptKey(sessionId: sessionId, promptId: promptId))
+        if sendFailureOwners[sessionId] == .prompt(promptId) { clearSendFailure(sessionId) }
+    }
 
     // MARK: Read-position + engagement-weighted unread (DF#3)
 
@@ -666,7 +756,7 @@ final class DashboardStore {
                 text: trimmed, images: images ?? [], timestamp: nowMs(), nonce: nonce)
         }
         chatStates[sid] = state
-        sendFailures.removeValue(forKey: sid)
+        clearSendFailure(sid)
 
         // 2) Fire the send; surface a throw (not-connected / socket error) as a
         // failed bubble/card + banner so a send that didn't land is VISIBLE.
@@ -695,7 +785,9 @@ final class DashboardStore {
                       }) else { return }
                 state = state.markingOptimisticFailed(nonce: nonce)
                 self.chatStates[sid] = state
-                self.sendFailures[sid] = "Message wasn't confirmed — check the connection and send again."
+                self.setSendFailure(
+                    sid, reason: "Message wasn't confirmed — check the connection and send again.",
+                    owner: .message(nonce))
             }
         }
     }
@@ -833,7 +925,17 @@ final class DashboardStore {
             }
             chatStates[sid] = state
         }
+        setSendFailure(sid, reason: reason, owner: .message(nonce))
+    }
+
+    private func setSendFailure(_ sid: String, reason: String, owner: SendFailureOwner) {
         sendFailures[sid] = reason
+        sendFailureOwners[sid] = owner
+    }
+
+    private func clearSendFailure(_ sid: String) {
+        sendFailures.removeValue(forKey: sid)
+        sendFailureOwners.removeValue(forKey: sid)
     }
 
     /// Epoch-ms timestamp for optimistic rows (matches the server event timebase).

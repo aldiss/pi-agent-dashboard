@@ -27,6 +27,8 @@ const TRACE = args.trace ?? "/tmp/portico5/trace.jsonl";
 const APP_PONG = args.pong !== "off";
 const LATE_ECHO = args.lateEcho === "on";
 const RESET_CYCLE = args.resetCycle === "on";
+const PROMPT_CYCLE = args.promptCycle === "on";
+const PROMPT_DUPLICATE = args.promptDuplicate === "on";
 let connectionCount = 0;
 
 const t0 = Date.now();
@@ -164,6 +166,11 @@ server.on("upgrade", (req, socket) => {
     }
     trace({ ev: "rx", type: msg.type, sessionId: msg.sessionId });
     if (msg.type === "ping" && APP_PONG) send({ type: "pong" });
+    if (msg.type === "prompt_response") {
+      trace({ ev: "rx_prompt_response", promptId: msg.promptId,
+              answer: msg.answer, cancelled: msg.cancelled, source: msg.source });
+      send({ type: "prompt_dismiss", sessionId: msg.sessionId, promptId: msg.promptId });
+    }
     if (msg.type === "subscribe") {
       if (RESET_CYCLE && connectionNumber === 1) {
         // Establish an old server sequence namespace at 100.
@@ -186,6 +193,23 @@ server.on("upgrade", (req, socket) => {
         });
       } else {
         send({ type: "event_replay", sessionId: msg.sessionId, events: [], isLast: true });
+      }
+      if (PROMPT_CYCLE && connectionNumber === 1) {
+        const prompt = {
+          type: "prompt_request",
+          sessionId: msg.sessionId,
+          promptId: "prompt-1",
+          prompt: {
+            question: "Choose target",
+            type: "select",
+            options: ["A", "B"],
+            metadata: { message: "Round-trip probe" },
+          },
+          component: { type: "generic-dialog", props: {} },
+          placement: "inline",
+        };
+        send(prompt);
+        if (PROMPT_DUPLICATE) send({ ...prompt, promptId: "prompt-2" });
       }
       // After recovery, deliver the real server echo that the black-holed first
       // socket could not acknowledge. No queueNonce: this matches persisted replay.
