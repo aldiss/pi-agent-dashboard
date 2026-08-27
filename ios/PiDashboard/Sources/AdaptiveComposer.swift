@@ -18,7 +18,7 @@ struct AdaptiveComposer: View {
     /// The operator `pi_dash_token` cookie — carried on the voice sidecar's REST calls
     /// (transcribe/health) so they pass the multi-operator gate with operator identity.
     let serverCookie: String?
-    let onSend: (String, [ImageContent]) -> Void
+    let onSend: (String, [ImageContent]) async -> Bool
     let onStop: () -> Void
     /// Optional one-time seed for the draft (the `-uitest-composer-overflow` probe
     /// pre-fills a long line to screenshot-verify wrapping). nil in normal use.
@@ -28,10 +28,10 @@ struct AdaptiveComposer: View {
     @Environment(ThemeController.self) private var themeController
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    @State private var text = ""
+    @Binding private var text: String
     @State private var isMultiline = false
     @State private var measuredHeight: Double = ComposerLayout.minHeight
-    @State private var images: [ImageContent] = []
+    @Binding private var images: [ImageContent]
     @State private var photoItems: [PhotosPickerItem] = []
     @State private var voice = VoiceRecorder()
     @State private var micPulse = false
@@ -45,9 +45,28 @@ struct AdaptiveComposer: View {
     /// Marks the NEXT `text` change as programmatic (send-clear / voice-append) so the
     /// text view force-applies it; a lagging streaming re-render never clobbers typing.
     @State private var textSignal = ComposerTextSignal()
+    /// One tap → one client nonce while the local socket send is awaiting completion.
+    @State private var sendInFlight = false
+
+    init(isWorking: Bool, queuedCount: Int, serverBase: URL?, serverToken: String?,
+         serverCookie: String?, onSend: @escaping (String, [ImageContent]) async -> Bool,
+         onStop: @escaping () -> Void, initialText: String? = nil,
+         text: Binding<String>, images: Binding<[ImageContent]>) {
+        self.isWorking = isWorking
+        self.queuedCount = queuedCount
+        self.serverBase = serverBase
+        self.serverToken = serverToken
+        self.serverCookie = serverCookie
+        self.onSend = onSend
+        self.onStop = onStop
+        self.initialText = initialText
+        _text = text
+        _images = images
+    }
 
     private var canSend: Bool {
-        ComposerLayout.canSend(text: text, imageCount: images.count, disabled: false)
+        !sendInFlight && ComposerLayout.canSend(
+            text: text, imageCount: images.count, disabled: false)
     }
 
     var body: some View {
@@ -243,11 +262,14 @@ struct AdaptiveComposer: View {
             }
             .opacity(voice.micEnabled ? 1 : 0.4)
         }
-        .disabled(!voice.micEnabled && !voice.isRecording && !voice.isUploading)
+        .disabled(voice.isUploading || (!voice.micEnabled && !voice.isRecording))
         .accessibilityIdentifier("mobile-composer-mic")
         .accessibilityValue(micAccessibilityValue)
-        .accessibilityLabel(voice.isRecording ? "Stop recording" :
-            (voice.micEnabled ? "Record voice" : "Voice service starting"))
+        .accessibilityLabel(
+            voice.isStarting ? "Cancel microphone start" :
+            (voice.isUploading ? "Transcribing recording" :
+             (voice.isRecording ? "Stop recording" :
+              (voice.micEnabled ? "Record voice" : "Voice service starting"))))
         .onAppear { micPulse = false }
         // Reduce Motion (Cluster 5): no infinite repeat when the user asked to reduce
         // motion — fall back to a non-looping default.
@@ -257,7 +279,7 @@ struct AdaptiveComposer: View {
     }
 
     @ViewBuilder private var micGlyph: some View {
-        if voice.isUploading {
+        if voice.isUploading || voice.phase == .starting {
             ProgressView().controlSize(.small).tint(theme.textSecondary)
         } else {
             Image(systemName: voice.isRecording ? "waveform" : "mic.fill")
@@ -268,6 +290,7 @@ struct AdaptiveComposer: View {
 
     private var micAccessibilityValue: String {
         switch voice.phase {
+        case .starting: return "starting"
         case .recording: return "recording"
         case .uploading: return "uploading"
         case .idle: return voice.micEnabled ? "idle" : "disabled"
@@ -361,14 +384,25 @@ struct AdaptiveComposer: View {
 
     private func send() {
         guard canSend else { return }
+        sendInFlight = true
+        let outgoingText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let outgoingImages = images
         Haptics.success()
-        onSend(text.trimmingCharacters(in: .whitespacesAndNewlines), images)
-        textSignal.markProgrammatic() // force the clear through even while first responder
-        text = ""
-        images = []
-        photoItems = []
-        measuredHeight = ComposerLayout.minHeight
-        isMultiline = false
+        Task {
+            let accepted = await onSend(outgoingText, outgoingImages)
+            sendInFlight = false
+            guard accepted else { return } // keep editable draft/images on local failure
+            // A send normally resolves immediately. If the operator edited while it
+            // awaited the socket, never erase that newer draft/attachment state.
+            guard text.trimmingCharacters(in: .whitespacesAndNewlines) == outgoingText,
+                  images == outgoingImages else { return }
+            textSignal.markProgrammatic() // force clear through while first responder
+            text = ""
+            images = []
+            photoItems = []
+            measuredHeight = ComposerLayout.minHeight
+            isMultiline = false
+        }
     }
 
     private func stop() {
@@ -380,11 +414,12 @@ struct AdaptiveComposer: View {
     /// draft via the core `TranscriptAppender`. The pulse flag flips on so the ring
     /// loops while recording.
     private func toggleMic() {
-        let recordingBase = text
-        voice.toggle(base: recordingBase) { composed in
+        voice.toggle { transcript in
             textSignal.markProgrammatic() // voice transcript is a programmatic append
             pendingProgrammaticLayout = true // arm the one-shot re-flip once the wrapped height lands
-            text = composed
+            // Append to the CURRENT draft. Text typed during recording/uploading is
+            // preserved instead of being overwritten by a stale recording-start copy.
+            text = TranscriptAppender.append(base: text, transcript: transcript)
         }
         micPulse = false
         DispatchQueue.main.async { micPulse = true }

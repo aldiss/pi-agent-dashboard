@@ -32,7 +32,9 @@ const PROMPT_DUPLICATE = args.promptDuplicate === "on";
 const QUEUE_CYCLE = args.queueCycle === "on";
 const QUEUE_LATE_ACK = args.queueLateAck === "on";
 const MODEL_CYCLE = args.modelCycle ?? "off";
+const IDLE_FIRST_ACK = args.idleFirstAck === "on";
 let connectionCount = 0;
+let idleAckScheduled = false;
 
 const t0 = Date.now();
 const el = () => ((Date.now() - t0) / 1000).toFixed(2);
@@ -169,6 +171,16 @@ server.on("upgrade", (req, socket) => {
     }
     trace({ ev: "rx", type: msg.type, sessionId: msg.sessionId });
     if (msg.type === "ping" && APP_PONG) send({ type: "pong" });
+    if (msg.type === "send_prompt" && IDLE_FIRST_ACK && !idleAckScheduled) {
+      idleAckScheduled = true;
+      setTimeout(() => send({
+        type: "event", sessionId: msg.sessionId, seq: 1,
+        event: { eventType: "message_start", timestamp: Date.now(), data: {
+          queueNonce: msg.queueNonce,
+          message: { role: "user", content: msg.text },
+        } },
+      }), 10_000);
+    }
     if (msg.type === "request_models" && MODEL_CYCLE !== "off") {
       send({ type: "models_list", sessionId: msg.sessionId,
              models: MODEL_CYCLE === "empty" ? [] : [

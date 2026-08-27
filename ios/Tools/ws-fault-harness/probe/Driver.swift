@@ -41,17 +41,26 @@ struct RealStoreProbe {
         // mode after the server has black-holed the socket: URLSession accepts the
         // bytes locally, but no application-level acknowledgement can arrive.
         let sendAt = CommandLine.arguments.count > 5 ? Double(CommandLine.arguments[5])! : -1
-        let competingSend = CommandLine.arguments.count > 6 && CommandLine.arguments[6] == "competing"
+        let competingMode = CommandLine.arguments.count > 6 ? CommandLine.arguments[6] : "single"
+        let competingSend = competingMode == "competing" || competingMode == "same"
         if sendAt > 0 {
             Task { @MainActor in
                 let remaining = max(0, sendAt - Date().timeIntervalSince(start))
                 try? await Task.sleep(for: .seconds(remaining))
                 print("[store \(el())s] sending into fault window")
-                await store.sendPrompt("sess-probe-1", text: "loss probe", images: nil)
+                store.setDraftText("loss probe", for: "sess-probe-1")
+                if await store.sendPrompt("sess-probe-1", text: "loss probe", images: nil) {
+                    // Exactly what AdaptiveComposer does after local acceptance.
+                    store.setDraftText("", for: "sess-probe-1")
+                }
                 if competingSend {
                     try? await Task.sleep(for: .seconds(1))
                     print("[store \(el())s] sending competing failure")
-                    await store.sendPrompt("sess-probe-1", text: "other loss", images: nil)
+                    let secondText = competingMode == "same" ? "loss probe" : "other loss"
+                    store.setDraftText(secondText, for: "sess-probe-1")
+                    if await store.sendPrompt("sess-probe-1", text: secondText, images: nil) {
+                        store.setDraftText("", for: "sess-probe-1")
+                    }
                 }
             }
         }
@@ -83,6 +92,17 @@ struct RealStoreProbe {
                 await store.requestModels("sess-probe-1")
             }
         }
+
+        // arg 9: simulate an operator edit after automatic draft restoration.
+        let editAt = CommandLine.arguments.count > 9 ? Double(CommandLine.arguments[9])! : -1
+        if editAt > 0 {
+            Task { @MainActor in
+                let remaining = max(0, editAt - Date().timeIntervalSince(start))
+                try? await Task.sleep(for: .seconds(remaining))
+                store.setDraftText("loss probe ", for: "sess-probe-1")
+                print("[store \(el())s] operator added trailing space to restored draft")
+            }
+        }
         var lastPhase = "\(store.phase)"
         let deadline = Date().addingTimeInterval(budget)
         while Date() < deadline {
@@ -98,11 +118,14 @@ struct RealStoreProbe {
         let failure = store.sendFailures["sess-probe-1"] ?? "none"
         let contents = finalState.messages.map(\.content).joined(separator: "|")
         let promptCount = store.prompts("sess-probe-1").count
+        let confirmedCount = finalState.messages.filter { $0.delivery == .confirmed }.count
+        let failedCount = finalState.messages.filter { $0.delivery == .failed }.count
         let modelCount = store.availableModels["sess-probe-1"]?.count ?? -1
         let modelPhase = String(describing: store.modelListPhases["sess-probe-1"] ?? .idle)
         let queuedDelivery = finalState.queued.first { $0.text == "loss probe" }
             .map { String(describing: $0.status) } ?? "absent"
-        print("[store \(el())s] final: phase=\(store.phase) sessions=\(store.sessions.count) delivery=\(delivery) other=\(otherDelivery) queue=\(queuedDelivery) failure=\(failure) prompts=\(promptCount) models=\(modelCount) modelPhase=\(modelPhase) contents=\(contents)")
+        let draft = store.draftText("sess-probe-1")
+        print("[store \(el())s] final: phase=\(store.phase) sessions=\(store.sessions.count) delivery=\(delivery) other=\(otherDelivery) confirmed=\(confirmedCount) failed=\(failedCount) queue=\(queuedDelivery) failure=\(failure) prompts=\(promptCount) models=\(modelCount) modelPhase=\(modelPhase) draft=[\(draft)] contents=\(contents)")
         exit(0)
     }
 }

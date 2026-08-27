@@ -72,6 +72,20 @@ final class DashboardStore {
 
     // Chat
     private(set) var chatStates: [String: ChatSessionState] = [:]
+    /// Per-session composer ownership. Text persists across process relaunch; images
+    /// stay memory-only but survive navigation. Neither can leak between sessions.
+    private var draftTexts: [String: String] = [:]
+    private var loadedDraftIds: Set<String> = []
+    private var draftImages: [String: [ImageContent]] = [:]
+    private struct DraftSnapshot: Equatable {
+        let text: String
+        let images: [ImageContent]
+    }
+    /// session → client nonce → values cleared optimistically by the composer.
+    private var pendingDraftSnapshots: [String: [String: DraftSnapshot]] = [:]
+    /// Which snapshot was automatically restored. A later failed send may replace it,
+    /// but any operator edit clears this marker and becomes untouchable.
+    private var restoredDraftNonces: [String: String] = [:]
     /// Sessions whose large `event_replay` is being folded OFF the main actor (DF#5).
     /// Live events + further replay chunks for these sessions buffer until the fold
     /// publishes, so nothing clobbers the historical reduce or lands out of order.
@@ -319,6 +333,7 @@ final class DashboardStore {
     }
 
     func disconnect() {
+        failPendingOperationsOnDisconnect()
         consumeTask?.cancel()
         consumeTask = nil
         Task { await client.disconnect() }
@@ -335,6 +350,8 @@ final class DashboardStore {
         pendingPrompts.removeAll()
         promptResponsesInFlight.removeAll()
         sendFailureOwners.removeAll()
+        pendingDraftSnapshots.removeAll()
+        restoredDraftNonces.removeAll()
         availableModels.removeAll()
         modelListPhases.removeAll()
         modelRequestTokens.removeAll()
@@ -357,6 +374,8 @@ final class DashboardStore {
         availableModels.removeValue(forKey: sid)
         modelListPhases.removeValue(forKey: sid)
         modelRequestTokens.removeValue(forKey: sid)
+        pendingDraftSnapshots.removeValue(forKey: sid)
+        restoredDraftNonces.removeValue(forKey: sid)
     }
 
     // MARK: Message application
@@ -443,7 +462,8 @@ final class DashboardStore {
                 bufferedDuringReplay[sid, default: []].append(contentsOf: evs)
             } else if evs.count <= Self.syncReplayThreshold {
                 // Small batch — fold synchronously (no async overhead / flicker).
-                chatStates[sid] = (chatStates[sid] ?? ChatSessionState()).reduce(events: evs)
+                let before = chatStates[sid] ?? ChatSessionState()
+                applyChatTransition(sid: sid, before: before, after: before.reduce(events: evs))
             } else {
                 // Large batch (the "won't load" hang): fold OFF the main actor so
                 // opening a big session doesn't freeze the UI, then publish on main.
@@ -472,35 +492,7 @@ final class DashboardStore {
                 bufferedDuringReplay[sid, default: []].append(event)
             } else {
                 let before = chatStates[sid] ?? ChatSessionState()
-                let after = before.reduce(event)
-                chatStates[sid] = after
-                // A no-ack deadline is uncertainty, not proof of loss. If this real
-                // event recovers the SAME failed optimistic row, retract the stale
-                // failure banner. Unrelated events/failures leave it untouched.
-                var recoveredNonces = Set(before.messages.compactMap { previous -> String? in
-                    guard previous.delivery == .failed,
-                          previous.id.hasPrefix("optim-"),
-                          after.messages.contains(where: {
-                              $0.id == previous.id && $0.delivery == .confirmed
-                          }) else { return nil }
-                    return String(previous.id.dropFirst("optim-".count))
-                })
-                // Queued recovery can be failed→confirmed (`message_enqueued`) OR
-                // removal (`message_start` dispatch). Both retract only that nonce's
-                // failure, never unrelated traffic.
-                recoveredNonces.formUnion(before.queued.compactMap { previous -> String? in
-                    guard previous.status == .failed else { return nil }
-                    let current = after.queued.first { $0.queueNonce == previous.queueNonce }
-                    return current == nil || current?.status == .confirmed
-                        ? previous.queueNonce : nil
-                })
-                let stillFailed = after.messages.contains {
-                    $0.id.hasPrefix("optim-") && $0.delivery == .failed
-                } || after.queued.contains { $0.status == .failed }
-                if !stillFailed, case .message(let ownerNonce) = sendFailureOwners[sid],
-                   ownerNonce.map(recoveredNonces.contains) ?? !recoveredNonces.isEmpty {
-                    clearSendFailure(sid)
-                }
+                applyChatTransition(sid: sid, before: before, after: before.reduce(event))
             }
 
         case .sendPromptFailed(let sid, let queueNonce, let reason):
@@ -582,6 +574,43 @@ final class DashboardStore {
     /// Dismiss the current action-error banner (Cluster 2).
     func clearActionError() { actionError = nil }
 
+    /// Publish one reducer transition and reconcile draft/error ownership from the
+    /// exact local nonce that moved from pending/failed to confirmed/removed.
+    private func applyChatTransition(sid: String, before: ChatSessionState,
+                                     after: ChatSessionState) {
+        chatStates[sid] = after
+
+        let acknowledgedMessages = before.messages.compactMap { previous -> String? in
+            guard previous.id.hasPrefix("optim-"), previous.delivery != .confirmed,
+                  after.messages.contains(where: {
+                      $0.id == previous.id && $0.delivery == .confirmed
+                  }) else { return nil }
+            return String(previous.id.dropFirst("optim-".count))
+        }
+        let acknowledgedQueue = before.queued.compactMap { previous -> String? in
+            guard previous.status != .confirmed else { return nil }
+            let current = after.queued.first { $0.queueNonce == previous.queueNonce }
+            return current == nil || current?.status == .confirmed ? previous.queueNonce : nil
+        }
+        let acknowledged = Set(acknowledgedMessages + acknowledgedQueue)
+        for nonce in acknowledged { acknowledgeDraft(sid, nonce: nonce) }
+
+        let recovered = acknowledged.intersection(
+            Set(before.messages.compactMap { message in
+                message.delivery == .failed && message.id.hasPrefix("optim-")
+                    ? String(message.id.dropFirst("optim-".count)) : nil
+            } + before.queued.compactMap {
+                $0.status == .failed ? $0.queueNonce : nil
+            }))
+        let stillFailed = after.messages.contains {
+            $0.id.hasPrefix("optim-") && $0.delivery == .failed
+        } || after.queued.contains { $0.status == .failed }
+        if !stillFailed, case .message(let ownerNonce) = sendFailureOwners[sid],
+           ownerNonce.map(recovered.contains) ?? !recovered.isEmpty {
+            clearSendFailure(sid)
+        }
+    }
+
     /// Publish an off-main replay fold back onto the main actor (DF#5). Drains any
     /// live events / further replay chunks that arrived DURING the fold (in arrival
     /// order) onto the reduced state, so the final transcript = history + everything
@@ -594,7 +623,8 @@ final class DashboardStore {
         }
         bufferedDuringReplay.removeValue(forKey: sid)
         replayInFlight.remove(sid)
-        chatStates[sid] = state
+        let before = chatStates[sid] ?? ChatSessionState()
+        applyChatTransition(sid: sid, before: before, after: state)
     }
 
     // MARK: Grouped + filtered view
@@ -767,6 +797,73 @@ final class DashboardStore {
 
     // MARK: Compose (guarded)
 
+    func draftText(_ sid: String) -> String {
+        if !loadedDraftIds.contains(sid) {
+            // Hermetic fixture runs are memory-only so one XCUITest cannot leak a
+            // persisted draft into another app launch (or suppress overflow seeds).
+            draftTexts[sid] = isFixtureMode ? "" : ComposerDraftStore.load(sessionId: sid)
+            loadedDraftIds.insert(sid)
+        }
+        return draftTexts[sid] ?? ""
+    }
+
+    func setDraftText(_ text: String, for sid: String) {
+        if let restored = restoredDraftNonces[sid],
+           let snapshot = pendingDraftSnapshots[sid]?[restored],
+           text != snapshot.text {
+            restoredDraftNonces.removeValue(forKey: sid) // operator edited it
+        }
+        loadedDraftIds.insert(sid)
+        if text.isEmpty { draftTexts.removeValue(forKey: sid) }
+        else { draftTexts[sid] = text }
+        if !isFixtureMode { ComposerDraftStore.save(text, sessionId: sid) }
+    }
+
+    func draftImages(_ sid: String) -> [ImageContent] { draftImages[sid] ?? [] }
+
+    func setDraftImages(_ images: [ImageContent], for sid: String) {
+        if let restored = restoredDraftNonces[sid],
+           let snapshot = pendingDraftSnapshots[sid]?[restored],
+           images != snapshot.images {
+            restoredDraftNonces.removeValue(forKey: sid) // operator edited it
+        }
+        if images.isEmpty { draftImages.removeValue(forKey: sid) }
+        else { draftImages[sid] = images }
+    }
+
+    private func restoreDraftIfNeeded(_ sid: String, nonce: String) {
+        guard let snapshot = pendingDraftSnapshots[sid]?[nonce] else { return }
+        let currentText = draftText(sid)
+        let currentImages = draftImages(sid)
+        let empty = currentText.isEmpty && currentImages.isEmpty
+        let unchangedAutomaticRestore: Bool = {
+            guard let restored = restoredDraftNonces[sid],
+                  let previous = pendingDraftSnapshots[sid]?[restored] else { return false }
+            return currentText == previous.text && currentImages == previous.images
+        }()
+        guard empty || unchangedAutomaticRestore else { return }
+        setDraftText(snapshot.text, for: sid)
+        setDraftImages(snapshot.images, for: sid)
+        restoredDraftNonces[sid] = nonce
+        // Keep the snapshot: a late real acknowledgement should clear this restored
+        // copy if the operator has not edited it meanwhile.
+    }
+
+    private func acknowledgeDraft(_ sid: String, nonce: String) {
+        let ownsAutomaticRestore = restoredDraftNonces[sid] == nonce
+        guard let snapshot = pendingDraftSnapshots[sid]?.removeValue(forKey: nonce) else { return }
+        if pendingDraftSnapshots[sid]?.isEmpty == true { pendingDraftSnapshots.removeValue(forKey: sid) }
+        // Value equality is insufficient: A and B (or an operator edit) can have the
+        // same text/images. Only the nonce that owns the automatic restore may clear it.
+        guard ownsAutomaticRestore else { return }
+        let currentText = draftText(sid)
+        let currentImages = draftImages(sid)
+        guard currentText == snapshot.text, currentImages == snapshot.images else { return }
+        setDraftText("", for: sid)
+        setDraftImages([], for: sid)
+        restoredDraftNonces.removeValue(forKey: sid)
+    }
+
     /// Send a prompt. SAFETY: refuses in UITest/fixture mode so the smoke suite can
     /// never mutate a live operator session (brief §4). Live send is wired but only
     /// fires against a real connected backend the operator drives.
@@ -777,12 +874,15 @@ final class DashboardStore {
     /// shown + the bridge confirms via `message_enqueued` and later dispatches it via
     /// `message_start(queueNonce)`. A send failure flips the matching bubble/card to
     /// failed + surfaces a banner so an undelivered message is visible.
-    func sendPrompt(_ sid: String, text: String, images: [ImageContent]?) async {
-        guard !isUITest else { return }
+    @discardableResult
+    func sendPrompt(_ sid: String, text: String, images: [ImageContent]?) async -> Bool {
+        guard !isUITest else { return true }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty || (images?.isEmpty == false) else { return }
+        guard !trimmed.isEmpty || (images?.isEmpty == false) else { return false }
 
         let nonce = UUID().uuidString
+        pendingDraftSnapshots[sid, default: [:]][nonce] = DraftSnapshot(
+            text: trimmed, images: images ?? [])
         var state = chatStates[sid] ?? ChatSessionState()
         let isStreaming = state.isStreaming
         // 1) Optimistic feedback — queued card while streaming, else a user bubble.
@@ -804,7 +904,9 @@ final class DashboardStore {
             markSendFailed(sid, nonce: nonce,
                            reason: isStreaming ? "Couldn't queue — not connected."
                                                : "Couldn't send — not connected.")
-            return
+            // Composer has not cleared yet because this returns false.
+            pendingDraftSnapshots[sid]?.removeValue(forKey: nonce)
+            return false
         }
 
         // 3) NO-ACK DEADLINE: `URLSessionWebSocketTask.send` returning only means
@@ -823,6 +925,7 @@ final class DashboardStore {
                       }) else { return }
                 state = state.markingOptimisticFailed(nonce: nonce)
                 self.chatStates[sid] = state
+                self.restoreDraftIfNeeded(sid, nonce: nonce)
                 self.setSendFailure(
                     sid, reason: "Message wasn't confirmed — check the connection and send again.",
                     owner: .message(nonce))
@@ -837,11 +940,13 @@ final class DashboardStore {
                       }) else { return }
                 state = state.markingQueuedFailed(nonce: nonce)
                 self.chatStates[sid] = state
+                self.restoreDraftIfNeeded(sid, nonce: nonce)
                 self.setSendFailure(
                     sid, reason: "Queued message wasn't confirmed — check the connection and try again.",
                     owner: .message(nonce))
             }
         }
+        return true
     }
 
     /// Stop a running session — the app's first control action. Optimistically flips
@@ -999,6 +1104,7 @@ final class DashboardStore {
             }
             guard let ownerNonce = queueNonces.last ?? messageNonces.last else { continue }
             chatStates[sid] = state.failingPendingLocalSends()
+            for nonce in messageNonces + queueNonces { restoreDraftIfNeeded(sid, nonce: nonce) }
             setSendFailure(
                 sid, reason: "Connection dropped before the message was confirmed.",
                 owner: .message(ownerNonce))
@@ -1027,6 +1133,7 @@ final class DashboardStore {
             }
             chatStates[sid] = state
         }
+        if let nonce { restoreDraftIfNeeded(sid, nonce: nonce) }
         setSendFailure(sid, reason: reason, owner: .message(nonce))
     }
 

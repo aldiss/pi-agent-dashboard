@@ -18,6 +18,8 @@ sent. Command line only: no simulator, no signing, no network, no npm install.
 ./run-reconnect-check.sh queue-recover          # late bridge ack recovers card + banner
 ./run-reconnect-check.sh model-cache            # two calls → one wire request, cache stays loaded
 ./run-reconnect-check.sh model-empty            # empty catalogue reaches loaded state
+./run-reconnect-check.sh send-same-recover       # ack A cannot clear same-value draft B
+./run-reconnect-check.sh send-edit-recover       # late ack preserves operator whitespace edit
 ```
 
 Exit 0 = the selected invariant holds. Exit 1 = behavior failed, or the fault never

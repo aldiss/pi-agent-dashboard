@@ -39,6 +39,26 @@ final class ComposerFocusUITests: PiDashboardUITestCase {
 
     // MARK: HERMETIC — focus + draft survive the single-row⇄multiline flip (runs today)
 
+    func testDraftSurvivesBackNavigationAndSessionReopen() {
+        launch(Self.fixtureArgs)
+        connectAndEnterList()
+        let sid = openChatBearing()
+        let tv = focusComposer()
+        tv.typeText("NAVDRAFT42")
+        XCTAssertTrue(waitForValueContains(tv, "NAVDRAFT42"))
+
+        app.navigationBars.buttons.firstMatch.tap()
+        _ = waitFor("session-list", 5)
+        guard let session = fixtureSessions.first(where: { $0.id == sid }) else {
+            return XCTFail("opened fixture session disappeared")
+        }
+        waitFor(cardId(session), 5).tap()
+        _ = waitFor("chat-scroll", 5)
+        let reopened = waitFor("mobile-composer-textarea", 5)
+        XCTAssertTrue(waitForValueContains(reopened, "NAVDRAFT42"),
+                      "per-session draft survives ChatView destruction/recreation")
+    }
+
     /// The core repro, no streaming required: focus the composer, type a short entry
     /// (single-row), then a long WRAPPING entry that crosses into multiline WHILE the
     /// field is focused. Assert the flip did NOT (a) dismiss the keyboard, (b) reset or

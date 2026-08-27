@@ -73,10 +73,17 @@ struct ChatView: View {
                 serverToken: nil,
                 serverCookie: store.connectionCookie,
                 onSend: { text, images in
-                    Task { await store.sendPrompt(sessionId, text: text, images: images.isEmpty ? nil : images) }
+                    await store.sendPrompt(
+                        sessionId, text: text, images: images.isEmpty ? nil : images)
                 },
                 onStop: { Task { await store.abort(sessionId) } },
-                initialText: store.composerOverflowText(for: sessionId))
+                initialText: store.composerOverflowText(for: sessionId),
+                text: Binding(
+                    get: { store.draftText(sessionId) },
+                    set: { store.setDraftText($0, for: sessionId) }),
+                images: Binding(
+                    get: { store.draftImages(sessionId) },
+                    set: { store.setDraftImages($0, for: sessionId) }))
         }
         .background(theme.bgPrimary)
         .navigationTitle(title)

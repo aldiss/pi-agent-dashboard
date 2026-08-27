@@ -24,11 +24,15 @@
 #        ./run-reconnect-check.sh queue-recover # late bridge ack recovers card + banner
 #        ./run-reconnect-check.sh model-cache # two calls -> one wire request, cached rows
 #        ./run-reconnect-check.sh model-empty # loaded empty, never endless loading
+#        ./run-reconnect-check.sh send-same-recover # ack A cannot clear same-value B draft
+#        ./run-reconnect-check.sh send-edit-recover # late ack preserves whitespace edit
 set -euo pipefail
 
 MODE="${1:-close}"
 QUEUE_LATE_ACK=off
 MODEL_CYCLE=off
+IDLE_FIRST_ACK=off
+EDIT_AT=-1
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP="$HERE/../../PiDashboard/Sources"
 KIT="$HERE/../../PiDashboardKit"
@@ -50,6 +54,8 @@ case "$MODE" in
   queue-recover)        SERVER_MODE=alive; FAULT_AT=8; BUDGET=16; SEND_AT=3; LATE_ECHO=off; RESET_CYCLE=off; PROMPT_CYCLE=off; PROMPT_DUPLICATE=off; QUEUE_CYCLE=on; QUEUE_LATE_ACK=on; PROMPT_ANSWER=none; MODEL_PROBE=off; COMPETING=single; LABEL="late bridge acknowledgement recovers queued card" ;;
   model-cache)          SERVER_MODE=alive; FAULT_AT=8; BUDGET=6; SEND_AT=-1; LATE_ECHO=off; RESET_CYCLE=off; PROMPT_CYCLE=off; PROMPT_DUPLICATE=off; QUEUE_CYCLE=off; PROMPT_ANSWER=none; MODEL_CYCLE=full; MODEL_PROBE=full; COMPETING=single; LABEL="model catalogue remains cached across second request" ;;
   model-empty)          SERVER_MODE=alive; FAULT_AT=8; BUDGET=6; SEND_AT=-1; LATE_ECHO=off; RESET_CYCLE=off; PROMPT_CYCLE=off; PROMPT_DUPLICATE=off; QUEUE_CYCLE=off; PROMPT_ANSWER=none; MODEL_CYCLE=empty; MODEL_PROBE=empty; COMPETING=single; LABEL="empty model catalogue reaches loaded state" ;;
+  send-same-recover)    SERVER_MODE=alive; FAULT_AT=8; BUDGET=16; SEND_AT=3; LATE_ECHO=off; RESET_CYCLE=off; PROMPT_CYCLE=off; PROMPT_DUPLICATE=off; QUEUE_CYCLE=off; PROMPT_ANSWER=none; MODEL_PROBE=off; COMPETING=same; IDLE_FIRST_ACK=on; LABEL="ack A must not clear same-value restored draft B" ;;
+  send-edit-recover)    SERVER_MODE=alive; FAULT_AT=8; BUDGET=16; SEND_AT=3; LATE_ECHO=off; RESET_CYCLE=off; PROMPT_CYCLE=off; PROMPT_DUPLICATE=off; QUEUE_CYCLE=off; PROMPT_ANSWER=none; MODEL_PROBE=off; COMPETING=single; IDLE_FIRST_ACK=on; EDIT_AT=10; LABEL="late ack must preserve operator whitespace edit" ;;
   *) echo "unknown mode '$MODE' (want: close | stall | send-loss | send-recover | send-partial-recover | reset-replay | prompt-cycle | prompt-duplicate)" >&2; exit 2 ;;
 esac
 
@@ -77,13 +83,13 @@ echo "building probe against $APP/DashboardStore.swift"
 
 TRACE="$WORK/trace.jsonl"
 MODEL_PROBE="${MODEL_PROBE:-off}"
-node "$HERE/ws-fault-server.mjs" --mode="$SERVER_MODE" --after="$FAULT_AT" --port="$PORT" --lateEcho="$LATE_ECHO" --resetCycle="$RESET_CYCLE" --promptCycle="$PROMPT_CYCLE" --promptDuplicate="$PROMPT_DUPLICATE" --queueCycle="$QUEUE_CYCLE" --queueLateAck="$QUEUE_LATE_ACK" --modelCycle="$MODEL_CYCLE" --trace="$TRACE" >"$WORK/srv.log" 2>&1 &
+node "$HERE/ws-fault-server.mjs" --mode="$SERVER_MODE" --after="$FAULT_AT" --port="$PORT" --lateEcho="$LATE_ECHO" --resetCycle="$RESET_CYCLE" --promptCycle="$PROMPT_CYCLE" --promptDuplicate="$PROMPT_DUPLICATE" --queueCycle="$QUEUE_CYCLE" --queueLateAck="$QUEUE_LATE_ACK" --modelCycle="$MODEL_CYCLE" --idleFirstAck="$IDLE_FIRST_ACK" --trace="$TRACE" >"$WORK/srv.log" 2>&1 &
 SRV_PID=$!
 sleep 1
 
 echo "running: $LABEL (${BUDGET}s)"
 PROBE_OUT="$WORK/probe.log"
-"$WORK/.build/debug/StoreProbe" "http://127.0.0.1:$PORT" "$BUDGET" 2 -1 "$SEND_AT" "$COMPETING" "$PROMPT_ANSWER" "$MODEL_PROBE" | tee "$PROBE_OUT" | grep -E "phase ->|sending into|competing failure|responding to prompt|final" || true
+"$WORK/.build/debug/StoreProbe" "http://127.0.0.1:$PORT" "$BUDGET" 2 -1 "$SEND_AT" "$COMPETING" "$PROMPT_ANSWER" "$MODEL_PROBE" "$EDIT_AT" | tee "$PROBE_OUT" | grep -E "phase ->|sending into|competing failure|operator added|responding to prompt|final" || true
 kill $SRV_PID 2>/dev/null || true
 sleep 0.3
 
@@ -94,7 +100,8 @@ echo "connections=$CONNECTIONS  subscribe frames received=$SUBSCRIBES"
 
 # The check can fail two ways, and both matter: no reconnect at all (nothing was
 # exercised), or reconnects that left the chat unsubscribed (the regression).
-if [[ "$MODE" != prompt-* && "$MODE" != queue-loss && "$MODE" != queue-recover && "$MODE" != model-* ]] \
+if [[ "$MODE" != prompt-* && "$MODE" != queue-loss && "$MODE" != queue-recover \
+      && "$MODE" != model-* && "$MODE" != send-same-recover && "$MODE" != send-edit-recover ]] \
     && [ "$CONNECTIONS" -lt 2 ]; then
   echo "FAIL: only $CONNECTIONS connection(s) — the drop never triggered a reconnect," >&2
   echo "      so this run proves nothing. Check the fault server log: $WORK/srv.log" >&2
@@ -106,21 +113,23 @@ if [ "$CONNECTIONS" != "$SUBSCRIBES" ]; then
   exit 1
 fi
 if [ "$MODE" = "send-loss" ]; then
-  if ! grep -q 'delivery=failed' "$PROBE_OUT"; then
-    echo "FAIL: unacknowledged send was not marked failed." >&2
+  if ! grep -q 'delivery=failed' "$PROBE_OUT" || ! grep -q 'draft=\[loss probe\]' "$PROBE_OUT"; then
+    echo "FAIL: unacknowledged send was not marked failed with its editable draft restored." >&2
     grep 'final:' "$PROBE_OUT" >&2 || true
     exit 1
   fi
   echo "PASS: unacknowledged send became visible failure; no false confirmation."
 elif [ "$MODE" = "send-recover" ]; then
-  if ! grep -q 'delivery=confirmed' "$PROBE_OUT" || ! grep -q 'failure=none' "$PROBE_OUT"; then
+  if ! grep -q 'delivery=confirmed' "$PROBE_OUT" || ! grep -q 'failure=none' "$PROBE_OUT" \
+      || ! grep -q 'draft=\[\]' "$PROBE_OUT"; then
     echo "FAIL: late echo did not recover both the row and failure banner." >&2
     grep 'final:' "$PROBE_OUT" >&2 || true
     exit 1
   fi
   echo "PASS: late real echo confirmed the same row and retracted the failure banner."
 elif [ "$MODE" = "send-partial-recover" ]; then
-  if ! grep -q 'delivery=confirmed other=failed' "$PROBE_OUT" || grep -q 'failure=none' "$PROBE_OUT"; then
+  if ! grep -q 'delivery=confirmed other=failed' "$PROBE_OUT" || grep -q 'failure=none' "$PROBE_OUT" \
+      || ! grep -q 'draft=\[other loss\]' "$PROBE_OUT"; then
     echo "FAIL: recovering one send hid a different failed send/banner." >&2
     grep 'final:' "$PROBE_OUT" >&2 || true
     exit 1
@@ -135,19 +144,39 @@ elif [ "$MODE" = "reset-replay" ]; then
   fi
   echo "PASS: reset discarded seq-100 history and accepted replay 1 + live 2."
 elif [ "$MODE" = "queue-recover" ]; then
-  if ! grep -q 'queue=confirmed' "$PROBE_OUT" || ! grep -q 'failure=none' "$PROBE_OUT"; then
+  if ! grep -q 'queue=confirmed' "$PROBE_OUT" || ! grep -q 'failure=none' "$PROBE_OUT" \
+      || ! grep -q 'draft=\[\]' "$PROBE_OUT"; then
     echo "FAIL: late queue acknowledgement did not recover card + banner." >&2
     grep 'final:' "$PROBE_OUT" >&2 || true
     exit 1
   fi
   echo "PASS: late queue acknowledgement confirmed card and retracted its banner."
 elif [[ "$MODE" == queue-* ]]; then
-  if ! grep -q 'queue=failed' "$PROBE_OUT" || grep -q 'failure=none' "$PROBE_OUT"; then
-    echo "FAIL: unacknowledged queued follow-up did not become visible failure." >&2
+  if ! grep -q 'queue=failed' "$PROBE_OUT" || grep -q 'failure=none' "$PROBE_OUT" \
+      || ! grep -q 'draft=\[loss probe\]' "$PROBE_OUT"; then
+    echo "FAIL: unacknowledged queued follow-up did not fail with its draft restored." >&2
     grep 'final:' "$PROBE_OUT" >&2 || true
     exit 1
   fi
   echo "PASS: unacknowledged queued follow-up became failed; banner remains visible."
+elif [ "$MODE" = "send-same-recover" ]; then
+  if ! grep -q 'confirmed=1 failed=1' "$PROBE_OUT" \
+      || ! grep -q 'draft=\[loss probe\]' "$PROBE_OUT" \
+      || grep -q 'failure=none' "$PROBE_OUT"; then
+    echo "FAIL: ack A cleared or hid same-value failed draft B." >&2
+    grep 'final:' "$PROBE_OUT" >&2 || true
+    exit 1
+  fi
+  echo "PASS: ack A confirmed only A; same-value failed B still owns draft + banner."
+elif [ "$MODE" = "send-edit-recover" ]; then
+  if ! grep -q 'confirmed=1 failed=0' "$PROBE_OUT" \
+      || ! grep -q 'failure=none' "$PROBE_OUT" \
+      || ! grep -q 'draft=\[loss probe \]' "$PROBE_OUT"; then
+    echo "FAIL: late ack erased or altered the operator-owned whitespace edit." >&2
+    grep 'final:' "$PROBE_OUT" >&2 || true
+    exit 1
+  fi
+  echo "PASS: late ack settled delivery but preserved byte-exact operator edit."
 elif [ "$MODE" = "model-cache" ]; then
   REQUEST_COUNT=$(grep -c '"type":"request_models"' "$TRACE" || true)
   if [ "$REQUEST_COUNT" -ne 1 ] || ! grep -q 'models=2 modelPhase=loaded' "$PROBE_OUT"; then

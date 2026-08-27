@@ -15,13 +15,14 @@ import PiDashboardKit
 @MainActor
 @Observable
 final class VoiceRecorder {
-    enum Phase: Equatable { case idle, recording, uploading }
+    enum Phase: Equatable { case idle, starting, recording, uploading }
 
     private(set) var phase: Phase = .idle
     private(set) var isHealthy = false
     private(set) var permissionDenied = false
     private(set) var errorMessage: String?
 
+    var isStarting: Bool { phase == .starting }
     var isRecording: Bool { phase == .recording }
     var isUploading: Bool { phase == .uploading }
     /// Mic is actionable only when the sidecar is reachable + healthy.
@@ -37,6 +38,7 @@ final class VoiceRecorder {
 
     private var recorder: AVAudioRecorder?
     private var fileURL: URL?
+    private var startTask: Task<Void, Never>?
     private var healthTask: Task<Void, Never>?
     private var autoStopTask: Task<Void, Never>?
     private var errorClearTask: Task<Void, Never>?
@@ -73,6 +75,9 @@ final class VoiceRecorder {
 
     func onDisappear() {
         healthTask?.cancel(); healthTask = nil
+        startTask?.cancel(); startTask = nil
+        pendingStop = false
+        if phase == .starting { phase = .idle }
         autoStopTask?.cancel(); autoStopTask = nil
         if let backgroundObserver {
             NotificationCenter.default.removeObserver(backgroundObserver)
@@ -83,33 +88,44 @@ final class VoiceRecorder {
 
     // MARK: tap-to-talk
 
-    /// idle → recording → uploading → idle.
-    func toggle(base: String, onTranscript: @escaping (String) -> Void) {
+    /// idle → starting(permission) → recording → uploading → idle.
+    func toggle(onTranscript: @escaping (String) -> Void) {
         switch phase {
-        case .idle: start(base: base, onTranscript: onTranscript)
+        case .idle: start(onTranscript: onTranscript)
+        case .starting: pendingStop = true // second tap = queued cancel, matching PWA
         case .recording: stopAndUpload()
-        case .uploading: break // ignore taps while the upload is in flight
+        case .uploading: break
         }
     }
 
-    private var draftBase = ""
     private var onTranscript: ((String) -> Void)?
+    private var pendingStop = false
 
-    private func start(base: String, onTranscript: @escaping (String) -> Void) {
+    private func start(onTranscript: @escaping (String) -> Void) {
         guard serverBase != nil else {
             showError("Not connected to a server."); return
         }
-        self.draftBase = base
+        phase = .starting // closes the duplicate-start race immediately
+        pendingStop = false
         self.onTranscript = onTranscript
         errorMessage = nil
-        Task { [weak self] in
+        startTask = Task { [weak self] in
             guard let self else { return }
             let granted = await Self.requestMicPermission()
-            if granted { self.beginRecording() } else { self.permissionDenied = true }
+            guard !Task.isCancelled, self.phase == .starting else { return }
+            self.startTask = nil
+            if self.pendingStop {
+                self.pendingStop = false
+                self.phase = .idle
+                return
+            }
+            if granted { self.beginRecording() }
+            else { self.phase = .idle; self.permissionDenied = true }
         }
     }
 
     private func beginRecording() {
+        guard phase == .starting else { return }
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("pi-voice-\(ProcessInfo.processInfo.globallyUniqueString).m4a")
         let settings: [String: Any] = [
@@ -123,7 +139,10 @@ final class VoiceRecorder {
             try session.setCategory(.playAndRecord, mode: .default, options: [.duckOthers, .defaultToSpeaker])
             try session.setActive(true, options: .notifyOthersOnDeactivation)
             let rec = try AVAudioRecorder(url: url, settings: settings)
-            guard rec.record() else { showError("Couldn't start the microphone."); deactivateSession(); return }
+            guard rec.record() else {
+                phase = .idle
+                showError("Couldn't start the microphone."); deactivateSession(); return
+            }
             recorder = rec
             fileURL = url
             phase = .recording
@@ -134,6 +153,7 @@ final class VoiceRecorder {
                 if !Task.isCancelled { await self?.stopAndUpload() }
             }
         } catch {
+            phase = .idle
             showError("Couldn't start audio recording.")
             deactivateSession()
         }
@@ -177,7 +197,9 @@ final class VoiceRecorder {
             }
             switch VoiceTranscriber.parseTranscript(body) {
             case .success(let transcript):
-                onTranscript?(TranscriptAppender.append(base: draftBase, transcript: transcript))
+                // Composer appends to its CURRENT binding. Never compose here against
+                // text captured at recording start; the operator may have typed since.
+                onTranscript?(transcript)
                 finishUpload(error: nil)
             case .failure(.emptyTranscript):
                 finishUpload(error: "No speech detected — try again.")
