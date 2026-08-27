@@ -285,7 +285,9 @@ public struct ChatSessionState: Sendable, Equatable {
     /// Flip the matching queued entry to `failed` (send threw / `send_prompt_failed`).
     /// No-op when the nonce isn't queued. Pure.
     public func markingQueuedFailed(nonce: String) -> ChatSessionState {
-        guard let idx = queued.firstIndex(where: { $0.queueNonce == nonce }) else { return self }
+        guard let idx = queued.firstIndex(where: {
+            $0.queueNonce == nonce && $0.status == .pending
+        }) else { return self }
         var next = self
         next.queued[idx].status = .failed
         return next

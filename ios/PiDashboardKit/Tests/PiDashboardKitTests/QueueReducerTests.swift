@@ -193,6 +193,14 @@ final class QueueReducerTests: XCTestCase {
         XCTAssertEqual(s.markingQueuedFailed(nonce: "other"), s)
     }
 
+    func testLateFailureCannotDemoteConfirmedQueueEntry() {
+        var s = ChatSessionState().enqueueingOptimistic(text: "accepted", nonce: "n1")
+        s = s.reduce(enqueued("n1", "accepted"))
+        XCTAssertEqual(s.queued[0].status, .confirmed)
+        XCTAssertEqual(s.markingQueuedFailed(nonce: "n1"), s,
+                       "late send_prompt_failed must not reverse bridge acknowledgement")
+    }
+
     // MARK: dequeue safety-net (nonce drift/absent — the lingering "1 queued")
 
     /// A CONFIRMED queued follow-up whose dispatch echo carries NO queueNonce must
