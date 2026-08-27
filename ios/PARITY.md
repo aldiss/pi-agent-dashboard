@@ -10,7 +10,7 @@ Owned by **cc-ios-tests**. This is also the template for the iPad / macOS passes
 
 ## Legend
 - ✅ **verified** — parity proven by a test that is **green today**: either
-  `cd ios/PiDashboardKit && swift test` (108, no simulator) OR an `e2e:Fn`
+  `cd ios/PiDashboardKit && swift test` (565, no simulator) OR an `e2e:Fn`
   XCUITest that RUNS GREEN in the integrated `PiDashboardUITests` target
   (`xcodebuild test` on the iOS 26.3.1 simulator).
 - 🟡 **partial** — one layer green, another pending: typically the core logic is
@@ -18,8 +18,8 @@ Owned by **cc-ios-tests**. This is also the template for the iPad / macOS passes
   positive path needs a small build-CC app hook (F6-reconnect).
 - ⛔ **deferred** — out of MVP scope (`DESIGN.md` §7); not yet built/tested.
 
-Test-id key: `swift:SuiteName` = green CLI test; `e2e:Fn` = XCUITest flow
-(`qa-e2e/PiDashboardUITests/`, runs green in the integrated target).
+Test-id key: `swift:SuiteName` = green CLI test; `harness:mode` = real-store
+WebSocket harness; `e2e:Fn` = XCUITest flow (`qa-e2e/PiDashboardUITests/`).
 
 ---
 
@@ -31,6 +31,8 @@ Test-id key: `swift:SuiteName` = green CLI test; `e2e:Fn` = XCUITest flow
 | Health probe (`/api/health`) verifies a live dashboard | `RestClient.health()` decodes `HealthStatus` from real bytes | `swift:SessionDecodingTests` (`testDecodeHealth`) | ✅ |
 | `http(s)` base → `ws(s)` browser-gateway URL | `DashboardClient.websocketURL` scheme/path mapping | `swift:ProtocolRoundTripTests` (`testWebsocketURLMappingMatrix`) | ✅ |
 | Unreachable / non-dashboard URL → error state | `connect-error` banner on failed connect | `e2e:F1` (`testF1_UnreachableServerShowsError`) | ✅ |
+| Per-origin credential; foreign, expired, or remote-HTTP credential omitted without blocking connect | `CredentialOrigin` + `CredentialPolicy`; isolated REST/WS/voice cookie jars | `swift:CredentialOriginTests`, `swift:CredentialPolicyTests`; `harness:cross-origin` | ✅ |
+| OAuth cancellation/exchange/session failures stay visible | `AuthManager.lastError` → `connect-error` | `e2e:ConnectErrorUITests.testExchangeFailureShowsError` | ✅ |
 | Optional bearer token | `connect-token` field → `Authorization: Bearer` header | `swift` (RestClient/DashboardClient header path) | 🟡 |
 | Persist known servers | `KnownServersStore` + `known-server-row-<host>` | — (build-CC owned) | 🟡 |
 | `/api/sessions` initial load (env-wrapped or bare) | `RestClient.sessions()` handles both shapes | `swift:PatchAndModelContractTests` (`testApiResponseEnvelope`), `swift:SessionDecodingTests` | ✅ |
@@ -63,7 +65,8 @@ Test-id key: `swift:SuiteName` = green CLI test; `e2e:Fn` = XCUITest flow
 | `session_updated {updates: Partial<DashboardSession>}` merges onto existing | `SessionPatch.apply(to:)` (present fields only; absent untouched) | `swift:PatchAndModelContractTests` (`testPatchMergesPresentFieldsOnly`, `testPatchAppliesEverySupportedField`, `testSequentialPatchesAccumulate`) | ✅ |
 | `subscribe {sessionId,lastSeq?}` → batched `event_replay` then live `event` | `ClientMessage.subscribe` encode; `ServerMessage.eventReplay`/`event` decode | `swift:ProtocolRoundTripTests` (`testEncodeSubscribe…`, `testEventReplayDefaultsIsLast…`, `testDecodeLiveEventFrame`) | ✅ |
 | Forward-compat: unknown server message types don't break the client | `ServerMessage.unknown(type:)` | `swift:ProtocolRoundTripTests` (`testUnknownTypePreservesWireType`); unknown enum → raw string (`testUnknownStatusStaysRawString`) | ✅ |
-| Reconnect/backoff on socket drop | `DashboardStore.scheduleReconnect` (exp backoff, cap 30s) | — (store-level; identity-gated client) | 🟡 |
+| Reconnect/backoff on socket drop | `DashboardStore.scheduleReconnect` (exp backoff, cap 30s) | `harness:close`, `harness:stall` | ✅ |
+| Rejected WS credential stops backoff and clears only target origin | typed 401 + `/auth/status` discriminator → `.authRequired(origin:)` | `harness:auth-reject` | ✅ |
 | **Real session replay decodes + reduces faithfully** | full `ServerMessage`→`ChatSessionState` on a REAL captured 68-event replay | `swift:ContractE2ETests` (all 6) | ✅ |
 
 ## 4. Session detail / chat (DESIGN §3.3)
@@ -96,6 +99,7 @@ Test-id key: `swift:SuiteName` = green CLI test; `e2e:Fn` = XCUITest flow
 | PWA behavior | Native behavior | Test id | Status |
 |---|---|---|---|
 | Connection banner on >3s disconnect | `connection-banner` (shown while `.reconnecting`/`.failed`) | `e2e:F6` (`testF6_NoBannerWhileConnected` ✅ green; `testF6_BannerAppearsWhenReconnecting` SKIPS pending the build-CC `-uitest-reconnecting` hook) | ✅ neg / 🟡 pos |
+| Auth rejection offers sign-in inside dashboard | `.authRequired` banner + `auth-required-signin` | `e2e:AuthRequiredUITests.testAuthRequiredBannerOffersSignIn` | ✅ |
 | Bridge-absent send failure surfaced | `send_prompt_failed` → `sendFailures` banner | `swift:ProtocolRoundTripTests` (`testSendPromptFailedOptionalFields`) | ✅ decode / 🟡 UI |
 | Server restarting / spawn errors safe states | — | — | ⛔ |
 
@@ -111,7 +115,7 @@ Test-id key: `swift:SuiteName` = green CLI test; `e2e:Fn` = XCUITest flow
 | Surface | Status |
 |---|---|
 | Physical-device install (signing/Team ID) | ⛔ |
-| Full OAuth2 web-login (URL+token only tonight) | ⛔ |
+| Physical OAuth/Keychain acceptance (#20–22) | ⛔ UNRUN |
 | Voice push-to-talk, terminals, editor proxy, package mgmt, flow/architect panels | ⛔ |
 | iPad / macOS passes (shared core ready) | ⛔ (this doc is the template) |
 
@@ -121,12 +125,14 @@ Test-id key: `swift:SuiteName` = green CLI test; `e2e:Fn` = XCUITest flow
 
 | Layer | Verified now (✅) | Partial (🟡) | Deferred (⛔) |
 |---|---|---|---|
-| Contract / protocol / models | 108 `swift test`, 0 failures (incl. real captured `event_replay`) | reconnect/backoff store path | — |
+| Contract / protocol / models | 565 `swift test`, 0 failures (incl. real captured `event_replay`); credential/rejection + reconnect harnesses | — | — |
 | Grouping / filters / composer rule | full algebra + hysteresis boundary sweep | — | queue path |
 | UI flows F1–F7 | F1–F5 + F7 + F6-negative RUN GREEN in the integrated `PiDashboardUITests` target (xcodebuild, iOS 26.3.1 sim) | F6-positive SKIPS pending the build-CC `-uitest-reconnecting` hook | haptics, server-restart states |
 
-**Bottom line:** every logic + contract surface of the MVP is ✅ green via
-`swift test` (108, grounded in REAL captured payloads, not impressions), AND every
+**Bottom line:** every Kit logic + contract surface of the MVP is ✅ green via
+`swift test` (565, grounded in REAL captured payloads, not impressions), AND every
 UI flow F1–F7 RUNS GREEN end-to-end in the integrated XCUITest target (11 e2e
 methods pass + the build-CC smoke; F6-positive skips on the documented pending
-hook). Deferred rows are MVP-scope exclusions per DESIGN §7.
+hook). Tranche-1 credential/rejection T2 harnesses and targeted T3 Simulator tests
+run green. Physical OAuth/Keychain acceptance remains ⛔ UNRUN. Deferred rows are
+MVP-scope exclusions per DESIGN §7.

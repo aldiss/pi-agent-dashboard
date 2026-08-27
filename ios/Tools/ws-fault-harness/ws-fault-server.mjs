@@ -7,9 +7,10 @@
 //   close   — after N seconds send a proper WS close frame
 //   destroy — after N seconds destroy the TCP socket (FIN/RST)
 //   alive   — never fault; answer app-level {"type":"ping"} with {"type":"pong"}
+//   auth-reject — reject every WebSocket upgrade with 401; auth status is false
 //
-// Every frame received from the client is appended to --trace as JSONL so the
-// test can assert on what the client actually sent (e.g. re-subscribe).
+// Every request and frame received from the client is appended to --trace as
+// JSONL. Credential requests record presence only, never token values.
 import http from "node:http";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -34,6 +35,7 @@ const QUEUE_LATE_ACK = args.queueLateAck === "on";
 const MODEL_CYCLE = args.modelCycle ?? "off";
 const IDLE_FIRST_ACK = args.idleFirstAck === "on";
 let connectionCount = 0;
+let rejectedUpgradeCount = 0;
 let idleAckScheduled = false;
 
 const t0 = Date.now();
@@ -116,9 +118,26 @@ const snapshot = {
 };
 
 const server = http.createServer((req, res) => {
+  trace({
+    ev: "credential_request",
+    transport: "http",
+    path: req.url,
+    host: req.headers.host ?? "",
+    cookiePresent: Boolean(req.headers.cookie),
+  });
   if (req.url?.startsWith("/api/health")) {
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify({ ok: true, version: "probe", mode: "production", uptime: 1, pid: process.pid }));
+    return;
+  }
+  if (req.url?.startsWith("/auth/status")) {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ authenticated: MODE !== "auth-reject" }));
+    return;
+  }
+  if (req.url?.startsWith("/__probe/stats")) {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify({ rejectedUpgradeCount }));
     return;
   }
   res.writeHead(404).end();
@@ -126,6 +145,24 @@ const server = http.createServer((req, res) => {
 
 server.on("upgrade", (req, socket) => {
   const connectionNumber = ++connectionCount;
+  socket.on("error", () => {});
+  trace({
+    ev: "credential_request",
+    transport: "ws",
+    path: req.url,
+    host: req.headers.host ?? "",
+    cookiePresent: Boolean(req.headers.cookie),
+  });
+  if (MODE === "auth-reject") {
+    rejectedUpgradeCount += 1;
+    trace({ ev: "upgrade_rejected", path: req.url, status: 401 });
+    socket.end(
+      "HTTP/1.1 401 Unauthorized\r\n" +
+        "Connection: close\r\n" +
+        "Content-Length: 0\r\n\r\n"
+    );
+    return;
+  }
   const key = req.headers["sec-websocket-key"];
   const accept = crypto.createHash("sha1").update(key + GUID).digest("base64");
   socket.write(
@@ -274,7 +311,6 @@ server.on("upgrade", (req, socket) => {
     }
     parser(c);
   });
-  socket.on("error", () => {});
   socket.on("close", () => trace({ ev: "socket_closed" }));
 
   if (MODE !== "alive") {

@@ -12,7 +12,9 @@ struct TierSection: Identifiable {
 /// The connection phase the banner reads. `.reconnecting` is the >3s-disconnect
 /// state the PWA surfaces; `.connecting` is the first attempt (no banner).
 enum ConnectionPhase: Equatable {
-    case idle, connecting, connected, reconnecting, failed(String)
+    case idle, connecting, connected, reconnecting
+    case authRequired(origin: String)
+    case failed(String)
 }
 
 enum ModelListPhase: Equatable {
@@ -34,7 +36,12 @@ final class DashboardStore {
     /// The operator's `pi_dash_token` JWT cookie, sourced from the Keychain at connect
     /// time (written by `AuthManager` after GitHub sign-in). Empty when signed out. This
     /// replaces the old bearer `token` — the multi-operator WS gate is cookie-only.
-    var cookie: String { AuthCookieStore.load() ?? "" }
+    var cookie: String {
+        guard let url = URL(string: serverURLString.trimmingCharacters(in: .whitespaces)) else {
+            return ""
+        }
+        return credential(for: url) ?? ""
+    }
     /// Set once a successful connect has entered the dashboard — keeps MainView
     /// mounted across transient drops (only the banner changes).
     private(set) var hasEnteredDashboard = false
@@ -163,6 +170,9 @@ final class DashboardStore {
     /// with `UITestFixtures.composerOverflowLine` so SwiftPilot can screenshot-verify a
     /// long line WRAPS (never overflows). Implies fixture mode (injects the same data).
     private let isComposerOverflowProbe: Bool
+    /// Hermetic auth-required banner probe. Implies fixture mode so MainView remains
+    /// mounted while the terminal auth phase is asserted without a live server.
+    private let isAuthRequiredProbe: Bool
 
     /// The dashboard base URL the app is connected to (for building sidecar URLs
     /// like the parakeet voice endpoint). Falls back to the entered URL string so a
@@ -172,7 +182,10 @@ final class DashboardStore {
     }
     /// The operator `pi_dash_token` cookie for the connected server, if any — threaded to
     /// the voice sidecar's REST calls (transcribe/health) so they carry operator identity.
-    var connectionCookie: String? { cookie.isEmpty ? nil : cookie }
+    var connectionCookie: String? {
+        guard let connectedBase else { return nil }
+        return credential(for: connectedBase)
+    }
 
     init(idleAckDeadline: Duration = .seconds(30),
          queueAckDeadline: Duration = .seconds(90)) {
@@ -180,8 +193,10 @@ final class DashboardStore {
         self.queueAckDeadline = queueAckDeadline
         let args = ProcessInfo.processInfo.arguments
         isComposerOverflowProbe = args.contains(UITestFixtures.composerOverflowLaunchArg)
+        isAuthRequiredProbe = args.contains("-uitest-auth-required")
         // The overflow probe implies fixture mode (it injects the same fixture data).
-        isFixtureMode = isComposerOverflowProbe || args.contains(UITestFixtures.launchArg)
+        isFixtureMode = isComposerOverflowProbe || isAuthRequiredProbe
+            || args.contains(UITestFixtures.launchArg)
         // Fixture mode is a superset of UITest (suppresses live mutation + network).
         isUITest = isFixtureMode || args.contains("-uitest")
         if isUITest {
@@ -192,6 +207,10 @@ final class DashboardStore {
             // The auth cookie is sourced from the Keychain (see `cookie`), not persisted here.
             let prefs = ConnectionPreferences.load()
             serverURLString = prefs.serverURL
+            let migrationOrigin = ConnectionPreferences.hasStoredServer()
+                ? URL(string: prefs.serverURL).flatMap(CredentialOrigin.init(url:))
+                : nil
+            AuthCookieStore.migrateLegacyIfNeeded(into: migrationOrigin)
         }
     }
 
@@ -200,20 +219,16 @@ final class DashboardStore {
     /// Probe `/api/health` then open the WS. On UITest launch, load bundled
     /// fixtures instead of touching the network (hermetic, no live mutation).
     ///
-    /// AUTH: the live WS is cookie-only. A missing/expired cookie → route to sign-in
-    /// (`.failed` with a sign-in prompt) rather than a doomed connect. A 401 from the
-    /// health probe clears the stored cookie so ConnectView re-prompts GitHub sign-in.
+    /// Credential absence never blocks the probe: unauthenticated/local servers decide
+    /// whether a cookie is required. Origin + transport policy controls attachment.
     func connect() async {
         if isFixtureMode { injectFixtures(); return }
         if isUITest { loadFixtures(); return }
-        guard let url = URL(string: serverURLString.trimmingCharacters(in: .whitespaces)) else {
+        guard let url = URL(string: serverURLString.trimmingCharacters(in: .whitespaces)),
+              CredentialOrigin(url: url) != nil else {
             phase = .failed("Invalid URL"); return
         }
-        // Cookie-only gate: no plausible cookie → don't even probe; prompt sign-in.
-        let cookie = self.cookie
-        guard AuthToken.isPlausiblyValid(cookie) else {
-            phase = .failed("Sign in with GitHub to connect."); return
-        }
+        let cookie = credential(for: url)
         base = url
         phase = .connecting
         let rest = RestClient(base: url, cookie: cookie)
@@ -221,11 +236,6 @@ final class DashboardStore {
             let h = try await rest.health()
             guard h.ok else { phase = .failed("Server reported not-ok"); return }
             health = h
-        } catch DashboardClientError.unauthorized {
-            // Cookie rejected/expired — clear it and re-prompt sign-in.
-            AuthCookieStore.clear()
-            phase = .failed("Session expired — sign in with GitHub again.")
-            return
         } catch {
             phase = .failed("Unreachable — is the dashboard running?")
             return
@@ -252,9 +262,6 @@ final class DashboardStore {
         guard !isUITest else { return }
         didBootstrap = true
         guard ConnectionPreferences.hasStoredServer() else { return }
-        // Cookie-only gate: auto-connect only when a plausible operator cookie is stored;
-        // otherwise fall through to the connect form (which shows the sign-in button).
-        guard AuthToken.isPlausiblyValid(cookie) else { return }
         isAutoConnecting = true
         bootstrapTask = Task { [weak self] in
             guard let self else { return }
@@ -275,10 +282,10 @@ final class DashboardStore {
 
     private func startStream(base: URL) {
         consumeTask?.cancel()
-        let cookie = self.cookie
+        let cookie = credential(for: base)
         consumeTask = Task { [weak self] in
             guard let self else { return }
-            let stream = await self.client.connect(base: base, cookie: cookie.isEmpty ? nil : cookie)
+            let stream = await self.client.connect(base: base, cookie: cookie)
             // The socket EXISTS from here on (the actor installs it before returning),
             // so this is the earliest point a subscribe can actually land.
             await self.resubscribeIfPending()
@@ -286,9 +293,49 @@ final class DashboardStore {
                 if Task.isCancelled { return }
                 self.apply(message)
             }
-            // Stream finished → socket dropped. Reconnect with backoff unless torn down.
-            if !Task.isCancelled { await self.scheduleReconnect(base: base) }
+            // Stream finished → distinguish credential rejection before normal backoff.
+            if !Task.isCancelled {
+                let state = await self.client.state
+                if await self.transitionToAuthRequiredIfNeeded(base: base, clientState: state) {
+                    return
+                }
+                await self.scheduleReconnect(base: base)
+            }
         }
+    }
+
+    /// PWA-parity auth discriminator. A typed 401 probes immediately; generic transport
+    /// failures probe only on the third consecutive pre-snapshot failure. Probe failures
+    /// retain the existing reconnect path instead of manufacturing an auth result.
+    private func transitionToAuthRequiredIfNeeded(
+        base: URL,
+        clientState: DashboardClient.ConnectionState
+    ) async -> Bool {
+        let typedRejection = clientState == .unauthorized
+        let cookie = credential(for: base)
+        guard typedRejection || (cookie != nil && reconnectAttempt + 1 >= 3) else {
+            return false
+        }
+        let rest = RestClient(base: base, cookie: cookie)
+        guard let status = try? await rest.authStatus(), !status.authenticated,
+              let origin = CredentialOrigin(url: base) else { return false }
+
+        failPendingOperationsOnDisconnect()
+        AuthCookieStore.clear(for: origin)
+        await client.disconnect()
+        phase = .authRequired(origin: origin.storageKey)
+        return true
+    }
+
+    /// Resolve only the credential keyed to this normalized origin, then enforce the
+    /// transport + expiry policy. Every omit decision still allows connection attempts.
+    private func credential(for url: URL) -> String? {
+        guard let origin = CredentialOrigin(url: url) else { return nil }
+        let stored = AuthCookieStore.load(for: origin).map { (origin: origin, jwt: $0) }
+        guard case .attach(let jwt) = CredentialPolicy.decide(
+            target: origin, stored: stored, now: Date()
+        ) else { return nil }
+        return jwt
     }
 
     private func scheduleReconnect(base: URL) async {
@@ -326,6 +373,7 @@ final class DashboardStore {
     /// stale view revives immediately instead of waiting for the keepalive deadline.
     /// No-op unless we've entered the dashboard on a real (non-UITest) connection.
     func revalidate() {
+        if case .authRequired = phase { return }
         guard !isUITest, hasEnteredDashboard, let base else { return }
         phase = .reconnecting
         pendingResubscribe = viewedSessionId != nil
@@ -1185,7 +1233,9 @@ final class DashboardStore {
         health = HealthStatus(ok: true, version: "fixture", mode: "production",
                               uptime: 1, starter: "UITest", pid: 0,
                               server: .init(activeSessions: registry.count, totalSessions: registry.count, eventStoreSessions: 0))
-        phase = .connected
+        phase = isAuthRequiredProbe
+            ? .authRequired(origin: serverURLString)
+            : .connected
         hasEnteredDashboard = true
     }
 

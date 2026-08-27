@@ -216,6 +216,7 @@ struct NewSessionSheet: View {
 /// `connection-banner` (TEST-CONTRACT §A).
 struct ConnectionBanner: View {
     @Environment(DashboardStore.self) private var store
+    @Environment(AuthManager.self) private var auth
     @Environment(\.theme) private var theme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -227,6 +228,8 @@ struct ConnectionBanner: View {
                        text: "Reconnecting…")
             case .failed(let message):
                 banner(color: theme.accentRed, icon: "wifi.slash", text: message)
+            case .authRequired(let origin):
+                authRequiredBanner(origin: origin)
             default:
                 EmptyView()
             }
@@ -249,5 +252,35 @@ struct ConnectionBanner: View {
         .background(color.opacity(0.92))
         .transition(.move(edge: .top).combined(with: .opacity))
         .accessibilityIdentifier("connection-banner")
+    }
+
+    private func authRequiredBanner(origin: String) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "person.badge.key.fill")
+            Text(auth.lastError ?? "Session expired for \(origin).")
+                .font(.footnote.weight(.medium))
+                .lineLimit(2)
+                .accessibilityIdentifier("connection-banner")
+            Spacer(minLength: 8)
+            Button(auth.isSigningIn ? "Signing in…" : "Sign in") {
+                Task {
+                    auth.setServer(store.serverURLString)
+                    do {
+                        try await auth.signIn()
+                        await store.connect()
+                    } catch {
+                        // AuthManager maps every AuthError into lastError above.
+                    }
+                }
+            }
+            .disabled(auth.isSigningIn)
+            .font(.footnote.weight(.bold))
+            .accessibilityIdentifier("auth-required-signin")
+        }
+        .foregroundStyle(.white)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(theme.accentRed.opacity(0.94))
+        .transition(.move(edge: .top).combined(with: .opacity))
     }
 }

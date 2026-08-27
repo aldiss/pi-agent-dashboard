@@ -6,9 +6,8 @@ import PiDashboardKit
 
 /// App-layer auth orchestrator for the dashboard's **multi-operator GitHub-OAuth cookie
 /// gate**. SwiftUI/`ASWebAuthenticationSession`/Keychain are app concerns (not the
-/// UI-free Kit), so this lives in the app target; the pure contract (auth-start URL,
-/// cookie name/framing, JWT `exp` pre-check, `/auth/status` decode, cookie-capture rule)
-/// is `AuthToken` in the Kit and is `swift test`-covered.
+/// UI-free Kit), so this lives in the app target; the pure auth URL, cookie framing,
+/// JWT-expiry, origin, and credential-policy contracts live in `PiDashboardKit`.
 ///
 /// Sign-in flow (native token-in-callback exchange). iOS ASWebAuthenticationSession did
 /// NOT propagate the server's `Set-Cookie` to `HTTPCookieStorage.shared` on real hardware
@@ -69,10 +68,12 @@ final class AuthManager: NSObject {
     private(set) var lastError: String?
 
     private var webAuthSession: ASWebAuthenticationSession?
+    private let session: URLSession
 
     init(host: String = AuthToken.tunnelHost) {
         self.host = host
         self.base = URL(string: "https://\(host)")!
+        self.session = URLSession(configuration: DashboardSessionConfiguration.make())
         super.init()
     }
 
@@ -92,7 +93,13 @@ final class AuthManager: NSObject {
     // MARK: Login state
 
     /// The stored `pi_dash_token` JWT (Keychain), or nil.
-    var sessionCookieValue: String? { AuthCookieStore.load() }
+    var sessionCookieValue: String? {
+        if ProcessInfo.processInfo.arguments.contains("-uitest-exchange-failure") {
+            return nil
+        }
+        guard let origin = CredentialOrigin(url: base) else { return nil }
+        return AuthCookieStore.load(for: origin)
+    }
 
     /// Client-side login hint: a stored cookie whose `exp` (if decodable) is still in the
     /// future. A saves-a-round-trip check — NOT the security gate (the server re-verifies
@@ -106,32 +113,49 @@ final class AuthManager: NSObject {
     /// Keychain, and `/auth/status` refreshes `user`. Throws on cancel, a bad URL, a missing
     /// `?code=`, or a failed exchange.
     func signIn() async throws {
-        guard let startURL = AuthToken.authStartURL(base: base) else { throw AuthError.badURL }
         isSigningIn = true
         lastError = nil
         defer { isSigningIn = false }
 
-        // ASWeb → `pidashboard://auth-done?code=<single-use code>`. The code is read ONLY
-        // from the completion-handler callbackURL (session-bound → hijack-resistant, A11) —
-        // never a general onOpenURL/application(_:open:) handler (none is registered).
-        let callbackURL = try await runWebAuth(url: startURL)
-        guard let code = AuthToken.extractExchangeCode(from: callbackURL) else {
-            lastError = AuthError.codeNotReturned.errorDescription
-            throw AuthError.codeNotReturned
-        }
+        do {
+            // Snapshot both values across OAuth awaits. A token issued by A must never be
+            // persisted under B if the editable connection target changes mid-flow.
+            let authBase = base
+            guard let origin = CredentialOrigin(url: authBase),
+                  let startURL = AuthToken.authStartURL(base: authBase) else {
+                throw AuthError.badURL
+            }
 
-        // Trade the single-use code for the pi_dash_token JWT (server burns the code +
-        // returns the JWT in the response body — never in a URL), then persist to Keychain.
-        let jwt = try await exchangeCode(code)
-        AuthCookieStore.save(jwt)
-        await refreshStatus()
+            // Dedicated non-network XCUITest injection for the ConnectView error surface.
+            if ProcessInfo.processInfo.arguments.contains("-uitest-exchange-failure") {
+                throw AuthError.exchangeFailed(400)
+            }
+
+            // ASWeb → `pidashboard://auth-done?code=<single-use code>`. The code is read
+            // only from this session-bound completion URL.
+            let callbackURL = try await runWebAuth(url: startURL)
+            guard let code = AuthToken.extractExchangeCode(from: callbackURL) else {
+                throw AuthError.codeNotReturned
+            }
+
+            let jwt = try await exchangeCode(code, base: authBase)
+            AuthCookieStore.save(jwt, for: origin)
+            await refreshStatus(base: authBase, origin: origin)
+        } catch let error as AuthError {
+            lastError = error.errorDescription
+            throw error
+        } catch {
+            let wrapped = AuthError.session(error.localizedDescription)
+            lastError = wrapped.errorDescription
+            throw wrapped
+        }
     }
 
     /// POST the single-use `code` to `/api/auth/exchange` and return the `pi_dash_token`
     /// JWT from the 200 response body (`{"token":"<jwt>"}`). Throws `.exchangeFailed` on a
     /// non-200 (e.g. 400 `invalid_or_expired_code` for a burned/expired code) or an empty
     /// token, `.session` on transport failure.
-    private func exchangeCode(_ code: String) async throws -> String {
+    private func exchangeCode(_ code: String, base: URL) async throws -> String {
         guard let url = AuthToken.exchangeURL(base: base) else { throw AuthError.badURL }
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
@@ -141,7 +165,7 @@ final class AuthManager: NSObject {
 
         let data: Data, resp: URLResponse
         do {
-            (data, resp) = try await URLSession.shared.data(for: req)
+            (data, resp) = try await session.data(for: req)
         } catch {
             throw AuthError.session(error.localizedDescription)
         }
@@ -181,9 +205,8 @@ final class AuthManager: NSObject {
                 cont.resume(returning: callbackURL)
             }
             session.presentationContextProvider = self
-            // ⚠ Do NOT set `session.prefersEphemeralWebBrowserSession = true` — ephemeral
-            // isolates + discards the cookie, so the WS would 401 despite a "success".
-            // The default (non-ephemeral) lands `pi_dash_token` in the shared jar.
+            // Keep the browser session non-ephemeral so the OAuth provider login can be
+            // reused. Dashboard JWT transfer still happens only through code exchange.
             self.webAuthSession = session
             if !session.start() {
                 cont.resume(throwing: AuthError.session("Couldn't start the sign-in session."))
@@ -196,13 +219,23 @@ final class AuthManager: NSObject {
     /// Refresh `user` from `GET /auth/status` (no-auth, but we send the cookie so the
     /// server can identify the operator). Best-effort — a failure leaves `user` unchanged.
     func refreshStatus() async {
+        if ProcessInfo.processInfo.arguments.contains("-uitest-exchange-failure") { return }
+        guard let origin = CredentialOrigin(url: base) else { return }
+        await refreshStatus(base: base, origin: origin)
+    }
+
+    private func refreshStatus(base: URL, origin: CredentialOrigin) async {
         guard let url = AuthToken.statusURL(base: base) else { return }
         var req = URLRequest(url: url)
-        if let cookie = sessionCookieValue, let header = AuthToken.cookieHeaderValue(cookie) {
+        let stored = AuthCookieStore.load(for: origin).map { (origin: origin, jwt: $0) }
+        if case .attach(let cookie) = CredentialPolicy.decide(
+            target: origin, stored: stored, now: Date()
+        ),
+           let header = AuthToken.cookieHeaderValue(cookie) {
             req.setValue(header, forHTTPHeaderField: "Cookie")
         }
         req.timeoutInterval = 10
-        guard let (data, _) = try? await URLSession.shared.data(for: req),
+        guard let (data, _) = try? await session.data(for: req),
               let status = try? JSONDecoder().decode(AuthStatus.self, from: data)
         else { return }
         user = status.authenticated ? status.user : nil
@@ -210,7 +243,9 @@ final class AuthManager: NSObject {
 
     /// Sign out: clear the Keychain cookie + the shared cookie jar entry + `user`.
     func signOut() {
-        AuthCookieStore.clear()
+        if let origin = CredentialOrigin(url: base) {
+            AuthCookieStore.clear(for: origin)
+        }
         if let cookies = HTTPCookieStorage.shared.cookies {
             for c in cookies where c.name == AuthToken.cookieName
                 && AuthToken.domainMatches(cookieDomain: c.domain, host: host) {
@@ -224,7 +259,9 @@ final class AuthManager: NSObject {
     /// Clear stored auth after a 401 so the app re-prompts sign-in (cookie expired /
     /// rejected). Keeps `user` display until the next status refresh.
     func handleUnauthorized() {
-        AuthCookieStore.clear()
+        if let origin = CredentialOrigin(url: base) {
+            AuthCookieStore.clear(for: origin)
+        }
     }
 }
 

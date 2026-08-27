@@ -5,6 +5,15 @@ import os
 /// logged here (never silently swallowed) so a data issue is debuggable.
 private let clientLog = Logger(subsystem: "technology.blackbelt.pidashboard", category: "ws-client")
 
+public enum DashboardSessionConfiguration {
+    public static func make() -> URLSessionConfiguration {
+        let configuration = URLSessionConfiguration.default
+        configuration.httpShouldSetCookies = false
+        configuration.httpCookieStorage = nil
+        return configuration
+    }
+}
+
 public enum DashboardClientError: Error, Sendable {
     case notConnected
     case badURL
@@ -24,6 +33,7 @@ public enum DashboardClientError: Error, Sendable {
 public actor DashboardClient {
     public enum ConnectionState: Sendable, Equatable {
         case disconnected, connecting, connected
+        case unauthorized
         case failed(String)
     }
 
@@ -39,8 +49,8 @@ public actor DashboardClient {
     /// differences matter; wall-clock jumps are tolerable for a ~22s heartbeat.
     private func nowSeconds() -> TimeInterval { Date().timeIntervalSinceReferenceDate }
 
-    public init(session: URLSession = URLSession(configuration: .default)) {
-        self.session = session
+    public init(session: URLSession? = nil) {
+        self.session = session ?? URLSession(configuration: DashboardSessionConfiguration.make())
     }
 
     /// Map a dashboard base URL (`http(s)://host:port`) to its browser-gateway WS
@@ -165,7 +175,15 @@ public actor DashboardClient {
                 }
             } catch {
                 guard socket === task else { return }  // superseded loop: stay silent
-                state = .failed(error.localizedDescription)
+                let nsError = error as NSError
+                let response = socket.response as? HTTPURLResponse
+                    ?? nsError.userInfo["NSErrorFailingURLResponseKey"] as? HTTPURLResponse
+                    ?? nsError.userInfo["NSURLErrorFailingURLResponseErrorKey"] as? HTTPURLResponse
+                state = response?.statusCode == 401
+                    ? .unauthorized
+                    : .failed(error.localizedDescription)
+                task = nil
+                keepalive = nil
                 continuation?.finish()
                 continuation = nil
                 return
@@ -247,10 +265,10 @@ public struct RestClient: Sendable {
     public let cookie: String?
     private let session: URLSession
 
-    public init(base: URL, cookie: String? = nil, session: URLSession = .shared) {
+    public init(base: URL, cookie: String? = nil, session: URLSession? = nil) {
         self.base = base
         self.cookie = cookie
-        self.session = session
+        self.session = session ?? URLSession(configuration: DashboardSessionConfiguration.make())
     }
 
     private func makeRequest(_ path: String) -> URLRequest {
@@ -268,6 +286,14 @@ public struct RestClient: Sendable {
         let (data, response) = try await session.data(for: makeRequest("api/health"))
         try Self.throwIfUnauthorized(response)
         return try JSONDecoder().decode(HealthStatus.self, from: data)
+    }
+
+    /// `GET /auth/status` — intentionally unauthenticated on the server. A manually
+    /// framed cookie identifies the operator when valid; `{authenticated:false}` is the
+    /// discriminator for a rejected WS credential and never relies on an HTTP 401.
+    public func authStatus() async throws -> AuthStatus {
+        let (data, _) = try await session.data(for: makeRequest("auth/status"))
+        return try JSONDecoder().decode(AuthStatus.self, from: data)
     }
 
     /// `GET /api/sessions` — initial session load. Handles both the

@@ -175,29 +175,6 @@ public enum AuthToken {
         return Data(base64Encoded: b64)
     }
 
-    // MARK: Cookie capture (the spike's pure core)
-
-    /// Pick the `pi_dash_token` value out of a cookie jar for the tunnel host — the pure
-    /// heart of the sign-in→cookie capture the app runs against `HTTPCookieStorage.shared`
-    /// after a successful (non-ephemeral) ASWebAuthenticationSession. Kept parameterized
-    /// (`cookies` + `host`) so the whole capture rule is unit-testable with synthetic
-    /// `HTTPCookie`s — zero simulator, zero live OAuth. The app calls it with
-    /// `HTTPCookieStorage.shared.cookies ?? []` and `AuthToken.tunnelHost`.
-    ///
-    /// Domain match: a cookie domain of `dash.deckdeckshare.com` OR a dot-prefixed parent
-    /// (`.deckdeckshare.com`) both match `dash.deckdeckshare.com`. Name must equal
-    /// `pi_dash_token`; an empty value is treated as NO capture (the empty-cookie failure
-    /// mode the brief flags — the app STOPs + escalates in that case).
-    public static func captureCookie(from cookies: [HTTPCookie],
-                                     host: String = tunnelHost) -> String? {
-        for cookie in cookies where cookie.name == cookieName {
-            guard domainMatches(cookieDomain: cookie.domain, host: host) else { continue }
-            let value = cookie.value.trimmingCharacters(in: .whitespaces)
-            if !value.isEmpty { return value }
-        }
-        return nil
-    }
-
     /// RFC 6265 domain match, narrowed to what we need: exact host, or the cookie domain
     /// is a dot-prefixed suffix of the host (`.deckdeckshare.com` ⊇ `dash.deckdeckshare.com`).
     /// Public so the app's `AuthManager.signOut()` can scope the shared-jar cookie sweep.

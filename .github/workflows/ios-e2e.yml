@@ -24,7 +24,7 @@ concurrency:
 
 jobs:
   core:
-    name: Core unit tests (swift test)
+    name: Core tests (Swift + real-store harness)
     runs-on: macos-latest
     timeout-minutes: 30
     steps:
@@ -37,6 +37,13 @@ jobs:
       - name: swift test (PiDashboardKit)
         working-directory: ios/PiDashboardKit
         run: swift test
+      - name: Real-store credential and reconnect harness
+        working-directory: ios/Tools/ws-fault-harness
+        run: |
+          ./run-reconnect-check.sh cross-origin
+          ./run-reconnect-check.sh auth-reject
+          ./run-reconnect-check.sh close
+          ./run-reconnect-check.sh stall
 
   e2e:
     name: E2E XCUITest (simulator)

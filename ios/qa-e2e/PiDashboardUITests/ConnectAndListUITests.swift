@@ -95,3 +95,29 @@ final class ConnectAndListUITests: PiDashboardUITestCase {
         XCTAssertTrue(waitFor("session-list", 6).exists, "navigates back to the list")
     }
 }
+
+@MainActor
+final class AuthRequiredUITests: PiDashboardUITestCase {
+    func testAuthRequiredBannerOffersSignIn() {
+        launch(Self.fixtureArgs + ["-uitest-auth-required"])
+        connectAndEnterList()
+
+        XCTAssertTrue(waitFor("connection-banner", 6).exists,
+                      "auth rejection surfaces an in-dashboard banner")
+        let signIn = waitFor("auth-required-signin", 6)
+        XCTAssertTrue(signIn.isEnabled, "auth-required sign-in action is enabled")
+        XCTAssertTrue(signIn.isHittable, "auth-required sign-in action is tappable")
+    }
+}
+
+@MainActor
+final class ConnectErrorUITests: PiDashboardUITestCase {
+    func testExchangeFailureShowsError() {
+        launch(["-uitest", "-uitest-exchange-failure"])
+
+        waitFor("connect-signin-github", 6).tap()
+        let error = waitFor("connect-error", 6)
+        XCTAssertFalse(error.label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                       "token-exchange failure surfaces a non-empty connect error")
+    }
+}

@@ -21,6 +21,9 @@ final class VoiceRecorder {
     private(set) var isHealthy = false
     private(set) var permissionDenied = false
     private(set) var errorMessage: String?
+    private static let httpSession = URLSession(
+        configuration: DashboardSessionConfiguration.make()
+    )
 
     var isStarting: Bool { phase == .starting }
     var isRecording: Bool { phase == .recording }
@@ -189,7 +192,7 @@ final class VoiceRecorder {
         let req = VoiceTranscriber.transcribeRequest(
             base: base, audio: data, boundary: UUID().uuidString, token: token, cookie: cookie)
         do {
-            let (body, response) = try await URLSession.shared.data(for: req)
+            let (body, response) = try await Self.httpSession.data(for: req)
             let status = (response as? HTTPURLResponse)?.statusCode ?? 0
             guard (200..<300).contains(status) else {
                 finishUpload(error: "Transcription failed (\(status)). Try again.")
@@ -258,7 +261,7 @@ final class VoiceRecorder {
 
     private static func probeHealth(base: URL, token: String?, cookie: String?) async -> Bool {
         let req = VoiceTranscriber.healthRequest(base: base, token: token, cookie: cookie)
-        guard let (body, response) = try? await URLSession.shared.data(for: req) else { return false }
+        guard let (body, response) = try? await httpSession.data(for: req) else { return false }
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         return VoiceTranscriber.parseHealthy(body, statusCode: status)
     }

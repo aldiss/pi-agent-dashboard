@@ -140,56 +140,30 @@ final class AuthTokenTests: XCTestCase {
         XCTAssertNil(status.user)
     }
 
-    // MARK: Cookie capture (the spike's pure core)
-
-    private func cookie(name: String, value: String, domain: String, path: String = "/") -> HTTPCookie {
-        HTTPCookie(properties: [
-            .name: name, .value: value, .domain: domain, .path: path,
-        ])!
-    }
-
-    func testCaptureCookieExactHost() {
-        let jar = [cookie(name: "pi_dash_token", value: "jwt-abc", domain: "dash.deckdeckshare.com")]
-        XCTAssertEqual(AuthToken.captureCookie(from: jar), "jwt-abc")
-    }
-
-    func testCaptureCookieDotPrefixedParentDomain() {
-        let jar = [cookie(name: "pi_dash_token", value: "jwt-parent", domain: ".deckdeckshare.com")]
-        XCTAssertEqual(AuthToken.captureCookie(from: jar), "jwt-parent")
-    }
-
-    func testCaptureCookieIgnoresOtherNamesAndDomains() {
-        let jar = [
-            cookie(name: "other", value: "nope", domain: "dash.deckdeckshare.com"),
-            cookie(name: "pi_dash_token", value: "wrong-domain", domain: "evil.example.com"),
-        ]
-        XCTAssertNil(AuthToken.captureCookie(from: jar))
-    }
-
-    func testCaptureCookieEmptyValueIsNoCapture() {
-        // The empty-cookie failure mode the brief flags: a present-but-empty cookie must
-        // NOT be treated as captured (the app STOPs + escalates rather than 401ing the WS).
-        let jar = [cookie(name: "pi_dash_token", value: "", domain: "dash.deckdeckshare.com")]
-        XCTAssertNil(AuthToken.captureCookie(from: jar))
-    }
-
-    func testCaptureCookiePicksTokenAmongMany() {
-        let jar = [
-            cookie(name: "session", value: "x", domain: "dash.deckdeckshare.com"),
-            cookie(name: "pi_dash_token", value: "the-jwt", domain: "dash.deckdeckshare.com"),
-            cookie(name: "csrf", value: "y", domain: "dash.deckdeckshare.com"),
-        ]
-        XCTAssertEqual(AuthToken.captureCookie(from: jar), "the-jwt")
-    }
-
     // MARK: domain-match rule
 
-    func testDomainMatches() {
+    func testDomainMatchesExactHost() {
         XCTAssertTrue(AuthToken.domainMatches(cookieDomain: "dash.deckdeckshare.com", host: "dash.deckdeckshare.com"))
+    }
+
+    func testDomainMatchesDotPrefixedParent() {
         XCTAssertTrue(AuthToken.domainMatches(cookieDomain: ".deckdeckshare.com", host: "dash.deckdeckshare.com"))
+    }
+
+    func testDomainMatchesBareParent() {
         XCTAssertTrue(AuthToken.domainMatches(cookieDomain: "deckdeckshare.com", host: "dash.deckdeckshare.com"))
+    }
+
+    func testDomainMatchesRejectsLookalikeSuffix() {
         XCTAssertFalse(AuthToken.domainMatches(cookieDomain: "deckdeckshare.com.evil.com", host: "dash.deckdeckshare.com"))
+    }
+
+    func testDomainMatchesRejectsUnrelatedHost() {
         XCTAssertFalse(AuthToken.domainMatches(cookieDomain: "other.com", host: "dash.deckdeckshare.com"))
+    }
+
+    func testDomainMatchesIgnoresCase() {
+        XCTAssertTrue(AuthToken.domainMatches(cookieDomain: ".DeckDeckShare.COM", host: "DASH.deckdeckshare.com"))
     }
 
     // MARK: Native token exchange (single-use code → JWT in the response body)

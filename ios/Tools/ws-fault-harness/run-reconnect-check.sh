@@ -12,6 +12,8 @@
 # Runs on the command line: no simulator, no signing, no network. ~45s.
 #
 # Usage: ./run-reconnect-check.sh          # drop+reconnect (the regression)
+#        ./run-reconnect-check.sh cross-origin # A credential must not reach B
+#        ./run-reconnect-check.sh auth-reject  # 401 -> authRequired, no backoff
 #        ./run-reconnect-check.sh stall    # silent half-open path (keepalive death)
 #        ./run-reconnect-check.sh send-loss # send into black hole; must fail, not confirm
 #        ./run-reconnect-check.sh send-recover # late real echo recovers row + banner
@@ -38,9 +40,17 @@ APP="$HERE/../../PiDashboard/Sources"
 KIT="$HERE/../../PiDashboardKit"
 WORK="$(mktemp -d)"
 PORT="${PORT:-8899}"
-trap 'kill ${SRV_PID:-0} 2>/dev/null || true; rm -rf "$WORK"' EXIT
+ORIGIN_A_URL="http://127.0.0.1:$PORT"
+ORIGIN_B_URL="http://localhost:$PORT"
+ORIGIN_A_HOST="127.0.0.1:$PORT"
+ORIGIN_B_HOST="localhost:$PORT"
+TARGET_URL="$ORIGIN_A_URL"
+PROBE_SCENARIO=default
+trap 'if [ -n "${SRV_PID:-}" ]; then kill "$SRV_PID" 2>/dev/null || true; fi; rm -rf "$WORK"' EXIT
 
 case "$MODE" in
+  cross-origin) SERVER_MODE=alive; FAULT_AT=8; BUDGET=6; SEND_AT=-1; LATE_ECHO=off; RESET_CYCLE=off; PROMPT_CYCLE=off; PROMPT_DUPLICATE=off; QUEUE_CYCLE=off; PROMPT_ANSWER=none; COMPETING=single; PROBE_SCENARIO=cross-origin; LABEL="same-origin negative control followed by foreign-origin connect" ;;
+  auth-reject)  SERVER_MODE=auth-reject; FAULT_AT=8; BUDGET=40; SEND_AT=-1; LATE_ECHO=off; RESET_CYCLE=off; PROMPT_CYCLE=off; PROMPT_DUPLICATE=off; QUEUE_CYCLE=off; PROMPT_ANSWER=none; COMPETING=single; PROBE_SCENARIO=auth-reject; LABEL="401 WebSocket upgrade followed by unauthenticated auth status" ;;
   close)        SERVER_MODE=close; FAULT_AT=8; BUDGET=30;  SEND_AT=-1; LATE_ECHO=off; RESET_CYCLE=off; PROMPT_CYCLE=off; PROMPT_DUPLICATE=off; QUEUE_CYCLE=off; PROMPT_ANSWER=none; COMPETING=single; LABEL="server drops the socket every 8s" ;;
   stall)        SERVER_MODE=stall; FAULT_AT=5; BUDGET=120; SEND_AT=-1; LATE_ECHO=off; RESET_CYCLE=off; PROMPT_CYCLE=off; PROMPT_DUPLICATE=off; QUEUE_CYCLE=off; PROMPT_ANSWER=none; COMPETING=single; LABEL="socket goes silently half-open (keepalive must catch it)" ;;
   send-loss)    SERVER_MODE=stall; FAULT_AT=5; BUDGET=45;  SEND_AT=10; LATE_ECHO=off; RESET_CYCLE=off; PROMPT_CYCLE=off; PROMPT_DUPLICATE=off; QUEUE_CYCLE=off; PROMPT_ANSWER=none; COMPETING=single; LABEL="send into a silently half-open socket" ;;
@@ -56,7 +66,7 @@ case "$MODE" in
   model-empty)          SERVER_MODE=alive; FAULT_AT=8; BUDGET=6; SEND_AT=-1; LATE_ECHO=off; RESET_CYCLE=off; PROMPT_CYCLE=off; PROMPT_DUPLICATE=off; QUEUE_CYCLE=off; PROMPT_ANSWER=none; MODEL_CYCLE=empty; MODEL_PROBE=empty; COMPETING=single; LABEL="empty model catalogue reaches loaded state" ;;
   send-same-recover)    SERVER_MODE=alive; FAULT_AT=8; BUDGET=16; SEND_AT=3; LATE_ECHO=off; RESET_CYCLE=off; PROMPT_CYCLE=off; PROMPT_DUPLICATE=off; QUEUE_CYCLE=off; PROMPT_ANSWER=none; MODEL_PROBE=off; COMPETING=same; IDLE_FIRST_ACK=on; LABEL="ack A must not clear same-value restored draft B" ;;
   send-edit-recover)    SERVER_MODE=alive; FAULT_AT=8; BUDGET=16; SEND_AT=3; LATE_ECHO=off; RESET_CYCLE=off; PROMPT_CYCLE=off; PROMPT_DUPLICATE=off; QUEUE_CYCLE=off; PROMPT_ANSWER=none; MODEL_PROBE=off; COMPETING=single; IDLE_FIRST_ACK=on; EDIT_AT=10; LABEL="late ack must preserve operator whitespace edit" ;;
-  *) echo "unknown mode '$MODE' (want: close | stall | send-loss | send-recover | send-partial-recover | reset-replay | prompt-cycle | prompt-duplicate)" >&2; exit 2 ;;
+  *) echo "unknown mode '$MODE' (want: cross-origin | auth-reject | close | stall | send-loss | send-recover | send-partial-recover | reset-replay | prompt-cycle | prompt-duplicate)" >&2; exit 2 ;;
 esac
 
 # Build a throwaway package around the REAL store sources (symlinked, never copied —
@@ -78,7 +88,11 @@ ln -s "$APP/FixtureData.swift"    "$WORK/Sources/StoreProbe/FixtureData.swift"
 cp "$HERE/probe/Driver.swift" "$HERE/probe/AuthCookieStoreStub.swift" "$WORK/Sources/StoreProbe/"
 
 echo "building probe against $APP/DashboardStore.swift"
-( cd "$WORK" && swift build 2>&1 | grep -E "error:" ) && { echo "PROBE BUILD FAILED" >&2; exit 1; } || true
+if ! ( cd "$WORK" && swift build --disable-sandbox >"$WORK/build.log" 2>&1 ); then
+  tail -40 "$WORK/build.log" >&2
+  echo "PROBE BUILD FAILED" >&2
+  exit 1
+fi
 [ -x "$WORK/.build/debug/StoreProbe" ] || { echo "PROBE BUILD FAILED (no binary)" >&2; exit 1; }
 
 TRACE="$WORK/trace.jsonl"
@@ -86,10 +100,15 @@ MODEL_PROBE="${MODEL_PROBE:-off}"
 node "$HERE/ws-fault-server.mjs" --mode="$SERVER_MODE" --after="$FAULT_AT" --port="$PORT" --lateEcho="$LATE_ECHO" --resetCycle="$RESET_CYCLE" --promptCycle="$PROMPT_CYCLE" --promptDuplicate="$PROMPT_DUPLICATE" --queueCycle="$QUEUE_CYCLE" --queueLateAck="$QUEUE_LATE_ACK" --modelCycle="$MODEL_CYCLE" --idleFirstAck="$IDLE_FIRST_ACK" --trace="$TRACE" >"$WORK/srv.log" 2>&1 &
 SRV_PID=$!
 sleep 1
+if ! kill -0 "$SRV_PID" 2>/dev/null; then
+  cat "$WORK/srv.log" >&2
+  echo "FAULT SERVER FAILED TO START" >&2
+  exit 1
+fi
 
 echo "running: $LABEL (${BUDGET}s)"
 PROBE_OUT="$WORK/probe.log"
-"$WORK/.build/debug/StoreProbe" "http://127.0.0.1:$PORT" "$BUDGET" 2 -1 "$SEND_AT" "$COMPETING" "$PROMPT_ANSWER" "$MODEL_PROBE" "$EDIT_AT" | tee "$PROBE_OUT" | grep -E "phase ->|sending into|competing failure|operator added|responding to prompt|final" || true
+"$WORK/.build/debug/StoreProbe" "$TARGET_URL" "$BUDGET" 2 -1 "$SEND_AT" "$COMPETING" "$PROMPT_ANSWER" "$MODEL_PROBE" "$EDIT_AT" "$PROBE_SCENARIO" "$ORIGIN_A_URL" "$ORIGIN_B_URL" | tee "$PROBE_OUT" | grep -E "phase ->|sending into|competing failure|operator added|responding to prompt|migration |auth attempts|auth credentials|cross-origin|final" || true
 kill $SRV_PID 2>/dev/null || true
 sleep 0.3
 
@@ -100,7 +119,7 @@ echo "connections=$CONNECTIONS  subscribe frames received=$SUBSCRIBES"
 
 # The check can fail two ways, and both matter: no reconnect at all (nothing was
 # exercised), or reconnects that left the chat unsubscribed (the regression).
-if [[ "$MODE" != prompt-* && "$MODE" != queue-loss && "$MODE" != queue-recover \
+if [[ "$MODE" != auth-reject && "$MODE" != prompt-* && "$MODE" != queue-loss && "$MODE" != queue-recover \
       && "$MODE" != model-* && "$MODE" != send-same-recover && "$MODE" != send-edit-recover ]] \
     && [ "$CONNECTIONS" -lt 2 ]; then
   echo "FAIL: only $CONNECTIONS connection(s) — the drop never triggered a reconnect," >&2
@@ -112,7 +131,66 @@ if [ "$CONNECTIONS" != "$SUBSCRIBES" ]; then
   echo "      The app would look connected while the open chat received nothing." >&2
   exit 1
 fi
-if [ "$MODE" = "send-loss" ]; then
+if [ "$MODE" = "cross-origin" ]; then
+  A_HTTP_REQUESTS=$(grep -c '"ev":"credential_request","transport":"http","path":"/api/health".*"host":"'"$ORIGIN_A_HOST"'"' "$TRACE" || true)
+  A_WS_REQUESTS=$(grep -c '"ev":"credential_request","transport":"ws".*"host":"'"$ORIGIN_A_HOST"'"' "$TRACE" || true)
+  B_HTTP_REQUESTS=$(grep -c '"ev":"credential_request","transport":"http","path":"/api/health".*"host":"'"$ORIGIN_B_HOST"'"' "$TRACE" || true)
+  B_WS_REQUESTS=$(grep -c '"ev":"credential_request","transport":"ws".*"host":"'"$ORIGIN_B_HOST"'"' "$TRACE" || true)
+  A_HTTP_COOKIES=$(grep -c '"ev":"credential_request","transport":"http","path":"/api/health".*"host":"'"$ORIGIN_A_HOST"'","cookiePresent":true' "$TRACE" || true)
+  A_WS_COOKIES=$(grep -c '"ev":"credential_request","transport":"ws".*"host":"'"$ORIGIN_A_HOST"'","cookiePresent":true' "$TRACE" || true)
+  B_HTTP_COOKIES=$(grep -c '"ev":"credential_request","transport":"http","path":"/api/health".*"host":"'"$ORIGIN_B_HOST"'","cookiePresent":true' "$TRACE" || true)
+  B_WS_COOKIES=$(grep -c '"ev":"credential_request","transport":"ws".*"host":"'"$ORIGIN_B_HOST"'","cookiePresent":true' "$TRACE" || true)
+  A_TOTAL_COOKIES=$(grep -c '"ev":"credential_request".*"host":"'"$ORIGIN_A_HOST"'","cookiePresent":true' "$TRACE" || true)
+  B_TOTAL_COOKIES=$(grep -c '"ev":"credential_request".*"host":"'"$ORIGIN_B_HOST"'","cookiePresent":true' "$TRACE" || true)
+  echo "cookie trace: A total=$A_TOTAL_COOKIES health=$A_HTTP_COOKIES/$A_HTTP_REQUESTS ws=$A_WS_COOKIES/$A_WS_REQUESTS; B total=$B_TOTAL_COOKIES health=$B_HTTP_COOKIES/$B_HTTP_REQUESTS ws=$B_WS_COOKIES/$B_WS_REQUESTS"
+  if [ "$A_HTTP_REQUESTS" -lt 1 ] || [ "$A_WS_REQUESTS" -lt 1 ] \
+      || [ "$B_HTTP_REQUESTS" -lt 1 ] || [ "$B_WS_REQUESTS" -lt 1 ]; then
+    echo "FAIL: both origins did not exercise both health and WebSocket credential paths." >&2
+    exit 1
+  fi
+  if [ "$A_HTTP_COOKIES" -lt 1 ] || [ "$A_WS_COOKIES" -lt 1 ]; then
+    echo "FAIL: same-origin negative control carried no credential, so this run proves nothing." >&2
+    exit 1
+  fi
+  if [ "$B_TOTAL_COOKIES" -ne 0 ]; then
+    echo "FAIL: origin B received origin A's credential." >&2
+    exit 1
+  fi
+  if ! grep -q 'migration attributed: legacy=false origin=true' "$PROBE_OUT" \
+      || ! grep -q 'migration unattributed: legacy=false deleted=true' "$PROBE_OUT"; then
+    echo "FAIL: legacy credential migration controls did not both pass." >&2
+    exit 1
+  fi
+  echo "PASS: B received zero Cookie headers; A health + upgrade negative controls carried credentials."
+elif [ "$MODE" = "auth-reject" ]; then
+  REJECTED=$(grep -c '"ev":"upgrade_rejected"' "$TRACE" || true)
+  AUTH_STATUS_REQUESTS=$(grep -c '"ev":"credential_request","transport":"http","path":"/auth/status"' "$TRACE" || true)
+  ATTEMPT_PAIR=$(sed -nE 's/.*attempts=([0-9]+)->([0-9]+).*/\1 \2/p' "$PROBE_OUT" | tail -1)
+  ATTEMPTS_AT_AUTH=${ATTEMPT_PAIR%% *}
+  ATTEMPTS_AFTER_SOAK=${ATTEMPT_PAIR##* }
+  if [ -z "$ATTEMPT_PAIR" ]; then ATTEMPTS_AT_AUTH=-1; ATTEMPTS_AFTER_SOAK=-1; fi
+  echo "auth trace: rejected=$REJECTED auth-status=$AUTH_STATUS_REQUESTS attempts=$ATTEMPTS_AT_AUTH->$ATTEMPTS_AFTER_SOAK"
+  if ! grep -q 'phase -> authRequired' "$PROBE_OUT"; then
+    echo "FAIL: rejected upgrade did not reach authRequired." >&2
+    grep 'final:' "$PROBE_OUT" >&2 || true
+    exit 1
+  fi
+  if [ "$REJECTED" -lt 1 ] || [ "$AUTH_STATUS_REQUESTS" -lt 1 ]; then
+    echo "FAIL: 401 upgrade and /auth/status discriminator were not both exercised." >&2
+    exit 1
+  fi
+  if [ "$ATTEMPTS_AT_AUTH" -lt 1 ] || [ "$ATTEMPTS_AT_AUTH" -ne "$ATTEMPTS_AFTER_SOAK" ] \
+      || [ "$ATTEMPTS_AFTER_SOAK" -ne "$REJECTED" ]; then
+    echo "FAIL: connection attempts continued after authRequired." >&2
+    exit 1
+  fi
+  if ! grep -q 'auth credentials: A=absent B=present' "$PROBE_OUT"; then
+    echo "FAIL: auth rejection did not clear only origin A." >&2
+    grep 'auth credentials:' "$PROBE_OUT" >&2 || true
+    exit 1
+  fi
+  echo "PASS: 401 reached authRequired, backoff stopped, A cleared, and B remained."
+elif [ "$MODE" = "send-loss" ]; then
   if ! grep -q 'delivery=failed' "$PROBE_OUT" || ! grep -q 'draft=\[loss probe\]' "$PROBE_OUT"; then
     echo "FAIL: unacknowledged send was not marked failed with its editable draft restored." >&2
     grep 'final:' "$PROBE_OUT" >&2 || true

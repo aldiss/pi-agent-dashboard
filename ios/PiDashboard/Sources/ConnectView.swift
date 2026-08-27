@@ -56,6 +56,13 @@ struct ConnectView: View {
             .padding(20)
         }
         .background(theme.bgPrimary)
+        .onAppear {
+            auth.setServer(store.serverURLString)
+            Task { await auth.refreshStatus() }
+        }
+        .onChange(of: store.serverURLString) { _, newValue in
+            auth.setServer(newValue)
+        }
     }
 
     private var header: some View {
@@ -138,8 +145,12 @@ struct ConnectView: View {
 
     /// The connect-error surfaces a failed connect phase OR an auth sign-in error.
     private var bannerMessage: String? {
+        if let message = auth.lastError { return message }
         if case .failed(let message) = store.phase { return message }
-        return auth.lastError
+        if case .authRequired(let origin) = store.phase {
+            return "Session expired for \(origin). Sign in again."
+        }
+        return nil
     }
 
     @ViewBuilder private var healthReadout: some View {
@@ -214,6 +225,7 @@ struct ConnectView: View {
     }
 
     private func submit() {
+        auth.setServer(store.serverURLString)
         connecting = true
         Task {
             await store.connect()
