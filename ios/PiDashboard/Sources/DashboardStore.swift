@@ -150,6 +150,9 @@ final class DashboardStore {
     private let idleAckDeadline: Duration
     private let queueAckDeadline: Duration
     private var consumeTask: Task<Void, Never>?
+    /// Coalesces foreground recovery while liveness is evaluated or a replacement
+    /// stream awaits its first authoritative snapshot.
+    private var foregroundRecoveryInFlight: UUID?
     /// Set when the stream is about to be restarted while a chat is on screen, and
     /// consumed inside the stream task once the socket actually exists. See
     /// `resubscribeIfPending` for why the timing is load-bearing.
@@ -295,6 +298,7 @@ final class DashboardStore {
             }
             // Stream finished → distinguish credential rejection before normal backoff.
             if !Task.isCancelled {
+                self.foregroundRecoveryInFlight = nil
                 let state = await self.client.state
                 if await self.transitionToAuthRequiredIfNeeded(base: base, clientState: state) {
                     return
@@ -369,19 +373,41 @@ final class DashboardStore {
 
     /// Foreground revalidation (DF#4): when the app returns to `.active` the socket
     /// may be silently half-open (suspended in the background, peer/NAT dropped it).
-    /// Force a fresh reconnect — restart the stream + re-subscribe/re-view — so a
-    /// stale view revives immediately instead of waiting for the keepalive deadline.
+    /// Probe the current stream before replacing + re-subscribing/re-viewing it, so a
+    /// half-open view revives before the passive keepalive deadline while a socket that
+    /// answers the bounded ping stays untouched.
     /// No-op unless we've entered the dashboard on a real (non-UITest) connection.
     func revalidate() {
         if case .authRequired = phase { return }
         guard !isUITest, hasEnteredDashboard, let base else { return }
-        phase = .reconnecting
-        pendingResubscribe = viewedSessionId != nil
-        startStream(base: base)
+        guard foregroundRecoveryInFlight == nil else { return }
+        let recoveryID = UUID()
+        foregroundRecoveryInFlight = recoveryID
+        Task { [weak self] in
+            guard let self else { return }
+            let isStale = !(await self.client.probeForegroundLiveness())
+            guard self.foregroundRecoveryInFlight == recoveryID else { return }
+            if case .authRequired = self.phase {
+                self.foregroundRecoveryInFlight = nil
+                return
+            }
+            guard self.hasEnteredDashboard, self.base == base else {
+                self.foregroundRecoveryInFlight = nil
+                return
+            }
+            guard isStale else {
+                self.foregroundRecoveryInFlight = nil
+                return
+            }
+            self.phase = .reconnecting
+            self.pendingResubscribe = self.viewedSessionId != nil
+            self.startStream(base: base)
+        }
     }
 
     func disconnect() {
         failPendingOperationsOnDisconnect()
+        foregroundRecoveryInFlight = nil
         consumeTask?.cancel()
         consumeTask = nil
         Task { await client.disconnect() }
@@ -438,6 +464,7 @@ final class DashboardStore {
             orders = ord
             phase = .connected
             hasEnteredDashboard = true
+            foregroundRecoveryInFlight = nil
             // Backoff resets ONLY on this real ready condition (DF#4 #5) — a fresh
             // snapshot proves the reconnect fully succeeded. Resetting on any stray
             // frame (the old behavior) let a flapping socket keep short-cycling.

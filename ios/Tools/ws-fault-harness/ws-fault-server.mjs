@@ -6,7 +6,8 @@
 //             (models a 5G NAT timeout / silent path loss: no FIN, no RST)
 //   close   — after N seconds send a proper WS close frame
 //   destroy — after N seconds destroy the TCP socket (FIN/RST)
-//   alive   — never fault; answer app-level {"type":"ping"} with {"type":"pong"}
+//   alive   — never fault; answer pings and emit application frames every 5s
+//   alive-idle — never fault; answer protocol pings, send no app frames after snapshot
 //   auth-reject — reject every WebSocket upgrade with 401; auth status is false
 //
 // Every request and frame received from the client is appended to --trace as
@@ -182,6 +183,14 @@ server.on("upgrade", (req, socket) => {
   send(snapshot);
 
   const parser = makeParser((opcode, payload) => {
+    if (faulted && MODE === "stall") {
+      if (opcode === 0x9) {
+        trace({ ev: "rx_ws_ping_stalled" });
+      } else {
+        trace({ ev: "rx_dropped_while_stalled", opcode, bytes: payload.length });
+      }
+      return;
+    }
     if (opcode === 0x8) {
       trace({ ev: "client_close" });
       socket.end();
@@ -258,7 +267,7 @@ server.on("upgrade", (req, socket) => {
           event: { eventType: "message_start", timestamp: Date.now(),
             data: { message: { role: "user", content: "after reset live" } } },
         });
-      } else {
+      } else if (MODE !== "alive-idle") {
         send({ type: "event_replay", sessionId: msg.sessionId, events: [], isLast: true });
       }
       if (QUEUE_CYCLE && connectionNumber === 1) {
@@ -304,16 +313,10 @@ server.on("upgrade", (req, socket) => {
     }
   });
 
-  socket.on("data", (c) => {
-    if (faulted && MODE === "stall") {
-      trace({ ev: "rx_dropped_while_stalled", bytes: c.length });
-      return; // black hole: read it, answer nothing
-    }
-    parser(c);
-  });
+  socket.on("data", parser);
   socket.on("close", () => trace({ ev: "socket_closed" }));
 
-  if (MODE !== "alive") {
+  if (MODE !== "alive" && MODE !== "alive-idle") {
     setTimeout(() => {
       faulted = true;
       if (MODE === "stall") {
@@ -329,11 +332,14 @@ server.on("upgrade", (req, socket) => {
     }, AFTER_MS);
   }
 
-  // Heartbeat of real traffic so "alive" mode is distinguishable from stall.
-  const beat = setInterval(() => {
+  // Only `alive` emits application traffic. `alive-idle` stays silent after the
+  // snapshot while continuing to answer protocol-level pings above.
+  const beat = MODE === "alive" ? setInterval(() => {
     send({ type: "session_updated", sessionId: "sess-probe-1", updates: { lastActivity: Date.now() } });
-  }, 5000);
-  socket.on("close", () => clearInterval(beat));
+  }, 5000) : null;
+  socket.on("close", () => {
+    if (beat) clearInterval(beat);
+  });
 });
 
 server.listen(PORT, "127.0.0.1", () => {

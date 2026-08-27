@@ -103,12 +103,20 @@ struct RealStoreProbe {
 
         // arg 4: seconds after which to simulate a foreground return (scenePhase .active
         // -> store.revalidate()), which is the path the operator hits every unlock.
+        // args 13/14: repeat count and interval; defaults preserve the single-shot probe.
         let revalidateAt = CommandLine.arguments.count > 4 ? Double(CommandLine.arguments[4])! : -1
-        if revalidateAt > 0 {
+        let revalidateCount = CommandLine.arguments.count > 13 ? Int(CommandLine.arguments[13])! : 1
+        let revalidateInterval = CommandLine.arguments.count > 14 ? Double(CommandLine.arguments[14])! : 0
+        if revalidateAt > 0, revalidateCount > 0 {
             Task { @MainActor in
                 try? await Task.sleep(for: .seconds(revalidateAt))
-                print("[store \(el())s] simulating foreground return -> revalidate()")
-                store.revalidate()
+                for index in 1...revalidateCount {
+                    print("[store \(el())s] simulating foreground return \(index)/\(revalidateCount) -> revalidate()")
+                    store.revalidate()
+                    if index < revalidateCount {
+                        try? await Task.sleep(for: .seconds(revalidateInterval))
+                    }
+                }
             }
         }
 

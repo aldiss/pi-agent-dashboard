@@ -44,6 +44,8 @@ jobs:
           ./run-reconnect-check.sh auth-reject
           ./run-reconnect-check.sh close
           ./run-reconnect-check.sh stall
+          ./run-reconnect-check.sh revalidate-idle
+          ./run-reconnect-check.sh revalidate-halfopen
 
   e2e:
     name: E2E XCUITest (simulator)

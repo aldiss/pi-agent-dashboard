@@ -5,6 +5,26 @@ import os
 /// logged here (never silently swallowed) so a data issue is debuggable.
 private let clientLog = Logger(subsystem: "technology.blackbelt.pidashboard", category: "ws-client")
 
+/// Resolves a callback/timeout race exactly once. `sendPing` can retain its callback
+/// forever on a half-open socket, so a structured task-group race cannot bound it:
+/// task groups wait for the uncooperative child even after cancellation.
+private final class ForegroundProbeResolution: @unchecked Sendable {
+    private let lock = NSLock()
+    private var continuation: CheckedContinuation<Bool, Never>?
+
+    init(_ continuation: CheckedContinuation<Bool, Never>) {
+        self.continuation = continuation
+    }
+
+    func resolve(_ value: Bool) {
+        lock.lock()
+        let continuation = self.continuation
+        self.continuation = nil
+        lock.unlock()
+        continuation?.resume(returning: value)
+    }
+}
+
 public enum DashboardSessionConfiguration {
     public static func make() -> URLSessionConfiguration {
         let configuration = URLSessionConfiguration.default
@@ -31,6 +51,10 @@ public enum DashboardClientError: Error, Sendable {
 /// An `actor` so connection state + the socket task are isolated; the SwiftUI
 /// layer wraps it in an `@MainActor` observable store.
 public actor DashboardClient {
+    /// Foreground liveness probe budget. Short enough to preserve recovery well inside
+    /// the passive 22s ping + 10s pong deadline.
+    public static let foregroundProbeTimeout: TimeInterval = 2
+
     public enum ConnectionState: Sendable, Equatable {
         case disconnected, connecting, connected
         case unauthorized
@@ -115,6 +139,39 @@ public actor DashboardClient {
         continuation?.finish()
         continuation = nil
         state = .disconnected
+    }
+
+    /// Actively ask the captured live socket for a pong. `sendPing` completes only when
+    /// its pong arrives (or with an error), so an independent timeout must resolve the
+    /// half-open case where the callback never fires. A late pong from a superseded
+    /// socket cannot certify the replacement connection.
+    public func probeForegroundLiveness() async -> Bool {
+        guard let socket = task else { return false }
+        let answered = await Self.awaitForegroundPong(timeout: Self.foregroundProbeTimeout) {
+            completion in
+            socket.sendPing(pongReceiveHandler: completion)
+        }
+        guard answered, socket === task else { return false }
+        keepalive?.recordActivity(at: nowSeconds())
+        return true
+    }
+
+    /// Injectable callback bridge for deterministic unit tests. Production supplies
+    /// `URLSessionWebSocketTask.sendPing`; tests supply an immediate pong or no callback.
+    static func awaitForegroundPong(
+        timeout: TimeInterval,
+        sendPing: (@escaping @Sendable (Error?) -> Void) -> Void
+    ) async -> Bool {
+        await withCheckedContinuation { continuation in
+            let resolution = ForegroundProbeResolution(continuation)
+            sendPing { error in
+                resolution.resolve(error == nil)
+            }
+            Task {
+                try? await Task.sleep(for: .seconds(timeout))
+                resolution.resolve(false)
+            }
+        }
     }
 
     /// Send a client message as a JSON text frame.

@@ -12,6 +12,8 @@
 # Runs on the command line: no simulator, no signing, no network. ~45s.
 #
 # Usage: ./run-reconnect-check.sh          # drop+reconnect (the regression)
+#        ./run-reconnect-check.sh revalidate-idle # idle healthy socket answers active probes
+#        ./run-reconnect-check.sh revalidate-halfopen # half-open socket recovers after probe timeout
 #        ./run-reconnect-check.sh cross-origin # A credential must not reach B
 #        ./run-reconnect-check.sh auth-reject  # 401 -> authRequired, no backoff
 #        ./run-reconnect-check.sh stall    # silent half-open path (keepalive death)
@@ -35,6 +37,9 @@ QUEUE_LATE_ACK=off
 MODEL_CYCLE=off
 IDLE_FIRST_ACK=off
 EDIT_AT=-1
+REVALIDATE_AT=-1
+REVALIDATE_COUNT=1
+REVALIDATE_INTERVAL=0
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP="$HERE/../../PiDashboard/Sources"
 KIT="$HERE/../../PiDashboardKit"
@@ -49,6 +54,8 @@ PROBE_SCENARIO=default
 trap 'if [ -n "${SRV_PID:-}" ]; then kill "$SRV_PID" 2>/dev/null || true; fi; rm -rf "$WORK"' EXIT
 
 case "$MODE" in
+  revalidate-idle)     SERVER_MODE=alive-idle; FAULT_AT=8; BUDGET=18; SEND_AT=-1; LATE_ECHO=off; RESET_CYCLE=off; PROMPT_CYCLE=off; PROMPT_DUPLICATE=off; QUEUE_CYCLE=off; PROMPT_ANSWER=none; COMPETING=single; REVALIDATE_AT=4; REVALIDATE_COUNT=5; REVALIDATE_INTERVAL=3; PROBE_SCENARIO=revalidate-idle; LABEL="five foreground returns on a healthy idle socket" ;;
+  revalidate-halfopen) SERVER_MODE=stall; FAULT_AT=3; BUDGET=12; SEND_AT=-1; LATE_ECHO=off; RESET_CYCLE=off; PROMPT_CYCLE=off; PROMPT_DUPLICATE=off; QUEUE_CYCLE=off; PROMPT_ANSWER=none; COMPETING=single; REVALIDATE_AT=2; REVALIDATE_COUNT=5; REVALIDATE_INTERVAL=0.25; PROBE_SCENARIO=revalidate-halfopen; LABEL="repeated foreground returns during a half-open probe" ;;
   cross-origin) SERVER_MODE=alive; FAULT_AT=8; BUDGET=6; SEND_AT=-1; LATE_ECHO=off; RESET_CYCLE=off; PROMPT_CYCLE=off; PROMPT_DUPLICATE=off; QUEUE_CYCLE=off; PROMPT_ANSWER=none; COMPETING=single; PROBE_SCENARIO=cross-origin; LABEL="same-origin negative control followed by foreign-origin connect" ;;
   auth-reject)  SERVER_MODE=auth-reject; FAULT_AT=8; BUDGET=40; SEND_AT=-1; LATE_ECHO=off; RESET_CYCLE=off; PROMPT_CYCLE=off; PROMPT_DUPLICATE=off; QUEUE_CYCLE=off; PROMPT_ANSWER=none; COMPETING=single; PROBE_SCENARIO=auth-reject; LABEL="401 WebSocket upgrade followed by unauthenticated auth status" ;;
   close)        SERVER_MODE=close; FAULT_AT=8; BUDGET=30;  SEND_AT=-1; LATE_ECHO=off; RESET_CYCLE=off; PROMPT_CYCLE=off; PROMPT_DUPLICATE=off; QUEUE_CYCLE=off; PROMPT_ANSWER=none; COMPETING=single; LABEL="server drops the socket every 8s" ;;
@@ -66,7 +73,7 @@ case "$MODE" in
   model-empty)          SERVER_MODE=alive; FAULT_AT=8; BUDGET=6; SEND_AT=-1; LATE_ECHO=off; RESET_CYCLE=off; PROMPT_CYCLE=off; PROMPT_DUPLICATE=off; QUEUE_CYCLE=off; PROMPT_ANSWER=none; MODEL_CYCLE=empty; MODEL_PROBE=empty; COMPETING=single; LABEL="empty model catalogue reaches loaded state" ;;
   send-same-recover)    SERVER_MODE=alive; FAULT_AT=8; BUDGET=16; SEND_AT=3; LATE_ECHO=off; RESET_CYCLE=off; PROMPT_CYCLE=off; PROMPT_DUPLICATE=off; QUEUE_CYCLE=off; PROMPT_ANSWER=none; MODEL_PROBE=off; COMPETING=same; IDLE_FIRST_ACK=on; LABEL="ack A must not clear same-value restored draft B" ;;
   send-edit-recover)    SERVER_MODE=alive; FAULT_AT=8; BUDGET=16; SEND_AT=3; LATE_ECHO=off; RESET_CYCLE=off; PROMPT_CYCLE=off; PROMPT_DUPLICATE=off; QUEUE_CYCLE=off; PROMPT_ANSWER=none; MODEL_PROBE=off; COMPETING=single; IDLE_FIRST_ACK=on; EDIT_AT=10; LABEL="late ack must preserve operator whitespace edit" ;;
-  *) echo "unknown mode '$MODE' (want: cross-origin | auth-reject | close | stall | send-loss | send-recover | send-partial-recover | reset-replay | prompt-cycle | prompt-duplicate)" >&2; exit 2 ;;
+  *) echo "unknown mode '$MODE' (want: revalidate-idle | revalidate-halfopen | cross-origin | auth-reject | close | stall | send-loss | send-recover | send-partial-recover | reset-replay | prompt-cycle | prompt-duplicate)" >&2; exit 2 ;;
 esac
 
 # Build a throwaway package around the REAL store sources (symlinked, never copied —
@@ -108,19 +115,29 @@ fi
 
 echo "running: $LABEL (${BUDGET}s)"
 PROBE_OUT="$WORK/probe.log"
-"$WORK/.build/debug/StoreProbe" "$TARGET_URL" "$BUDGET" 2 -1 "$SEND_AT" "$COMPETING" "$PROMPT_ANSWER" "$MODEL_PROBE" "$EDIT_AT" "$PROBE_SCENARIO" "$ORIGIN_A_URL" "$ORIGIN_B_URL" | tee "$PROBE_OUT" | grep -E "phase ->|sending into|competing failure|operator added|responding to prompt|migration |auth attempts|auth credentials|cross-origin|final" || true
+PROBE_RESULT=0
+"$WORK/.build/debug/StoreProbe" "$TARGET_URL" "$BUDGET" 2 "$REVALIDATE_AT" "$SEND_AT" "$COMPETING" "$PROMPT_ANSWER" "$MODEL_PROBE" "$EDIT_AT" "$PROBE_SCENARIO" "$ORIGIN_A_URL" "$ORIGIN_B_URL" "$REVALIDATE_COUNT" "$REVALIDATE_INTERVAL" | tee "$PROBE_OUT" | grep -E "phase ->|simulating foreground|sending into|competing failure|operator added|responding to prompt|migration |auth attempts|auth credentials|cross-origin|final" || PROBE_RESULT=${PIPESTATUS[0]}
 kill $SRV_PID 2>/dev/null || true
 sleep 0.3
 
 CONNECTIONS=$(grep -c '"ev":"upgraded"' "$TRACE" || true)
 SUBSCRIBES=$(grep -c '"type":"subscribe"' "$TRACE" || true)
+MAX_LIVE=$(awk '
+  /"ev":"upgraded"/ { live += 1; if (live > max) max = live }
+  /"ev":"socket_closed"/ { if (live > 0) live -= 1 }
+  END { print max + 0 }
+' "$TRACE")
+RX_WS_PINGS=$(grep -c '"ev":"rx_ws_ping"' "$TRACE" || true)
+APP_UPDATES=$(grep -c '"ev":"sent","type":"session_updated"' "$TRACE" || true)
+STALLED_WS_PINGS=$(grep -c '"ev":"rx_ws_ping_stalled"' "$TRACE" || true)
 echo
 echo "connections=$CONNECTIONS  subscribe frames received=$SUBSCRIBES"
 
 # The check can fail two ways, and both matter: no reconnect at all (nothing was
 # exercised), or reconnects that left the chat unsubscribed (the regression).
 if [[ "$MODE" != auth-reject && "$MODE" != prompt-* && "$MODE" != queue-loss && "$MODE" != queue-recover \
-      && "$MODE" != model-* && "$MODE" != send-same-recover && "$MODE" != send-edit-recover ]] \
+      && "$MODE" != model-* && "$MODE" != send-same-recover && "$MODE" != send-edit-recover \
+      && "$MODE" != revalidate-idle ]] \
     && [ "$CONNECTIONS" -lt 2 ]; then
   echo "FAIL: only $CONNECTIONS connection(s) — the drop never triggered a reconnect," >&2
   echo "      so this run proves nothing. Check the fault server log: $WORK/srv.log" >&2
@@ -131,7 +148,81 @@ if [ "$CONNECTIONS" != "$SUBSCRIBES" ]; then
   echo "      The app would look connected while the open chat received nothing." >&2
   exit 1
 fi
-if [ "$MODE" = "cross-origin" ]; then
+if [ "$MODE" = "revalidate-idle" ]; then
+  REVALIDATIONS=$(grep -c 'simulating foreground return' "$PROBE_OUT" || true)
+  echo "idle revalidate trace: ACCEPTED=$CONNECTIONS max-live=$MAX_LIVE revalidates=$REVALIDATIONS rx_ws_ping=$RX_WS_PINGS"
+  if [ "$PROBE_RESULT" -ne 0 ]; then
+    echo "FAIL: idle StoreProbe exited $PROBE_RESULT." >&2
+    exit 1
+  fi
+  if [ "$REVALIDATIONS" -ne 5 ]; then
+    echo "FAIL: idle probe drove $REVALIDATIONS revalidations instead of 5." >&2
+    exit 1
+  fi
+  if [ "$CONNECTIONS" -ne 1 ]; then
+    echo "FAIL: idle revalidate requires ACCEPTED == 1; got $CONNECTIONS." >&2
+    exit 1
+  fi
+  if [ "$MAX_LIVE" -gt 1 ]; then
+    echo "FAIL: idle revalidate reached $MAX_LIVE live sockets; want at most 1." >&2
+    exit 1
+  fi
+  if [ "$RX_WS_PINGS" -ne "$REVALIDATIONS" ]; then
+    echo "FAIL: idle revalidate observed $RX_WS_PINGS protocol pings for $REVALIDATIONS foreground returns." >&2
+    exit 1
+  fi
+  if [ "$APP_UPDATES" -ne 0 ]; then
+    echo "FAIL: alive-idle emitted $APP_UPDATES periodic application frame(s)." >&2
+    exit 1
+  fi
+  if ! grep -q 'final: phase=connected' "$PROBE_OUT"; then
+    echo "FAIL: idle revalidate did not finish connected." >&2
+    grep 'final:' "$PROBE_OUT" >&2 || true
+    exit 1
+  fi
+  if grep -q 'phase -> reconnecting' "$PROBE_OUT"; then
+    echo "FAIL: idle revalidate entered reconnecting despite a healthy pong." >&2
+    exit 1
+  fi
+  echo "PASS: healthy idle socket answered active probes and kept ACCEPTED == 1."
+elif [ "$MODE" = "revalidate-halfopen" ]; then
+  REVALIDATIONS=$(grep -c 'simulating foreground return' "$PROBE_OUT" || true)
+  FIRST_ACCEPTED_AT=$(awk -F'"t":|,' '/"ev":"upgraded"/ { count += 1; if (count == 1) { print $2; exit } }' "$TRACE")
+  SECOND_ACCEPTED_AT=$(awk -F'"t":|,' '/"ev":"upgraded"/ { count += 1; if (count == 2) { print $2; exit } }' "$TRACE")
+  if [ -n "$FIRST_ACCEPTED_AT" ] && [ -n "$SECOND_ACCEPTED_AT" ]; then
+    RECOVERY_SECONDS=$(awk -v first="$FIRST_ACCEPTED_AT" -v second="$SECOND_ACCEPTED_AT" 'BEGIN { printf "%.2f", second - first }')
+  else
+    RECOVERY_SECONDS=missing
+  fi
+  echo "half-open revalidate trace: ACCEPTED=$CONNECTIONS max-live=$MAX_LIVE revalidates=$REVALIDATIONS stalled_ws_ping=$STALLED_WS_PINGS recovery_s=$RECOVERY_SECONDS"
+  if [ "$PROBE_RESULT" -ne 0 ]; then
+    echo "FAIL: half-open StoreProbe exited $PROBE_RESULT." >&2
+    exit 1
+  fi
+  if [ "$REVALIDATIONS" -ne 5 ]; then
+    echo "FAIL: half-open probe drove $REVALIDATIONS revalidations instead of 5." >&2
+    exit 1
+  fi
+  if [ "$CONNECTIONS" -ne 2 ]; then
+    echo "FAIL: half-open revalidate requires exactly one additional accepted connection; got $CONNECTIONS total." >&2
+    exit 1
+  fi
+  if [ "$STALLED_WS_PINGS" -lt 1 ]; then
+    echo "FAIL: half-open server observed no protocol ping while stalled; the positive control proves nothing." >&2
+    exit 1
+  fi
+  if [ "$RECOVERY_SECONDS" = missing ] \
+      || ! awk -v elapsed="$RECOVERY_SECONDS" 'BEGIN { exit !(elapsed < 32) }'; then
+    echo "FAIL: half-open recovery did not arrive before the 32s passive deadline." >&2
+    exit 1
+  fi
+  if ! grep -q 'final: phase=connected' "$PROBE_OUT"; then
+    echo "FAIL: half-open revalidate did not finish connected." >&2
+    grep 'final:' "$PROBE_OUT" >&2 || true
+    exit 1
+  fi
+  echo "PASS: half-open probe timed out once and recovered in ${RECOVERY_SECONDS}s (<32s)."
+elif [ "$MODE" = "cross-origin" ]; then
   A_HTTP_REQUESTS=$(grep -c '"ev":"credential_request","transport":"http","path":"/api/health".*"host":"'"$ORIGIN_A_HOST"'"' "$TRACE" || true)
   A_WS_REQUESTS=$(grep -c '"ev":"credential_request","transport":"ws".*"host":"'"$ORIGIN_A_HOST"'"' "$TRACE" || true)
   B_HTTP_REQUESTS=$(grep -c '"ev":"credential_request","transport":"http","path":"/api/health".*"host":"'"$ORIGIN_B_HOST"'"' "$TRACE" || true)
