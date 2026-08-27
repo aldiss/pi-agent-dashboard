@@ -22,10 +22,13 @@
 #        ./run-reconnect-check.sh queue-loss # connected/no ack -> slow failure
 #        ./run-reconnect-check.sh queue-drop # socket close -> failure before deadline
 #        ./run-reconnect-check.sh queue-recover # late bridge ack recovers card + banner
+#        ./run-reconnect-check.sh model-cache # two calls -> one wire request, cached rows
+#        ./run-reconnect-check.sh model-empty # loaded empty, never endless loading
 set -euo pipefail
 
 MODE="${1:-close}"
 QUEUE_LATE_ACK=off
+MODEL_CYCLE=off
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP="$HERE/../../PiDashboard/Sources"
 KIT="$HERE/../../PiDashboardKit"
@@ -44,7 +47,9 @@ case "$MODE" in
   prompt-duplicate)     SERVER_MODE=alive; FAULT_AT=8; BUDGET=8; SEND_AT=-1; LATE_ECHO=off; RESET_CYCLE=off; PROMPT_CYCLE=on;  PROMPT_DUPLICATE=on;  QUEUE_CYCLE=off; PROMPT_ANSWER=B; COMPETING=single; LABEL="duplicate PromptBus ids collapse to one control" ;;
   queue-loss)           SERVER_MODE=stall; FAULT_AT=4; BUDGET=15; SEND_AT=5; LATE_ECHO=off; RESET_CYCLE=off; PROMPT_CYCLE=off; PROMPT_DUPLICATE=off; QUEUE_CYCLE=on; PROMPT_ANSWER=none; COMPETING=single; LABEL="queued follow-up receives no bridge acknowledgement" ;;
   queue-drop)           SERVER_MODE=close; FAULT_AT=6; BUDGET=10; SEND_AT=5; LATE_ECHO=off; RESET_CYCLE=off; PROMPT_CYCLE=off; PROMPT_DUPLICATE=off; QUEUE_CYCLE=on; PROMPT_ANSWER=none; COMPETING=single; LABEL="socket closes before queued-send deadline" ;;
-  queue-recover)        SERVER_MODE=alive; FAULT_AT=8; BUDGET=16; SEND_AT=3; LATE_ECHO=off; RESET_CYCLE=off; PROMPT_CYCLE=off; PROMPT_DUPLICATE=off; QUEUE_CYCLE=on; QUEUE_LATE_ACK=on; PROMPT_ANSWER=none; COMPETING=single; LABEL="late bridge acknowledgement recovers queued card" ;;
+  queue-recover)        SERVER_MODE=alive; FAULT_AT=8; BUDGET=16; SEND_AT=3; LATE_ECHO=off; RESET_CYCLE=off; PROMPT_CYCLE=off; PROMPT_DUPLICATE=off; QUEUE_CYCLE=on; QUEUE_LATE_ACK=on; PROMPT_ANSWER=none; MODEL_PROBE=off; COMPETING=single; LABEL="late bridge acknowledgement recovers queued card" ;;
+  model-cache)          SERVER_MODE=alive; FAULT_AT=8; BUDGET=6; SEND_AT=-1; LATE_ECHO=off; RESET_CYCLE=off; PROMPT_CYCLE=off; PROMPT_DUPLICATE=off; QUEUE_CYCLE=off; PROMPT_ANSWER=none; MODEL_CYCLE=full; MODEL_PROBE=full; COMPETING=single; LABEL="model catalogue remains cached across second request" ;;
+  model-empty)          SERVER_MODE=alive; FAULT_AT=8; BUDGET=6; SEND_AT=-1; LATE_ECHO=off; RESET_CYCLE=off; PROMPT_CYCLE=off; PROMPT_DUPLICATE=off; QUEUE_CYCLE=off; PROMPT_ANSWER=none; MODEL_CYCLE=empty; MODEL_PROBE=empty; COMPETING=single; LABEL="empty model catalogue reaches loaded state" ;;
   *) echo "unknown mode '$MODE' (want: close | stall | send-loss | send-recover | send-partial-recover | reset-replay | prompt-cycle | prompt-duplicate)" >&2; exit 2 ;;
 esac
 
@@ -71,13 +76,14 @@ echo "building probe against $APP/DashboardStore.swift"
 [ -x "$WORK/.build/debug/StoreProbe" ] || { echo "PROBE BUILD FAILED (no binary)" >&2; exit 1; }
 
 TRACE="$WORK/trace.jsonl"
-node "$HERE/ws-fault-server.mjs" --mode="$SERVER_MODE" --after="$FAULT_AT" --port="$PORT" --lateEcho="$LATE_ECHO" --resetCycle="$RESET_CYCLE" --promptCycle="$PROMPT_CYCLE" --promptDuplicate="$PROMPT_DUPLICATE" --queueCycle="$QUEUE_CYCLE" --queueLateAck="$QUEUE_LATE_ACK" --trace="$TRACE" >"$WORK/srv.log" 2>&1 &
+MODEL_PROBE="${MODEL_PROBE:-off}"
+node "$HERE/ws-fault-server.mjs" --mode="$SERVER_MODE" --after="$FAULT_AT" --port="$PORT" --lateEcho="$LATE_ECHO" --resetCycle="$RESET_CYCLE" --promptCycle="$PROMPT_CYCLE" --promptDuplicate="$PROMPT_DUPLICATE" --queueCycle="$QUEUE_CYCLE" --queueLateAck="$QUEUE_LATE_ACK" --modelCycle="$MODEL_CYCLE" --trace="$TRACE" >"$WORK/srv.log" 2>&1 &
 SRV_PID=$!
 sleep 1
 
 echo "running: $LABEL (${BUDGET}s)"
 PROBE_OUT="$WORK/probe.log"
-"$WORK/.build/debug/StoreProbe" "http://127.0.0.1:$PORT" "$BUDGET" 2 -1 "$SEND_AT" "$COMPETING" "$PROMPT_ANSWER" | tee "$PROBE_OUT" | grep -E "phase ->|sending into|competing failure|responding to prompt|final" || true
+"$WORK/.build/debug/StoreProbe" "http://127.0.0.1:$PORT" "$BUDGET" 2 -1 "$SEND_AT" "$COMPETING" "$PROMPT_ANSWER" "$MODEL_PROBE" | tee "$PROBE_OUT" | grep -E "phase ->|sending into|competing failure|responding to prompt|final" || true
 kill $SRV_PID 2>/dev/null || true
 sleep 0.3
 
@@ -88,7 +94,7 @@ echo "connections=$CONNECTIONS  subscribe frames received=$SUBSCRIBES"
 
 # The check can fail two ways, and both matter: no reconnect at all (nothing was
 # exercised), or reconnects that left the chat unsubscribed (the regression).
-if [[ "$MODE" != prompt-* && "$MODE" != queue-loss && "$MODE" != queue-recover ]] \
+if [[ "$MODE" != prompt-* && "$MODE" != queue-loss && "$MODE" != queue-recover && "$MODE" != model-* ]] \
     && [ "$CONNECTIONS" -lt 2 ]; then
   echo "FAIL: only $CONNECTIONS connection(s) — the drop never triggered a reconnect," >&2
   echo "      so this run proves nothing. Check the fault server log: $WORK/srv.log" >&2
@@ -142,6 +148,21 @@ elif [[ "$MODE" == queue-* ]]; then
     exit 1
   fi
   echo "PASS: unacknowledged queued follow-up became failed; banner remains visible."
+elif [ "$MODE" = "model-cache" ]; then
+  REQUEST_COUNT=$(grep -c '"type":"request_models"' "$TRACE" || true)
+  if [ "$REQUEST_COUNT" -ne 1 ] || ! grep -q 'models=2 modelPhase=loaded' "$PROBE_OUT"; then
+    echo "FAIL: cached catalogue was hidden/refetched or did not remain loaded." >&2
+    grep 'final:' "$PROBE_OUT" >&2 || true
+    exit 1
+  fi
+  echo "PASS: two calls emitted one request; cached two-model catalogue stayed loaded."
+elif [ "$MODE" = "model-empty" ]; then
+  if ! grep -q 'models=0 modelPhase=loaded' "$PROBE_OUT"; then
+    echo "FAIL: loaded-empty catalogue was mistaken for loading/failure." >&2
+    grep 'final:' "$PROBE_OUT" >&2 || true
+    exit 1
+  fi
+  echo "PASS: empty catalogue is loaded-empty, not an endless spinner."
 elif [[ "$MODE" == prompt-* ]]; then
   RESPONSE_COUNT=$(grep -c '"ev":"rx_prompt_response"' "$TRACE" || true)
   if ! grep -q 'prompts=0' "$PROBE_OUT" \

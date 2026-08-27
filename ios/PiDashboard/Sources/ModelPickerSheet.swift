@@ -21,6 +21,7 @@ struct ModelPickerSheet: View {
     private let thinkingLevels = ["off", "minimal", "low", "medium", "high", "xhigh"]
 
     private var models: [ModelInfo] { store.availableModels[sessionId] ?? [] }
+    private var loadPhase: ModelListPhase { store.modelListPhases[sessionId] ?? .idle }
     private var session: DashboardSession? { store.sessions[sessionId] }
     private var currentModel: String? { session?.model }
     private var currentThinking: String { session?.thinkingLevel ?? "off" }
@@ -97,14 +98,39 @@ struct ModelPickerSheet: View {
     }
 
     @ViewBuilder private var modelList: some View {
-        if models.isEmpty {
+        switch loadPhase {
+        case .idle, .loading:
             HStack(spacing: 8) {
                 ProgressView().controlSize(.small).tint(theme.textTertiary)
                 Text("Loading models…").font(.callout).foregroundStyle(theme.textTertiary)
             }
             .frame(maxWidth: .infinity, alignment: .center)
             .padding(.vertical, 24)
-        } else {
+
+        case .failed:
+            VStack(spacing: 10) {
+                Text("Couldn't load models.")
+                    .font(.callout).foregroundStyle(theme.textSecondary)
+                Button("Try again") { Task { await store.requestModels(sessionId) } }
+                    .buttonStyle(.bordered)
+                    .tint(theme.accentBlue)
+            }
+            .frame(maxWidth: .infinity, alignment: .center)
+            .padding(.vertical, 24)
+
+        case .loaded where models.isEmpty:
+            Text("No models available")
+                .font(.callout).foregroundStyle(theme.textTertiary)
+                .frame(maxWidth: .infinity, alignment: .center)
+                .padding(.vertical, 24)
+
+        case .loaded where filteredModels.isEmpty:
+            Text("No matching models")
+                .font(.callout).foregroundStyle(theme.textTertiary)
+                .frame(maxWidth: .infinity, alignment: .center)
+                .padding(.vertical, 24)
+
+        case .loaded:
             VStack(spacing: 6) {
                 ForEach(filteredModels) { model in
                     Button {

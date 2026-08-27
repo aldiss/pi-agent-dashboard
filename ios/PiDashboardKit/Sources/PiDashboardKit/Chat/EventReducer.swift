@@ -58,6 +58,7 @@ public struct ChatMessage: Sendable, Equatable, Identifiable {
 public struct ToolCallState: Sendable, Equatable {
     public var toolCallId: String
     public var toolName: String
+    public var args: [String: JSONValue]
     public var status: ToolStatus
     public var result: String?
 }
@@ -484,17 +485,19 @@ public struct ChatSessionState: Sendable, Equatable {
                 next.streamingText = ""
                 next.streamingTextFlushed = true
             }
+            let args = data["args"]?.objectValue ?? [:]
             next.toolCalls[toolCallId] = ToolCallState(
-                toolCallId: toolCallId, toolName: toolName, status: .running)
+                toolCallId: toolCallId, toolName: toolName, args: args, status: .running)
             next.currentTool = toolName
             // Idempotent on toolCallId: refresh in place if a row already exists.
             if let idx = next.messages.lastIndex(where: { $0.role == .toolResult && $0.toolCallId == toolCallId }) {
                 next.messages[idx].toolName = toolName
+                next.messages[idx].args = args
             } else {
                 next.messages.append(ChatMessage(
                     id: "tool-\(toolCallId)", role: .toolResult, content: toolName,
                     toolName: toolName, toolCallId: toolCallId, toolStatus: .running,
-                    timestamp: ts, startedAt: ts))
+                    timestamp: ts, startedAt: ts, args: args))
             }
 
         case "tool_execution_update":
@@ -520,7 +523,7 @@ public struct ChatSessionState: Sendable, Equatable {
                 if let started = next.messages[idx].startedAt {
                     next.messages[idx].duration = max(0, ts - started) // clamp clock-skew negatives
                 }
-                if let images = ChatSessionState.extractImages(data["images"]) {
+                if let images = ChatSessionState.extractToolResultImages(data) {
                     next.messages[idx].images = images
                 }
             }
@@ -742,6 +745,14 @@ public struct ChatSessionState: Sendable, Equatable {
             }
         }
         return (text, images)
+    }
+
+    /// Tool result images arrive in two shapes: state replay pre-extracts `images`,
+    /// while live events carry them inside `result.content` blocks.
+    static func extractToolResultImages(_ data: [String: JSONValue]) -> [ImageContent]? {
+        if let replay = extractImages(data["images"]) { return replay }
+        guard let blocks = data["result"]?.objectValue?["content"] else { return nil }
+        return extractImages(blocks)
     }
 
     /// Extract pre-resolved `[{data,mimeType}]` image arrays (state-replay shape).

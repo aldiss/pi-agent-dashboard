@@ -72,6 +72,17 @@ struct RealStoreProbe {
                 }
             }
         }
+
+        // arg 8: request the model catalogue twice. The second call must use cache
+        // and emit no second request_models frame.
+        let modelProbe = CommandLine.arguments.count > 8 ? CommandLine.arguments[8] : "off"
+        if modelProbe != "off" {
+            Task { @MainActor in
+                await store.requestModels("sess-probe-1")
+                try? await Task.sleep(for: .milliseconds(300))
+                await store.requestModels("sess-probe-1")
+            }
+        }
         var lastPhase = "\(store.phase)"
         let deadline = Date().addingTimeInterval(budget)
         while Date() < deadline {
@@ -87,9 +98,11 @@ struct RealStoreProbe {
         let failure = store.sendFailures["sess-probe-1"] ?? "none"
         let contents = finalState.messages.map(\.content).joined(separator: "|")
         let promptCount = store.prompts("sess-probe-1").count
+        let modelCount = store.availableModels["sess-probe-1"]?.count ?? -1
+        let modelPhase = String(describing: store.modelListPhases["sess-probe-1"] ?? .idle)
         let queuedDelivery = finalState.queued.first { $0.text == "loss probe" }
             .map { String(describing: $0.status) } ?? "absent"
-        print("[store \(el())s] final: phase=\(store.phase) sessions=\(store.sessions.count) delivery=\(delivery) other=\(otherDelivery) queue=\(queuedDelivery) failure=\(failure) prompts=\(promptCount) contents=\(contents)")
+        print("[store \(el())s] final: phase=\(store.phase) sessions=\(store.sessions.count) delivery=\(delivery) other=\(otherDelivery) queue=\(queuedDelivery) failure=\(failure) prompts=\(promptCount) models=\(modelCount) modelPhase=\(modelPhase) contents=\(contents)")
         exit(0)
     }
 }

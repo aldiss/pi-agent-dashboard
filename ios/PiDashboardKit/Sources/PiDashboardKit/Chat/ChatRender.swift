@@ -14,6 +14,33 @@ public enum ChatRender {
         return ChatSessionState.prettyJSON(args)
     }
 
+    /// PWA-equivalent collapsed tool summary. Arguments stay available in full when
+    /// expanded; the header names the command/path/pattern so tool rows are useful at
+    /// a glance instead of every read/bash/edit collapsing to the same word.
+    public static func toolSummary(_ toolName: String, args: [String: JSONValue]) -> String {
+        func value(_ key: String, fallback: String = "") -> String {
+            guard let raw = args[key], let text = ChatSessionState.displayString(raw) else { return fallback }
+            return text
+        }
+        func clipped(_ text: String, _ limit: Int) -> String { String(text.prefix(limit)) }
+
+        switch toolName {
+        case "read": return "Read \(value("path", fallback: "file"))"
+        case "bash": return "$ \(clipped(value("command"), 60))"
+        case "edit": return "Edit \(value("path", fallback: "file"))"
+        case "write": return "Write \(value("path", fallback: "file"))"
+        case "grep": return "Grep \(value("pattern"))"
+        case "find": return "Find \(value("glob"))"
+        case "ls": return "ls \(value("path", fallback: "."))"
+        case "ask_user": return clipped(value("title", fallback: "ask_user"), 80)
+        case "Agent":
+            return "\(value("subagent_type", fallback: "Agent")): \(clipped(value("description"), 60))"
+        case "get_subagent_result": return "Get result: \(clipped(value("agent_id"), 30))"
+        case "steer_subagent": return "Steer: \(clipped(value("agent_id"), 30))"
+        default: return toolName
+        }
+    }
+
     /// Thinking blocks longer than this (characters) default to COLLAPSED — a short
     /// aside stays open, a long chain-of-thought is tucked behind the chevron.
     public static let thinkingCollapseThreshold = 280

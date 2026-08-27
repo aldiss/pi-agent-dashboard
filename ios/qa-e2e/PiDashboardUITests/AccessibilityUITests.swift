@@ -75,23 +75,14 @@ final class AccessibilityUITests: PiDashboardUITestCase {
         attach("a11y-tap-targets")
     }
 
-    /// The send + attach glyphs are icon-only with IDs but no explicit `.accessibilityLabel`
-    /// today (VoiceOver falls back to the SF Symbol name). If neither carries a purposeful
-    /// label this SKIPS with the request rather than asserting an aspirational string.
-    func testSendAndAttachExposePurposefulLabels() throws {
+    /// Icon-only controls must describe purpose, not expose SF Symbol names.
+    func testSendAndAttachExposePurposefulLabels() {
         openAChat()
         let send = waitFor("mobile-composer-send", 6)
         let attachBtn = waitFor("mobile-composer-attach", 6)
-        let sendLabeled = ["Send", "Send message"].contains(send.label)
-        let attachLabeled = ["Add photo", "Attach", "Attach image", "Add image"].contains(attachBtn.label)
-        guard sendLabeled || attachLabeled else {
-            throw XCTSkip("""
-            The composer send/attach glyphs carry no purposeful `.accessibilityLabel` (VoiceOver \
-            falls back to the SF Symbol name — "arrow up" / "plus"). PENDING app change: add \
-            `.accessibilityLabel("Send")` to `mobile-composer-send` + `.accessibilityLabel("Add \
-            photo")` to `mobile-composer-attach` (Cluster 5). Reported to cc-ios-build.
-            """)
-        }
+        XCTAssertTrue(["Send message", "Queue message"].contains(send.label),
+                      "send label describes immediate send vs queued follow-up")
+        XCTAssertEqual(attachBtn.label, "Add photo")
         attach("a11y-send-attach-labels")
     }
 }

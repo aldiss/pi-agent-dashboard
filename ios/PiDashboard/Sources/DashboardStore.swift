@@ -15,6 +15,10 @@ enum ConnectionPhase: Equatable {
     case idle, connecting, connected, reconnecting, failed(String)
 }
 
+enum ModelListPhase: Equatable {
+    case idle, loading, loaded, failed
+}
+
 /// `@MainActor @Observable` store wrapping the core `DashboardClient`. Owns the
 /// session registry + per-cwd order + pinned dirs, consumes the `ServerMessage`
 /// stream applying snapshot/added/updated/removed/reordered/pinned, routes chat
@@ -111,6 +115,8 @@ final class DashboardStore {
     private(set) var actionError: String?
     /// sessionId → available models (populated by `models_list` after requestModels).
     private(set) var availableModels: [String: [ModelInfo]] = [:]
+    private(set) var modelListPhases: [String: ModelListPhase] = [:]
+    private var modelRequestTokens: [String: UUID] = [:]
     /// PromptBus requests waiting for this operator. Kept until authoritative
     /// prompt_dismiss/prompt_cancel; a local socket write is not completion.
     private(set) var pendingPrompts: [String: [DashboardPromptRequest]] = [:]
@@ -329,6 +335,9 @@ final class DashboardStore {
         pendingPrompts.removeAll()
         promptResponsesInFlight.removeAll()
         sendFailureOwners.removeAll()
+        availableModels.removeAll()
+        modelListPhases.removeAll()
+        modelRequestTokens.removeAll()
     }
 
     /// Evict all per-session chat/seq/replay caches for one session (Cluster 1). Used
@@ -345,6 +354,9 @@ final class DashboardStore {
         promptResponsesInFlight = Set(promptResponsesInFlight.filter { $0.sessionId != sid })
         sendFailures.removeValue(forKey: sid)
         sendFailureOwners.removeValue(forKey: sid)
+        availableModels.removeValue(forKey: sid)
+        modelListPhases.removeValue(forKey: sid)
+        modelRequestTokens.removeValue(forKey: sid)
     }
 
     // MARK: Message application
@@ -500,7 +512,9 @@ final class DashboardStore {
 
         case .modelsList(let sid, let models):
             // Available models for the picker (replace — authoritative per request).
+            // Loaded-empty is distinct from loading; the sheet must not spin forever.
             availableModels[sid] = models
+            modelListPhases[sid] = .loaded
 
         case .sessionStateReset(let sid):
             // Server reset means the old sequence namespace is gone. Keep only local
@@ -592,7 +606,11 @@ final class DashboardStore {
         var visible = SessionGrouping.filterSessions(Array(sessions.values), activeOnly: false, showHidden: showHidden)
         visible = SessionGrouping.filterStale(visible, staleHoursThreshold: staleHoursThreshold,
                                               hideStale: hideStale, now: now, selectedId: viewedSessionId)
-        visible = SessionGrouping.filterEnded(visible, hideEnded: hideEnded, selectedId: viewedSessionId)
+        let searching = !search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        // Search is a reveal operation: an ended match must not be discarded before
+        // the query runs, and matching directories/tiers are force-open below.
+        visible = SessionGrouping.filterEnded(
+            visible, hideEnded: hideEnded && !searching, selectedId: viewedSessionId)
         visible = SessionGrouping.filterByQuery(visible, search)
         return SessionGrouping.groupByTier(visible).map { tier, tierSessions in
             TierSection(
@@ -609,7 +627,8 @@ final class DashboardStore {
     /// Is the directory folder at `cwd` expanded? Default true (absent from the
     /// collapsed set). Empty cwd (the folders-off flat bucket) is always expanded.
     func isDirExpanded(_ cwd: String) -> Bool {
-        cwd.isEmpty || !collapsedDirs.contains(cwd)
+        let searching = !search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        return searching || cwd.isEmpty || !collapsedDirs.contains(cwd)
     }
 
     /// Toggle the fold state of the directory folder at `cwd` (persists via didSet).
@@ -623,14 +642,17 @@ final class DashboardStore {
     /// never hides a match (mirrors the PWA). Default set: {standing-crew, drivers,
     /// cell-executor} expanded, the rest collapsed.
     func isTierExpanded(_ tier: SessionTier) -> Bool {
-        let searching = !search.trimmingCharacters(in: .whitespaces).isEmpty
-        return TierFold.isExpanded(tier, offDefault: tierFold, forceExpand: searching)
+        let searching = !search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        return TierFold.isExpanded(
+            tier, offDefault: tierFold,
+            forceExpand: searching || tierSections.count == 1)
     }
 
     /// Toggle `tier`'s fold state (persists via didSet). No-op while searching — the
     /// tiers are force-expanded, so a toggle then would be invisible/confusing.
     func toggleTier(_ tier: SessionTier) {
-        guard search.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+        guard search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              tierSections.count > 1 else { return }
         tierFold = TierFold.toggle(tier, in: tierFold)
     }
 
@@ -927,7 +949,29 @@ final class DashboardStore {
     /// Ask the server for the available models (reply arrives as `models_list` →
     /// `availableModels[sid]`). Called when the picker sheet appears.
     func requestModels(_ sid: String) async {
-        await safeSend(.requestModels(sessionId: sid))
+        // Match PWA: a cached catalogue remains visible/selectable; reopening the
+        // sheet does not mask it behind a redundant loading/failure state.
+        if availableModels[sid] != nil {
+            modelListPhases[sid] = .loaded
+            return
+        }
+        // UUID token cannot collide when disconnect/evict clears state and the same
+        // session id later returns; an integer generation could restart at 1 and let
+        // request A's old timeout fail request B.
+        let token = UUID()
+        modelRequestTokens[sid] = token
+        modelListPhases[sid] = .loading
+        guard await safeSend(.requestModels(sessionId: sid)) else {
+            if modelRequestTokens[sid] == token { modelListPhases[sid] = .failed }
+            return
+        }
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(10))
+            guard let self,
+                  self.modelRequestTokens[sid] == token,
+                  self.modelListPhases[sid] == .loading else { return }
+            self.modelListPhases[sid] = .failed
+        }
     }
 
     /// Switch the session's model. The confirmation arrives via `session_updated`
@@ -990,6 +1034,8 @@ final class DashboardStore {
         sendFailures[sid] = reason
         sendFailureOwners[sid] = owner
     }
+
+    func dismissSendFailure(_ sid: String) { clearSendFailure(sid) }
 
     private func clearSendFailure(_ sid: String) {
         sendFailures.removeValue(forKey: sid)

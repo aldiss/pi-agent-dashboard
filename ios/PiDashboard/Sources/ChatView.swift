@@ -448,6 +448,13 @@ struct ChatView: View {
                 Image(systemName: "exclamationmark.triangle.fill")
                 Text(reason).font(.caption)
                 Spacer()
+                Button {
+                    store.dismissSendFailure(sessionId)
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.caption.weight(.semibold))
+                }
+                .accessibilityLabel("Dismiss send error")
             }
             .foregroundStyle(theme.accentRed)
             .padding(10)

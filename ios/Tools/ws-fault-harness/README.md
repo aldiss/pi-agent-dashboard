@@ -16,6 +16,8 @@ sent. Command line only: no simulator, no signing, no network, no npm install.
 ./run-reconnect-check.sh queue-loss             # connected/no ack → slow failure
 ./run-reconnect-check.sh queue-drop             # socket close → failure before deadline
 ./run-reconnect-check.sh queue-recover          # late bridge ack recovers card + banner
+./run-reconnect-check.sh model-cache            # two calls → one wire request, cache stays loaded
+./run-reconnect-check.sh model-empty            # empty catalogue reaches loaded state
 ```
 
 Exit 0 = the selected invariant holds. Exit 1 = behavior failed, or the fault never

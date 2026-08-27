@@ -108,6 +108,45 @@ final class EventReducerTests: XCTestCase {
         XCTAssertNil(s.currentTool)
     }
 
+    func testToolInputArgumentsReachStateAndRenderableRow() {
+        var s = ChatSessionState()
+        let args: JSONValue = .object([
+            "path": .string("/tmp/report.txt"), "line": .number(42),
+        ])
+        s = s.reduce(ev("tool_execution_start", [
+            "toolCallId": .string("t1"), "toolName": .string("read"), "args": args,
+        ]))
+        XCTAssertEqual(s.toolCalls["t1"]?.args["path"]?.stringValue, "/tmp/report.txt")
+        XCTAssertEqual(s.messages[0].args["line"]?.numberValue, 42)
+
+        // Replay/update refreshes args on the same row, never duplicates it.
+        s = s.reduce(ev("tool_execution_start", [
+            "toolCallId": .string("t1"), "toolName": .string("read"),
+            "args": .object(["path": .string("/tmp/new.txt")]),
+        ]))
+        XCTAssertEqual(s.messages.count, 1)
+        XCTAssertEqual(s.messages[0].args["path"]?.stringValue, "/tmp/new.txt")
+    }
+
+    func testLiveToolResultContentExtractsTextAndImage() {
+        var s = ChatSessionState()
+        s = s.reduce(ev("tool_execution_start", [
+            "toolCallId": .string("t1"), "toolName": .string("image"),
+        ]))
+        s = s.reduce(ev("tool_execution_end", [
+            "toolCallId": .string("t1"), "isError": .bool(false),
+            "result": .object(["content": .array([
+                .object(["type": .string("text"), "text": .string("rendered")]),
+                .object(["type": .string("image"), "data": .string("aGVsbG8="),
+                         "mimeType": .string("image/png")]),
+            ])]),
+        ]))
+        XCTAssertEqual(s.messages[0].result, "rendered")
+        XCTAssertEqual(s.messages[0].images, [
+            ImageContent(data: "aGVsbG8=", mimeType: "image/png"),
+        ])
+    }
+
     func testToolErrorStatus() {
         var s = ChatSessionState()
         s = s.reduce(ev("tool_execution_start", ["toolCallId": .string("t1"), "toolName": .string("edit")]))

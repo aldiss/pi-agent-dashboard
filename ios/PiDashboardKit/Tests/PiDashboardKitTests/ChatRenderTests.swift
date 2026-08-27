@@ -31,6 +31,25 @@ final class ChatRenderTests: XCTestCase {
         XCTAssertTrue(out.contains("count"))
     }
 
+    func testToolSummaryMatchesPWAForCommonTools() {
+        XCTAssertEqual(ChatRender.toolSummary("read", args: ["path": .string("/tmp/a")]), "Read /tmp/a")
+        XCTAssertEqual(ChatRender.toolSummary("edit", args: ["path": .string("a.swift")]), "Edit a.swift")
+        XCTAssertEqual(ChatRender.toolSummary("write", args: [:]), "Write file")
+        XCTAssertEqual(ChatRender.toolSummary("grep", args: ["pattern": .string("nonce")]), "Grep nonce")
+        XCTAssertEqual(ChatRender.toolSummary("find", args: ["glob": .string("*.swift")]), "Find *.swift")
+        XCTAssertEqual(ChatRender.toolSummary("ls", args: [:]), "ls .")
+    }
+
+    func testBashToolSummaryClipsLongCommandAtSixtyCharacters() {
+        let command = String(repeating: "x", count: 80)
+        XCTAssertEqual(ChatRender.toolSummary("bash", args: ["command": .string(command)]),
+                       "$ " + String(repeating: "x", count: 60))
+    }
+
+    func testUnknownToolSummaryFallsBackToName() {
+        XCTAssertEqual(ChatRender.toolSummary("custom_tool", args: ["x": .number(1)]), "custom_tool")
+    }
+
     func testShouldCollapseThinkingLongCollapses() {
         let long = String(repeating: "x", count: ChatRender.thinkingCollapseThreshold + 1)
         XCTAssertTrue(ChatRender.shouldCollapseThinking(long))

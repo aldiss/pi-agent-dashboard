@@ -31,6 +31,7 @@ const PROMPT_CYCLE = args.promptCycle === "on";
 const PROMPT_DUPLICATE = args.promptDuplicate === "on";
 const QUEUE_CYCLE = args.queueCycle === "on";
 const QUEUE_LATE_ACK = args.queueLateAck === "on";
+const MODEL_CYCLE = args.modelCycle ?? "off";
 let connectionCount = 0;
 
 const t0 = Date.now();
@@ -168,6 +169,13 @@ server.on("upgrade", (req, socket) => {
     }
     trace({ ev: "rx", type: msg.type, sessionId: msg.sessionId });
     if (msg.type === "ping" && APP_PONG) send({ type: "pong" });
+    if (msg.type === "request_models" && MODEL_CYCLE !== "off") {
+      send({ type: "models_list", sessionId: msg.sessionId,
+             models: MODEL_CYCLE === "empty" ? [] : [
+               { provider: "probe", id: "model-a" },
+               { provider: "probe", id: "model-b" },
+             ] });
+    }
     if (msg.type === "send_prompt" && QUEUE_LATE_ACK) {
       setTimeout(() => send({
         type: "event", sessionId: msg.sessionId, seq: 2,

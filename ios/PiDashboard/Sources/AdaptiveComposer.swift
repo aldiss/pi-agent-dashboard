@@ -185,6 +185,8 @@ struct AdaptiveComposer: View {
                 .background(theme.bgTertiary)
                 .clipShape(Circle())
         }
+        .accessibilityLabel("Add photo")
+        .accessibilityHint("Choose up to four images")
         .accessibilityIdentifier("mobile-composer-attach")
     }
 
@@ -200,6 +202,7 @@ struct AdaptiveComposer: View {
                         .background(theme.accentRed)
                         .clipShape(Circle())
                 }
+                .accessibilityLabel("Stop response")
                 .accessibilityIdentifier("mobile-composer-stop")
             }
             Button(action: send) {
@@ -211,6 +214,8 @@ struct AdaptiveComposer: View {
                     .clipShape(Circle())
             }
             .disabled(!canSend)
+            .accessibilityLabel(isWorking ? "Queue message" : "Send message")
+            .accessibilityHint(isWorking ? "Adds this message after the current response" : "Sends this message")
             .accessibilityIdentifier("mobile-composer-send")
         }
     }
@@ -333,6 +338,7 @@ struct AdaptiveComposer: View {
                                     Image(systemName: "xmark.circle.fill")
                                         .foregroundStyle(.white, .black.opacity(0.6))
                                 }
+                                .accessibilityLabel("Remove attachment \(idx + 1)")
                                 .padding(2)
                             }
                     }

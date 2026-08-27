@@ -19,6 +19,8 @@ struct ChatMessageRow: View {
     init(message: ChatMessage, onImageTap: @escaping (UIImage) -> Void = { _ in }) {
         self.message = message
         self.onImageTap = onImageTap
+        // PWA opens image-bearing tool results so the output is visible immediately.
+        _toolExpanded = State(initialValue: !message.images.isEmpty)
         // Long thinking starts collapsed; a short aside stays open.
         _thinkingExpanded = State(initialValue: !ChatRender.shouldCollapseThinking(message.content))
     }
@@ -36,6 +38,12 @@ struct ChatMessageRow: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: alignment)
+        .onChange(of: message.images.isEmpty) { wasEmpty, isEmpty in
+            // Live tool rows mount at tool_start with no images; tool_end updates
+            // the same identity later. @State init does not rerun, so open on the
+            // empty→image transition as well as on image-bearing first render.
+            if message.role == .toolResult && wasEmpty && !isEmpty { toolExpanded = true }
+        }
         .accessibilityIdentifier("chat-message-\(message.id)")
     }
 
@@ -225,7 +233,9 @@ struct ChatMessageRow: View {
                     HStack(spacing: 6) {
                         Image(systemName: toolIcon).font(.caption)
                             .foregroundStyle(theme.toolStatusColor(message.toolStatus))
-                        Text(message.toolName ?? "tool").font(.caption.weight(.semibold)).monospaced()
+                        Text(ChatRender.toolSummary(message.toolName ?? "tool", args: message.args))
+                            .font(.caption.weight(.semibold)).monospaced()
+                            .lineLimit(1)
                         Spacer()
                         toolStatusBadge
                         if let d = message.duration, d > 0 {
@@ -359,7 +369,7 @@ struct ChatMessageRow: View {
     private var imageStrip: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 6) {
-                ForEach(Array(message.images.enumerated()), id: \.offset) { _, img in
+                ForEach(Array(message.images.enumerated()), id: \.offset) { index, img in
                     if let data = Data(base64Encoded: img.data), let ui = UIImage(data: data) {
                         let cell = ImageLayout.thumbnailSize(for: ui.size)
                         Button { onImageTap(ui) } label: {
@@ -369,7 +379,8 @@ struct ChatMessageRow: View {
                                 .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                                 .overlay(RoundedRectangle(cornerRadius: 10).stroke(theme.borderPrimary, lineWidth: 1))
                         }
-                        .accessibilityIdentifier("chat-image")
+                        .accessibilityLabel("Attachment \(index + 1); opens full screen")
+                        .accessibilityIdentifier("chat-image-\(index)")
                     }
                 }
             }
