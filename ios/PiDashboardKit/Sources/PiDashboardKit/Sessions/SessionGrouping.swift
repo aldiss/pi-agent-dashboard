@@ -154,6 +154,17 @@ public enum SessionGrouping {
         return name.lowercased()
     }
 
+    private enum CollapseKey: Hashable {
+        case crew(String)
+        case nonCrew(name: String, groupPath: String)
+    }
+
+    private static func collapseKey(_ session: DashboardSession) -> CollapseKey {
+        let name = canonicalNameKey(session)
+        if isCrewKey(name) { return .crew(name) }
+        return .nonCrew(name: name, groupPath: pathKey(groupPath(session)))
+    }
+
     /// One collapsed row: the most-recent session for a canonical name, plus how many
     /// OLDER same-name sessions it folds (drives the "+N" badge) and their ids.
     public struct CollapsedSession: Sendable, Equatable, Identifiable {
@@ -171,18 +182,17 @@ public enum SessionGrouping {
         max(s.lastActivityAt ?? 0, s.startedAt ?? 0)
     }
 
-    /// Collapse same-canonical-name sessions to ONE row each — the most-recent by
-    /// recency (tie-break: id descending, deterministic) — folding older tenures into
-    /// a `+N` count. Output preserves the FIRST-seen order of the surviving rows (so
-    /// the caller's prior server-order sort is respected). The selected session, when
-    /// it's an OLDER tenure, is promoted to be the surviving row for its name so an
-    /// open chat never hides behind a newer sibling. Pure + deterministic.
+    /// Collapse sessions to ONE row per identity: canonical name alone for crew,
+    /// canonical name + normalized group path for non-crew. The most-recent by recency
+    /// survives (tie-break: id descending, deterministic), folding older tenures into
+    /// a `+N` count. Output preserves first-seen order. The selected session, when it's
+    /// an older tenure, is promoted within its identity. Pure + deterministic.
     public static func collapseSameName(_ sessions: [DashboardSession],
                                         selectedId: String? = nil) -> [CollapsedSession] {
-        var order: [String] = []                       // canonical keys in first-seen order
-        var buckets: [String: [DashboardSession]] = [:]
+        var order: [CollapseKey] = []                  // collapse keys in first-seen order
+        var buckets: [CollapseKey: [DashboardSession]] = [:]
         for s in sessions {
-            let key = canonicalNameKey(s)
+            let key = collapseKey(s)
             if buckets[key] == nil { order.append(key) }
             buckets[key, default: []].append(s)
         }
@@ -385,7 +395,7 @@ public enum SessionGrouping {
     }
 
     /// Collapse a tier's directory groups, folding crew canonical names GLOBALLY (one
-    /// row per crew name across all groups) while non-crew names fold per-group.
+    /// row per crew name across all groups) while non-crew names fold per group path.
     ///
     /// Crew survivor: the selected session if it's a crew tenure, else the most-recent
     /// crew tenure of that name across every group (recency desc, id-desc tie-break).
@@ -419,37 +429,39 @@ public enum SessionGrouping {
                                      olderCount: older.count, olderIds: older.map { $0.session.id })
         }
         // 3) Rebuild each group's rows in first-seen order: crew rows emit only in their
-        //    home group (with the GLOBAL fold count); non-crew fold per-group as before.
+        //    home group (with the GLOBAL fold count); non-crew fold per group path.
         var out: [CollapsedDirectoryGroup] = []
         for (gi, group) in groups.enumerated() {
-            var order: [String] = []                        // "crew:<key>" or non-crew key, first-seen
-            var nonCrewBuckets: [String: [DashboardSession]] = [:]
+            var order: [CollapseKey] = []
+            var nonCrewBuckets: [CollapseKey: [DashboardSession]] = [:]
             for s in group.sessions {
-                let key = canonicalNameKey(s)
-                if isCrewKey(key) {
+                let key = collapseKey(s)
+                switch key {
+                case let .crew(name):
                     // Suppress crew tenures that live in another group (non-home).
-                    guard let fold = crewFold[key], fold.homeGroup == gi else { continue }
-                    let token = "crew:" + key
-                    if !order.contains(token) { order.append(token) }  // reserve first-seen slot
-                } else {
+                    guard let fold = crewFold[name], fold.homeGroup == gi else { continue }
+                    if !order.contains(key) { order.append(key) }
+                case .nonCrew:
                     if nonCrewBuckets[key] == nil { order.append(key) }
                     nonCrewBuckets[key, default: []].append(s)
                 }
             }
-            let rows: [CollapsedSession] = order.compactMap { token in
-                if token.hasPrefix("crew:") {
-                    let key = String(token.dropFirst("crew:".count))
-                    guard let fold = crewFold[key],
+            let rows: [CollapsedSession] = order.compactMap { key in
+                switch key {
+                case let .crew(name):
+                    guard let fold = crewFold[name],
                           let winner = group.sessions.first(where: { $0.id == fold.winnerId }) else { return nil }
                     return CollapsedSession(session: winner, olderCount: fold.olderCount, olderIds: fold.olderIds)
+                case .nonCrew:
+                    let bucket = nonCrewBuckets[key]!
+                    let winner = bucket.first { $0.id == selectedId }
+                        ?? bucket.max { a, b in
+                            recency(a) != recency(b) ? recency(a) < recency(b) : a.id < b.id
+                        }!
+                    let older = bucket.filter { $0.id != winner.id }
+                    return CollapsedSession(session: winner, olderCount: older.count,
+                                            olderIds: older.map { $0.id })
                 }
-                let bucket = nonCrewBuckets[token]!
-                let winner = bucket.first { $0.id == selectedId }
-                    ?? bucket.max { a, b in
-                        recency(a) != recency(b) ? recency(a) < recency(b) : a.id < b.id
-                    }!
-                let older = bucket.filter { $0.id != winner.id }
-                return CollapsedSession(session: winner, olderCount: older.count, olderIds: older.map { $0.id })
             }
             if !rows.isEmpty {
                 out.append(CollapsedDirectoryGroup(cwd: group.cwd, pinned: group.pinned, rows: rows))

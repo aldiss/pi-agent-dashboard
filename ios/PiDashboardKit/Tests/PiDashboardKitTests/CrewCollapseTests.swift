@@ -12,14 +12,22 @@ import XCTest
 final class CrewCollapseTests: XCTestCase {
 
     private func session(_ id: String, name: String? = nil, cwd: String? = nil,
+                         groupCwd: String? = nil,
                          lastActivityAt: Double? = nil, startedAt: Double? = nil) -> DashboardSession {
         DashboardSession(id: id, cwd: cwd, name: name,
-                         startedAt: startedAt, lastActivityAt: lastActivityAt)
+                         startedAt: startedAt, lastActivityAt: lastActivityAt,
+                         groupCwd: groupCwd)
     }
 
     private func group(_ cwd: String, pinned: Bool = false, _ sessions: [DashboardSession])
         -> SessionGrouping.DirectoryGroup {
         SessionGrouping.DirectoryGroup(cwd: cwd, sessions: sessions, pinned: pinned)
+    }
+
+    private func rows(_ sessions: [DashboardSession], folders: Bool)
+        -> [SessionGrouping.CollapsedSession] {
+        let groups = SessionGrouping.groupTierByFolder(sessions, folders: folders)
+        return SessionGrouping.collapseGroupsFoldingCrew(groups).flatMap(\.rows)
     }
 
     // MARK: isCrewKey
@@ -176,6 +184,126 @@ final class CrewCollapseTests: XCTestCase {
         let pete = out[0].rows.first { $0.session.name?.hasPrefix("Pete") == true }!
         XCTAssertEqual(pete.session.id, "p2")
         XCTAssertEqual(pete.olderCount, 1)
+    }
+
+    // MARK: folders toggle preserves visible rows
+
+    func testSameNameDifferentCwdsSurviveFoldersOff() {
+        let sessions = [
+            session("c1", name: "Cartographer", cwd: "/a"),
+            session("c2", name: "Cartographer", cwd: "/b"),
+        ]
+
+        XCTAssertEqual(rows(sessions, folders: false).count, 2)
+    }
+
+    func testSameNameThreeCwdsSurviveFoldersOff() {
+        let sessions = [
+            session("c1", name: "Cartographer", cwd: "/a"),
+            session("c2", name: "Cartographer", cwd: "/b"),
+            session("c3", name: "Cartographer", cwd: "/c"),
+        ]
+
+        XCTAssertEqual(rows(sessions, folders: false).count, 3)
+    }
+
+    func testFoldersToggleDoesNotChangeRowCount() {
+        let fixtures: [(name: String, sessions: [DashboardSession])] = [
+            ("same name, different cwds", [
+                session("a1", name: "Cartographer", cwd: "/a"),
+                session("a2", name: "Cartographer", cwd: "/b"),
+            ]),
+            ("distinct names", [
+                session("b1", name: "Cartographer", cwd: "/a"),
+                session("b2", name: "Navigator", cwd: "/b"),
+            ]),
+            ("crew name, different cwds", [
+                session("c1", name: "Pete", cwd: "/a"),
+                session("c2", name: "Pete-tenure-1", cwd: "/b"),
+            ]),
+            ("same name, same cwd", [
+                session("d1", name: "Cartographer", cwd: "/same"),
+                session("d2", name: "Cartographer", cwd: "/same"),
+            ]),
+            ("same name, three cwds", [
+                session("e1", name: "Cartographer", cwd: "/a"),
+                session("e2", name: "Cartographer", cwd: "/b"),
+                session("e3", name: "Cartographer", cwd: "/c"),
+            ]),
+        ]
+
+        for fixture in fixtures {
+            let foldersOn = rows(fixture.sessions, folders: true).count
+            let foldersOff = rows(fixture.sessions, folders: false).count
+            XCTAssertEqual(foldersOn, foldersOff, fixture.name)
+        }
+    }
+
+    func testWorktreeSessionsUseGroupPathIdentity() {
+        let repoA = [
+            session("a1", name: "Cartographer", cwd: "/repo-a/.worktrees/one",
+                    groupCwd: "/repo-a", lastActivityAt: 100),
+            session("a2", name: "Cartographer", cwd: "/repo-a/.worktrees/two",
+                    groupCwd: "/repo-a", lastActivityAt: 200),
+        ]
+
+        for folders in [true, false] {
+            let visible = rows(repoA, folders: folders)
+            XCTAssertEqual(visible.count, 1, "same groupCwd must fold with folders=\(folders)")
+            XCTAssertEqual(visible[0].olderCount, 1)
+        }
+
+        let acrossRepos = repoA + [
+            session("b1", name: "Cartographer", cwd: "/repo-b/.worktrees/one",
+                    groupCwd: "/repo-b", lastActivityAt: 300),
+            session("b2", name: "Cartographer", cwd: "/repo-b/.worktrees/two",
+                    groupCwd: "/repo-b", lastActivityAt: 400),
+        ]
+
+        for folders in [true, false] {
+            let visible = rows(acrossRepos, folders: folders)
+            XCTAssertEqual(visible.count, 2, "different groupCwds must survive with folders=\(folders)")
+            XCTAssertEqual(visible.map(\.olderCount).sorted(), [1, 1])
+        }
+    }
+
+    func testDistinctNamesUnaffectedByFoldersToggle() {
+        let sessions = [
+            session("c", name: "Cartographer", cwd: "/a"),
+            session("n", name: "Navigator", cwd: "/b"),
+        ]
+
+        for folders in [true, false] {
+            XCTAssertEqual(rows(sessions, folders: folders).count, 2)
+        }
+    }
+
+    func testSameNameSameCwdStillFolds() {
+        let sessions = [
+            session("old", name: "Cartographer", cwd: "/same", lastActivityAt: 100),
+            session("new", name: "Cartographer", cwd: "/same", lastActivityAt: 200),
+        ]
+
+        for folders in [true, false] {
+            let visible = rows(sessions, folders: folders)
+            XCTAssertEqual(visible.count, 1)
+            XCTAssertEqual(visible[0].session.id, "new")
+            XCTAssertEqual(visible[0].olderCount, 1)
+        }
+    }
+
+    func testCrewNamesStillFoldGloballyAcrossCwds() {
+        let sessions = [
+            session("old", name: "Pete-tenure-1", cwd: "/a", lastActivityAt: 100),
+            session("new", name: "Pete-tenure-2", cwd: "/b", lastActivityAt: 200),
+        ]
+
+        for folders in [true, false] {
+            let visible = rows(sessions, folders: folders)
+            XCTAssertEqual(visible.count, 1)
+            XCTAssertEqual(visible[0].session.id, "new")
+            XCTAssertEqual(visible[0].olderCount, 1)
+        }
     }
 
     // MARK: empty input

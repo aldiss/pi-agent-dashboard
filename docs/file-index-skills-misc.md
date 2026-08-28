@@ -37,6 +37,8 @@
 | `.github/workflows/ios-e2e.yml` | Runs native iOS Swift and reconnect checks, including `revalidate-idle` and `revalidate-halfopen`. |
 | `ios/PiDashboard/Sources/DashboardStore.swift` | Owns UUID latch that gates foreground recovery on probe failure, auth state, and base identity. |
 | `ios/PiDashboardKit/Sources/PiDashboardKit/Net/DashboardClient.swift` | Probes current WebSocket identity through `sendPing` with 2 s timeout. |
+| `ios/PiDashboardKit/Sources/PiDashboardKit/Sessions/SessionGrouping.swift` | Computes collapse keys: normalized `groupPath` for non-crew sessions; crew name across directories for crew sessions. |
+| `ios/PiDashboardKit/Tests/PiDashboardKitTests/CrewCollapseTests.swift` | Covers Folders row-count parity, worktree `groupCwd` identity, same-cwd folding, and crew-global controls. |
 | `ios/PiDashboardKit/Tests/PiDashboardKitTests/ForegroundProbeTests.swift` | Covers pong, timeout, error, late-pong, and passive-deadline probe contracts. |
 | `ios/Tools/ws-fault-harness/probe/Driver.swift` | Drives repeated `DashboardStore.revalidate()` calls for foreground-transition storms. |
 | `ios/Tools/ws-fault-harness/run-reconnect-check.sh` | Checks healthy-idle retention and half-open recovery bounds. |
