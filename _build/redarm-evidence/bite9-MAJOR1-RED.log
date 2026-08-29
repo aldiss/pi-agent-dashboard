@@ -1,0 +1,55 @@
+
+ RUN  v4.1.5 /Users/vdrobkov/Misc/Documents/Copilot/pi-agent-dashboard-multiop-stream2-wt
+
+[test-isolation] HOME (/var/folders/sh/rtc7_3wd27q_jffxy54dt44m0000gn/T/tmp.gRdQNU7gE5) is not under os.tmpdir() (/tmp/claude-501). Tests will still run but this layout is unusual.
+[test-isolation] HOME=/var/folders/sh/rtc7_3wd27q_jffxy54dt44m0000gn/T/tmp.gRdQNU7gE5 (real=/Users/vdrobkov)
+ ❯ |@blackbelt-technology/pi-dashboard-server| src/__tests__/stream2-d-admission.test.ts (19 tests | 2 failed | 17 skipped) 7ms
+     × a WRITE-admitted-but-never-VIEWED human's socket close FREES the slot 6ms
+     × ONE of TWO tabs closing does NOT free the slot (last-socket guard) 1ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  |@blackbelt-technology/pi-dashboard-server| src/__tests__/stream2-d-admission.test.ts > D · Test 9 — slot-release on last-socket-close, presence-independent (MAJOR-1) > a WRITE-admitted-but-never-VIEWED human's socket close FREES the slot
+AssertionError: expected 2 to be 1 // Object.is equality
+
+- Expected
++ Received
+
+- 1
++ 2
+
+ ❯ src/__tests__/stream2-d-admission.test.ts:483:29
+    481|     releaseOnClose(OP2.sub, principals, cell);
+    482|     // ← RED if sessionsAdmitted is neutered: slot leaks, count stays …
+    483|     expect(cell.count(SID)).toBe(1);
+       |                             ^
+    484|     expect(cell.isMember(SID, OP2.sub)).toBe(false);
+    485|     // …the freed slot now admits a fresh 3rd distinct human.
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ FAIL  |@blackbelt-technology/pi-dashboard-server| src/__tests__/stream2-d-admission.test.ts > D · Test 9 — slot-release on last-socket-close, presence-independent (MAJOR-1) > ONE of TWO tabs closing does NOT free the slot (last-socket guard)
+AssertionError: expected true to be false // Object.is equality
+
+- Expected
++ Received
+
+- false
++ true
+
+ ❯ src/__tests__/stream2-d-admission.test.ts:502:41
+    500|     principals.delete(wsA2);
+    501|     releaseOnClose(OP1.sub, principals, cell);
+    502|     expect(cell.isMember(SID, OP1.sub)).toBe(false);
+       |                                         ^
+    503|   });
+    504| });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  2 failed | 17 skipped (19)
+   Start at  12:06:44
+   Duration  428ms (transform 146ms, setup 0ms, import 239ms, tests 7ms, environment 0ms)
+

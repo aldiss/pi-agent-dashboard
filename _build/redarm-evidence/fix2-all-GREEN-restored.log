@@ -1,0 +1,11 @@
+
+ RUN  v4.1.5 /Users/vdrobkov/Misc/Documents/Copilot/pi-agent-dashboard-multiop-stream2-wt
+
+[test-isolation] HOME (/var/folders/sh/rtc7_3wd27q_jffxy54dt44m0000gn/T/tmp.m69LCzh47P) is not under os.tmpdir() (/tmp/claude-501). Tests will still run but this layout is unusual.
+[test-isolation] HOME=/var/folders/sh/rtc7_3wd27q_jffxy54dt44m0000gn/T/tmp.m69LCzh47P (real=/Users/vdrobkov)
+
+ Test Files  1 passed (1)
+      Tests  24 passed (24)
+   Start at  12:33:29
+   Duration  506ms (transform 185ms, setup 0ms, import 300ms, tests 9ms, environment 0ms)
+

@@ -1,0 +1,55 @@
+
+ RUN  v4.1.5 /Users/vdrobkov/Misc/Documents/Copilot/pi-agent-dashboard-multiop-stream2-wt
+
+[test-isolation] HOME (/var/folders/sh/rtc7_3wd27q_jffxy54dt44m0000gn/T/tmp.5sfWtFJlHq) is not under os.tmpdir() (/tmp/claude-501). Tests will still run but this layout is unusual.
+[test-isolation] HOME=/var/folders/sh/rtc7_3wd27q_jffxy54dt44m0000gn/T/tmp.5sfWtFJlHq (real=/Users/vdrobkov)
+ ❯ |@blackbelt-technology/pi-dashboard-server| src/__tests__/stream2-d-admission.test.ts (14 tests | 2 failed | 12 skipped) 6ms
+     × REFUSES the 3rd distinct sub on the REST co-drive path (403 session-full) 5ms
+     × the SAME cell binds WS + REST (a WS-admitted pair refuses a REST 3rd) 1ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  |@blackbelt-technology/pi-dashboard-server| src/__tests__/stream2-d-admission.test.ts > D · Test 2 — N=2 admission over the REST arm (no connection-only bypass) > REFUSES the 3rd distinct sub on the REST co-drive path (403 session-full)
+AssertionError: expected undefined to be 403 // Object.is equality
+
+- Expected:
+403
+
++ Received:
+undefined
+
+ ❯ src/__tests__/stream2-d-admission.test.ts:146:56
+    144|     expect(await restVerdict("abort", OP2, SID, cell)).toBeUndefined();
+    145|     // op3 = 3rd distinct sub over REST → 403 (session-full), same cel…
+    146|     expect(await restVerdict("abort", OP3, SID, cell)).toBe(403);
+       |                                                        ^
+    147|     expect(cell.count(SID)).toBe(OPERATOR_CELL_LIMIT);
+    148|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ FAIL  |@blackbelt-technology/pi-dashboard-server| src/__tests__/stream2-d-admission.test.ts > D · Test 2 — N=2 admission over the REST arm (no connection-only bypass) > the SAME cell binds WS + REST (a WS-admitted pair refuses a REST 3rd)
+AssertionError: expected undefined to be 403 // Object.is equality
+
+- Expected:
+403
+
++ Received:
+undefined
+
+ ❯ src/__tests__/stream2-d-admission.test.ts:156:56
+    154|     expect(authorizeWsMessage({ type: "abort", sessionId: SID } as any…
+    155|     // …the 3rd, arriving over REST, is refused by the SHARED cell.
+    156|     expect(await restVerdict("abort", OP3, SID, cell)).toBe(403);
+       |                                                        ^
+    157|   });
+    158| });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  2 failed | 12 skipped (14)
+   Start at  10:44:34
+   Duration  403ms (transform 108ms, setup 0ms, import 202ms, tests 6ms, environment 0ms)
+

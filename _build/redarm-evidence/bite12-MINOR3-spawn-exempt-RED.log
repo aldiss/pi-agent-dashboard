@@ -1,0 +1,32 @@
+
+ RUN  v4.1.5 /Users/vdrobkov/Misc/Documents/Copilot/pi-agent-dashboard-multiop-stream2-wt
+
+[test-isolation] HOME (/var/folders/sh/rtc7_3wd27q_jffxy54dt44m0000gn/T/tmp.UTaQpUyC3u) is not under os.tmpdir() (/tmp/claude-501). Tests will still run but this layout is unusual.
+[test-isolation] HOME=/var/folders/sh/rtc7_3wd27q_jffxy54dt44m0000gn/T/tmp.UTaQpUyC3u (real=/Users/vdrobkov)
+ ❯ |@blackbelt-technology/pi-dashboard-server| src/__tests__/stream2-d-admission.test.ts (25 tests | 1 failed | 24 skipped) 7ms
+     × session-CREATING `spawn` (no sessionId, operatorSet threaded) is EXEMPT from fail-closed 6ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  |@blackbelt-technology/pi-dashboard-server| src/__tests__/stream2-d-admission.test.ts > D · Test 11 — fail-closed on absent sessionId when admission engaged (MINOR-3) > session-CREATING `spawn` (no sessionId, operatorSet threaded) is EXEMPT from fail-closed
+AssertionError: expected 'session-full' to be 'operator-only' // Object.is equality
+
+Expected: "operator-only"
+Received: "session-full"
+
+ ❯ src/__tests__/stream2-d-admission.test.ts:606:29
+    604|     });
+    605|     expect(op2Spawn.allowed).toBe(false);
+    606|     expect(op2Spawn.reason).toBe("operator-only"); // NOT session-full…
+       |                             ^
+    607|     // op-1 (the operator) is allowed to spawn — admission does not bl…
+    608|     const op1Spawn = authorizeSessionAction({
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 24 skipped (25)
+   Start at  12:55:27
+   Duration  432ms (transform 162ms, setup 0ms, import 239ms, tests 7ms, environment 0ms)
+

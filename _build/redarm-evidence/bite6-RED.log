@@ -1,0 +1,55 @@
+
+ RUN  v4.1.5 /Users/vdrobkov/Misc/Documents/Copilot/pi-agent-dashboard-multiop-stream2-wt
+
+[test-isolation] HOME (/var/folders/sh/rtc7_3wd27q_jffxy54dt44m0000gn/T/tmp.0CziKvdmpJ) is not under os.tmpdir() (/tmp/claude-501). Tests will still run but this layout is unusual.
+[test-isolation] HOME=/var/folders/sh/rtc7_3wd27q_jffxy54dt44m0000gn/T/tmp.0CziKvdmpJ (real=/Users/vdrobkov)
+ ❯ |@blackbelt-technology/pi-dashboard-server| src/__tests__/stream2-d-admission.test.ts (14 tests | 2 failed | 12 skipped) 7ms
+     × flag OFF → every actor is allowed, the cell is NEVER touched (no admission) 5ms
+     × flag OFF → the WS arm passes co-drive through with the cell untouched 1ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  |@blackbelt-technology/pi-dashboard-server| src/__tests__/stream2-d-admission.test.ts > D · Test 6 — flag-OFF byte-unchanged (admission/cell/intersection inert) > flag OFF → every actor is allowed, the cell is NEVER touched (no admission)
+AssertionError: expected false to be true // Object.is equality
+
+- Expected
++ Received
+
+- true
++ false
+
+ ❯ src/__tests__/stream2-d-admission.test.ts:300:25
+    298|     for (const p of [OP1, OP2, OP3]) {
+    299|       const d = authorizeSessionAction({ actor: { kind: "human", princ…
+    300|       expect(d.allowed).toBe(true);
+       |                         ^
+    301|     }
+    302|     // The cell was never consulted/mutated while the flag is off.
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ FAIL  |@blackbelt-technology/pi-dashboard-server| src/__tests__/stream2-d-admission.test.ts > D · Test 6 — flag-OFF byte-unchanged (admission/cell/intersection inert) > flag OFF → the WS arm passes co-drive through with the cell untouched
+AssertionError: expected 1 to be +0 // Object.is equality
+
+- Expected
++ Received
+
+- 0
++ 1
+
+ ❯ src/__tests__/stream2-d-admission.test.ts:311:29
+    309|     const d = authorizeWsMessage({ type: "abort", sessionId: SID } as …
+    310|     expect(d.allowed).toBe(true);
+    311|     expect(cell.count(SID)).toBe(0);
+       |                             ^
+    312|   });
+    313| });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  2 failed | 12 skipped (14)
+   Start at  10:46:59
+   Duration  331ms (transform 91ms, setup 0ms, import 153ms, tests 7ms, environment 0ms)
+

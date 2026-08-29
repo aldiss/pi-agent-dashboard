@@ -1,0 +1,35 @@
+
+ RUN  v4.1.5 /Users/vdrobkov/Misc/Documents/Copilot/pi-agent-dashboard-multiop-stream2-wt
+
+[test-isolation] HOME (/var/folders/sh/rtc7_3wd27q_jffxy54dt44m0000gn/T/tmp.HAn5g6tFxN) is not under os.tmpdir() (/tmp/claude-501). Tests will still run but this layout is unusual.
+[test-isolation] HOME=/var/folders/sh/rtc7_3wd27q_jffxy54dt44m0000gn/T/tmp.HAn5g6tFxN (real=/Users/vdrobkov)
+ ❯ |@blackbelt-technology/pi-dashboard-server| src/__tests__/stream2-d-admission.test.ts (14 tests | 1 failed | 12 skipped) 7ms
+     × a service actor CANNOT satisfy operator-only (infra, not an operator) 5ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  |@blackbelt-technology/pi-dashboard-server| src/__tests__/stream2-d-admission.test.ts > D · Test 5 — det-spawn-inherit (service rides the chokepoint, not admission-counted) > a service actor CANNOT satisfy operator-only (infra, not an operator)
+AssertionError: expected true to be false // Object.is equality
+
+- Expected
++ Received
+
+- false
++ true
+
+ ❯ src/__tests__/stream2-d-admission.test.ts:264:23
+    262|     const cell = createOperatorSetTracker();
+    263|     const d = authorizeSessionAction({ ...svc("shutdown"), operatorSet…
+    264|     expect(d.allowed).toBe(false); // ← RED if service is short-circui…
+       |                       ^
+    265|     expect(d.reason).toBe("operator-only");
+    266|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 1 passed | 12 skipped (14)
+   Start at  10:46:22
+   Duration  372ms (transform 103ms, setup 0ms, import 175ms, tests 7ms, environment 0ms)
+

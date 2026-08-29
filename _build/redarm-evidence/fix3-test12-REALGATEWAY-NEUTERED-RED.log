@@ -1,0 +1,72 @@
+
+ RUN  v4.1.5 /Users/vdrobkov/Misc/Documents/Copilot/pi-agent-dashboard-multiop-stream2-wt
+
+[test-isolation] HOME (/var/folders/sh/rtc7_3wd27q_jffxy54dt44m0000gn/T/tmp.zZO4ZlSVPO) is not under os.tmpdir() (/tmp/claude-501). Tests will still run but this layout is unusual.
+[test-isolation] HOME=/var/folders/sh/rtc7_3wd27q_jffxy54dt44m0000gn/T/tmp.zZO4ZlSVPO (real=/Users/vdrobkov)
+stderr | src/__tests__/stream2-d-admission.test.ts > D · Test 12 — REAL gateway ws.close → operatorSet.release (MAJOR-1 real seam) > op-2 admitted via the real send_prompt seam; the ACTUAL ws.close frees the slot
+[browser-gw] browser client connected from unknown origin=no-origin ua=no-ua (total: 1)
+
+stderr | src/__tests__/stream2-d-admission.test.ts > D · Test 12 — REAL gateway ws.close → operatorSet.release (MAJOR-1 real seam) > op-2 admitted via the real send_prompt seam; the ACTUAL ws.close frees the slot
+[browser-gw] browser client connected from unknown origin=no-origin ua=no-ua (total: 2)
+
+stderr | src/__tests__/stream2-d-admission.test.ts > D · Test 12 — REAL gateway ws.close → operatorSet.release (MAJOR-1 real seam) > op-2 admitted via the real send_prompt seam; the ACTUAL ws.close frees the slot
+[browser-gw] browser client disconnected (remaining: 1)
+
+stderr | src/__tests__/stream2-d-admission.test.ts > D · Test 12 — REAL gateway ws.close → operatorSet.release (MAJOR-1 real seam) > last-socket guard over the REAL seam: closing ONE of two same-sub tabs does NOT free; the LAST does
+[browser-gw] browser client connected from unknown origin=no-origin ua=no-ua (total: 1)
+[browser-gw] browser client connected from unknown origin=no-origin ua=no-ua (total: 2)
+
+stderr | src/__tests__/stream2-d-admission.test.ts > D · Test 12 — REAL gateway ws.close → operatorSet.release (MAJOR-1 real seam) > last-socket guard over the REAL seam: closing ONE of two same-sub tabs does NOT free; the LAST does
+[browser-gw] browser client disconnected (remaining: 1)
+[browser-gw] browser client disconnected (remaining: 0)
+
+ ❯ |@blackbelt-technology/pi-dashboard-server| src/__tests__/stream2-d-admission.test.ts (27 tests | 2 failed | 25 skipped) 12ms
+     × op-2 admitted via the real send_prompt seam; the ACTUAL ws.close frees the slot 10ms
+     × last-socket guard over the REAL seam: closing ONE of two same-sub tabs does NOT free; the LAST does 1ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  |@blackbelt-technology/pi-dashboard-server| src/__tests__/stream2-d-admission.test.ts > D · Test 12 — REAL gateway ws.close → operatorSet.release (MAJOR-1 real seam) > op-2 admitted via the real send_prompt seam; the ACTUAL ws.close frees the slot
+AssertionError: expected 2 to be 1 // Object.is equality
+
+- Expected
++ Received
+
+- 1
++ 2
+
+ ❯ src/__tests__/stream2-d-admission.test.ts:753:36
+    751|     ws2.emit("close");
+    752|     // The REAL :809-819 release loop must have freed op-2's slot.
+    753|     expect(operatorSet.count(SID)).toBe(1);                       // ←…
+       |                                    ^
+    754|     expect(operatorSet.isMember(SID, OP2.sub)).toBe(false);
+    755|     // …so a fresh 3rd distinct human is now admittable through the re…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ FAIL  |@blackbelt-technology/pi-dashboard-server| src/__tests__/stream2-d-admission.test.ts > D · Test 12 — REAL gateway ws.close → operatorSet.release (MAJOR-1 real seam) > last-socket guard over the REAL seam: closing ONE of two same-sub tabs does NOT free; the LAST does
+AssertionError: expected true to be false // Object.is equality
+
+- Expected
++ Received
+
+- false
++ true
+
+ ❯ src/__tests__/stream2-d-admission.test.ts:773:48
+    771|     // Close the LAST tab (B) → now the real seam frees the slot.
+    772|     tabB.emit("close");
+    773|     expect(operatorSet.isMember(SID, OP2.sub)).toBe(false);
+       |                                                ^
+    774|     expect(operatorSet.count(SID)).toBe(0);
+    775|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  2 failed | 25 skipped (27)
+   Start at  13:46:23
+   Duration  626ms (transform 338ms, setup 0ms, import 456ms, tests 12ms, environment 0ms)
+

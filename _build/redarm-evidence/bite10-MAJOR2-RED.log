@@ -1,0 +1,55 @@
+
+ RUN  v4.1.5 /Users/vdrobkov/Misc/Documents/Copilot/pi-agent-dashboard-multiop-stream2-wt
+
+[test-isolation] HOME (/var/folders/sh/rtc7_3wd27q_jffxy54dt44m0000gn/T/tmp.nDPOZI0AuA) is not under os.tmpdir() (/tmp/claude-501). Tests will still run but this layout is unusual.
+[test-isolation] HOME=/var/folders/sh/rtc7_3wd27q_jffxy54dt44m0000gn/T/tmp.nDPOZI0AuA (real=/Users/vdrobkov)
+ ❯ |@blackbelt-technology/pi-dashboard-server| src/__tests__/stream2-d-admission.test.ts (24 tests | 2 failed | 22 skipped) 7ms
+     × op-3's 403'd operator-only REST consumes NO slot → op-2 still admittable 6ms
+     × a REFUSED action never grows the cell count (multiple refusals strand nothing) 1ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  |@blackbelt-technology/pi-dashboard-server| src/__tests__/stream2-d-admission.test.ts > D · Test 10 — check-then-commit: a refused REST action strands NO slot (MAJOR-2) > op-3's 403'd operator-only REST consumes NO slot → op-2 still admittable
+AssertionError: expected 2 to be 1 // Object.is equality
+
+- Expected
++ Received
+
+- 1
++ 2
+
+ ❯ src/__tests__/stream2-d-admission.test.ts:532:29
+    530|     expect(await restVerdict("shutdown", OP3, SID, cell, OPS)).toBe(40…
+    531|     // …and consumes NO slot (check-then-commit: the refusal committed…
+    532|     expect(cell.count(SID)).toBe(1); // ← RED under mutate-at-admissio…
+       |                             ^
+    533|     expect(cell.isMember(SID, OP3.sub)).toBe(false);
+    534|     // …so the intended 2nd human op-2 is STILL admittable (co-drive),…
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ FAIL  |@blackbelt-technology/pi-dashboard-server| src/__tests__/stream2-d-admission.test.ts > D · Test 10 — check-then-commit: a refused REST action strands NO slot (MAJOR-2) > a REFUSED action never grows the cell count (multiple refusals strand nothing)
+AssertionError: expected 2 to be +0 // Object.is equality
+
+- Expected
++ Received
+
+- 0
++ 2
+
+ ❯ src/__tests__/stream2-d-admission.test.ts:547:29
+    545|     expect(await restVerdict("shutdown", OP2, SID, cell, OPS)).toBe(40…
+    546|     expect(await restVerdict("shutdown", OP3, SID, cell, OPS)).toBe(40…
+    547|     expect(cell.count(SID)).toBe(0); // ← RED under mutate-at-admissio…
+       |                             ^
+    548|   });
+    549| });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  2 failed | 22 skipped (24)
+   Start at  12:32:33
+   Duration  442ms (transform 164ms, setup 0ms, import 255ms, tests 7ms, environment 0ms)
+

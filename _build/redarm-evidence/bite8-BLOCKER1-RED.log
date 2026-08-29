@@ -1,0 +1,75 @@
+
+ RUN  v4.1.5 /Users/vdrobkov/Misc/Documents/Copilot/pi-agent-dashboard-multiop-stream2-wt
+
+[test-isolation] HOME (/var/folders/sh/rtc7_3wd27q_jffxy54dt44m0000gn/T/tmp.eXnG4E3lGc) is not under os.tmpdir() (/tmp/claude-501). Tests will still run but this layout is unusual.
+[test-isolation] HOME=/var/folders/sh/rtc7_3wd27q_jffxy54dt44m0000gn/T/tmp.eXnG4E3lGc (real=/Users/vdrobkov)
+ ❯ |@blackbelt-technology/pi-dashboard-server| src/__tests__/stream2-d-admission.test.ts (19 tests | 3 failed | 16 skipped) 12ms
+     × op1 + op2 send_prompts POPULATE the cell (co-drive admission on the primary path) 7ms
+     × a 3rd DISTINCT sub's send_prompt to a FULL session is REFUSED (bridge NOT reached) 2ms
+     × two TABS of the SAME sub via send_prompt = ONE slot (co-drive dedup) 1ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 3 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  |@blackbelt-technology/pi-dashboard-server| src/__tests__/stream2-d-admission.test.ts > D · Test 8 — N=2 admission on the send_prompt co-drive path (handleSendPrompt seam) > op1 + op2 send_prompts POPULATE the cell (co-drive admission on the primary path)
+AssertionError: expected +0 to be 2 // Object.is equality
+
+- Expected
++ Received
+
+- 2
++ 0
+
+ ❯ src/__tests__/stream2-d-admission.test.ts:405:29
+    403|     expect(r1.forwarded).toHaveLength(1);
+    404|     expect(r2.forwarded).toHaveLength(1);
+    405|     expect(cell.count(SID)).toBe(OPERATOR_CELL_LIMIT); // ← RED if :23…
+       |                             ^
+    406|   });
+    407|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/3]⎯
+
+ FAIL  |@blackbelt-technology/pi-dashboard-server| src/__tests__/stream2-d-admission.test.ts > D · Test 8 — N=2 admission on the send_prompt co-drive path (handleSendPrompt seam) > a 3rd DISTINCT sub's send_prompt to a FULL session is REFUSED (bridge NOT reached)
+AssertionError: expected [ { type: 'send_prompt', …(5) } ] to have a length of +0 but got 1
+
+- Expected
++ Received
+
+- 0
++ 1
+
+ ❯ src/__tests__/stream2-d-admission.test.ts:414:26
+    412|     // op3 = 3rd distinct human on the co-drive path → refused session…
+    413|     const r3 = await sendPrompt(OP3, cell, { queueNonce: "n3" });
+    414|     expect(r3.forwarded).toHaveLength(0); // ← RED if admission skippe…
+       |                          ^
+    415|     const failure = r3.sent.find((m) => m.type === "send_prompt_failed…
+    416|     expect(failure).toBeDefined();
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/3]⎯
+
+ FAIL  |@blackbelt-technology/pi-dashboard-server| src/__tests__/stream2-d-admission.test.ts > D · Test 8 — N=2 admission on the send_prompt co-drive path (handleSendPrompt seam) > two TABS of the SAME sub via send_prompt = ONE slot (co-drive dedup)
+AssertionError: expected +0 to be 1 // Object.is equality
+
+- Expected
++ Received
+
+- 1
++ 0
+
+ ❯ src/__tests__/stream2-d-admission.test.ts:426:29
+    424|     await sendPrompt(OP1, cell); // tab 1
+    425|     await sendPrompt(OP1, cell); // tab 2 (same sub)
+    426|     expect(cell.count(SID)).toBe(1); // ← RED under per-connection cou…
+       |                             ^
+    427|     // A DISTINCT 2nd human still fits.
+    428|     const r2 = await sendPrompt(OP2, cell);
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/3]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  3 failed | 16 skipped (19)
+   Start at  12:06:07
+   Duration  744ms (transform 375ms, setup 0ms, import 529ms, tests 12ms, environment 0ms)
+

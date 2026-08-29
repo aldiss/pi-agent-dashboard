@@ -1,0 +1,1018 @@
+### D-SLICE REVIEW BUNDLE — git diff bc0f91b (9 modified) ###
+diff --git a/packages/server/src/agent-presence.ts b/packages/server/src/agent-presence.ts
+index 703d136..6b95182 100644
+--- a/packages/server/src/agent-presence.ts
++++ b/packages/server/src/agent-presence.ts
+@@ -1,27 +1,79 @@
+ /**
+- * Greenfield agent-presence interface (multi-operator, Surface B / BA-4 / dl-6010).
++ * Agent-as-presence (multi-operator, Surface B / BA-4 / dl-6010 — Stream-2 D fill).
+  *
+  * The session presence surface (see `session-presence-tracker.ts` +
+- * `presence_update`) is the union of the distinct human co-drivers AND whatever
+- * agent participant this interface contributes. TODAY this is a NO-OP: it
+- * returns `null` (no agent participant) for every session, so the presence set
+- * is humans-only and no existing event is perturbed.
++ * `presence_update`) is the union of the distinct human co-drivers AND the agent
++ * participant this interface contributes. B shipped this as a NO-OP (`null` for
++ * every session); D FILLS it — resolving the live agent participant for a
++ * session — WITHOUT re-implementing the presence UI or the presence tracker (B
++ * owns those; D extends THROUGH this single ratified seam).
+  *
+- * ── D-FILLER MARKER ──────────────────────────────────────────────────────────
+- * D fills this in later (post-C-land, when D un-defers). D implements the real
+- * agent source HERE — resolving the live agent participant for a session (id,
+- * display) — WITHOUT re-implementing the presence UI or the presence tracker.
+- * B OWNS the presence surface; D extends it THROUGH this single seam. Do NOT
+- * build an agent source now; ship the NO-OP + this marker.
++ * ── Live-agent signal (own-hand recon, NOT fabricated) ───────────────────────
++ * The server-side `SessionManager` IS the registry of connected pi instances (a
++ * `DashboardSession` = "a dashboard session representing a connected pi
++ * instance"). Its `status` (`active|idle|streaming|ended`) is the authoritative
++ * liveness bit: `!== "ended"` ⇒ the pi agent process is live. This is the SAME
++ * liveness predicate the rest of the server already gates on (server.ts session-
++ * write branches). D reads it through a narrow injected source so this module
++ * stays decoupled from `SessionManager` (and unit-testable without one) and the
++ * frozen `getAgentPresence(sessionId)` signature does not change shape.
++ *
++ * ── Flag discipline (byte-unchanged when off) ────────────────────────────────
++ * The source is configured (server.ts) ONLY when `auth.requireBrowserAuth` is
++ * ON. With the flag OFF nothing configures it → `getAgentPresence` returns
++ * `null` for every session → the presence set is exactly as B shipped it
++ * (humans-only, and empty in single-operator mode). So a single-operator server
++ * never grows an agent participant (no `presence_update` perturbation).
++ */
++import type { PresenceParticipant, SessionStatus } from "@blackbelt-technology/pi-dashboard-shared/types.js";
++
++/**
++ * The narrow live-agent signal D reads: given a sessionId, the session's
++ * liveness `status` + optional display `name`, or null/undefined when the
++ * session is unknown. Injected (server.ts) so this module never imports
++ * `SessionManager` — it depends only on the two fields it needs.
++ */
++export type AgentPresenceSource = (
++  sessionId: string,
++) => { status: SessionStatus; name?: string } | null | undefined;
++
++/**
++ * The configured source, or null when unconfigured (single-operator / flag OFF /
++ * pre-startup / a test that did not opt in). Null → `getAgentPresence` is the
++ * B-era NO-OP (returns null), so behavior is byte-unchanged.
+  */
+-import type { PresenceParticipant } from "@blackbelt-technology/pi-dashboard-shared/types.js";
++let agentSource: AgentPresenceSource | null = null;
++
++/**
++ * Wire the live-agent signal. Called at server startup ONLY when the
++ * multi-operator flag is ON (so flag-off servers stay NO-OP). Idempotent — the
++ * last call wins.
++ */
++export function configureAgentPresence(source: AgentPresenceSource): void {
++  agentSource = source;
++}
++
++/** Clear the configured source (test isolation / flag-off restart). */
++export function resetAgentPresence(): void {
++  agentSource = null;
++}
+ 
+ /**
+  * Resolve the agent participant present in a session, or `null` when there is
+- * none. NO-OP today (always `null`). D replaces the body; the SIGNATURE is the
+- * ratified seam and must not change shape.
++ * none (unconfigured, unknown session, or an ENDED session whose pi process is
++ * gone). The agent id is namespaced (`agent:<sessionId>`) so it can never
++ * collide with a human participant's `sub` (an email in the current provider
++ * set) in the unioned presence set. Display prefers the session's `name` (the
++ * themed/assigned session label), else a stable generic `"agent"`.
+  */
+-export function getAgentPresence(_sessionId: string): PresenceParticipant | null {
+-  // D-FILLER: return the live agent participant for `_sessionId` here.
+-  return null;
++export function getAgentPresence(sessionId: string): PresenceParticipant | null {
++  if (!agentSource) return null; // B-era NO-OP: flag off / unconfigured.
++  const session = agentSource(sessionId);
++  if (!session || session.status === "ended") return null; // no live agent.
++  const name = typeof session.name === "string" ? session.name.trim() : "";
++  return {
++    id: `agent:${sessionId}`,
++    kind: "agent",
++    display: name.length > 0 ? name : "agent",
++  };
+ }
+diff --git a/packages/server/src/browser-gateway.ts b/packages/server/src/browser-gateway.ts
+index bd45693..f00f7de 100644
+--- a/packages/server/src/browser-gateway.ts
++++ b/packages/server/src/browser-gateway.ts
+@@ -143,6 +143,14 @@ export function createBrowserGateway(
+    * enforcement is INERT; flag OFF → the gate no-ops entirely.
+    */
+   operatorUsers?: string[],
++  /**
++   * Stream-2 D: the shared bounded-cell (N=2) admission tracker. The SAME
++   * instance passed to the REST gate policy in `server.ts`, so WS + REST bound a
++   * session to 2 distinct humans from ONE source. Threaded onto every socket's
++   * handler context (the WS gate consults it) and freed here on last-socket-leave
++   * + session removal. Unset → admission SKIPPED (byte-unchanged).
++   */
++  operatorSet?: import("./operator-set-tracker.js").OperatorSetTracker,
+ ): BrowserGateway {
+   // perMessageDeflate enabled: the sessions_snapshot frame is ~345 KB uncompressed
+   // at ~380 sessions and re-ships on every (re)connect; gzip of the identical payload
+@@ -423,6 +431,7 @@ export function createBrowserGateway(
+           principal: principals.get(ws) ?? null,
+           requireBrowserAuth,
+           ...(operatorUsers ? { operatorUsers } : {}),
++          ...(operatorSet ? { operatorSet } : {}),
+           sendTo, broadcast, getSubscribers, replayPendingUiRequests,
+           trackUiRequest: trackUiRequest,
+           markReplaying(targetWs, sessionId) {
+@@ -736,6 +745,10 @@ export function createBrowserGateway(
+             viewedSessionTracker.unview(msg.sessionId, ws);
+             // SURFACE B: drop this socket from presence; emit on real change.
+             if (sessionPresenceTracker.leave(msg.sessionId, ws)) {
++              // Stream-2 D: this human's LAST socket left the session's view →
++              // free its bounded-cell slot too (symmetric with presence).
++              const leavingSub = principals.get(ws)?.sub;
++              if (operatorSet && leavingSub) operatorSet.release(msg.sessionId, leavingSub);
+               emitPresenceUpdate(msg.sessionId);
+             }
+             break;
+@@ -766,6 +779,10 @@ export function createBrowserGateway(
+       console.error(`[browser-gw] browser client disconnected (remaining: ${subscriptions.size - 1})`);
+       subscriptions.delete(ws);
+       replayingSessions.delete(ws);
++      // Stream-2 D: capture this socket's `sub` BEFORE dropping the principal, so
++      // the operator-cell release below (keyed by `sub`) can free the slot for
++      // each session where this was the human's LAST socket.
++      const closingSub = principals.get(ws)?.sub;
+       // Build 0: drop the bound principal so a closed socket holds no identity.
+       principals.delete(ws);
+       // Drop this ws from every viewed-session entry so disconnected browsers
+@@ -775,6 +792,11 @@ export function createBrowserGateway(
+       // presence_update to remaining subscribers for each session whose
+       // distinct-human set changed (this human's LAST tab just closed).
+       for (const sessionId of sessionPresenceTracker.removeSocket(ws)) {
++        // Stream-2 D: the presence set changing means this `sub`'s LAST socket
++        // left `sessionId` → free its bounded-cell slot too (symmetric with
++        // presence last-socket-leave), so a departed co-driver does not hold a
++        // slot and a fresh distinct human can be admitted.
++        if (operatorSet && closingSub) operatorSet.release(sessionId, closingSub);
+         emitPresenceUpdate(sessionId);
+       }
+     });
+@@ -823,6 +845,10 @@ export function createBrowserGateway(
+     },
+ 
+     broadcastSessionRemoved(sessionId: string) {
++      // Stream-2 D: leak guard — drop the whole bounded cell on session removal
++      // so a REST-only admit (no persistent socket, never freed by socket-leave)
++      // cannot permanently hold a slot on an ended session.
++      operatorSet?.clearSession(sessionId);
+       broadcast({ type: "session_removed", sessionId });
+     },
+ 
+diff --git a/packages/server/src/browser-handlers/handler-context.ts b/packages/server/src/browser-handlers/handler-context.ts
+index 975f7bb..149a63f 100644
+--- a/packages/server/src/browser-handlers/handler-context.ts
++++ b/packages/server/src/browser-handlers/handler-context.ts
+@@ -19,6 +19,7 @@ import type { PendingAttachRegistry } from "../pending-attach-registry.js";
+ import type { PendingResumeIntentRegistry } from "../pending-resume-intent-registry.js";
+ import type { PendingClientCorrelations } from "../pending-client-correlations.js";
+ import type { TokenPayload } from "../auth.js";
++import type { OperatorSetTracker } from "../operator-set-tracker.js";
+ 
+ export interface BrowserHandlerContext {
+   ws: WebSocket;
+@@ -51,6 +52,15 @@ export interface BrowserHandlerContext {
+    * admitted); flag OFF → the gate no-ops entirely.
+    */
+   operatorUsers?: string[];
++  /**
++   * Stream-2 D: the shared bounded-cell (N=2) admission tracker. The SAME
++   * instance the REST arm reads, so a session is bounded to 2 distinct humans
++   * from the ONE `authorizeSessionAction` chokepoint (not per-arm). Threaded
++   * onto every socket's context; the WS gate passes it (+ the message's
++   * `sessionId`) into the chokepoint for `human` actors. Unset → admission
++   * SKIPPED (flag-off / non-multi-operator servers are byte-unchanged).
++   */
++  operatorSet?: OperatorSetTracker;
+   pendingForkRegistry?: PendingForkRegistry;
+   sessionOrderManager?: SessionOrderManager;
+   preferencesStore?: PreferencesStore;
+diff --git a/packages/server/src/rest-session-gate.ts b/packages/server/src/rest-session-gate.ts
+index 1a956bd..9a670f9 100644
+--- a/packages/server/src/rest-session-gate.ts
++++ b/packages/server/src/rest-session-gate.ts
+@@ -21,11 +21,31 @@ import {
+   type SessionWriteAction,
+ } from "./session-authz.js";
+ import { classifySendPromptAction } from "./send-prompt-authz.js";
++import type { OperatorSetTracker } from "./operator-set-tracker.js";
+ 
+ /** Frozen-at-startup gate policy, threaded from `requireBrowserAuthAtStartup`. */
+ export interface RestGatePolicy {
+   requireBrowserAuth: boolean;
+   operatorUsers?: string[];
++  /**
++   * Stream-2 D: the shared bounded-cell (N=2) admission tracker — the SAME
++   * instance the WS arm reads, so a session is bounded to 2 distinct humans from
++   * the ONE chokepoint (a 3rd distinct human cannot bypass a connection-only cap
++   * by driving via REST). Unset → admission SKIPPED (byte-unchanged).
++   */
++  operatorSet?: OperatorSetTracker;
++}
++
++/**
++ * Extract the session id a REST session-write targets, from `request.params.id`
++ * (every session-write route is `/api/session(s)/:id/...`). Returns undefined
++ * when absent (a body-only route) so admission degrades to skipped rather than
++ * keying a cell on "". Never the body (anti-spoof — same discipline as the
++ * actor).
++ */
++function restSessionId(request: FastifyRequest): string | undefined {
++  const id = (request.params as { id?: unknown } | undefined)?.id;
++  return typeof id === "string" && id.length > 0 ? id : undefined;
+ }
+ 
+ /**
+@@ -69,16 +89,20 @@ export type SessionWriteGatePreHandler = ((
+ export function makeRestSessionGate(policy: RestGatePolicy) {
+   const requireBrowserAuth = policy.requireBrowserAuth === true;
+   const operatorUsers = policy.operatorUsers;
++  const operatorSet = policy.operatorSet;
+   return function gate(action: SessionWriteAction): SessionWriteGatePreHandler {
+     const preHandler = async function sessionWriteGate(
+       request: FastifyRequest,
+       reply: FastifyReply,
+     ): Promise<void> {
++      const sessionId = restSessionId(request);
+       const decision = authorizeSessionAction({
+         actor: buildActorFromRequest(request),
+         action,
+         requireBrowserAuth,
+         ...(operatorUsers ? { operatorUsers } : {}),
++        ...(sessionId ? { sessionId } : {}),
++        ...(operatorSet ? { operatorSet } : {}),
+       });
+       if (!decision.allowed) {
+         const code =
+@@ -120,17 +144,21 @@ export function makeRestSessionGate(policy: RestGatePolicy) {
+ export function makeRestPromptGate(policy: RestGatePolicy): SessionWriteGatePreHandler {
+   const requireBrowserAuth = policy.requireBrowserAuth === true;
+   const operatorUsers = policy.operatorUsers;
++  const operatorSet = policy.operatorSet;
+   const preHandler = async function sessionPromptGate(
+     request: FastifyRequest,
+     reply: FastifyReply,
+   ): Promise<void> {
+     const text = (request.body as { text?: unknown } | undefined)?.text;
+     const action = classifySendPromptAction(text);
++    const sessionId = restSessionId(request);
+     const decision = authorizeSessionAction({
+       actor: buildActorFromRequest(request),
+       action,
+       requireBrowserAuth,
+       ...(operatorUsers ? { operatorUsers } : {}),
++      ...(sessionId ? { sessionId } : {}),
++      ...(operatorSet ? { operatorSet } : {}),
+     });
+     if (!decision.allowed) {
+       const code =
+diff --git a/packages/server/src/routes/session-routes.ts b/packages/server/src/routes/session-routes.ts
+index 782afc3..73634df 100644
+--- a/packages/server/src/routes/session-routes.ts
++++ b/packages/server/src/routes/session-routes.ts
+@@ -39,6 +39,13 @@ export function registerSessionRoutes(
+      */
+     requireBrowserAuth?: boolean;
+     operatorUsers?: string[];
++    /**
++     * Stream-2 D: the shared bounded-cell (N=2) tracker. Threaded for wiring
++     * uniformity with the other REST gate; the retire route carries its
++     * sessionId in the BODY (no `params.id`) so admission is naturally skipped
++     * there — retire stays operator-only regardless.
++     */
++    operatorSet?: import("../operator-set-tracker.js").OperatorSetTracker;
+   },
+ ) {
+   const { sessionManager, eventStore, networkGuard, hygieneProbes, broadcastSessionUpdated } = deps;
+@@ -52,6 +59,7 @@ export function registerSessionRoutes(
+   const gate = makeRestSessionGate({
+     requireBrowserAuth: deps.requireBrowserAuth === true,
+     ...(deps.operatorUsers ? { operatorUsers: deps.operatorUsers } : {}),
++    ...(deps.operatorSet ? { operatorSet: deps.operatorSet } : {}),
+   });
+ 
+   // GET /api/sessions — read-path hygiene (F1 reap + demote, F2 name-canon,
+diff --git a/packages/server/src/server.ts b/packages/server/src/server.ts
+index c21b141..7865a84 100644
+--- a/packages/server/src/server.ts
++++ b/packages/server/src/server.ts
+@@ -56,6 +56,8 @@ import { createWebPushTransport } from "./push/push-transports/web-push.js";
+ import { loadOrGenerateVapidKeys } from "./push/push-vapid.js";
+ import type { PushPrefs } from "./push/push-types.js";
+ import { registerSessionApi } from "./session-api.js";
++import { createOperatorSetTracker } from "./operator-set-tracker.js";
++import { configureAgentPresence } from "./agent-presence.js";
+ import { registerSessionRoutes } from "./routes/session-routes.js";
+ import { registerGitRoutes } from "./routes/git-routes.js";
+ import { registerFileRoutes } from "./routes/file-routes.js";
+@@ -308,6 +310,27 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
+   // only the next server start observes it. See gate-pushback-1 MAJOR (desync).
+   const requireBrowserAuthAtStartup = config.authConfig?.requireBrowserAuth === true;
+ 
++  // Stream-2 D: the ONE bounded-cell (N=2) admission tracker. A SINGLE instance
++  // shared by BOTH the WS gate (via the browser gateway) and the REST gate
++  // policies below, so a session is bounded to 2 distinct humans from the ONE
++  // `authorizeSessionAction` chokepoint — a 3rd distinct human cannot bypass a
++  // connection-only cap by driving via REST. Inert when the flag is off (the
++  // gate returns allowed before consulting it) → byte-unchanged single-operator.
++  const operatorSetTracker = createOperatorSetTracker();
++
++  // Stream-2 D (agent-as-presence): wire the live-agent signal into the
++  // greenfield `getAgentPresence` seam ONLY when the multi-operator flag is ON,
++  // so a flag-off server stays the B-era NO-OP (presence humans-only /
++  // byte-unchanged). The source is narrow — the session's liveness `status` +
++  // display `name` off the SessionManager (the registry of connected pi
++  // instances); `status !== "ended"` is the authoritative live-agent bit.
++  if (requireBrowserAuthAtStartup) {
++    configureAgentPresence((sessionId) => {
++      const s = sessionManager.get(sessionId);
++      return s ? { status: s.status, ...(s.name ? { name: s.name } : {}) } : null;
++    });
++  }
++
+   // Ensure bridge extension is registered in pi's global settings
+   // (needed for bundled installs where pi can't discover it from package.json)
+   //
+@@ -648,7 +671,7 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
+     },
+   });
+ 
+-  const browserGateway = createBrowserGateway(sessionManager, eventStore, piGateway, undefined, pendingForkRegistry, sessionOrderManager, preferencesStore, directoryService, terminalManager, pendingDashboardSpawns, config.maxWsBufferBytes, pendingAttachRegistry, pendingResumeIntents, pendingClientCorrelations, pushPrefsMap, () => config.push?.defaults, requireBrowserAuthAtStartup, config.authConfig?.operatorUsers);
++  const browserGateway = createBrowserGateway(sessionManager, eventStore, piGateway, undefined, pendingForkRegistry, sessionOrderManager, preferencesStore, directoryService, terminalManager, pendingDashboardSpawns, config.maxWsBufferBytes, pendingAttachRegistry, pendingResumeIntents, pendingClientCorrelations, pushPrefsMap, () => config.push?.defaults, requireBrowserAuthAtStartup, config.authConfig?.operatorUsers, operatorSetTracker);
+ 
+   // Driver self-report poller (dl-2620): re-reads the driver-state sidecars
+   // (written by the `driver-report` CLI) and pushes per-driver progress-% +
+@@ -938,6 +961,8 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
+     requireBrowserAuth: requireBrowserAuthAtStartup,
+     ...(config.authConfig?.operatorUsers ? { operatorUsers: config.authConfig.operatorUsers } : {}),
+     ...(config.resurrectVerify ? { resurrectVerify: config.resurrectVerify } : {}),
++    // Stream-2 D: the ONE bounded-cell tracker shared with the WS gate.
++    operatorSet: operatorSetTracker,
+   });
+ 
+   // Register route modules
+@@ -973,6 +998,8 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
+     // frozen gate. Flag OFF → no-op.
+     requireBrowserAuth: requireBrowserAuthAtStartup,
+     ...(config.authConfig?.operatorUsers ? { operatorUsers: config.authConfig.operatorUsers } : {}),
++    // Stream-2 D: the ONE bounded-cell tracker shared with the WS + session-api gates.
++    operatorSet: operatorSetTracker,
+   });
+   registerGitRoutes(fastify, { networkGuard });
+   registerFileRoutes(fastify, { sessionManager, preferencesStore, networkGuard });
+diff --git a/packages/server/src/session-api.ts b/packages/server/src/session-api.ts
+index dc9e02f..e7456bb 100644
+--- a/packages/server/src/session-api.ts
++++ b/packages/server/src/session-api.ts
+@@ -105,6 +105,13 @@ export interface SessionApiDeps {
+    * REST routes. Unset/empty → operator-only enforcement is INERT (mandate 4c).
+    */
+   operatorUsers?: string[];
++  /**
++   * Stream-2 D: the shared bounded-cell (N=2) admission tracker — the SAME
++   * instance the WS gate reads (threaded from `server.ts`). Passed into both REST
++   * gate factories so a session is bounded to 2 distinct humans from the ONE
++   * chokepoint. Unset → admission SKIPPED (byte-unchanged).
++   */
++  operatorSet?: import("./operator-set-tracker.js").OperatorSetTracker;
+ }
+ 
+ type IdParams = { Params: { id: string } };
+@@ -192,6 +199,7 @@ export function registerSessionApi(fastify: FastifyInstance, deps: SessionApiDep
+   const gate = makeRestSessionGate({
+     requireBrowserAuth: deps.requireBrowserAuth === true,
+     ...(deps.operatorUsers ? { operatorUsers: deps.operatorUsers } : {}),
++    ...(deps.operatorSet ? { operatorSet: deps.operatorSet } : {}),
+   });
+ 
+   // PUSHBACK-3 FIX-P3-1: the `/prompt` route gets a command-classifying gate.
+@@ -202,6 +210,7 @@ export function registerSessionApi(fastify: FastifyInstance, deps: SessionApiDep
+   const promptGate = makeRestPromptGate({
+     requireBrowserAuth: deps.requireBrowserAuth === true,
+     ...(deps.operatorUsers ? { operatorUsers: deps.operatorUsers } : {}),
++    ...(deps.operatorSet ? { operatorSet: deps.operatorSet } : {}),
+   });
+ 
+   // Post-respawn VERIFY gate (build-gate item 2). Production default wires the
+diff --git a/packages/server/src/session-authz.ts b/packages/server/src/session-authz.ts
+index d7febc7..806adae 100644
+--- a/packages/server/src/session-authz.ts
++++ b/packages/server/src/session-authz.ts
+@@ -30,6 +30,7 @@
+  */
+ import type { TokenPayload } from "./auth.js";
+ import { hasUsableSub } from "./auth.js";
++import type { OperatorSetTracker } from "./operator-set-tracker.js";
+ 
+ /**
+  * The authenticated actor behind a session-write, discriminated by kind.
+@@ -292,6 +293,24 @@ export interface AuthorizeSessionActionInput {
+    * unset/empty, operator-only enforcement is INERT (see {@link isOperator}).
+    */
+   operatorUsers?: string[];
++  /**
++   * The session the action targets (Stream-2 D — N=2 admission). Required
++   * together with {@link operatorSet} for the bounded-cell admission check to
++   * run; when either is absent, admission is SKIPPED (the gate degrades to the
++   * Build-1b identity + operator-only behavior — byte-unchanged for every
++   * existing caller that does not thread the cell). The two live gate arms (WS +
++   * REST) BOTH thread these so a session is bounded to 2 distinct humans from the
++   * ONE chokepoint, not per-arm.
++   */
++  sessionId?: string;
++  /**
++   * The shared bounded-cell tracker (Stream-2 D). The SAME instance is threaded
++   * by BOTH the WS and REST arms so admission is derived from one source (a 3rd
++   * distinct human cannot bypass a connection-only cap via REST). Consulted ONLY
++   * for `human` actors (a `service` actor is infra, not one of the 2 humans, and
++   * is never admission-counted). Absent → admission SKIPPED (see `sessionId`).
++   */
++  operatorSet?: OperatorSetTracker;
+ }
+ 
+ export interface AuthorizeSessionActionResult {
+@@ -300,6 +319,7 @@ export interface AuthorizeSessionActionResult {
+   reason?:
+     | "no-principal"
+     | "invalid-principal"
++    | "session-full"
+     | "operator-only"
+     | "unclassified-action"
+     | "ui-management-forged";
+@@ -316,13 +336,24 @@ export interface AuthorizeSessionActionResult {
+  *   2. A `human` principal must carry a usable `sub` (H-M2) — else
+  *      `invalid-principal` (a secret-signed but `sub`-less token has no exact
+  *      identity to authorize / attribute).
+- *   3. An operator-only action requires `isOperator(principal, operatorUsers)`
++ *   3. N=2 ADMISSION (Stream-2 D, Contract-2 / Joan pin 2 — runs BEFORE the
++ *      per-action check): when `operatorSet` + `sessionId` are threaded, a
++ *      `human` `sub` is admitted to the session's bounded cell iff it is already
++ *      a member OR a slot is free (`< 2` distinct subs). A 3rd DISTINCT human is
++ *      refused `session-full` at ADMISSION — before any per-action verdict, so a
++ *      non-member never learns a per-action outcome. Two tabs of the SAME `sub`
++ *      are ONE operator (Set dedup). A `service` actor is NOT admission-counted
++ *      (infra, not one of the 2 humans) — it bypasses admission but still faces
++ *      the per-action operator-only rule (det-spawn-inherit unbroken). Absent
++ *      cell/sessionId → admission SKIPPED (byte-unchanged for non-threading
++ *      callers).
++ *   4. An operator-only action requires `isOperator(principal, operatorUsers)`
+  *      — a non-operator human (op-2) or a `service` actor is refused with
+  *      `operator-only`. When `operatorUsers` is unset/empty this rule is INERT
+  *      (no principal is an operator → the check no-ops for the co-drive class,
+  *      but an operator-only action then has NO operator to satisfy it, so it is
+  *      refused for humans only when an operator IS configured — see below).
+- *   4. An unknown action token (not in the enumeration) is refused
++ *   5. An unknown action token (not in the enumeration) is refused
+  *      `unclassified-action` — fail-CLOSED so a route added without an
+  *      enumeration entry cannot silently pass.
+  *
+@@ -340,7 +371,7 @@ export interface AuthorizeSessionActionResult {
+ export function authorizeSessionAction(
+   input: AuthorizeSessionActionInput,
+ ): AuthorizeSessionActionResult {
+-  const { actor, action, requireBrowserAuth, operatorUsers } = input;
++  const { actor, action, requireBrowserAuth, operatorUsers, sessionId, operatorSet } = input;
+ 
+   if (!requireBrowserAuth) {
+     // Single-operator: no-op gate, byte-unchanged behavior.
+@@ -358,6 +389,23 @@ export function authorizeSessionAction(
+     }
+   }
+ 
++  // ── N=2 ADMISSION (Contract-2 / Joan pin 2: admission-FIRST) ────────────
++  // Bound the session to 2 DISTINCT humans BEFORE any per-action check. A 3rd
++  // distinct human is refused here — a non-member never reaches (nor learns the
++  // verdict of) the per-action gate below. Only `human` actors with a real
++  // `sub` (guaranteed by the identity checks above) are admission-counted; a
++  // `service` actor is infra (not one of the 2 humans) and bypasses admission
++  // — it remains bound by the per-action operator-only rule (det-spawn-inherit
++  // unbroken). Admission runs ONLY when BOTH the shared cell + a sessionId are
++  // threaded; absent either, it is SKIPPED (byte-unchanged for callers that do
++  // not opt in — e.g. the send-seam's own in-handler gate + the unit tests).
++  if (actor.kind === "human" && operatorSet && sessionId) {
++    const verdict = operatorSet.tryAdmit(sessionId, actor.principal!.sub);
++    if (!verdict.admitted) {
++      return { allowed: false, reason: "session-full" };
++    }
++  }
++
+   // ── Action classification (fail-closed on unknown) ─────────────────────
+   const cls = actionClass(action);
+   if (cls === undefined) {
+diff --git a/packages/server/src/ws-session-gate.ts b/packages/server/src/ws-session-gate.ts
+index ebb6903..031a131 100644
+--- a/packages/server/src/ws-session-gate.ts
++++ b/packages/server/src/ws-session-gate.ts
+@@ -152,6 +152,8 @@ export function authorizeWsMessage(
+         action: "ui_management",
+         requireBrowserAuth: ctx.requireBrowserAuth,
+         ...(ctx.operatorUsers ? { operatorUsers: ctx.operatorUsers } : {}),
++        ...(sessionId ? { sessionId } : {}),
++        ...(ctx.operatorSet ? { operatorSet: ctx.operatorSet } : {}),
+       });
+       return { ...decision, action: "ui_management", passThrough: false };
+     }
+@@ -173,6 +175,10 @@ export function authorizeWsMessage(
+     action,
+     requireBrowserAuth: ctx.requireBrowserAuth,
+     ...(ctx.operatorUsers ? { operatorUsers: ctx.operatorUsers } : {}),
++    ...(((msg as { sessionId?: string }).sessionId)
++      ? { sessionId: (msg as { sessionId?: string }).sessionId }
++      : {}),
++    ...(ctx.operatorSet ? { operatorSet: ctx.operatorSet } : {}),
+   });
+   return { ...decision, action, passThrough: false };
+ }
+
+### NEW FILE 1: operator-set-tracker.ts ###
+/**
+ * Operator-set tracker — the bounded 2-operator cell primitive (Stream-2 D,
+ * N=2 admission).
+ *
+ * Tracks WHICH DISTINCT AUTHENTICATED HUMANS (`principal.sub`) have been ADMITTED
+ * to co-drive each session, and caps the count at N=2. This is the admission
+ * substrate the ONE `authorizeSessionAction` chokepoint consults so BOTH the WS
+ * and REST arms bound a session to 2 distinct human operators from a SINGLE
+ * source (a 3rd distinct human cannot slip in via REST after learning a
+ * sessionId from the snapshot).
+ *
+ * Deliberately SEPARATE from `session-presence-tracker.ts`:
+ *   - `session-presence-tracker` answers "which distinct humans are VIEWING"
+ *     (per-socket, view-driven) and feeds `presence_update`.
+ *   - THIS tracker answers "which distinct humans are ADMITTED to WRITE"
+ *     (per-`sub`, admission-driven) and bounds the cell. A viewer is not
+ *     necessarily an admitted writer, and a REST writer may hold no socket.
+ *
+ * Distinct-`sub` semantics (NOT per-connection): two browser TABS of the SAME
+ * human share ONE `sub` → ONE cell slot (the Set dedups). A 3rd DISTINCT `sub`
+ * is the one refused. Counting by connection instead would let one human's two
+ * tabs exhaust the cell AND let a 3rd human's extra socket slip in — both wrong.
+ *
+ * `service` actors are NOT tracked here: they are infra (a shared-secret / a
+ * future det-spawn producer), not one of the 2 humans, so the chokepoint never
+ * calls `tryAdmit` for them (they bypass admission but remain bound by the
+ * per-action operator-only rule). See `session-authz.ts`.
+ *
+ * In-memory only — admission is intrinsically per-run, nothing to persist.
+ */
+
+/** The bounded cell size: at most this many DISTINCT humans co-drive a session. */
+export const OPERATOR_CELL_LIMIT = 2;
+
+/** Verdict of a {@link OperatorSetTracker.tryAdmit} attempt. */
+export interface OperatorAdmissionVerdict {
+  /**
+   * True when the `sub` is IN the cell after this call — either it was already a
+   * member, or it was admitted into a free slot. False ONLY when the cell was
+   * already full of OTHER distinct `sub`s (this is a 3rd distinct human).
+   */
+  admitted: boolean;
+  /**
+   * True when the `sub` was ALREADY a member before this call (no new slot
+   * consumed — e.g. a second tab of an already-admitted human). False when this
+   * call admitted a new distinct `sub` (or refused).
+   */
+  member: boolean;
+  /** Distinct-`sub` count in the cell AFTER this call (≤ limit). */
+  count: number;
+}
+
+export interface OperatorSetTracker {
+  /**
+   * Attempt to admit `sub` to `sessionId`'s cell. Idempotent for an existing
+   * member. Admits a new `sub` iff a slot is free (`count < limit`). Refuses
+   * (does NOT create/mutate the cell) a new `sub` when the cell is full. Only a
+   * successful admit (member or new) allocates cell state.
+   */
+  tryAdmit(sessionId: string, sub: string): OperatorAdmissionVerdict;
+  /** True when `sub` currently occupies a slot in `sessionId`'s cell. */
+  isMember(sessionId: string, sub: string): boolean;
+  /**
+   * Free `sub`'s slot in `sessionId` (e.g. that human's last socket left).
+   * Idempotent. Returns true when a slot was actually freed. Removing the last
+   * member drops the cell entirely.
+   */
+  release(sessionId: string, sub: string): boolean;
+  /** Drop the entire cell for `sessionId` (session end — leak guard). */
+  clearSession(sessionId: string): void;
+  /** Distinct-`sub` count currently in `sessionId`'s cell. */
+  count(sessionId: string): number;
+  /** Test/diagnostic — the distinct `sub`s currently in `sessionId`'s cell. */
+  operatorsOf(sessionId: string): string[];
+}
+
+/**
+ * Create an in-memory operator-set tracker. `limit` defaults to
+ * {@link OPERATOR_CELL_LIMIT} (2) — the bounded-cell size; parameterized only so
+ * a test can exercise the cap at a smaller N without a 3-socket fixture.
+ */
+export function createOperatorSetTracker(limit: number = OPERATOR_CELL_LIMIT): OperatorSetTracker {
+  // sessionId → Set<sub>. A cell exists only while it has ≥1 member.
+  const cells = new Map<string, Set<string>>();
+
+  function tryAdmit(sessionId: string, sub: string): OperatorAdmissionVerdict {
+    const existing = cells.get(sessionId);
+    if (existing?.has(sub)) {
+      // Already a member — no new slot consumed (a second tab / repeat write).
+      return { admitted: true, member: true, count: existing.size };
+    }
+    const size = existing?.size ?? 0;
+    if (size >= limit) {
+      // Cell full of OTHER distinct subs — this is a 3rd distinct human. Do NOT
+      // create or mutate the cell (a refusal allocates nothing).
+      return { admitted: false, member: false, count: size };
+    }
+    const cell = existing ?? new Set<string>();
+    cell.add(sub);
+    if (!existing) cells.set(sessionId, cell);
+    return { admitted: true, member: false, count: cell.size };
+  }
+
+  function isMember(sessionId: string, sub: string): boolean {
+    return cells.get(sessionId)?.has(sub) ?? false;
+  }
+
+  function release(sessionId: string, sub: string): boolean {
+    const cell = cells.get(sessionId);
+    if (!cell || !cell.delete(sub)) return false;
+    if (cell.size === 0) cells.delete(sessionId);
+    return true;
+  }
+
+  function clearSession(sessionId: string): void {
+    cells.delete(sessionId);
+  }
+
+  function count(sessionId: string): number {
+    return cells.get(sessionId)?.size ?? 0;
+  }
+
+  function operatorsOf(sessionId: string): string[] {
+    return [...(cells.get(sessionId) ?? [])];
+  }
+
+  return { tryAdmit, isMember, release, clearSession, count, operatorsOf };
+}
+
+### NEW FILE 2: __tests__/stream2-d-admission.test.ts ###
+/**
+ * Stream-2 D red-arm suite — the bounded 2-operator cell (N=2 admission) +
+ * intersection permission model + agent-as-presence + det-spawn-inherit.
+ *
+ * Every case is RED-ARM: it is GREEN on the shipped code, and the block header
+ * names the exact one-line PLANT that turns it RED (a green-that-can't-go-red is
+ * a vacuous pass). The plants were each run RED own-hand; the evidence paths are
+ * in `_build/bastion-D-slice-cc-report-2026-07-09.md`.
+ *
+ * These drive the REAL production seams — no re-implemented logic:
+ *   - `authorizeSessionAction`  (the ONE chokepoint — admission + per-action)
+ *   - `authorizeWsMessage`      (the WS arm)
+ *   - `makeRestSessionGate`     (the REST arm)
+ *   - `createOperatorSetTracker`(the cell state)
+ *   - `getAgentPresence` + `configureAgentPresence` (the presence D-filler)
+ *
+ * Pure / gate-level by design (deterministic — no real-server SIGTERM-timing
+ * flakiness): the cell is a pure Set primitive, the chokepoint a pure function,
+ * and both gate arms call the chokepoint with the SAME threaded cell, so a
+ * gate-level drive exercises the identical production path a socket would.
+ *
+ * Contract-3: this file + the D authz/session-state hunks are the whole diff —
+ * it touches NO message-flow / author / attribution / reconciliation code.
+ */
+import { describe, it, expect, afterEach } from "vitest";
+import {
+  authorizeSessionAction,
+  type AuthorizeSessionActionInput,
+} from "../session-authz.js";
+import { authorizeWsMessage } from "../ws-session-gate.js";
+import { makeRestSessionGate } from "../rest-session-gate.js";
+import { createOperatorSetTracker, OPERATOR_CELL_LIMIT } from "../operator-set-tracker.js";
+import {
+  getAgentPresence,
+  configureAgentPresence,
+  resetAgentPresence,
+} from "../agent-presence.js";
+import type { TokenPayload } from "../auth.js";
+import type { BrowserHandlerContext } from "../browser-handlers/handler-context.js";
+import type { SessionStatus } from "@blackbelt-technology/pi-dashboard-shared/types.js";
+
+// ── Principal fixtures (distinct sub A/B/C — NOT live identity values) ────────
+const OP1 = { sub: "op1@example.com", name: "Op One", username: "op1", provider: "github", exp: 0 } as unknown as TokenPayload;
+const OP2 = { sub: "op2@example.com", name: "Op Two", username: "op2", provider: "github", exp: 0 } as unknown as TokenPayload;
+const OP3 = { sub: "op3@example.com", name: "Op Three", username: "op3", provider: "github", exp: 0 } as unknown as TokenPayload;
+
+/** A fake WS handler-context threading a given cell + principal. */
+function wsCtx(
+  principal: TokenPayload | null,
+  operatorSet: ReturnType<typeof createOperatorSetTracker>,
+  operatorUsers?: string[],
+): BrowserHandlerContext {
+  return {
+    principal,
+    requireBrowserAuth: true,
+    operatorSet,
+    ...(operatorUsers ? { operatorUsers } : {}),
+    sessionManager: { get: () => undefined },
+  } as unknown as BrowserHandlerContext;
+}
+
+/** Drive the REST session-gate preHandler; return the reply code (undefined = allowed). */
+async function restVerdict(
+  gateAction: string,
+  principal: TokenPayload | null,
+  sessionId: string,
+  operatorSet: ReturnType<typeof createOperatorSetTracker>,
+  operatorUsers?: string[],
+): Promise<number | undefined> {
+  const gate = makeRestSessionGate({
+    requireBrowserAuth: true,
+    operatorSet,
+    ...(operatorUsers ? { operatorUsers } : {}),
+  });
+  const preHandler = gate(gateAction as any);
+  let code: number | undefined;
+  const request = {
+    params: { id: sessionId },
+    // The REST arm derives the actor from restActorKind/restPrincipal (never the body).
+    restActorKind: principal ? "human" : null,
+    restPrincipal: principal,
+  } as any;
+  const reply = {
+    code(c: number) { code = c; return this; },
+    send() { return this; },
+  } as any;
+  await preHandler(request, reply);
+  return code;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// TEST 1 — N=2 admission (WS): 2 distinct subs admitted; 3rd REFUSED; two TABS
+// of the SAME sub do NOT trip the cap (distinct-sub dedup, NOT per-connection).
+//
+// RED-ARM: in `operator-set-tracker.ts#tryAdmit`, count by connection instead of
+// sub — delete the `existing?.has(sub)` early-return so every call consumes a
+// slot. Then op1's 2nd tab fills the cell and op2 is REFUSED → assertions bite.
+// ═══════════════════════════════════════════════════════════════════════════
+describe("D · Test 1 — N=2 admission over the WS arm (distinct-sub, tabs deduped)", () => {
+  const SID = "sWs1";
+  const abortMsg = (sessionId: string) => ({ type: "abort", sessionId }) as any;
+
+  it("admits 2 distinct subs, REFUSES the 3rd distinct sub (session-full)", () => {
+    const cell = createOperatorSetTracker();
+    // op1 admitted (co-drive `abort` → admission runs, per-action passes)
+    expect(authorizeWsMessage(abortMsg(SID), wsCtx(OP1, cell)).allowed).toBe(true);
+    // op2 admitted (2nd distinct sub, slot free)
+    expect(authorizeWsMessage(abortMsg(SID), wsCtx(OP2, cell)).allowed).toBe(true);
+    // op3 = 3rd distinct sub → REFUSED at admission
+    const d3 = authorizeWsMessage(abortMsg(SID), wsCtx(OP3, cell));
+    expect(d3.allowed).toBe(false);
+    expect(d3.reason).toBe("session-full");
+    expect(cell.count(SID)).toBe(OPERATOR_CELL_LIMIT);
+  });
+
+  it("two TABS of the SAME sub are ONE operator (dedup — does NOT exhaust the cell)", () => {
+    const cell = createOperatorSetTracker();
+    // op1 drives from TWO tabs (two calls, same sub) — must consume ONE slot.
+    expect(authorizeWsMessage(abortMsg(SID), wsCtx(OP1, cell)).allowed).toBe(true);
+    expect(authorizeWsMessage(abortMsg(SID), wsCtx(OP1, cell)).allowed).toBe(true);
+    expect(cell.count(SID)).toBe(1); // ← RED under per-connection counting (would be 2)
+    // A DISTINCT 2nd human still fits (cell not exhausted by op1's 2nd tab).
+    expect(authorizeWsMessage(abortMsg(SID), wsCtx(OP2, cell)).allowed).toBe(true);
+    expect(cell.count(SID)).toBe(2);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// TEST 2 — N=2 admission (REST): the 3rd distinct sub is refused via the REST
+// path too (a 3rd user who learned a sessionId cannot drive via REST).
+//
+// RED-ARM: enforce N=2 only on the WS connection — pass NO `operatorSet` into
+// `makeRestSessionGate` (drop `operatorSet` from the RestGatePolicy wiring). The
+// REST gate then skips admission → the 3rd user's REST co-drive is ALLOWED (403
+// expectation fails).
+// ═══════════════════════════════════════════════════════════════════════════
+describe("D · Test 2 — N=2 admission over the REST arm (no connection-only bypass)", () => {
+  const SID = "sRest2";
+
+  it("REFUSES the 3rd distinct sub on the REST co-drive path (403 session-full)", async () => {
+    const cell = createOperatorSetTracker();
+    // op1 + op2 admitted via REST co-drive (`abort`).
+    expect(await restVerdict("abort", OP1, SID, cell)).toBeUndefined();
+    expect(await restVerdict("abort", OP2, SID, cell)).toBeUndefined();
+    // op3 = 3rd distinct sub over REST → 403 (session-full), same cell.
+    expect(await restVerdict("abort", OP3, SID, cell)).toBe(403);
+    expect(cell.count(SID)).toBe(OPERATOR_CELL_LIMIT);
+  });
+
+  it("the SAME cell binds WS + REST (a WS-admitted pair refuses a REST 3rd)", async () => {
+    const cell = createOperatorSetTracker();
+    // Two distinct humans admitted over WS…
+    expect(authorizeWsMessage({ type: "abort", sessionId: SID } as any, wsCtx(OP1, cell)).allowed).toBe(true);
+    expect(authorizeWsMessage({ type: "abort", sessionId: SID } as any, wsCtx(OP2, cell)).allowed).toBe(true);
+    // …the 3rd, arriving over REST, is refused by the SHARED cell.
+    expect(await restVerdict("abort", OP3, SID, cell)).toBe(403);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// TEST 3 — Composition order: a 3rd user is refused at ADMISSION *before* any
+// per-action check; a MEMBER op-2 is refused an operator-only action but ALLOWED
+// a co-drive action.
+//
+// RED-ARM: in `authorizeSessionAction`, move the admission block to AFTER the
+// operator-only enforcement. Then a NON-MEMBER 3rd user attempting an
+// operator-only action gets the per-action verdict (`operator-only`) instead of
+// the admission verdict (`session-full`) → the reason assertion bites.
+// ═══════════════════════════════════════════════════════════════════════════
+describe("D · Test 3 — composition order (admission FIRST, then per-action)", () => {
+  const SID = "sComp3";
+  const OPS = ["op1@example.com"]; // op-1 is THE operator; op-2 is a bounded member.
+
+  it("a 3rd NON-MEMBER is refused at ADMISSION (session-full), not per-action", () => {
+    const cell = createOperatorSetTracker();
+    // Fill the cell with op1 + op2 (both members).
+    authorizeSessionAction({ actor: { kind: "human", principal: OP1 }, action: "abort", requireBrowserAuth: true, operatorUsers: OPS, sessionId: SID, operatorSet: cell });
+    authorizeSessionAction({ actor: { kind: "human", principal: OP2 }, action: "abort", requireBrowserAuth: true, operatorUsers: OPS, sessionId: SID, operatorSet: cell });
+    // op3 attempts an OPERATOR-ONLY action. Admission-first ⇒ session-full
+    // (NOT operator-only — they never reach the per-action check).
+    const d = authorizeSessionAction({ actor: { kind: "human", principal: OP3 }, action: "shutdown", requireBrowserAuth: true, operatorUsers: OPS, sessionId: SID, operatorSet: cell });
+    expect(d.allowed).toBe(false);
+    expect(d.reason).toBe("session-full"); // ← RED if per-action runs first (would be "operator-only")
+  });
+
+  it("a MEMBER op-2 passes admission, then is refused operator-only but ALLOWED co-drive", () => {
+    const cell = createOperatorSetTracker();
+    const base = (action: string, principal: TokenPayload): AuthorizeSessionActionInput => ({
+      actor: { kind: "human", principal }, action, requireBrowserAuth: true, operatorUsers: OPS, sessionId: SID, operatorSet: cell,
+    });
+    // op1 (operator) + op2 (member) both admitted.
+    expect(authorizeSessionAction(base("abort", OP1)).allowed).toBe(true);
+    // op2 co-drive → ALLOWED (member, co-drive class).
+    expect(authorizeSessionAction(base("abort", OP2)).allowed).toBe(true);
+    // op2 operator-only → REFUSED at the per-action check (member, but not operator).
+    const opOnly = authorizeSessionAction(base("shutdown", OP2));
+    expect(opOnly.allowed).toBe(false);
+    expect(opOnly.reason).toBe("operator-only");
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// TEST 4 — Intersection (vs union): the shared agent / op-2 acts with the
+// INTERSECTION = an action permitted for op-1 but NOT op-2 is REFUSED for op-2.
+// C's model reduces intersection to "op-2 bounded to co-drive"; the guard is
+// that this stays intersection, never union.
+//
+// RED-ARM: flip the resolution to UNION — in `authorizeSessionAction`, let a
+// member human satisfy operator-only when ANY operator is configured (e.g. skip
+// the `isOperator(actor.principal,…)` check for an admitted member). Then op-2's
+// operator-only action PASSES → the refusal assertion bites (a security
+// regression: union would REVERSE C's op-2 enforcement).
+// ═══════════════════════════════════════════════════════════════════════════
+describe("D · Test 4 — intersection permission (LOCKED to intersection, never union)", () => {
+  const SID = "sInt4";
+  const OPS = ["op1@example.com"];
+
+  it("op-2 (member) is REFUSED an op-1-only action (intersection, not union)", () => {
+    const cell = createOperatorSetTracker();
+    const input = (action: string, principal: TokenPayload): AuthorizeSessionActionInput => ({
+      actor: { kind: "human", principal }, action, requireBrowserAuth: true, operatorUsers: OPS, sessionId: SID, operatorSet: cell,
+    });
+    // op-1 CAN shutdown (operator).
+    expect(authorizeSessionAction(input("shutdown", OP1)).allowed).toBe(true);
+    // op-2 (admitted member) CANNOT — intersection bounds them to co-drive.
+    const d = authorizeSessionAction(input("shutdown", OP2));
+    expect(d.allowed).toBe(false); // ← RED under union (op-2 would inherit op-1's operator-only)
+    expect(d.reason).toBe("operator-only");
+    // …but op-2 CAN co-drive (the intersection floor).
+    expect(authorizeSessionAction(input("send_prompt", OP2)).allowed).toBe(true);
+  });
+
+  it("the shared AGENT (a service actor) likewise cannot exceed co-drive", () => {
+    const cell = createOperatorSetTracker();
+    // A service actor (the agent / a future det-spawn producer) on operator-only.
+    const d = authorizeSessionAction({ actor: { kind: "service", id: "agent" }, action: "shutdown", requireBrowserAuth: true, operatorUsers: OPS, sessionId: SID, operatorSet: cell });
+    expect(d.allowed).toBe(false);
+    expect(d.reason).toBe("operator-only");
+    // …but co-drive is fine (the agent can drive prompts).
+    expect(authorizeSessionAction({ actor: { kind: "service", id: "agent" }, action: "send_prompt", requireBrowserAuth: true, operatorUsers: OPS, sessionId: SID, operatorSet: cell }).allowed).toBe(true);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// TEST 5 — det-spawn-inherit NOT foreclosed: a `service{id}` actor rides the
+// SAME chokepoint, (correctly) cannot satisfy operator-only, and N=2 admission
+// does NOT break the service path (service is NOT admission-counted).
+//
+// RED-ARM: special-case the service actor OUT of the chokepoint — in
+// `authorizeSessionAction`, `if (actor.kind === "service") return {allowed:true}`
+// at the top. Then a service actor PASSES an operator-only action → the refusal
+// assertion bites (the inherit path diverges: infra could satisfy operator-only).
+// ═══════════════════════════════════════════════════════════════════════════
+describe("D · Test 5 — det-spawn-inherit (service rides the chokepoint, not admission-counted)", () => {
+  const SID = "sDet5";
+  const OPS = ["op1@example.com"];
+  const svc = (action: string): AuthorizeSessionActionInput => ({
+    actor: { kind: "service", id: "det-spawn" }, action, requireBrowserAuth: true, operatorUsers: OPS, sessionId: SID,
+  });
+
+  it("a service actor CANNOT satisfy operator-only (infra, not an operator)", () => {
+    const cell = createOperatorSetTracker();
+    const d = authorizeSessionAction({ ...svc("shutdown"), operatorSet: cell });
+    expect(d.allowed).toBe(false); // ← RED if service is short-circuited allowed
+    expect(d.reason).toBe("operator-only");
+  });
+
+  it("a service actor is NOT admission-counted (bypasses N=2; humans keep both slots)", () => {
+    const cell = createOperatorSetTracker();
+    // A service co-drive does NOT consume a human slot.
+    expect(authorizeSessionAction({ ...svc("send_prompt"), operatorSet: cell }).allowed).toBe(true);
+    expect(cell.count(SID)).toBe(0); // service never entered the cell
+    // BOTH human slots remain available after the service action.
+    expect(authorizeSessionAction({ actor: { kind: "human", principal: OP1 }, action: "abort", requireBrowserAuth: true, operatorUsers: OPS, sessionId: SID, operatorSet: cell }).allowed).toBe(true);
+    expect(authorizeSessionAction({ actor: { kind: "human", principal: OP2 }, action: "abort", requireBrowserAuth: true, operatorUsers: OPS, sessionId: SID, operatorSet: cell }).allowed).toBe(true);
+    expect(cell.count(SID)).toBe(2);
+    // The 3rd distinct human is still the one refused (service didn't take a slot).
+    const d3 = authorizeSessionAction({ actor: { kind: "human", principal: OP3 }, action: "abort", requireBrowserAuth: true, operatorUsers: OPS, sessionId: SID, operatorSet: cell });
+    expect(d3.reason).toBe("session-full");
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// TEST 6 — Flag-OFF byte-unchanged: with the flag OFF, N=2 + operatorSet +
+// intersection are all INERT → the single-op path is identical (allow).
+//
+// RED-ARM: make admission fire while the flag is off — in
+// `authorizeSessionAction`, move the admission block ABOVE the
+// `if (!requireBrowserAuth) return {allowed:true}` early-return. Then a
+// single-operator 3rd write is refused session-full → the flag-off allow bites.
+// ═══════════════════════════════════════════════════════════════════════════
+describe("D · Test 6 — flag-OFF byte-unchanged (admission/cell/intersection inert)", () => {
+  const SID = "sOff6";
+
+  it("flag OFF → every actor is allowed, the cell is NEVER touched (no admission)", () => {
+    const cell = createOperatorSetTracker();
+    // Three distinct humans + an operator-only action, flag OFF → all allowed.
+    for (const p of [OP1, OP2, OP3]) {
+      const d = authorizeSessionAction({ actor: { kind: "human", principal: p }, action: "shutdown", requireBrowserAuth: false, sessionId: SID, operatorSet: cell });
+      expect(d.allowed).toBe(true);
+    }
+    // The cell was never consulted/mutated while the flag is off.
+    expect(cell.count(SID)).toBe(0); // ← RED if admission fires flag-off (would be 2)
+  });
+
+  it("flag OFF → the WS arm passes co-drive through with the cell untouched", () => {
+    const cell = createOperatorSetTracker();
+    const offCtx = { principal: OP1, requireBrowserAuth: false, operatorSet: cell, sessionManager: { get: () => undefined } } as unknown as BrowserHandlerContext;
+    const d = authorizeWsMessage({ type: "abort", sessionId: SID } as any, offCtx);
+    expect(d.allowed).toBe(true);
+    expect(cell.count(SID)).toBe(0);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// TEST 7 (3.3) — Agent-as-presence: getAgentPresence resolves a live agent
+// participant, null for an ended/unknown session, and stays the B-era NO-OP when
+// unconfigured (flag-off byte-unchanged).
+//
+// RED-ARM: make `getAgentPresence` ignore the `status === "ended"` guard (return
+// a participant for any known session). Then the ended-session case yields a
+// participant → the `toBeNull()` assertion bites (a dead agent shown present).
+// ═══════════════════════════════════════════════════════════════════════════
+describe("D · Test 7 — agent-as-presence (live-agent signal, flag-gated NO-OP)", () => {
+  afterEach(() => resetAgentPresence());
+
+  it("unconfigured (flag off) → NO-OP null for every session (byte-unchanged)", () => {
+    resetAgentPresence();
+    expect(getAgentPresence("anything")).toBeNull();
+  });
+
+  it("configured → a LIVE session yields an agent participant; ENDED/unknown → null", () => {
+    const sessions: Record<string, { status: SessionStatus; name?: string }> = {
+      live: { status: "active", name: "Athena" },
+      quiet: { status: "idle" },
+      dead: { status: "ended", name: "Zombie" },
+    };
+    configureAgentPresence((id) => sessions[id] ?? null);
+    // Live agent → participant, kind:"agent", namespaced id, display = name.
+    expect(getAgentPresence("live")).toEqual({ id: "agent:live", kind: "agent", display: "Athena" });
+    // Live but unnamed → stable generic display.
+    expect(getAgentPresence("quiet")).toEqual({ id: "agent:quiet", kind: "agent", display: "agent" });
+    // ENDED session → no live agent → null (← RED if the ended-guard is dropped).
+    expect(getAgentPresence("dead")).toBeNull();
+    // Unknown session → null.
+    expect(getAgentPresence("ghost")).toBeNull();
+  });
+});

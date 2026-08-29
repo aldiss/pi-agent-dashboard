@@ -1,0 +1,39 @@
+
+ RUN  v4.1.5 /Users/vdrobkov/Misc/Documents/Copilot/pi-agent-dashboard-multiop-stream2-wt
+
+[test-isolation] HOME (/var/folders/sh/rtc7_3wd27q_jffxy54dt44m0000gn/T/tmp.TyO5yxx0kj) is not under os.tmpdir() (/tmp/claude-501). Tests will still run but this layout is unusual.
+[test-isolation] HOME=/var/folders/sh/rtc7_3wd27q_jffxy54dt44m0000gn/T/tmp.TyO5yxx0kj (real=/Users/vdrobkov)
+ ❯ |@blackbelt-technology/pi-dashboard-server| src/__tests__/stream2-d-admission.test.ts (14 tests | 1 failed | 12 skipped) 7ms
+     × configured → a LIVE session yields an agent participant; ENDED/unknown → null 5ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  |@blackbelt-technology/pi-dashboard-server| src/__tests__/stream2-d-admission.test.ts > D · Test 7 — agent-as-presence (live-agent signal, flag-gated NO-OP) > configured → a LIVE session yields an agent participant; ENDED/unknown → null
+AssertionError: expected { id: 'agent:dead', …(2) } to be null
+
+- Expected:
+null
+
++ Received:
+{
+  "display": "Zombie",
+  "id": "agent:dead",
+  "kind": "agent",
+}
+
+ ❯ src/__tests__/stream2-d-admission.test.ts:344:38
+    342|     expect(getAgentPresence("quiet")).toEqual({ id: "agent:quiet", kin…
+    343|     // ENDED session → no live agent → null (← RED if the ended-guard …
+    344|     expect(getAgentPresence("dead")).toBeNull();
+       |                                      ^
+    345|     // Unknown session → null.
+    346|     expect(getAgentPresence("ghost")).toBeNull();
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 1 passed | 12 skipped (14)
+   Start at  10:47:32
+   Duration  901ms (transform 200ms, setup 0ms, import 565ms, tests 7ms, environment 0ms)
+

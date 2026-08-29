@@ -1,0 +1,32 @@
+
+ RUN  v4.1.5 /Users/vdrobkov/Misc/Documents/Copilot/pi-agent-dashboard-multiop-stream2-wt
+
+[test-isolation] HOME (/var/folders/sh/rtc7_3wd27q_jffxy54dt44m0000gn/T/tmp.vTVzrjT95H) is not under os.tmpdir() (/tmp/claude-501). Tests will still run but this layout is unusual.
+[test-isolation] HOME=/var/folders/sh/rtc7_3wd27q_jffxy54dt44m0000gn/T/tmp.vTVzrjT95H (real=/Users/vdrobkov)
+ ❯ |@blackbelt-technology/pi-dashboard-server| src/__tests__/stream2-d-admission.test.ts (14 tests | 1 failed | 12 skipped) 7ms
+     × a 3rd NON-MEMBER is refused at ADMISSION (session-full), not per-action 6ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  |@blackbelt-technology/pi-dashboard-server| src/__tests__/stream2-d-admission.test.ts > D · Test 3 — composition order (admission FIRST, then per-action) > a 3rd NON-MEMBER is refused at ADMISSION (session-full), not per-action
+AssertionError: expected 'operator-only' to be 'session-full' // Object.is equality
+
+Expected: "session-full"
+Received: "operator-only"
+
+ ❯ src/__tests__/stream2-d-admission.test.ts:183:22
+    181|     const d = authorizeSessionAction({ actor: { kind: "human", princip…
+    182|     expect(d.allowed).toBe(false);
+    183|     expect(d.reason).toBe("session-full"); // ← RED if per-action runs…
+       |                      ^
+    184|   });
+    185|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 1 passed | 12 skipped (14)
+   Start at  10:45:15
+   Duration  367ms (transform 104ms, setup 0ms, import 181ms, tests 7ms, environment 0ms)
+
