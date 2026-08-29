@@ -36,6 +36,7 @@
 |------|---------|
 | `.github/workflows/ios-e2e.yml` | Runs native iOS Swift and reconnect checks, including `revalidate-idle` and `revalidate-halfopen`. |
 | `ios/PiDashboard/Sources/DashboardStore.swift` | Owns UUID latch that gates foreground recovery on probe failure, auth state, and base identity. |
+| `ios/PiDashboard/Sources/SessionListView.swift` | Renders tier sections and directory groups using tier-qualified row-group identity. |
 | `ios/PiDashboardKit/Sources/PiDashboardKit/Net/DashboardClient.swift` | Probes current WebSocket identity through `sendPing` with 2 s timeout. |
 | `ios/PiDashboardKit/Sources/PiDashboardKit/Sessions/SessionGrouping.swift` | Computes collapse keys: normalized `groupPath` for non-crew sessions; crew name across directories for crew sessions. |
 | `ios/PiDashboardKit/Tests/PiDashboardKitTests/CrewCollapseTests.swift` | Covers Folders row-count parity, worktree `groupCwd` identity, same-cwd folding, and crew-global controls. |
