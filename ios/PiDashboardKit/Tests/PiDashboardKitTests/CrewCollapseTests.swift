@@ -12,9 +12,10 @@ import XCTest
 final class CrewCollapseTests: XCTestCase {
 
     private func session(_ id: String, name: String? = nil, cwd: String? = nil,
+                         source: String? = nil,
                          groupCwd: String? = nil,
                          lastActivityAt: Double? = nil, startedAt: Double? = nil) -> DashboardSession {
-        DashboardSession(id: id, cwd: cwd, name: name,
+        DashboardSession(id: id, cwd: cwd, name: name, source: source,
                          startedAt: startedAt, lastActivityAt: lastActivityAt,
                          groupCwd: groupCwd)
     }
@@ -28,6 +29,48 @@ final class CrewCollapseTests: XCTestCase {
         -> [SessionGrouping.CollapsedSession] {
         let groups = SessionGrouping.groupTierByFolder(sessions, folders: folders)
         return SessionGrouping.collapseGroupsFoldingCrew(groups).flatMap(\.rows)
+    }
+
+    private func renderedGroups(_ sessions: [DashboardSession], folders: Bool)
+        -> [SessionGrouping.CollapsedDirectoryGroup] {
+        SessionGrouping.groupByTier(sessions).flatMap { _, tierSessions in
+            let groups = SessionGrouping.groupTierByFolder(tierSessions, folders: folders)
+            return SessionGrouping.collapseGroupsFoldingCrew(groups)
+        }
+    }
+
+    // MARK: row-group identity across tier sections
+
+    func testCollapsedGroupIDsAreUniqueAcrossTiersSharingCwd() {
+        let groups = renderedGroups([
+            session("crew", name: "Peggy", cwd: "/shared"),
+            session("other", name: "Atlas-4", cwd: "/shared"),
+        ], folders: true)
+
+        XCTAssertEqual(groups.map(\.cwd), ["/shared", "/shared"])
+        XCTAssertEqual(Set(groups.map(\.id)).count, groups.count)
+    }
+
+    func testCollapsedGroupIDsAreUniqueAcrossThreeFlatTierGroups() {
+        let groups = renderedGroups([
+            session("crew", name: "Peggy", cwd: "/crew"),
+            session("operator", name: "Operator", cwd: "/chat", source: "tui"),
+            session("other", name: "Atlas-4", cwd: "/other"),
+        ], folders: false)
+
+        XCTAssertEqual(groups.count, 3)
+        XCTAssertTrue(groups.allSatisfy { $0.cwd.isEmpty })
+        XCTAssertEqual(Set(groups.map(\.id)).count, groups.count)
+    }
+
+    func testSameTierSameDirectoryRemainsOneCollapsedGroup() {
+        let groups = renderedGroups([
+            session("atlas", name: "Atlas-4", cwd: "/shared"),
+            session("navigator", name: "NavigatorPopulation-7", cwd: "/shared"),
+        ], folders: true)
+
+        XCTAssertEqual(groups.count, 1)
+        XCTAssertEqual(Set(groups[0].rows.map { $0.session.id }), ["atlas", "navigator"])
     }
 
     // MARK: isCrewKey

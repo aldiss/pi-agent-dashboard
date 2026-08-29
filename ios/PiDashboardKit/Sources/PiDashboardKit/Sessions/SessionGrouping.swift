@@ -383,14 +383,20 @@ public enum SessionGrouping {
     /// plus its already-collapsed rows in first-seen order. `rows` is what the folder
     /// renders; a crew survivor appears in exactly ONE group's rows across the tier.
     public struct CollapsedDirectoryGroup: Sendable, Equatable, Identifiable {
+        public struct ID: Sendable, Equatable, Hashable {
+            public let tier: SessionTier
+            public let cwd: String
+        }
+
+        public let tier: SessionTier
         public let cwd: String
         public let pinned: Bool
         public let rows: [CollapsedSession]
-        public var id: String { cwd }
+        public var id: ID { ID(tier: tier, cwd: cwd) }
         /// Last path segment — the label the directory header shows.
         public var basename: String { cwd.split(separator: "/").last.map(String.init) ?? cwd }
-        public init(cwd: String, pinned: Bool, rows: [CollapsedSession]) {
-            self.cwd = cwd; self.pinned = pinned; self.rows = rows
+        public init(tier: SessionTier, cwd: String, pinned: Bool, rows: [CollapsedSession]) {
+            self.tier = tier; self.cwd = cwd; self.pinned = pinned; self.rows = rows
         }
     }
 
@@ -464,7 +470,9 @@ public enum SessionGrouping {
                 }
             }
             if !rows.isEmpty {
-                out.append(CollapsedDirectoryGroup(cwd: group.cwd, pinned: group.pinned, rows: rows))
+                out.append(CollapsedDirectoryGroup(
+                    tier: classifyTier(rows[0].session), cwd: group.cwd,
+                    pinned: group.pinned, rows: rows))
             }
         }
         return out
