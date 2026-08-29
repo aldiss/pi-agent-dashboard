@@ -16,16 +16,12 @@ echo "--- ci_post_clone: generating Xcode project from project.yml ---"
 cd "$CI_PRIMARY_REPOSITORY_PATH/ios/PiDashboard"
 echo "working dir: $(pwd)"
 
-# The generated project is committed (see 42156ef), so a fresh clone already has
-# it and this script has nothing to do. Regenerating would still be correct --
-# the output is byte-identical -- but installing xcodegen via Homebrew costs
-# minutes of build time on every run for no gain. Only fall back to generating
-# when the project is genuinely absent.
-if [ -d "PiDashboard.xcodeproj" ]; then
-  echo "project already present in the clone; skipping generation"
-  exit 0
-fi
-
+# ALWAYS regenerate. The committed .xcodeproj (42156ef) is NOT sufficient on its
+# own: xcodegen also emits Sources/Info.plist, which is gitignored
+# (ios/.gitignore:13) and so is absent from a fresh clone. Skipping generation
+# when the project directory looked present broke cloud archives with
+#   Build input file cannot be found: .../ios/PiDashboard/Sources/Info.plist
+# because that plist is a build INPUT produced only by this step.
 if ! command -v xcodegen >/dev/null 2>&1; then
   echo "installing xcodegen…"
   brew install xcodegen
