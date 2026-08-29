@@ -63,7 +63,7 @@ public enum SessionGrouping {
         let name = session.name ?? ""
         if matches(name, "^subagent-worker-[0-9a-f]", caseInsensitive: true) { return .worker }
         if let f = session.sessionFile, matches(f, "/run-[0-9]+/session\\.jsonl$") { return .worker }
-        if matches(name, "^(Bert|Joan|Peggy|Lane|Pete|Faye|Don|Alice)(?![A-Za-z])", caseInsensitive: true) {
+        if matches(name, "^(Bert|Joan|Peggy|Lane|Pete|Faye|Don|Alice|Harry|Dawn)(?![A-Za-z])", caseInsensitive: true) {
             return .standingCrew
         }
         if session.source == "tui" { return .operatorChatPane }
