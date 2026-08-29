@@ -47,16 +47,18 @@
     "react-dom": ">=18.0.0"
   },
   "dependencies": {
-    "@blackbelt-technology/dashboard-plugin-runtime": "^0.4.6",
-    "@blackbelt-technology/pi-dashboard-shared": "^0.4.6",
+    "@blackbelt-technology/dashboard-plugin-runtime": "workspace:*",
+    "@blackbelt-technology/pi-dashboard-shared": "workspace:*",
     "bonjour-service": "^1.2.1",
-    "ws": "^8.18.0"
+    "ws": "^8.18.0",
+    "fastify": "^5.0.0"
   },
   "devDependencies": {
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@types/ws": "^8.5.10",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react-dom": "^19.0.0",
+    "vitest": "^4.0.0"
   }
 }

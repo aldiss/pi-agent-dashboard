@@ -24,7 +24,7 @@
     ".pi/skills/pi-dashboard/"
   ],
   "dependencies": {
-    "@blackbelt-technology/pi-dashboard-shared": "^0.5.1",
+    "@blackbelt-technology/pi-dashboard-shared": "workspace:*",
     "ws": "^8.18.0"
   },
   "peerDependencies": {
@@ -32,7 +32,8 @@
     "@earendil-works/pi-tui": "*",
     "@mariozechner/pi-coding-agent": "*",
     "@mariozechner/pi-tui": "*",
-    "typebox": "*"
+    "typebox": "*",
+    "@earendil-works/pi-ai": "*"
   },
   "peerDependenciesMeta": {
     "@earendil-works/pi-coding-agent": {
@@ -46,11 +47,15 @@
     },
     "@mariozechner/pi-tui": {
       "optional": true
+    },
+    "@earendil-works/pi-ai": {
+      "optional": true
     }
   },
   "devDependencies": {
     "@earendil-works/pi-tui": "*",
     "@types/ws": "^8.18.1",
-    "typebox": "^1.1.33"
+    "typebox": "^1.1.33",
+    "vitest": "^4.0.0"
   }
 }

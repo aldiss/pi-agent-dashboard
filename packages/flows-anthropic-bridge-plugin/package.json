@@ -62,12 +62,15 @@
     "react-dom": ">=18.0.0"
   },
   "dependencies": {
-    "@blackbelt-technology/pi-dashboard-shared": "^0.5.1"
+    "@blackbelt-technology/pi-dashboard-shared": "workspace:*",
+    "@blackbelt-technology/dashboard-plugin-runtime": "workspace:*"
   },
   "devDependencies": {
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react-dom": "^19.0.0",
+    "vitest": "^4.0.0",
+    "@vitejs/plugin-react": "^4.3.4"
   }
 }

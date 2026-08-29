@@ -22,5 +22,9 @@
         "toolName": "DashboardDemo"
       }
     ]
+  },
+  "dependencies": {
+    "react": "^19.0.0",
+    "@blackbelt-technology/dashboard-plugin-runtime": "workspace:*"
   }
 }

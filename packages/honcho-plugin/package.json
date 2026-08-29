@@ -61,8 +61,8 @@
     "react-dom": ">=18.0.0"
   },
   "dependencies": {
-    "@blackbelt-technology/dashboard-plugin-runtime": "^0.5.0",
-    "@blackbelt-technology/pi-dashboard-shared": "^0.5.0",
+    "@blackbelt-technology/dashboard-plugin-runtime": "workspace:*",
+    "@blackbelt-technology/pi-dashboard-shared": "workspace:*",
     "@honcho-ai/sdk": "^1.0.0",
     "@mdi/js": "^7.4.47",
     "@mdi/react": "^1.6.1"
@@ -74,6 +74,9 @@
     "@types/react-dom": "^19.0.0",
     "fastify": "^5.0.0",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react-dom": "^19.0.0",
+    "vitest": "^4.0.0",
+    "@vitejs/plugin-react": "^4.3.4",
+    "light-my-request": "^6.6.0"
   }
 }
