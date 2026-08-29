@@ -1,0 +1,43 @@
+[
+  {
+    "received_item_ids": [
+      "ny-held",
+      "ny-parked",
+      "ny-block"
+    ],
+    "received_at": "2026-07-18T19:28:35.199Z"
+  },
+  {
+    "received_item_ids": [
+      "ny-held",
+      "ny-parked"
+    ],
+    "received_at": "2026-07-18T19:28:39.389Z"
+  },
+  {
+    "received_item_ids": [
+      "ny-held",
+      "ny-parked"
+    ],
+    "received_at": "2026-07-18T19:28:42.344Z"
+  },
+  {
+    "received_item_ids": [
+      "ny-held"
+    ],
+    "received_at": "2026-07-18T19:28:44.734Z"
+  },
+  {
+    "received_item_ids": [
+      "ny-held"
+    ],
+    "received_at": "2026-07-18T19:28:46.337Z"
+  },
+  {
+    "received_item_ids": [
+      "ny-held",
+      "ny-unknown"
+    ],
+    "received_at": "2026-07-18T19:28:49.920Z"
+  }
+]

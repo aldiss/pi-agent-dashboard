@@ -3,6 +3,7 @@
 import { HonchoSettings, HonchoBadge, HonchoCardActions, HonchoMapPopover } from "../../../honcho-plugin/src/client/index";
 import { MachineBadge, FederationSettings } from "../../../pi-federation-plugin/src/client/index";
 import { FlowsAnthropicBridgeSettings } from "../../../flows-anthropic-bridge-plugin/src/client";
+import { DemoSettings, DemoToolRenderer } from "../../../demo-plugin/src/client";
 
 import type { PluginManifest } from "@blackbelt-technology/pi-dashboard-shared/dashboard-plugin/manifest-types.js";
 import type { ClaimEntry } from "@blackbelt-technology/dashboard-plugin-runtime";
@@ -104,6 +105,31 @@ export const PLUGIN_REGISTRY: RegistryEntry[] = [
     },
     claims: [
       { pluginId: "flows-anthropic-bridge", priority: 500, slot: "settings-section", tab: "general", Component: FlowsAnthropicBridgeSettings },
+    ],
+  },
+  {
+    manifest: {
+        "id": "demo",
+        "displayName": "Demo Plugin (fixture)",
+        "priority": 1000,
+        "claims": [
+            {
+                "slot": "settings-section",
+                "component": "DemoSettings",
+                "tab": "general"
+            },
+            {
+                "slot": "tool-renderer",
+                "component": "DemoToolRenderer",
+                "toolName": "DashboardDemo"
+            }
+        ],
+        "client": "./src/client.tsx",
+        "fixture": true
+    },
+    claims: [
+      { pluginId: "demo", priority: 1000, slot: "settings-section", tab: "general", Component: DemoSettings },
+      { pluginId: "demo", priority: 1000, slot: "tool-renderer", toolName: "DashboardDemo", Component: DemoToolRenderer },
     ],
   },
 ];

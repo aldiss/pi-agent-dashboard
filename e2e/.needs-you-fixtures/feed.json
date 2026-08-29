@@ -1,0 +1,47 @@
+{
+  "schema_version": "surface-contract-v0",
+  "computed_at": "2026-07-18T12:00:00Z",
+  "ledger_head": "dl-9347",
+  "items": [
+    {
+      "id": "ny-held",
+      "kind": "production-held",
+      "source": {
+        "origin": "ledger",
+        "ledger_type": "production-gate",
+        "event_id": "dl-6858",
+        "thread_id": "peggy+cds-postprod"
+      },
+      "label": "A live GitHub token with full access to all your repos — anyone with it can push to every repo you own",
+      "action": "Revoke the GitHub CLI OAuth app — Settings, Applications, Authorized OAuth Apps, GitHub CLI, Revoke, then re-auth gh.",
+      "halt_tier": true,
+      "uncertain": false,
+      "lane": "operator-band",
+      "pushed_at": "2026-07-18T12:00:00Z",
+      "drilldown": {
+        "event_id": "dl-6858",
+        "thread_id": "peggy+cds-postprod",
+        "raw_summary": "F1 LIVE PRIVACY INCIDENT verified own-hand"
+      }
+    },
+    {
+      "id": "ny-crew",
+      "kind": "runaway-cost",
+      "source": {
+        "origin": "ledger",
+        "ledger_type": "operator-decision",
+        "event_id": "dl-9100",
+        "thread_id": "growth+checkout"
+      },
+      "label": "Which checkout flow to ship: the two-step or the one-page",
+      "action": "Pick the checkout flow in the experiment dashboard, then resume the test.",
+      "halt_tier": false,
+      "uncertain": false,
+      "lane": "crew-lane",
+      "pushed_at": "2026-07-18T12:00:00Z",
+      "drilldown": {
+        "event_id": "dl-9100"
+      }
+    }
+  ]
+}
