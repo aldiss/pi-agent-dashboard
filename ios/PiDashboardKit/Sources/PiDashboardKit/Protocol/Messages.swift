@@ -1,5 +1,13 @@
 import Foundation
 
+/// Connection phase rendered by the native dashboard. Transport liveness and the
+/// initial ready gate are intentionally distinct; see `ConnectionFrameState`.
+public enum ConnectionPhase: Sendable, Equatable {
+    case idle, connecting, connected, reconnecting
+    case authRequired(origin: String)
+    case failed(String)
+}
+
 /// Server → Browser WebSocket messages (the subset the native client consumes).
 /// Faithful to `ServerToBrowserMessage` in `packages/shared/src/browser-protocol.ts`.
 /// Unhandled message types decode to `.unknown(type:)` rather than throwing, so a
@@ -53,6 +61,29 @@ public enum ServerMessage: Sendable {
         case .promptCancel: return "prompt_cancel"
         case .unknown(let t): return t
         }
+    }
+}
+
+/// Pure connection-state transition for one decoded server frame. Every decoded
+/// frame proves the current socket is carrying traffic, so it clears a stale
+/// reconnecting phase. Only a full sessions snapshot satisfies initial readiness
+/// and resets exponential backoff; deltas must preserve both values.
+public struct ConnectionFrameState: Sendable, Equatable {
+    public private(set) var phase: ConnectionPhase
+    public private(set) var hasEnteredDashboard: Bool
+    public private(set) var reconnectAttempt: Int
+
+    public init(phase: ConnectionPhase, hasEnteredDashboard: Bool, reconnectAttempt: Int) {
+        self.phase = phase
+        self.hasEnteredDashboard = hasEnteredDashboard
+        self.reconnectAttempt = reconnectAttempt
+    }
+
+    public mutating func receive(_ message: ServerMessage) {
+        phase = .connected
+        guard case .sessionsSnapshot = message else { return }
+        hasEnteredDashboard = true
+        reconnectAttempt = 0
     }
 }
 

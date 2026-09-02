@@ -48,6 +48,39 @@ final class ChatWindowTests: XCTestCase {
         XCTAssertEqual(ChatWindow.window(msgs(5), limit: 0).rows.count, 5, "limit<=0 → all")
     }
 
+    // MARK: viewport follow + read policy
+
+    func testViewportAtBottomAllowsFollowAndMarkRead() {
+        let decision = ChatViewportPolicy.decide(bottomDistance: 0)
+
+        XCTAssertTrue(decision.shouldAutoFollow, "genuine bottom still follows new messages")
+        XCTAssertTrue(decision.shouldMarkRead, "genuine bottom marks the newest row read")
+    }
+
+    func testViewportScrolledUpDisablesFollowAndMarkRead() {
+        let decision = ChatViewportPolicy.decide(bottomDistance: 320)
+
+        XCTAssertFalse(decision.shouldAutoFollow)
+        XCTAssertFalse(decision.shouldMarkRead)
+    }
+
+    func testViewportWithoutMeasurementDisablesFollowAndMarkRead() {
+        let decision = ChatViewportPolicy.decide(bottomDistance: nil)
+
+        XCTAssertFalse(decision.shouldAutoFollow, "a de-realized sentinel must not yank scrollback")
+        XCTAssertFalse(decision.shouldMarkRead, "unseen rows must remain unread")
+    }
+
+    func testViewportResumesFollowingWhenMeasurementReturnsAtBottom() {
+        let absent = ChatViewportPolicy.decide(bottomDistance: nil)
+        let restored = ChatViewportPolicy.decide(bottomDistance: 0)
+
+        XCTAssertFalse(absent.shouldAutoFollow)
+        XCTAssertFalse(absent.shouldMarkRead)
+        XCTAssertTrue(restored.shouldAutoFollow)
+        XCTAssertTrue(restored.shouldMarkRead)
+    }
+
     // MARK: payload truncation (line AND char caps)
 
     func testTruncateByLines() {

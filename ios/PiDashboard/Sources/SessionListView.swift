@@ -60,6 +60,7 @@ struct SessionListView: View {
                     toggleChip("Folders", isOn: store.folders, id: "toggle-folders") { store.folders.toggle() }
                     toggleChip("Hide ended", isOn: store.hideEnded, id: "toggle-hide-ended") { store.hideEnded.toggle() }
                     toggleChip("Hide stale", isOn: store.hideStale, id: "toggle-hide-stale") { store.hideStale.toggle() }
+                    toggleChip("Active only", isOn: store.activeOnly, id: "toggle-active-only") { store.activeOnly.toggle() }
                     toggleChip("Hidden", isOn: store.showHidden, id: "toggle-show-hidden") { store.showHidden.toggle() }
                 }
             }

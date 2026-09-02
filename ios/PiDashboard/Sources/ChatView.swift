@@ -14,8 +14,8 @@ struct ChatView: View {
 
     /// Distance (pt) of the bottom sentinel below the viewport bottom: ~0 when the
     /// chat is scrolled to the bottom, larger when the operator has scrolled up.
-    /// Gates the non-animated auto-follow so a manual scroll-up isn't yanked back.
-    @State private var bottomDistance: CGFloat = 0
+    /// `nil` means the lazy sentinel is not realized, so follow/read marking stay off.
+    @State private var bottomDistance: CGFloat?
     @State private var showModelPicker = false
     @State private var lightboxImage: UIImage?
     @State private var showAbortConfirm = false
@@ -316,11 +316,14 @@ struct ChatView: View {
                 .onPreferenceChange(BottomDistanceKey.self) { sentinelMinY in
                     // distance the sentinel sits BELOW the viewport bottom: ~0 (or
                     // negative) when scrolled to the bottom, grows as the operator
-                    // scrolls up. Viewport height = outer.size.height.
-                    bottomDistance = sentinelMinY - outer.size.height
+                    // scrolls up. No value means the lazy sentinel is not realized.
+                    let distance = sentinelMinY.map { $0 - outer.size.height }
+                    bottomDistance = distance
                     // At the bottom → the operator has read to the newest row; mark it
                     // read live so the unread badge clears without waiting for close.
-                    if bottomDistance <= Self.nearBottomThreshold, let lastId = filteredMessages.last?.id {
+                    let decision = ChatViewportPolicy.decide(
+                        bottomDistance: distance.map(Double.init))
+                    if decision.shouldMarkRead, let lastId = filteredMessages.last?.id {
                         store.markRead(sessionId, messageId: lastId)
                     }
                 }
@@ -336,16 +339,14 @@ struct ChatView: View {
         }
     }
 
-    /// Distance (pt) the bottom sentinel sits below the viewport bottom edge: ~0 at
-    /// the bottom, larger when scrolled up. Within this band counts as "near bottom".
-    private static let nearBottomThreshold: CGFloat = 160
-
     /// Pin to the bottom WITHOUT animation, but only when the operator is already
-    /// near the bottom. The sentinel also de-realizes when scrolled far up
-    /// (LazyVStack), so the follow naturally stays off there too.
+    /// near the bottom. When the LazyVStack de-realizes the sentinel, its optional
+    /// measurement clears and the policy keeps follow off until a real value returns.
     private func autoFollow(_ proxy: ScrollViewProxy) {
         guard !state.messages.isEmpty else { return }
-        guard bottomDistance <= Self.nearBottomThreshold else { return }
+        let decision = ChatViewportPolicy.decide(
+            bottomDistance: bottomDistance.map(Double.init))
+        guard decision.shouldAutoFollow else { return }
         proxy.scrollTo("chat-bottom", anchor: .bottom)
     }
 
@@ -513,8 +514,8 @@ struct ChatView: View {
 /// to `ChatView`, which derives `bottomDistance` to gate the non-animated
 /// auto-follow. `reduce` keeps the last (deepest) value reported in a layout pass.
 private struct BottomDistanceKey: PreferenceKey {
-    static let defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+    static let defaultValue: CGFloat? = nil
+    static func reduce(value: inout CGFloat?, nextValue: () -> CGFloat?) {
         value = nextValue()
     }
 }

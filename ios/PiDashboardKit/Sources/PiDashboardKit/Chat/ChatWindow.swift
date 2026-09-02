@@ -35,3 +35,28 @@ public enum ChatWindow {
         return Windowed(rows: Array(messages.suffix(limit)), hiddenCount: hidden)
     }
 }
+
+/// Pure viewport decision shared by chat auto-follow and live read marking.
+/// A missing bottom-sentinel measurement means the lazy sentinel is not realized,
+/// which must behave as far from the bottom rather than as distance zero.
+public enum ChatViewportPolicy {
+    public static let nearBottomThreshold = 160.0
+
+    public struct Decision: Sendable, Equatable {
+        public let shouldAutoFollow: Bool
+        public let shouldMarkRead: Bool
+
+        public init(shouldAutoFollow: Bool, shouldMarkRead: Bool) {
+            self.shouldAutoFollow = shouldAutoFollow
+            self.shouldMarkRead = shouldMarkRead
+        }
+    }
+
+    public static func decide(bottomDistance: Double?) -> Decision {
+        guard let bottomDistance else {
+            return Decision(shouldAutoFollow: false, shouldMarkRead: false)
+        }
+        let isNearBottom = bottomDistance <= nearBottomThreshold
+        return Decision(shouldAutoFollow: isNearBottom, shouldMarkRead: isNearBottom)
+    }
+}

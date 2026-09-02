@@ -36,14 +36,20 @@
 |------|---------|
 | `.github/workflows/ios-e2e.yml` | Runs native iOS Swift and reconnect checks, including `revalidate-idle` and `revalidate-halfopen`. |
 | `ios/PiDashboard/Sources/AdaptiveComposer.swift` | Downscales oversized JPEG, PNG, WebP, HEIC, and HEIF attachments before base64 send. Preserves GIF bytes. Labels HEIC/HEIF re-encodes as JPEG. |
-| `ios/PiDashboard/Sources/DashboardStore.swift` | Owns UUID latch that gates foreground recovery on probe failure, auth state, and base identity. |
-| `ios/PiDashboard/Sources/SessionListView.swift` | Renders tier sections and directory groups using tier-qualified row-group identity. |
+| `ios/PiDashboard/Sources/ChatView.swift` | Gates chat auto-follow and live read marking on present near-bottom sentinel measurement. |
+| `ios/PiDashboard/Sources/DashboardStore.swift` | Owns native dashboard state: snapshot-gated readiness/backoff, frame-driven connection phase, foreground recovery, auth, base identity, list filters. |
+| `ios/PiDashboard/Sources/SessionListView.swift` | Renders tier-qualified session groups and Folders, Hide ended, Hide stale, Active only, Hidden filter chips. |
+| `ios/PiDashboardKit/Sources/PiDashboardKit/Chat/ChatWindow.swift` | Defines chat windowing and pure `ChatViewportPolicy` decisions from optional bottom distance. |
 | `ios/PiDashboardKit/Sources/PiDashboardKit/Chat/ImageResizePolicy.swift` | Defines pure long-edge geometry and resizable MIME policy. Caps at 1568 px, preserves aspect ratio, rejects upscaling and degenerate inputs, excludes GIF. |
 | `ios/PiDashboardKit/Sources/PiDashboardKit/Net/DashboardClient.swift` | Probes current WebSocket identity through `sendPing` with 2 s timeout. |
-| `ios/PiDashboardKit/Sources/PiDashboardKit/Sessions/SessionGrouping.swift` | Computes collapse keys: normalized `groupPath` for non-crew sessions; crew name across directories for crew sessions. |
+| `ios/PiDashboardKit/Sources/PiDashboardKit/Protocol/Messages.swift` | Defines native server-frame protocol and pure connection transition separating live-traffic phase from snapshot-only readiness/backoff reset. |
+| `ios/PiDashboardKit/Sources/PiDashboardKit/Sessions/SessionGrouping.swift` | Computes collapse keys and filters active-only rows through `status` or `endedAt` web semantics. |
+| `ios/PiDashboardKit/Tests/PiDashboardKitTests/ChatWindowTests.swift` | Covers chat windowing, payload truncation, and optional viewport-measurement follow/read policy. |
 | `ios/PiDashboardKit/Tests/PiDashboardKitTests/CrewCollapseTests.swift` | Covers Folders row-count parity, worktree `groupCwd` identity, same-cwd folding, and crew-global controls. |
 | `ios/PiDashboardKit/Tests/PiDashboardKitTests/ForegroundProbeTests.swift` | Covers pong, timeout, error, late-pong, and passive-deadline probe contracts. |
+| `ios/PiDashboardKit/Tests/PiDashboardKitTests/GroupingTests.swift` | Covers grouping, ordering, stale filtering, and active-only `status`/`endedAt` semantics. |
 | `ios/PiDashboardKit/Tests/PiDashboardKitTests/ImageResizePolicyTests.swift` | Covers landscape, portrait, square, rounding, 1 px floor, custom cap, no-upscale, exact-cap, degenerate-input, constants, and GIF exclusion contracts. |
+| `ios/PiDashboardKit/Tests/PiDashboardKitTests/ProtocolTests.swift` | Covers server-frame decoding, patching, and snapshot-gated connection readiness/backoff transitions. |
 | `ios/Tools/ws-fault-harness/probe/Driver.swift` | Drives repeated `DashboardStore.revalidate()` calls for foreground-transition storms. |
 | `ios/Tools/ws-fault-harness/run-reconnect-check.sh` | Checks healthy-idle retention and half-open recovery bounds. |
 | `ios/Tools/ws-fault-harness/ws-fault-server.mjs` | Emulates healthy-idle and half-open WebSocket paths with control-frame traces. |

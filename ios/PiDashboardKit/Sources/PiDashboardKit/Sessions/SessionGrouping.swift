@@ -100,7 +100,7 @@ public enum SessionGrouping {
     /// activeOnly → hidden filter pipeline. Mirrors `filterSessions`.
     public static func filterSessions(_ sessions: [DashboardSession], activeOnly: Bool, showHidden: Bool) -> [DashboardSession] {
         sessions.filter { s in
-            if activeOnly && s.status == "ended" { return false }
+            if activeOnly && (s.status == "ended" || s.endedAt != nil) { return false }
             if (s.hidden ?? false) && !showHidden { return false }
             return true
         }

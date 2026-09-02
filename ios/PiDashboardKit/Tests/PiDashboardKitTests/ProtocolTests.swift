@@ -70,6 +70,39 @@ final class ProtocolTests: XCTestCase {
         XCTAssertNil(base.name) // patch left absent fields untouched
     }
 
+    func testLiveSessionUpdateClearsReconnectBannerWithoutResettingBackoff() {
+        var state = ConnectionFrameState(
+            phase: .reconnecting, hasEnteredDashboard: true, reconnectAttempt: 4)
+
+        state.receive(.sessionUpdated(sessionId: "a", updates: SessionPatch()))
+
+        XCTAssertEqual(state.phase, .connected, "live traffic proves the transport is up")
+        XCTAssertTrue(state.hasEnteredDashboard)
+        XCTAssertEqual(state.reconnectAttempt, 4, "ordinary traffic must not reset reconnect backoff")
+    }
+
+    func testLiveSessionUpdateDoesNotSatisfyInitialReadyGate() {
+        var state = ConnectionFrameState(
+            phase: .reconnecting, hasEnteredDashboard: false, reconnectAttempt: 4)
+
+        state.receive(.sessionUpdated(sessionId: "a", updates: SessionPatch()))
+
+        XCTAssertEqual(state.phase, .connected)
+        XCTAssertFalse(state.hasEnteredDashboard, "a delta cannot replace the initial snapshot")
+        XCTAssertEqual(state.reconnectAttempt, 4)
+    }
+
+    func testSnapshotSatisfiesReadyGateAndResetsBackoff() {
+        var state = ConnectionFrameState(
+            phase: .reconnecting, hasEnteredDashboard: false, reconnectAttempt: 4)
+
+        state.receive(.sessionsSnapshot(sessions: [], orders: [:]))
+
+        XCTAssertEqual(state.phase, .connected)
+        XCTAssertTrue(state.hasEnteredDashboard)
+        XCTAssertEqual(state.reconnectAttempt, 0, "only a real snapshot resets reconnect backoff")
+    }
+
     func testDecodeEventAndReplay() throws {
         let ev = try decode(#"{"type":"event","sessionId":"a","seq":7,"event":{"eventType":"turn_end","timestamp":123.0,"data":{"cost":0.1,"label":"done"}}}"#)
         guard case .event(let s, let seq, let event) = ev else { return XCTFail("expected event") }

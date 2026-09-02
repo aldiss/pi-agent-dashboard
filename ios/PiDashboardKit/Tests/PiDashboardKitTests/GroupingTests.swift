@@ -78,6 +78,24 @@ final class GroupingTests: XCTestCase {
         XCTAssertEqual(SessionGrouping.filterStale([stale], staleHoursThreshold: 5, hideStale: false, now: now).count, 1)
     }
 
+    func testFilterSessionsActiveOnlyMatchesWebEndedSemantics() {
+        var endedByTimestamp = DashboardSession(id: "ended-at", status: "idle")
+        endedByTimestamp.endedAt = 123
+        let sessions: [DashboardSession] = [
+            .init(id: "active", status: "active"),
+            .init(id: "ended-status", status: "ended"),
+            endedByTimestamp,
+        ]
+
+        let active = SessionGrouping.filterSessions(
+            sessions, activeOnly: true, showHidden: true)
+        XCTAssertEqual(active.map(\.id), ["active"], "status or endedAt excludes an ended session")
+
+        let flagOff = SessionGrouping.filterSessions(
+            sessions, activeOnly: false, showHidden: true)
+        XCTAssertEqual(flagOff, sessions, "default-off behavior remains today's unfiltered set")
+    }
+
     func testRankActiveFirst_stable() {
         let sessions: [DashboardSession] = [
             .init(id: "e1", status: "ended"),

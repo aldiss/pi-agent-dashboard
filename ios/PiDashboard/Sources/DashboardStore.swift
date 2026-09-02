@@ -9,14 +9,6 @@ struct TierSection: Identifiable {
     var id: String { tier.rawValue }
 }
 
-/// The connection phase the banner reads. `.reconnecting` is the >3s-disconnect
-/// state the PWA surfaces; `.connecting` is the first attempt (no banner).
-enum ConnectionPhase: Equatable {
-    case idle, connecting, connected, reconnecting
-    case authRequired(origin: String)
-    case failed(String)
-}
-
 enum ModelListPhase: Equatable {
     case idle, loading, loaded, failed
 }
@@ -57,6 +49,9 @@ final class DashboardStore {
     // Filters (mirror the PWA toggles)
     var folders = true
     var hideStale = false
+    /// Optional restrictive filter. In-memory and default-off like Hide stale/Hidden,
+    /// preserving the full current set on every launch unless the operator enables it.
+    var activeOnly = false
     var showHidden = false
     /// Hide ENDED sessions (DF#2 declutter). Default ON — old crew tenures flood the
     /// list. Persisted (unlike the other in-memory toggles) so it survives launches.
@@ -455,6 +450,18 @@ final class DashboardStore {
     // MARK: Message application
 
     private func apply(_ message: ServerMessage) {
+        // Any decoded frame proves this live socket is carrying authoritative server
+        // traffic, so the banner must stop claiming "Reconnecting…". Snapshot-only
+        // readiness/backoff semantics remain inside the pure transition.
+        var connection = ConnectionFrameState(
+            phase: phase,
+            hasEnteredDashboard: hasEnteredDashboard,
+            reconnectAttempt: reconnectAttempt)
+        connection.receive(message)
+        phase = connection.phase
+        hasEnteredDashboard = connection.hasEnteredDashboard
+        reconnectAttempt = connection.reconnectAttempt
+
         switch message {
         case .sessionsSnapshot(let snap, let ord):
             // REPLACE (not merge) — drops stale ids, faithful to the contract.
@@ -462,13 +469,9 @@ final class DashboardStore {
             for s in snap { registry[s.id] = s }
             sessions = registry
             orders = ord
-            phase = .connected
-            hasEnteredDashboard = true
             foregroundRecoveryInFlight = nil
-            // Backoff resets ONLY on this real ready condition (DF#4 #5) — a fresh
-            // snapshot proves the reconnect fully succeeded. Resetting on any stray
-            // frame (the old behavior) let a flapping socket keep short-cycling.
-            reconnectAttempt = 0
+            // `ConnectionFrameState` resets backoff ONLY for this real ready condition
+            // (DF#4 #5). Deltas clear the lying banner but cannot short-cycle backoff.
 
         case .sessionAdded(let session, _):
             sessions[session.id] = session
@@ -708,7 +711,8 @@ final class DashboardStore {
     /// per-tier directory subgroups (pinned-first). All via the core's pure helpers.
     var tierSections: [TierSection] {
         let now = Date().timeIntervalSince1970 * 1000
-        var visible = SessionGrouping.filterSessions(Array(sessions.values), activeOnly: false, showHidden: showHidden)
+        var visible = SessionGrouping.filterSessions(
+            Array(sessions.values), activeOnly: activeOnly, showHidden: showHidden)
         visible = SessionGrouping.filterStale(visible, staleHoursThreshold: staleHoursThreshold,
                                               hideStale: hideStale, now: now, selectedId: viewedSessionId)
         let searching = !search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
