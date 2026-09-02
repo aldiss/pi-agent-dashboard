@@ -1,6 +1,8 @@
 import SwiftUI
 import PhotosUI
 import UIKit
+import ImageIO
+import UniformTypeIdentifiers
 import PiDashboardKit
 
 /// Native port of the PWA `MobileComposer`. The single-row⇄column flip, height
@@ -429,21 +431,111 @@ struct AdaptiveComposer: View {
         var loaded: [ImageContent] = []
         for item in items {
             guard let data = try? await item.loadTransferable(type: Data.self) else { continue }
-            let mime = Self.mimeType(for: data)
-            loaded.append(ImageContent(data: data.base64EncodedString(), mimeType: mime))
+            let sourceMime = Self.mimeType(for: data)
+                ?? item.supportedContentTypes.compactMap(\.preferredMIMEType).first
+                ?? "application/octet-stream"
+            let prepared = Self.prepareImageForSend(data, mimeType: sourceMime)
+            loaded.append(ImageContent(
+                data: prepared.data.base64EncodedString(),
+                mimeType: prepared.mimeType))
         }
         if !loaded.isEmpty { images.append(contentsOf: loaded) }
     }
 
-    /// Sniff a supported image mime from magic bytes (jpeg/png/gif/webp).
-    private static func mimeType(for data: Data) -> String {
-        let bytes = [UInt8](data.prefix(12))
-        if bytes.starts(with: [0xFF, 0xD8, 0xFF]) { return "image/jpeg" }
-        if bytes.starts(with: [0x89, 0x50, 0x4E, 0x47]) { return "image/png" }
-        if bytes.starts(with: [0x47, 0x49, 0x46]) { return "image/gif" }
-        if bytes.count >= 12, Array(bytes[0..<4]) == [0x52, 0x49, 0x46, 0x46], Array(bytes[8..<12]) == [0x57, 0x45, 0x42, 0x50] {
-            return "image/webp"
+    /// Decode the container identifier so HEIC data never falls through as PNG.
+    private static func mimeType(for data: Data) -> String? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let identifier = CGImageSourceGetType(source) else { return nil }
+        return UTType(identifier as String)?.preferredMIMEType
+    }
+
+    /// Downscale supported images before base64 encoding. Every failure path keeps
+    /// the original bytes and MIME so attaching an image never blocks a send.
+    private static func prepareImageForSend(
+        _ data: Data,
+        mimeType: String
+    ) -> (data: Data, mimeType: String) {
+        let original = (data: data, mimeType: mimeType)
+        guard let outputMime = resizeOutputMime(for: mimeType),
+              let image = UIImage(data: data) else { return original }
+
+        let dimensions = ImageResizePolicy.computeResizeDimensions(
+            width: Double(image.size.width * image.scale),
+            height: Double(image.size.height * image.scale))
+        guard dimensions.resized else { return original }
+
+        let targetSize = CGSize(
+            width: CGFloat(dimensions.width),
+            height: CGFloat(dimensions.height))
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        format.opaque = outputMime == "image/jpeg"
+        let resized = UIGraphicsImageRenderer(size: targetSize, format: format).image { _ in
+            image.draw(in: CGRect(origin: .zero, size: targetSize))
         }
-        return "image/png"
+
+        guard let encoded = encodedData(
+            for: resized,
+            preferredMimeType: outputMime,
+            sourceHasAlpha: hasAlpha(image)) else {
+            return original
+        }
+        return encoded
+    }
+
+    /// Web formats prefer their MIME; unsupported WebP output cross-encodes truthfully.
+    /// Native HEIC/HEIF extends the web set and converts oversized images to JPEG.
+    private static func resizeOutputMime(for sourceMime: String) -> String? {
+        if ImageResizePolicy.isResizableImageMime(sourceMime) { return sourceMime }
+        if sourceMime == "image/heic" || sourceMime == "image/heif" { return "image/jpeg" }
+        return nil
+    }
+
+    private static func encodedData(
+        for image: UIImage,
+        preferredMimeType: String,
+        sourceHasAlpha: Bool
+    ) -> (data: Data, mimeType: String)? {
+        switch preferredMimeType {
+        case "image/jpeg":
+            return image.jpegData(compressionQuality: CGFloat(ImageResizePolicy.lossyQuality))
+                .map { (data: $0, mimeType: "image/jpeg") }
+        case "image/png":
+            return image.pngData().map { (data: $0, mimeType: "image/png") }
+        case "image/webp":
+            if let data = webPData(for: image) {
+                return (data: data, mimeType: "image/webp")
+            }
+            if sourceHasAlpha {
+                return image.pngData().map { (data: $0, mimeType: "image/png") }
+            }
+            return image.jpegData(compressionQuality: CGFloat(ImageResizePolicy.lossyQuality))
+                .map { (data: $0, mimeType: "image/jpeg") }
+        default:
+            return nil
+        }
+    }
+
+    private static func hasAlpha(_ image: UIImage) -> Bool {
+        guard let alphaInfo = image.cgImage?.alphaInfo else { return true }
+        switch alphaInfo {
+        case .first, .last, .premultipliedFirst, .premultipliedLast, .alphaOnly:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private static func webPData(for image: UIImage) -> Data? {
+        guard let cgImage = image.cgImage,
+              let output = CFDataCreateMutable(nil, 0),
+              let destination = CGImageDestinationCreateWithData(
+                output, UTType.webP.identifier as CFString, 1, nil) else { return nil }
+        let properties = [
+            kCGImageDestinationLossyCompressionQuality: ImageResizePolicy.lossyQuality
+        ] as CFDictionary
+        CGImageDestinationAddImage(destination, cgImage, properties)
+        guard CGImageDestinationFinalize(destination) else { return nil }
+        return output as Data
     }
 }
