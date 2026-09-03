@@ -1,33 +1,29 @@
 import XCTest
 import PiDashboardKit
 
-/// CREW COLLAPSE (the operator's "doubling" bug) — a standing-crew canonical name with
-/// tenures in MULTIPLE cwds folds to exactly ONE row plus a `+N` badge, NOT one row per
-/// cwd-group. The fold is GLOBAL across a tier's directory groups for crew names,
-/// per-group for everything else (`SessionGrouping.collapseGroupsFoldingCrew`).
+/// CREW COLLAPSE — repeated standing-crew tenures fold within one directory, while the
+/// same crew name in another directory remains a separately reachable row.
 ///
 /// Contract fixture: `UITestFixtures` seeds the standing-crew name "Pete" with tenures in
-/// TWO different cwds (`peteTenures()` returns both), so the global crew fold collapses
-/// them to one row + "+1". The subject is derived from the fixture set (the Pete pair),
-/// and the surviving row id is computed via the SAME `collapseGroupsFoldingCrew` the app
-/// uses — so the test asserts on the exact `card-collapsed-count-<survivor>` badge.
+/// two sessions in cwd A and one in cwd B. The cwd-A pair collapses to one row + "+1";
+/// cwd B remains visible. Subjects derive from the shared fixture and production helpers.
 @MainActor
 final class CrewCollapseUITests: PiDashboardUITestCase {
 
-    /// The contract holds at the fixture layer: Pete has ≥2 tenures across ≥2 cwds (so the
-    /// global crew fold has something to fold). Guards the fixture set's coverage.
-    func testFixtureHasPeteInTwoCwds() {
+    /// The contract holds at the fixture layer: Pete spans two cwds and repeats in one.
+    func testFixtureHasPeteInTwoCwdsWithSameCwdPair() {
         let pete = peteTenures()
-        XCTAssertGreaterThanOrEqual(pete.count, 2, "the fixture seeds ≥2 Pete tenures")
+        XCTAssertEqual(pete.count, 3, "the fixture seeds three Pete tenures")
         let cwds = Set(pete.map { $0.cwd ?? "" })
-        XCTAssertGreaterThanOrEqual(cwds.count, 2, "Pete's tenures span ≥2 distinct cwds")
+        XCTAssertEqual(cwds.count, 2, "Pete's tenures span two distinct cwds")
+        XCTAssertTrue(Dictionary(grouping: pete, by: { $0.cwd ?? "" }).values.contains { $0.count == 2 },
+                      "one cwd contains a foldable Pete pair")
     }
 
-    /// Pete renders EXACTLY ONE row (the doubling bug showed one row per cwd-group). Search
-    /// "Pete" narrows to his card(s) + force-expands every tier so fold state can't hide a
-    /// row; exactly one `session-card-name` reads "Pete".
-    func testCrewNameRendersExactlyOneRow() {
-        launch()
+    /// Pete renders one row per cwd. Both rows carry a directory subtitle so they are not
+    /// visually identical when the operator searches across folders.
+    func testCrewNameRendersExactlyTwoDisambiguatedRows() {
+        launchForcing(hideEnded: false)
         connectAndEnterList()
 
         let field = waitFor("list-search")
@@ -38,18 +34,17 @@ final class CrewCollapseUITests: PiDashboardUITestCase {
 
         let peteNameRows = app.descendants(matching: .any).allElementsBoundByIndex
             .filter { $0.identifier == "session-card-name" && ($0.label == "Pete") }
-        XCTAssertEqual(peteNameRows.count, 1,
-                       "the crew name folds to exactly one row (no per-cwd doubling)")
-        attach("crew-single-row")
+        XCTAssertEqual(peteNameRows.count, 2, "Pete renders once in each cwd")
+        XCTAssertTrue(waitForAppear("card-directory-label-\(UITestFixtures.peteId)", 6))
+        XCTAssertTrue(waitForAppear("card-directory-label-\(UITestFixtures.peteSecondId)", 6))
+        attach("crew-directory-rows")
     }
 
     /// The folded Pete row carries the `+N` collapse badge for its hidden tenures. The
-    /// surviving row id is computed via `collapseGroupsFoldingCrew` (the app's own fold),
+    /// surviving row id is computed via `collapseGroups` (the app's own fold),
     /// so the exact `card-collapsed-count-<survivor>` id is asserted.
     func testFoldedCrewRowShowsCollapsedCountBadge() {
-        // `fix-pete-2` (the older Pete tenure that folds into `fix-pete` +1) is `ended`, so it
-        // is FILTERED OUT under the default hideEnded=on BEFORE the crew fold runs → no fold,
-        // no badge. Force hideEnded OFF so both Pete tenures are present and actually fold.
+        // The same-cwd older Pete is ended, so force hideEnded OFF before exercising the fold.
         launchForcing(hideEnded: false)
         connectAndEnterList()
         let field = waitFor("list-search")
@@ -61,28 +56,62 @@ final class CrewCollapseUITests: PiDashboardUITestCase {
             XCTAssertTrue(waitForAppear("card-collapsed-count-\(survivor)", 6),
                           "the folded Pete row shows its +N collapse badge")
         } else {
-            // Fallback (fold survivor not derivable from the pure helper): ANY collapse
-            // badge on the Pete-narrowed list proves the fold rendered a +N.
-            let hasBadge = app.descendants(matching: .any).allElementsBoundByIndex
-                .contains { $0.identifier.hasPrefix("card-collapsed-count-") }
-            XCTAssertTrue(hasBadge, "a +N collapse badge renders for the folded crew name")
+            XCTFail("the same-cwd Pete fold survivor must be derivable from the fixture")
         }
         attach("crew-collapse-badge")
     }
 
+    /// Interaction control: the badge must reveal the exact tenure behind `+N`, then that
+    /// revealed card must open. A decorative or no-op "button" fails before navigation.
+    func testCollapsedBadgeTapRevealsAndOpensHiddenTenure() {
+        guard let folded = foldedPeteRow() else {
+            XCTFail("the same-cwd Pete fold row must be derivable from the fixture")
+            return
+        }
+        let registry = Dictionary(uniqueKeysWithValues: fixtureSessions.map { ($0.id, $0) })
+        guard let hidden = SessionGrouping.foldedSessions(folded, registry: registry).first else {
+            XCTFail("the Pete +N must resolve to a hidden tenure")
+            return
+        }
+        XCTAssertEqual(hidden.id, UITestFixtures.peteSameCwdId)
+        XCTAssertEqual(SessionGrouping.groupPath(hidden), SessionGrouping.groupPath(folded.session))
+
+        launchForcing(hideEnded: false)
+        connectAndEnterList()
+        let field = waitFor("list-search")
+        field.tap()
+        field.typeText("Pete")
+        XCTAssertTrue(waitForAnyPeteCard(6), "a Pete card renders")
+
+        let hiddenCard = cardId(hidden)
+        XCTAssertFalse(el(hiddenCard).exists, "the older tenure starts folded")
+        let toggleID = "card-collapsed-toggle-\(folded.session.id)"
+        let toggle = waitFor(toggleID)
+        XCTAssertEqual(toggle.value as? String, "collapsed")
+        toggle.tap()
+        XCTAssertTrue(waitForValue(toggleID, equals: "expanded"), "the toggle reports expansion")
+        XCTAssertTrue(waitForAppear(hiddenCard, 6), "tapping +N reveals the exact hidden tenure")
+
+        openChat(cardId: hiddenCard)
+    }
+
     // MARK: fixture-derived subjects
 
-    /// The surviving row id for the folded Pete crew, computed by the app's own global
-    /// crew fold over the standing-crew tier groups. nil if not derivable (→ fallback).
+    /// The surviving row id for the same-cwd Pete pair, computed by the app's own fold.
     private func foldedPeteSurvivorId() -> String? {
+        foldedPeteRow()?.session.id
+    }
+
+    private func foldedPeteRow() -> SessionGrouping.CollapsedSession? {
         let grouped = SessionGrouping.groupByTier(fixtureSessions)
         guard let crew = grouped.first(where: { $0.tier == .standingCrew }) else { return nil }
         let dirGroups = SessionGrouping.groupTierByFolder(
-            crew.sessions, folders: true, orders: [:], pinnedDirectories: [])
-        let collapsed = SessionGrouping.collapseGroupsFoldingCrew(dirGroups, selectedId: nil)
+            crew.sessions, folders: true, orders: UITestFixtures.orders,
+            pinnedDirectories: UITestFixtures.pinned)
+        let collapsed = SessionGrouping.collapseGroups(dirGroups, selectedId: nil)
         for group in collapsed {
-            for row in group.rows where row.session.name == "Pete" && row.olderCount > 0 {
-                return row.session.id
+            for row in group.rows where row.olderIds.contains(UITestFixtures.peteSameCwdId) {
+                return row
             }
         }
         return nil

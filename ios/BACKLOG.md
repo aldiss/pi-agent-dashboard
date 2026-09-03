@@ -67,3 +67,11 @@ could have failed. Where a cause is not established, the item says so instead of
 - To tell whether a build carries B4's fix without a build number: expand **Other →
   orchestration-state**. Crew names there (Joan/Peggy/Bert) means the old build; utility
   sessions there (StubBoot/Nameplate/DiskCleanup-4) means the fix is live.
+
+## Added during the gate work
+
+| ID | Title | Status | Detail |
+|---|---|---|---|
+| F7 | Filter chips overflow the screen | OPEN | The filter row is a horizontal `ScrollView`. Adding "Active only" (F4) made five chips, so the row now overflows and **"Hidden" is off-screen by default** — reachable only by scrolling a control strip most people will not think to scroll. Surfaced by the rendering gate: a clipped chip reports `isHittable` while its centre lies outside the window, so taps missed. The test now scrolls the chip into view before tapping; the UI question (wrap the row, shrink the chips, or move some filters into a menu) is unresolved and is mine, not the test's. |
+| N1 | Crew roster duplicated in a second list | IN PROGRESS | `classifyTier` knows ten names; the fold list knows eight — Harry and Dawn absent — so their tenures never fold even in one directory. Same roster-drift as B3 (`c531f10`) recurring in a different list. Being fixed at the root (single source both paths consume) plus a test that fails if they ever disagree. |
+| N2 | Session card never shows a directory | OPEN | `SessionCard` renders name, model, branch, age, status — never `cwd`. `displayName` falls back to the directory basename only when name AND firstMessage are both empty, which never happens for a named crew session. This is why "Pete twice" read as a bug: the rows were not wrong, they were indistinguishable, and with Folders off there is no header either, so they are pixel-identical. |

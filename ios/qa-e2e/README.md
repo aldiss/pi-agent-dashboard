@@ -86,7 +86,7 @@ build-hook/fixture-gated path authored as a clean `XCTSkip` (see below).
 | File | Area |
 |---|---|
 | `FoldingUITests.swift` | tier + directory fold via the header chevron; PWA default-collapsed set ({operator-chat-pane, other} collapsed); tier fold persists across relaunch. Forces both persisted fold sets empty via the arg domain for a clean-default start |
-| `CrewCollapseUITests.swift` | a crew canonical name renders ONE row (no per-cwd doubling); distinct names → no spurious `+N` badge; global-multi-cwd fold skips pending a same-crew fixture |
+| `CrewCollapseUITests.swift` | crew canonical names remain visible across directories; same-directory tenures fold; `+N` badge reveals folded rows; distinct names → no spurious `+N` badge |
 | `StatusRowUITests.swift` | status chip on its OWN row below the name (frame compare), single-line height-bounded, clear of the top-trailing `+N` zone |
 | `ReadPositionUITests.swift` | DF#3 engagement-weighted unread negatives (no spurious divider / no asks-badge for a tool-prose chat); divider + restore-to-last-read skip pending a Tier-A + read-position fixture |
 | `ModelPickerUITests.swift` | title opens the model picker; thinking-level grid renders + is tappable; Done dismisses; model-row select skips pending a models fixture |
@@ -103,11 +103,9 @@ guard beside each runs today):
   `-uitest-echo-send` arg so `sendPrompt` produces the optimistic bubble +
   schedules the ack-net reconcile in fixture mode (`sendPrompt` no-ops under
   `-uitest` today, and the reconcile lives inside it).
-- `SessionDeclutterUITests.testSameNameTenuresCollapseWithBadge` +
-  `CrewCollapseUITests.testCrewInMultipleCwdsCollapsesToOneRowWithBadge` — need a
-  duplicate-canonical-name pair (crew name in ≥2 cwds) in
-  `FixtureData.sessionsSnapshot()` so a row folds + the `card-collapsed-count-*`
-  badge renders.
+- `SessionDeclutterUITests.testSameNameTenuresCollapseWithBadge` — needs a
+  duplicate-canonical-name pair in one directory in `FixtureData.sessionsSnapshot()`
+  so same-directory tenures fold + the `card-collapsed-count-*` badge renders.
 - `ComposerFocusUITests` streaming/voice, `ReadPositionUITests` divider/restore,
   `ModelPickerUITests` model-select, `CardRichnessUITests` stats/process/PR,
   `AccessibilityUITests` send/attach labels, `ActionFailureUITests`

@@ -100,8 +100,8 @@ class PiDashboardUITestCase: XCTestCase {
     var fixtureSessions: [DashboardSession] { UITestFixtures.sessions }
 
     /// The fixture sessions whose card can actually RENDER as a standalone row — i.e. the
-    /// crew-collapse SURVIVORS. Same-canonical-name tenures (e.g. the two "Pete"s) fold to
-    /// ONE row via `SessionGrouping.collapseSameName`; the older, folded-away tenants never
+    /// per-directory collapse SURVIVORS. Same-canonical-name tenures in one directory fold
+    /// to one row via `SessionGrouping.collapseSameName`; older, folded-away tenures never
     /// render their own `session-card-<id>`. Deriving a test subject from a folded-away
     /// non-survivor would wait forever on a card that never appears, so the property-based
     /// `fixtureSession(...)` helpers pick from THIS set. Uses the app's OWN collapse rule
@@ -134,8 +134,7 @@ class PiDashboardUITestCase: XCTestCase {
         fixtureSession("status == \(status)") { $0.status == status }
     }
 
-    /// The two same-crew tenures the crew-collapse fold folds to one row (contract: the
-    /// standing-crew name "Pete" in ≥2 cwds). Returns every fixture session named Pete.
+    /// Every Pete tenure in the fixture: a foldable pair in one cwd plus a row in another.
     func peteTenures() -> [DashboardSession] {
         UITestFixtures.sessions.filter { $0.name == "Pete" }
     }
@@ -271,6 +270,32 @@ class PiDashboardUITestCase: XCTestCase {
             usleep(150_000)
         }
         return composerLayoutValue() == expected
+    }
+
+    /// Tap a filter chip RELIABLY. The chip row is a horizontal `ScrollView`, so a chip
+    /// near the trailing edge can report `isHittable` while its CENTRE — the point `tap()`
+    /// actually targets — lies outside the visible area, and the tap lands on nothing.
+    /// That is a miss, not a slow update, so waiting longer never fixes it. Scroll the row
+    /// until the chip's frame sits fully inside the window, then tap.
+    @discardableResult
+    func tapChip(_ id: String, timeout: TimeInterval = 6) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            let chip = app.descendants(matching: .any).allElementsBoundByIndex
+                .first { $0.identifier == id }
+            if let chip, chip.exists {
+                let window = app.windows.element(boundBy: 0).frame
+                let f = chip.frame
+                if f.minX >= window.minX, f.maxX <= window.maxX, f.width > 0 {
+                    chip.tap()
+                    return true
+                }
+                // Chip is clipped by the horizontal scroller — bring it into view.
+                if f.maxX > window.maxX { chip.swipeLeft() } else { chip.swipeRight() }
+            }
+            usleep(150_000)
+        }
+        return false
     }
 
     /// Poll an element's accessibility VALUE until it equals `expected`. SwiftUI
