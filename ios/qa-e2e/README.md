@@ -75,7 +75,7 @@ bundled fixtures — never touches a live operator session).
 | `BannerAndFiltersUITests.swift` | **F6** connection banner, **F7** search / folders / hide-stale filters |
 | `ComposerThemeUITests.swift` | **Backfill #1** — composer interactable + text readable in light AND dark + live theme-switch (guards c7acd19 light-mode wash-out) |
 | `StuckSendingUITests.swift` | **Backfill #2** — settled chat has nothing stuck at "Sending…" (hermetic guard); full send→reconcile skips pending a build hook (guards 9640dbb) |
-| `SessionDeclutterUITests.swift` | **Backfill #3** — ended hidden by default + toggle reveals/re-hides; tenure-collapse +N skips pending a same-name fixture (guards e6cf8e3) |
+| `SessionDeclutterUITests.swift` | **Backfill #3** — ended hidden by default + toggle reveals/re-hides; same-directory tenure collapse renders `+N` badge (guards e6cf8e3) |
 | `ControlActionsUITests.swift` | **F-ext** — abort confirm-dialog, resume affordance, spawn sheet, message-type filter pills, settings round-trip |
 | `ComposerFocusUITests.swift` | **Focus** — composer keeps draft + first-responder across the single-row⇄multiline flip and repeated re-layout; live-streaming + voice-append paths skip pending `-uitest-stream` / `-uitest-voice-append` |
 
@@ -103,9 +103,6 @@ guard beside each runs today):
   `-uitest-echo-send` arg so `sendPrompt` produces the optimistic bubble +
   schedules the ack-net reconcile in fixture mode (`sendPrompt` no-ops under
   `-uitest` today, and the reconcile lives inside it).
-- `SessionDeclutterUITests.testSameNameTenuresCollapseWithBadge` — needs a
-  duplicate-canonical-name pair in one directory in `FixtureData.sessionsSnapshot()`
-  so same-directory tenures fold + the `card-collapsed-count-*` badge renders.
 - `ComposerFocusUITests` streaming/voice, `ReadPositionUITests` divider/restore,
   `ModelPickerUITests` model-select, `CardRichnessUITests` stats/process/PR,
   `AccessibilityUITests` send/attach labels, `ActionFailureUITests`

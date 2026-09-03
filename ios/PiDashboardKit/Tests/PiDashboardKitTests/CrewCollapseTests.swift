@@ -1,12 +1,8 @@
 import XCTest
 @testable import PiDashboardKit
 
-/// Usability round 2 §3 — crew sessions were STILL doubling in the list. Root cause:
-/// `collapseSameName` folds PER directory-group, so a standing-crew canonical name
-/// with tenures in >1 cwd rendered once per cwd-group (the operator saw Pete twice —
-/// `nos-cells` + `unend-e2e-cwd`). `collapseGroupsFoldingCrew` folds crew names
-/// GLOBALLY across a tier's groups (one survivor in its most-recent cwd, `+N` counts
-/// ALL tenures) while non-crew names keep per-cwd folding. Pure — verified here.
+/// Same-name tenure folding stays scoped to a directory. Repeated tenures in one cwd
+/// collapse behind `+N`; same-name sessions in distinct cwds remain distinct rows.
 ///
 /// Also §2 — the collapsed-directory fold state persists via `ListPrefsStore`.
 final class CrewCollapseTests: XCTestCase {
@@ -28,14 +24,14 @@ final class CrewCollapseTests: XCTestCase {
     private func rows(_ sessions: [DashboardSession], folders: Bool)
         -> [SessionGrouping.CollapsedSession] {
         let groups = SessionGrouping.groupTierByFolder(sessions, folders: folders)
-        return SessionGrouping.collapseGroupsFoldingCrew(groups).flatMap(\.rows)
+        return SessionGrouping.collapseGroups(groups).flatMap(\.rows)
     }
 
     private func renderedGroups(_ sessions: [DashboardSession], folders: Bool)
         -> [SessionGrouping.CollapsedDirectoryGroup] {
         SessionGrouping.groupByTier(sessions).flatMap { _, tierSessions in
             let groups = SessionGrouping.groupTierByFolder(tierSessions, folders: folders)
-            return SessionGrouping.collapseGroupsFoldingCrew(groups)
+            return SessionGrouping.collapseGroups(groups)
         }
     }
 
@@ -85,9 +81,9 @@ final class CrewCollapseTests: XCTestCase {
         XCTAssertFalse(SessionGrouping.isCrewKey("petersen"))
     }
 
-    // MARK: cross-cwd crew → ONE row, +N counts all tenures (the actual bug)
+    // MARK: cross-cwd crew stays visible; same-cwd tenures still fold
 
-    func testCrossCwdCrewFoldsToOneRow() {
+    func testCrossCwdCrewFoldsWithinEachDirectory() {
         // Pete: 4 tenures under /orch, 1 under /tmp (mirrors the live doubling).
         let groups = [
             group("/orch", [
@@ -100,14 +96,16 @@ final class CrewCollapseTests: XCTestCase {
                 session("p5", name: "Pete", lastActivityAt: 50),
             ]),
         ]
-        let out = SessionGrouping.collapseGroupsFoldingCrew(groups)
-        // Exactly ONE group survives (the survivor's home /orch); /tmp emptied → dropped.
-        XCTAssertEqual(out.count, 1)
+        let out = SessionGrouping.collapseGroups(groups)
+        XCTAssertEqual(out.count, 2)
         XCTAssertEqual(out[0].cwd, "/orch")
-        XCTAssertEqual(out[0].rows.count, 1, "Pete folds to a single row across both cwds")
-        XCTAssertEqual(out[0].rows[0].session.id, "p1", "most-recent tenure survives")
-        XCTAssertEqual(out[0].rows[0].olderCount, 4, "+4 counts ALL other tenures, both cwds")
-        XCTAssertEqual(Set(out[0].rows[0].olderIds), ["p2", "p3", "p4", "p5"])
+        XCTAssertEqual(out[0].rows.count, 1)
+        XCTAssertEqual(out[0].rows[0].session.id, "p1", "most-recent same-cwd tenure survives")
+        XCTAssertEqual(out[0].rows[0].olderCount, 3)
+        XCTAssertEqual(Set(out[0].rows[0].olderIds), ["p2", "p3", "p4"])
+        XCTAssertEqual(out[1].cwd, "/tmp")
+        XCTAssertEqual(out[1].rows.map(\.session.id), ["p5"])
+        XCTAssertEqual(out[1].rows[0].olderCount, 0)
     }
 
     // MARK: non-crew is UNAFFECTED (still per-cwd)
@@ -118,7 +116,7 @@ final class CrewCollapseTests: XCTestCase {
             group("/a", [session("c1", name: "Cartographer", lastActivityAt: 100)]),
             group("/b", [session("c2", name: "Cartographer", lastActivityAt: 200)]),
         ]
-        let out = SessionGrouping.collapseGroupsFoldingCrew(groups)
+        let out = SessionGrouping.collapseGroups(groups)
         XCTAssertEqual(out.count, 2, "non-crew name is NOT folded across cwds")
         XCTAssertEqual(out.flatMap { $0.rows }.count, 2)
         XCTAssertTrue(out.allSatisfy { $0.rows.allSatisfy { $0.olderCount == 0 } })
@@ -132,33 +130,29 @@ final class CrewCollapseTests: XCTestCase {
                 session("c2", name: "Cartographer", lastActivityAt: 300),  // newest
             ]),
         ]
-        let out = SessionGrouping.collapseGroupsFoldingCrew(groups)
+        let out = SessionGrouping.collapseGroups(groups)
         XCTAssertEqual(out.count, 1)
         XCTAssertEqual(out[0].rows.count, 1)
         XCTAssertEqual(out[0].rows[0].session.id, "c2")
         XCTAssertEqual(out[0].rows[0].olderCount, 1)
     }
 
-    // MARK: selected-session promotion across groups
+    // MARK: selected-session promotion never suppresses another directory
 
-    func testSelectedCrewTenurePromotedAcrossGroups() {
-        // The open chat is an OLDER Pete tenure in a DIFFERENT cwd than the newest —
-        // it must become the survivor (and land in ITS group), not hide behind newest.
+    func testSelectedCrewTenureDoesNotSuppressOtherGroups() {
         let groups = [
             group("/orch", [session("p_new", name: "Pete", lastActivityAt: 500)]),
             group("/tmp",  [session("p_old", name: "Pete-tenure-1", lastActivityAt: 100)]),
         ]
-        let out = SessionGrouping.collapseGroupsFoldingCrew(groups, selectedId: "p_old")
-        XCTAssertEqual(out.count, 1)
-        XCTAssertEqual(out[0].cwd, "/tmp", "survivor lands in the SELECTED tenure's group")
-        XCTAssertEqual(out[0].rows[0].session.id, "p_old")
-        XCTAssertEqual(out[0].rows[0].olderCount, 1)
-        XCTAssertEqual(out[0].rows[0].olderIds, ["p_new"])
+        let out = SessionGrouping.collapseGroups(groups, selectedId: "p_old")
+        XCTAssertEqual(out.count, 2)
+        XCTAssertEqual(out.flatMap(\.rows).map(\.session.id), ["p_new", "p_old"])
+        XCTAssertTrue(out.flatMap(\.rows).allSatisfy { $0.olderCount == 0 })
     }
 
-    // MARK: mixed crew + non-crew, first-seen order preserved, non-home crew suppressed
+    // MARK: mixed crew + non-crew, first-seen order preserved per directory
 
-    func testMixedGroupSuppressesNonHomeCrewKeepsOrder() {
+    func testMixedGroupKeepsCrossDirectoryCrewAndOrder() {
         let groups = [
             group("/a", [
                 session("pa", name: "Pete", lastActivityAt: 100),          // non-home (older)
@@ -169,16 +163,15 @@ final class CrewCollapseTests: XCTestCase {
                 session("pb", name: "Pete", lastActivityAt: 500),          // Pete survivor
             ]),
         ]
-        let out = SessionGrouping.collapseGroupsFoldingCrew(groups)
+        let out = SessionGrouping.collapseGroups(groups)
         XCTAssertEqual(out.count, 2)
         let a = out.first { $0.cwd == "/a" }!
-        // Pete is suppressed in /a (non-home); Joan + Cartographer remain in first-seen order.
-        XCTAssertEqual(a.rows.map { $0.session.id }, ["ja", "ca"])
-        XCTAssertFalse(a.rows.contains { $0.session.name == "Pete" })
+        XCTAssertEqual(a.rows.map { $0.session.id }, ["pa", "ja", "ca"])
+        XCTAssertTrue(a.rows.allSatisfy { $0.olderCount == 0 })
         let b = out.first { $0.cwd == "/b" }!
         XCTAssertEqual(b.rows.map { $0.session.id }, ["pb"])
-        XCTAssertEqual(b.rows[0].olderCount, 1, "Pete +1 (the suppressed /a tenure)")
-        XCTAssertEqual(b.rows[0].olderIds, ["pa"])
+        XCTAssertEqual(b.rows[0].olderCount, 0)
+        XCTAssertTrue(b.rows[0].olderIds.isEmpty)
     }
 
     // MARK: same-cwd crew fold still works (regression of the original per-cwd case)
@@ -191,37 +184,36 @@ final class CrewCollapseTests: XCTestCase {
                 session("j3", name: "Joan-tenure-3", lastActivityAt: 200),
             ]),
         ]
-        let out = SessionGrouping.collapseGroupsFoldingCrew(groups)
+        let out = SessionGrouping.collapseGroups(groups)
         XCTAssertEqual(out.count, 1)
         XCTAssertEqual(out[0].rows.count, 1)
         XCTAssertEqual(out[0].rows[0].session.id, "j2")
         XCTAssertEqual(out[0].rows[0].olderCount, 2)
     }
 
-    // MARK: deterministic tie-break across groups (equal recency → id-desc)
+    // MARK: equal-recency crew rows in distinct directories do not compete
 
-    func testCrossCwdTieBreakIsDeterministic() {
+    func testCrossCwdCrewRowsDoNotCompeteOnTie() {
         let groups = [
             group("/a", [session("aaa", name: "Pete", lastActivityAt: 100)]),
             group("/b", [session("zzz", name: "Pete", lastActivityAt: 100)]),  // same recency
         ]
-        let out = SessionGrouping.collapseGroupsFoldingCrew(groups)
-        XCTAssertEqual(out.count, 1)
-        XCTAssertEqual(out[0].cwd, "/b", "id-desc tie-break → zzz wins, home = /b")
-        XCTAssertEqual(out[0].rows[0].session.id, "zzz")
-        XCTAssertEqual(out[0].rows[0].olderCount, 1)
+        let out = SessionGrouping.collapseGroups(groups)
+        XCTAssertEqual(out.count, 2)
+        XCTAssertEqual(out.flatMap(\.rows).map(\.session.id), ["aaa", "zzz"])
+        XCTAssertTrue(out.flatMap(\.rows).allSatisfy { $0.olderCount == 0 })
     }
 
     // MARK: folders-OFF flat bucket — crew still folds to one row within the single group
 
     func testFlatBucketFoldsCrewToOne() {
-        // With Folders off the tier is one cwd:"" group; crew must still fold globally.
+        // Both Pete sessions have the same nil cwd, so they remain one identity.
         let flat = [group("", [
             session("p1", name: "Pete-1", lastActivityAt: 100),
             session("p2", name: "Pete-2", lastActivityAt: 300),
             session("d1", name: "Don", lastActivityAt: 50),
         ])]
-        let out = SessionGrouping.collapseGroupsFoldingCrew(flat)
+        let out = SessionGrouping.collapseGroups(flat)
         XCTAssertEqual(out.count, 1)
         XCTAssertEqual(out[0].rows.count, 2, "Pete folded to one; Don separate")
         let pete = out[0].rows.first { $0.session.name?.hasPrefix("Pete") == true }!
@@ -251,34 +243,35 @@ final class CrewCollapseTests: XCTestCase {
     }
 
     func testFoldersToggleDoesNotChangeRowCount() {
-        let fixtures: [(name: String, sessions: [DashboardSession])] = [
+        let fixtures: [(name: String, sessions: [DashboardSession], expectedRows: Int)] = [
             ("same name, different cwds", [
                 session("a1", name: "Cartographer", cwd: "/a"),
                 session("a2", name: "Cartographer", cwd: "/b"),
-            ]),
+            ], 2),
             ("distinct names", [
                 session("b1", name: "Cartographer", cwd: "/a"),
                 session("b2", name: "Navigator", cwd: "/b"),
-            ]),
+            ], 2),
             ("crew name, different cwds", [
                 session("c1", name: "Pete", cwd: "/a"),
                 session("c2", name: "Pete-tenure-1", cwd: "/b"),
-            ]),
+            ], 2),
             ("same name, same cwd", [
                 session("d1", name: "Cartographer", cwd: "/same"),
                 session("d2", name: "Cartographer", cwd: "/same"),
-            ]),
+            ], 1),
             ("same name, three cwds", [
                 session("e1", name: "Cartographer", cwd: "/a"),
                 session("e2", name: "Cartographer", cwd: "/b"),
                 session("e3", name: "Cartographer", cwd: "/c"),
-            ]),
+            ], 3),
         ]
 
         for fixture in fixtures {
             let foldersOn = rows(fixture.sessions, folders: true).count
             let foldersOff = rows(fixture.sessions, folders: false).count
             XCTAssertEqual(foldersOn, foldersOff, fixture.name)
+            XCTAssertEqual(foldersOn, fixture.expectedRows, fixture.name)
         }
     }
 
@@ -335,7 +328,7 @@ final class CrewCollapseTests: XCTestCase {
         }
     }
 
-    func testCrewNamesStillFoldGloballyAcrossCwds() {
+    func testCrewNamesDoNotFoldAcrossCwds() {
         let sessions = [
             session("old", name: "Pete-tenure-1", cwd: "/a", lastActivityAt: 100),
             session("new", name: "Pete-tenure-2", cwd: "/b", lastActivityAt: 200),
@@ -343,17 +336,17 @@ final class CrewCollapseTests: XCTestCase {
 
         for folders in [true, false] {
             let visible = rows(sessions, folders: folders)
-            XCTAssertEqual(visible.count, 1)
-            XCTAssertEqual(visible[0].session.id, "new")
-            XCTAssertEqual(visible[0].olderCount, 1)
+            XCTAssertEqual(visible.count, 2)
+            XCTAssertEqual(Set(visible.map(\.session.id)), ["old", "new"])
+            XCTAssertTrue(visible.allSatisfy { $0.olderCount == 0 })
         }
     }
 
     // MARK: empty input
 
     func testEmptyGroupsYieldNothing() {
-        XCTAssertTrue(SessionGrouping.collapseGroupsFoldingCrew([]).isEmpty)
-        XCTAssertTrue(SessionGrouping.collapseGroupsFoldingCrew([group("/a", [])]).isEmpty)
+        XCTAssertTrue(SessionGrouping.collapseGroups([]).isEmpty)
+        XCTAssertTrue(SessionGrouping.collapseGroups([group("/a", [])]).isEmpty)
     }
 
     // MARK: §2 — collapsed-directory fold-state persistence (ephemeral UserDefaults)

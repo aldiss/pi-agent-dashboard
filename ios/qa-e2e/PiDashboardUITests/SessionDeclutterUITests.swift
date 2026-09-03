@@ -155,35 +155,19 @@ final class SessionDeclutterUITests: PiDashboardUITestCase {
                        "toggling Hide ended ON hides the ended session without search")
     }
 
-    // MARK: tenure collapse (+N) — authored; skips pending a same-name fixture
+    // MARK: tenure collapse (+N)
 
     /// Same-entity tenures collapse to ONE row with a "+N" badge
-    /// (`card-collapsed-count-<id>`) for the older ones (`collapseSameName`). Driving
-    /// this end-to-end needs ≥2 fixture sessions that share a canonical name (e.g. two
-    /// `Joan` tenures, or `Joan` + `Joan-tenure-2`) so the collapse actually folds a row
-    /// and renders the badge. The current `-uitest` fixture has all-distinct names, so
-    /// no badge renders and this SKIPS with a request rather than asserting on absent UI
-    /// (the collapse ALGEBRA itself is covered at the unit layer by SessionDeclutterTests
-    /// — this is the missing e2e wiring). PENDING fixture extension: add a duplicate-
-    /// canonical-name pair to `FixtureData.sessionsSnapshot()`. App-target/fixture change
-    /// = cc-ios-build owned (reported to SwiftPilot). Spec authored + ready.
-    func testSameNameTenuresCollapseWithBadge() throws {
-        launchForcing(hideEnded: false) // show everything so any tenure can fold
+    /// (`card-collapsed-count-<id>`) for the older ones (`collapseSameName`). The shared
+    /// fixture's same-directory Pete pair drives the path without a fixture skip.
+    func testSameNameTenuresCollapseWithBadge() {
+        launchForcing(hideEnded: false)
         connectAndEnterList()
 
-        // Look for ANY collapsed-count badge across the list.
-        let hasBadge = app.descendants(matching: .any).allElementsBoundByIndex
-            .contains { $0.identifier.hasPrefix("card-collapsed-count-") }
-        guard hasBadge else {
-            throw XCTSkip("""
-            No `card-collapsed-count-*` badge in the fixture — its sessions all have \
-            distinct canonical names, so collapseSameName folds nothing. PENDING fixture \
-            extension: add ≥2 same-canonical-name tenures (e.g. two `Joan*`) to \
-            FixtureData.sessionsSnapshot() so a row collapses + the "+N" badge renders. \
-            Collapse algebra is unit-covered (SessionDeclutterTests); this is the e2e \
-            wiring. Reported to cc-ios-build. Spec authored + ready.
-            """)
-        }
+        let survivor = fixtureSessions.first { $0.id == UITestFixtures.peteId }!
+        _ = revealCard(survivor)
+        XCTAssertTrue(waitForAppear("card-collapsed-count-\(survivor.id)", 6),
+                      "the same-directory older Pete renders behind +1")
         attach("declutter-collapse-badge")
     }
 }

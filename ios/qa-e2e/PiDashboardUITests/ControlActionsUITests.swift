@@ -46,30 +46,15 @@ final class ControlActionsUITests: PiDashboardUITestCase {
     /// An ended fixture session's card exposes a Resume control (`card-resume-button`) —
     /// shown ONLY for `status == "ended"`. Reveal it (hideEnded off + search + tier-expand).
     ///
-    /// Assert-if-present / skip-if-absent: the shipped fixture has NO standalone-rendering
-    /// ended session — `fix-pete-2` (ended) crew-folds into the streaming `fix-pete` survivor
-    /// (no own card), and `fix-atlas` (ended) sits in a pinned-cwd `.other` group that does
-    /// not render as a searchable/scrollable card in fixture mode (verified: search +
-    /// force-expand + scroll all fail to realize it). So the Resume affordance can't be driven
-    /// hermetically today; SKIP with the request rather than fail. The Resume routing is
-    /// unit-covered (DashboardStore.resume tests). PENDING fixture: add a standalone ended
-    /// session in a DEFAULT-EXPANDED tier (e.g. drivers) so its card renders.
-    func testResumeAffordanceShowsOnEndedSession() throws {
+    /// The cross-directory Pete fixture supplies a standalone ended row in the default-
+    /// expanded standing-crew tier, so the Resume affordance runs hermetically.
+    func testResumeAffordanceShowsOnEndedSession() {
         launchForcing(hideEnded: false)
         connectAndEnterList()
 
         let ended = fixtureSession(status: "ended")
         let card = revealCard(ended)
-        guard el(card).exists else {
-            throw XCTSkip("""
-            No standalone-rendering ended session in the fixture: `fix-pete-2` crew-folds into the \
-            `fix-pete` survivor (no own card), and `fix-atlas` sits in a pinned-cwd `.other` group \
-            that doesn't render as a card in fixture mode (search + force-expand + scroll all fail). \
-            The Resume affordance needs a rendered ended card. PENDING fixture: add a standalone \
-            ended session in a default-EXPANDED tier (drivers/standing-crew). Resume routing is \
-            unit-covered (DashboardStore.resume). Reported to cc-ios-build.
-            """)
-        }
+        XCTAssertTrue(waitForAppear(card, 6), "the standalone ended Pete row renders")
         XCTAssertTrue(waitForAppear("card-resume-button", 6),
                       "an ended session exposes the Resume control")
         attach("ext-resume-button")

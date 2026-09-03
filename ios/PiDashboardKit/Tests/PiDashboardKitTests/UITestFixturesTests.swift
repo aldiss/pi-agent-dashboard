@@ -3,8 +3,8 @@ import XCTest
 
 /// Guards the hermetic e2e fixture CONTRACT (`UITestFixtures`) — the shared source of
 /// truth both the app and the qa-e2e XCUITests build against. These assert the fixture
-/// SET actually satisfies all 10 UITest scenarios, so a drift here (a renamed id, a
-/// dropped tier, Pete no longer folding) fails `swift test` BEFORE it silently breaks
+/// SET actually satisfies all UITest scenarios, so a drift here (a renamed id, a
+/// dropped tier, Pete no longer folding per directory) fails `swift test` BEFORE it silently breaks
 /// the e2e run on CI. The qa-e2e side imports the same constants; keep them stable.
 final class UITestFixturesTests: XCTestCase {
 
@@ -21,7 +21,8 @@ final class UITestFixturesTests: XCTestCase {
         let ids = sessions.map(\.id)
         XCTAssertEqual(Set(ids).count, ids.count, "fixture ids must be unique")
         // The exact ids the qa-e2e tests assert against — pin them here.
-        for id in [UITestFixtures.peteId, UITestFixtures.peteSecondId, UITestFixtures.cartographerId,
+        for id in [UITestFixtures.peteId, UITestFixtures.peteSecondId, UITestFixtures.peteSameCwdId,
+                   UITestFixtures.cartographerId,
                    UITestFixtures.keystoneId, UITestFixtures.longStatusId, UITestFixtures.endedId,
                    UITestFixtures.voyageId] {
             XCTAssertNotNil(byId(id), "fixture \(id) must be present")
@@ -34,34 +35,41 @@ final class UITestFixturesTests: XCTestCase {
         XCTAssertEqual(UITestFixtures.sessions.map(\.id), UITestFixtures.sessions.map(\.id))
     }
 
-    // MARK: CrewCollapse — Pete in TWO cwds → ONE standing-crew row +1
+    // MARK: CrewCollapse — same-cwd Pete pair + one Pete in a second cwd
 
-    func testPeteHasTwoTenuresInTwoDistinctCwds() {
+    func testPeteHasThreeTenuresAcrossTwoCwdsWithSameCwdPair() {
         let petes = sessions.filter { SessionGrouping.canonicalNameKey($0) == "pete" }
-        XCTAssertEqual(petes.count, 2, "two Pete tenures")
-        XCTAssertEqual(Set(petes.map { $0.cwd ?? "" }).count, 2, "in TWO distinct cwds")
+        XCTAssertEqual(petes.count, 3, "three Pete tenures")
+        XCTAssertEqual(Set(petes.map { $0.cwd ?? "" }),
+                       [UITestFixtures.cwdOrchestration, UITestFixtures.cwdUnend])
+        XCTAssertEqual(petes.filter { $0.cwd == UITestFixtures.cwdOrchestration }.count, 2,
+                       "cwd A contains the foldable pair")
     }
 
     func testPeteClassifiesAsStandingCrew() {
-        XCTAssertEqual(SessionGrouping.classifyTier(byId(UITestFixtures.peteId)!), .standingCrew)
-        XCTAssertEqual(SessionGrouping.classifyTier(byId(UITestFixtures.peteSecondId)!), .standingCrew)
+        for id in [UITestFixtures.peteId, UITestFixtures.peteSecondId, UITestFixtures.peteSameCwdId] {
+            XCTAssertEqual(SessionGrouping.classifyTier(byId(id)!), .standingCrew)
+        }
     }
 
-    /// The end-to-end collapse the CrewCollapse UITest asserts: run the app's real
-    /// pipeline (tier → folder groups → global crew fold) and confirm Pete folds to ONE
-    /// row carrying "+1", and the survivor is the rich `fix-pete` (most-recent).
-    func testPeteFoldsToOneRowPlusOne() {
+    /// Run the app's real pipeline and confirm the same-cwd pair folds while the other-cwd
+    /// Pete remains a separately visible row.
+    func testPeteFoldsWithinOneCwdAndRendersInTheOther() throws {
         let crew = SessionGrouping.groupByTier(sessions).first { $0.tier == .standingCrew }!.sessions
         let groups = SessionGrouping.groupTierByFolder(crew, folders: true,
                                                        orders: UITestFixtures.orders,
                                                        pinnedDirectories: UITestFixtures.pinned)
-        let collapsed = SessionGrouping.collapseGroupsFoldingCrew(groups)
+        let collapsed = SessionGrouping.collapseGroups(groups)
         let peteRows = collapsed.flatMap { $0.rows }.filter {
             SessionGrouping.canonicalNameKey($0.session) == "pete"
         }
-        XCTAssertEqual(peteRows.count, 1, "two Pete tenures across cwds fold to ONE row")
-        XCTAssertEqual(peteRows[0].session.id, UITestFixtures.peteId, "survivor = the most-recent rich Pete")
-        XCTAssertEqual(peteRows[0].olderCount, 1, "the other-cwd tenure folds in as +1")
+        XCTAssertEqual(peteRows.count, 2, "one Pete row per cwd")
+        let folded = try XCTUnwrap(peteRows.first { $0.session.id == UITestFixtures.peteId })
+        XCTAssertEqual(folded.olderCount, 1)
+        XCTAssertEqual(folded.olderIds, [UITestFixtures.peteSameCwdId])
+        let standalone = try XCTUnwrap(peteRows.first { $0.session.id == UITestFixtures.peteSecondId })
+        XCTAssertEqual(standalone.olderCount, 0)
+        XCTAssertTrue(standalone.olderIds.isEmpty)
     }
 
     // MARK: Folding — ≥2 tiers, multiple cwds

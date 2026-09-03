@@ -121,15 +121,15 @@ class PiDashboardUITestCase: XCTestCase {
     func fixtureSession(_ why: String,
                         where predicate: (DashboardSession) -> Bool) -> DashboardSession {
         guard let s = renderedSessions.first(where: predicate) else {
-            XCTFail("UITestFixtures has no RENDERED (crew-survivor) session for: \(why)")
+            XCTFail("UITestFixtures has no rendered collapse survivor for: \(why)")
             return renderedSessions.first ?? UITestFixtures.sessions.first ?? DashboardSession(id: "fix-missing")
         }
         return s
     }
 
     /// A RENDERED fixture session with a given raw `status` (idle/streaming/ended/active).
-    /// Survivor-only, so e.g. the ended subject is the standalone `fix-atlas`, never the
-    /// crew-folded older "Pete" tenure that shares its row with the streaming survivor.
+    /// Survivor-only, so the ended subject is the standalone cross-directory Pete, never
+    /// the same-directory tenure folded behind the streaming Pete survivor.
     func fixtureSession(status: String) -> DashboardSession {
         fixtureSession("status == \(status)") { $0.status == status }
     }

@@ -46,11 +46,14 @@
 | `ios/PiDashboardKit/Sources/PiDashboardKit/Protocol/Messages.swift` | Defines native server-frame protocol and pure connection transition separating live-traffic phase from snapshot-only readiness/backoff reset. |
 | `ios/PiDashboardKit/Sources/PiDashboardKit/Sessions/SessionGrouping.swift` | Computes collapse keys and filters active-only rows through `status` or `endedAt` web semantics. |
 | `ios/PiDashboardKit/Tests/PiDashboardKitTests/ChatWindowTests.swift` | Covers chat windowing, payload truncation, and optional viewport-measurement follow/read policy. |
-| `ios/PiDashboardKit/Tests/PiDashboardKitTests/CrewCollapseTests.swift` | Covers Folders row-count parity, worktree `groupCwd` identity, same-cwd folding, and crew-global controls. |
+| `ios/PiDashboardKit/Tests/PiDashboardKitTests/CrewCollapseTests.swift` | Covers unique collapsed-group IDs, cross-directory crew visibility, same-directory folding, selection isolation, ordering, Folders row-count parity, worktree `groupCwd` identity, and `isCrewKey` boundaries. |
+| `ios/PiDashboardKit/Tests/PiDashboardKitTests/CrewFoldScopeTests.swift` | Covers per-directory crew folding, selected-tenure promotion, duplicate-name directory labels, session conservation, and folding-enabled control. |
+| `ios/PiDashboardKit/Tests/PiDashboardKitTests/FoldedSessionAccessTests.swift` | Covers folded-session resolution, newest-first order, unknown-ID filtering, survivor exclusion, and badge-count reachability control. |
 | `ios/PiDashboardKit/Tests/PiDashboardKitTests/ForegroundProbeTests.swift` | Covers pong, timeout, error, late-pong, and passive-deadline probe contracts. |
 | `ios/PiDashboardKit/Tests/PiDashboardKitTests/GroupingTests.swift` | Covers grouping, ordering, stale filtering, and active-only `status`/`endedAt` semantics. |
 | `ios/PiDashboardKit/Tests/PiDashboardKitTests/ImageResizePolicyTests.swift` | Covers landscape, portrait, square, rounding, 1 px floor, custom cap, no-upscale, exact-cap, degenerate-input, constants, and GIF exclusion contracts. |
 | `ios/PiDashboardKit/Tests/PiDashboardKitTests/ProtocolTests.swift` | Covers server-frame decoding, patching, and snapshot-gated connection readiness/backoff transitions. |
+| `ios/PiDashboardKit/Tests/PiDashboardKitTests/StandingCrewRosterTests.swift` | Locks shared ten-name roster. Verifies classification and same-directory folding parity. Rejects non-crew and crew-prefix near names. |
 | `ios/qa-e2e/PiDashboardUITests/AccessibilityUITests.swift` | Selects repeated `session-card-status` elements by raw accessibility value. Verifies `Status: Working` non-color speech. |
 | `ios/qa-e2e/PiDashboardUITests/ComposerFocusUITests.swift` | Covers stable editor focus and draft across layout changes. Requires long no-newline programmatic seed to flip multiline after async measurement. |
 | `ios/qa-e2e/PiDashboardUITests/ModelPickerUITests.swift` | Queries model rows through stable `model-row-*` accessibility identifiers. Avoids indexed snapshots. |

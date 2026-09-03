@@ -12,8 +12,8 @@ import Foundation
 /// the suite is fast + green on CI and locally.
 ///
 /// The fixture set is engineered to satisfy all 10 UITest files at once:
-///  - Folding      — 7 sessions across ≥4 cwds and 3 tiers (standing-crew/drivers/other).
-///  - CrewCollapse — "Pete" has tenures in TWO cwds → folds to ONE standing-crew row +1.
+///  - Folding      — 8 sessions across ≥4 cwds and 3 tiers (standing-crew/drivers/other).
+///  - CrewCollapse — "Pete" folds within one cwd and remains visible in a second cwd.
 ///  - StatusRow    — `fix-longstatus` carries a long status string (chip truncation).
 ///  - Color/Status — idle / streaming / ended (+ an error-flagged tool in the chat).
 ///  - Chat/ReadPosition/ModelPicker/Separation — `fix-pete` has a multi-message
@@ -40,7 +40,8 @@ public enum UITestFixtures {
 
     // Stable ids the qa-e2e tests assert against — NEVER rename without updating both sides.
     public static let peteId = "fix-pete"            // standing-crew survivor (cwd A), rich card + chat
-    public static let peteSecondId = "fix-pete-2"    // standing-crew Pete tenure (cwd B) → folds into peteId +1
+    public static let peteSecondId = "fix-pete-2"    // standing-crew Pete tenure (cwd B), standalone row
+    public static let peteSameCwdId = "fix-pete-same-cwd" // older Pete tenure (cwd A) → peteId +1
     public static let cartographerId = "fix-cartographer" // drivers tier, streaming
     public static let keystoneId = "fix-keystone"    // drivers tier, idle
     public static let longStatusId = "fix-longstatus" // long status string (chip-truncation test)
@@ -52,7 +53,7 @@ public enum UITestFixtures {
     /// 2026-06-01T00:00:00Z.
     public static let baseTime: Double = 1_780_272_000_000
 
-    // Two cwds Pete has tenures in — the cross-cwd crew-collapse fixture.
+    // Two cwds Pete has tenures in; cwd A also has a foldable pair.
     public static let cwdOrchestration = "/Users/op/.pi/orchestration-state"
     public static let cwdUnend = "/private/tmp/unend-e2e-cwd"
     public static let cwdArchDriver = "/Users/op/.pi/orchestration-state/nos-cells/arch-diagram-driver"
@@ -64,7 +65,7 @@ public enum UITestFixtures {
     public static var sessions: [DashboardSession] {
         let t = baseTime
 
-        // ── standing-crew: Pete, TWO tenures in TWO cwds → collapse to one row +1 ──
+        // ── standing-crew: Pete pair in cwd A (+1), standalone Pete in cwd B ──
         // Survivor (most-recent) — the RICH card: git + processes + stats + unread + chat.
         var pete = DashboardSession(id: peteId, cwd: cwdOrchestration, name: "Pete",
                                     source: "tmux", status: "streaming",
@@ -80,7 +81,14 @@ public enum UITestFixtures {
             ProcessEntry(pid: 4822, pgid: 4821, command: "xcodebuild -scheme PiDashboard", elapsedMs: 12_500),
         ]
 
-        // Older Pete tenure in a DIFFERENT cwd — the "+1" that folds into the survivor.
+        // Older Pete tenure in the SAME cwd — the "+1" behind the survivor.
+        var peteSameCwd = DashboardSession(id: peteSameCwdId, cwd: cwdOrchestration, name: "Pete",
+                                           source: "tmux", status: "ended",
+                                           startedAt: t - 8_000_000, lastActivityAt: t - 7_000_000)
+        peteSameCwd.model = "anthropic/claude-sonnet-4"
+        peteSameCwd.endedAt = t - 7_000_000
+
+        // Pete in a different cwd stays visible as its own row.
         var peteOld = DashboardSession(id: peteSecondId, cwd: cwdUnend, name: "Pete",
                                        source: "tmux", status: "ended",
                                        startedAt: t - 9_000_000, lastActivityAt: t - 7_200_000)
@@ -128,10 +136,10 @@ public enum UITestFixtures {
         voyage.model = "anthropic/claude-sonnet-4"
         voyage.contextTokens = 33_000; voyage.contextWindow = 200_000
 
-        return [pete, peteOld, cartographer, keystone, longStatus, atlas, voyage]
+        return [pete, peteSameCwd, peteOld, cartographer, keystone, longStatus, atlas, voyage]
     }
 
-    /// Per-cwd server order — pins Pete's survivor first in the orchestration group.
+    /// Per-cwd server order for the driver fixture.
     public static var orders: [String: [String]] {
         [cwdArchDriver: [cartographerId]]
     }

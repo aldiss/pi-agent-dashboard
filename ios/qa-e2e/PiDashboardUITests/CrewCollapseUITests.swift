@@ -29,14 +29,20 @@ final class CrewCollapseUITests: PiDashboardUITestCase {
         let field = waitFor("list-search")
         field.tap()
         field.typeText("Pete")
-        // At least one Pete card realizes.
-        XCTAssertTrue(waitForAnyPeteCard(6), "a Pete crew card renders under the search")
+        let expectedCards: Set<String> = [
+            "session-card-\(UITestFixtures.peteId)",
+            "session-card-\(UITestFixtures.peteSecondId)",
+        ]
+        let expectedLabels = [
+            "card-directory-label-\(UITestFixtures.peteId)": "orchestration-state",
+            "card-directory-label-\(UITestFixtures.peteSecondId)": "unend-e2e-cwd",
+        ]
+        let observed = scanPeteRows(labelIDs: Set(expectedLabels.keys))
 
-        let peteNameRows = app.descendants(matching: .any).allElementsBoundByIndex
-            .filter { $0.identifier == "session-card-name" && ($0.label == "Pete") }
-        XCTAssertEqual(peteNameRows.count, 2, "Pete renders once in each cwd")
-        XCTAssertTrue(waitForAppear("card-directory-label-\(UITestFixtures.peteId)", 6))
-        XCTAssertTrue(waitForAppear("card-directory-label-\(UITestFixtures.peteSecondId)", 6))
+        XCTAssertEqual(observed.cards, expectedCards,
+                       "Pete renders once in each cwd; the same-cwd older tenure stays folded")
+        XCTAssertEqual(observed.labels, expectedLabels,
+                       "the two Pete rows show distinct, non-empty directory basenames")
         attach("crew-directory-rows")
     }
 
@@ -50,11 +56,11 @@ final class CrewCollapseUITests: PiDashboardUITestCase {
         let field = waitFor("list-search")
         field.tap()
         field.typeText("Pete")
-        XCTAssertTrue(waitForAnyPeteCard(6), "a Pete card renders")
 
         if let survivor = foldedPeteSurvivorId() {
-            XCTAssertTrue(waitForAppear("card-collapsed-count-\(survivor)", 6),
-                          "the folded Pete row shows its +N collapse badge")
+            _ = scrollToHittable("card-collapsed-toggle-\(survivor)")
+            XCTAssertTrue(el("card-collapsed-count-\(survivor)").exists,
+                          "the folded Pete row keeps its +N collapse marker")
         } else {
             XCTFail("the same-cwd Pete fold survivor must be derivable from the fixture")
         }
@@ -81,18 +87,22 @@ final class CrewCollapseUITests: PiDashboardUITestCase {
         let field = waitFor("list-search")
         field.tap()
         field.typeText("Pete")
-        XCTAssertTrue(waitForAnyPeteCard(6), "a Pete card renders")
 
         let hiddenCard = cardId(hidden)
         XCTAssertFalse(el(hiddenCard).exists, "the older tenure starts folded")
         let toggleID = "card-collapsed-toggle-\(folded.session.id)"
-        let toggle = waitFor(toggleID)
+        let toggle = scrollToHittable(toggleID)
         XCTAssertEqual(toggle.value as? String, "collapsed")
         toggle.tap()
         XCTAssertTrue(waitForValue(toggleID, equals: "expanded"), "the toggle reports expansion")
-        XCTAssertTrue(waitForAppear(hiddenCard, 6), "tapping +N reveals the exact hidden tenure")
+        let hiddenElement = scrollToHittable(hiddenCard)
+        XCTAssertTrue(hiddenElement.exists, "tapping +N reveals the exact hidden tenure")
 
-        openChat(cardId: hiddenCard)
+        hiddenElement.tap()
+        _ = waitFor("chat-scroll", 6)
+        _ = waitFor("mobile-composer", 6)
+        XCTAssertEqual(waitFor("chat-model-button", 6).label, "Model: claude-sonnet-4",
+                       "the revealed older tenure, not the Opus survivor, opened")
     }
 
     // MARK: fixture-derived subjects
@@ -117,14 +127,32 @@ final class CrewCollapseUITests: PiDashboardUITestCase {
         return nil
     }
 
-    /// True once ANY of Pete's fixture card ids is on screen.
-    private func waitForAnyPeteCard(_ timeout: TimeInterval) -> Bool {
-        let ids = peteTenures().map { cardId($0) }
-        let deadline = Date().addingTimeInterval(timeout)
-        while Date() < deadline {
-            if ids.contains(where: { el($0).exists }) { return true }
-            usleep(150_000)
+    private func scanPeteRows(labelIDs: Set<String>)
+        -> (cards: Set<String>, labels: [String: String]) {
+        let peteCardIDs = Set(peteTenures().map { cardId($0) })
+        var cards: Set<String> = []
+        var labels: [String: String] = [:]
+        let list = el("session-list")
+
+        for _ in 0..<6 {
+            cards.formUnion(peteCardIDs.filter { el($0).exists })
+            for id in labelIDs where el(id).exists {
+                labels[id] = el(id).label
+            }
+            list.swipeUp()
         }
-        return ids.contains { el($0).exists }
+        return (cards, labels)
+    }
+
+    private func scrollToHittable(_ id: String) -> XCUIElement {
+        let list = el("session-list")
+        for _ in 0..<6 {
+            let element = el(id)
+            if element.exists, element.isHittable { return element }
+            list.swipeUp()
+        }
+        let element = waitFor(id, 6)
+        XCTAssertTrue(element.isHittable, "expected element '\(id)' to be hittable")
+        return element
     }
 }

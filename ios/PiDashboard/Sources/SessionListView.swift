@@ -84,17 +84,15 @@ struct SessionListView: View {
     // MARK: tier section
 
     private func tierSection(_ section: TierSection) -> some View {
-        // Fold crew canonical names GLOBALLY across this tier's directory groups (a crew
-        // name with tenures in >1 cwd was doubling — once per cwd-group). Non-crew names
-        // still fold per-cwd. Groups emptied by the fold drop out.
-        let collapsedGroups = SessionGrouping.collapseGroupsFoldingCrew(
+        let collapsedGroups = SessionGrouping.collapseGroups(
             section.groups, selectedId: store.viewedSessionId)
+        let directoryLabelIDs = SessionGrouping.rowsNeedingDirectoryLabel(collapsedGroups)
         let count = collapsedGroups.reduce(0) { $0 + $1.rows.count }
         let expanded = store.isTierExpanded(section.tier)
         return Section {
             if expanded {
                 ForEach(collapsedGroups) { group in
-                    directoryGroup(group)
+                    directoryGroup(group, directoryLabelIDs: directoryLabelIDs)
                 }
             }
         } header: {
@@ -138,7 +136,10 @@ struct SessionListView: View {
         .accessibilityValue(expanded ? "expanded" : "collapsed")
     }
 
-    @ViewBuilder private func directoryGroup(_ group: SessionGrouping.CollapsedDirectoryGroup) -> some View {
+    @ViewBuilder private func directoryGroup(
+        _ group: SessionGrouping.CollapsedDirectoryGroup,
+        directoryLabelIDs: Set<String>
+    ) -> some View {
         let hasHeader = store.folders && !group.cwd.isEmpty
         let expanded = store.isDirExpanded(group.cwd)
         VStack(alignment: .leading, spacing: 8) {
@@ -147,30 +148,81 @@ struct SessionListView: View {
             }
             if !hasHeader || expanded {
                 ForEach(group.rows) { collapsed in
-                    NavigationLink {
-                        ChatView(sessionId: collapsed.session.id, title: collapsed.session.displayName)
-                    } label: {
-                        SessionCard(session: collapsed.session)
-                            .overlay(alignment: .topTrailing) {
-                                if collapsed.olderCount > 0 {
-                                    Text("+\(collapsed.olderCount)")
-                                        .font(.caption2.weight(.semibold))
-                                        .foregroundStyle(theme.textSecondary)
-                                        .padding(.horizontal, 6)
-                                        .padding(.vertical, 2)
-                                        .background(theme.bgSurface)
-                                        .clipShape(Capsule())
-                                        .overlay(Capsule().stroke(theme.borderPrimary, lineWidth: 1))
-                                        .padding(6)
-                                        .accessibilityIdentifier("card-collapsed-count-\(collapsed.session.id)")
+                    VStack(alignment: .leading, spacing: 8) {
+                        NavigationLink {
+                            ChatView(sessionId: collapsed.session.id, title: collapsed.session.displayName)
+                        } label: {
+                            VStack(alignment: .leading, spacing: 4) {
+                                SessionCard(session: collapsed.session)
+                                if directoryLabelIDs.contains(collapsed.session.id) {
+                                    Text(directoryBasename(for: collapsed.session))
+                                        .font(.caption2)
+                                        .foregroundStyle(theme.textTertiary)
+                                        .lineLimit(1)
+                                        .padding(.horizontal, 12)
+                                        .accessibilityIdentifier("card-directory-label-\(collapsed.session.id)")
                                 }
                             }
+                        }
+                        .buttonStyle(.pressableCard)
+                        .accessibilityIdentifier("session-card-\(collapsed.session.id)")
+                        .overlay(alignment: .topTrailing) {
+                            if collapsed.olderCount > 0 {
+                                foldToggle(collapsed)
+                            }
+                        }
+
+                        if store.expandedFoldedRows.contains(collapsed.session.id) {
+                            ForEach(SessionGrouping.foldedSessions(
+                                collapsed, registry: store.sessions
+                            )) { session in
+                                NavigationLink {
+                                    ChatView(sessionId: session.id, title: session.displayName)
+                                } label: {
+                                    SessionCard(session: session)
+                                }
+                                .buttonStyle(.pressableCard)
+                                .accessibilityIdentifier("session-card-\(session.id)")
+                                .padding(.leading, 16)
+                            }
+                        }
                     }
-                    .buttonStyle(.pressableCard)
-                    .accessibilityIdentifier("session-card-\(collapsed.session.id)")
                 }
             }
         }
+    }
+
+    private func foldToggle(_ collapsed: SessionGrouping.CollapsedSession) -> some View {
+        let expanded = store.expandedFoldedRows.contains(collapsed.session.id)
+        return ZStack {
+            Button {
+                store.toggleFoldedRow(collapsed.session.id)
+            } label: {
+                Text("+\(collapsed.olderCount)")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(theme.textSecondary)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(theme.bgSurface)
+                    .clipShape(Capsule())
+                    .overlay(Capsule().stroke(theme.borderPrimary, lineWidth: 1))
+                    .padding(6)
+                    .frame(minWidth: 44, minHeight: 44, alignment: .topTrailing)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("card-collapsed-toggle-\(collapsed.session.id)")
+            .accessibilityLabel(
+                "\(expanded ? "Hide" : "Show") \(collapsed.olderCount) older \(collapsed.session.displayName) tenures")
+            .accessibilityValue(expanded ? "expanded" : "collapsed")
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("card-collapsed-count-\(collapsed.session.id)")
+    }
+
+    private func directoryBasename(for session: DashboardSession) -> String {
+        let path = SessionGrouping.groupPath(session)
+        return path.split(separator: "/").last.map(String.init) ?? path
     }
 
     /// Foldable directory header (PWA-style): a tappable row that folds/unfolds the

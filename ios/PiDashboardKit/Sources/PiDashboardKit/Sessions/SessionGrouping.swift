@@ -51,10 +51,23 @@ public enum TierFold {
 /// SwiftUI; fully unit-testable via `swift test`.
 public enum SessionGrouping {
 
+    /// Standing-crew roster shared by tier classification and tenure normalization.
+    static let standingCrewNames = [
+        "Bert", "Joan", "Peggy", "Lane", "Pete", "Faye", "Don", "Alice", "Harry", "Dawn",
+    ]
+
     private static func matches(_ s: String, _ pattern: String, caseInsensitive: Bool = false) -> Bool {
         var opts: String.CompareOptions = [.regularExpression]
         if caseInsensitive { opts.insert(.caseInsensitive) }
         return s.range(of: pattern, options: opts) != nil
+    }
+
+    /// Canonical roster entry when `name` begins with a crew name followed by a non-letter
+    /// boundary. Longer words such as `Harrison` and `Dawnbreaker` do not match.
+    private static func standingCrewCanonicalName(_ name: String) -> String? {
+        standingCrewNames.first { crew in
+            matches(name, "^\(crew)(?![A-Za-z])", caseInsensitive: true)
+        }
     }
 
     /// Classify a session into a `SessionTier`. Decision order matches the TS
@@ -63,7 +76,7 @@ public enum SessionGrouping {
         let name = session.name ?? ""
         if matches(name, "^subagent-worker-[0-9a-f]", caseInsensitive: true) { return .worker }
         if let f = session.sessionFile, matches(f, "/run-[0-9]+/session\\.jsonl$") { return .worker }
-        if matches(name, "^(Bert|Joan|Peggy|Lane|Pete|Faye|Don|Alice|Harry|Dawn)(?![A-Za-z])", caseInsensitive: true) {
+        if standingCrewCanonicalName(name) != nil {
             return .standingCrew
         }
         if session.source == "tui" { return .operatorChatPane }
@@ -134,9 +147,6 @@ public enum SessionGrouping {
         }
     }
 
-    /// The standing-crew canonical names — same set the tier classifier anchors on.
-    private static let crewNames = ["Bert", "Joan", "Peggy", "Lane", "Pete", "Faye", "Don", "Alice"]
-
     /// Collapse key that folds repeated tenures of the same entity into one bucket:
     /// a standing-crew canonical name (`Joan` from `Joan-tenure-23`, `Don` from
     /// `Don — Don tenure-4 …`) via the crew regex (anchored, non-letter boundary so
@@ -145,24 +155,19 @@ public enum SessionGrouping {
     public static func canonicalNameKey(_ session: DashboardSession) -> String {
         let name = (session.name ?? "").trimmingCharacters(in: .whitespaces)
         if name.isEmpty { return session.id }
-        for crew in crewNames {
-            // ^crew followed by a non-letter boundary (or end) → canonical crew name.
-            if matches(name, "^\(crew)(?![A-Za-z])", caseInsensitive: true) {
-                return crew.lowercased()
-            }
+        if let crew = standingCrewCanonicalName(name) {
+            return crew.lowercased()
         }
         return name.lowercased()
     }
 
-    private enum CollapseKey: Hashable {
-        case crew(String)
-        case nonCrew(name: String, groupPath: String)
+    private struct CollapseKey: Hashable {
+        let name: String
+        let groupPath: String
     }
 
     private static func collapseKey(_ session: DashboardSession) -> CollapseKey {
-        let name = canonicalNameKey(session)
-        if isCrewKey(name) { return .crew(name) }
-        return .nonCrew(name: name, groupPath: pathKey(groupPath(session)))
+        CollapseKey(name: canonicalNameKey(session), groupPath: pathKey(groupPath(session)))
     }
 
     /// One collapsed row: the most-recent session for a canonical name, plus how many
@@ -182,11 +187,18 @@ public enum SessionGrouping {
         max(s.lastActivityAt ?? 0, s.startedAt ?? 0)
     }
 
-    /// Collapse sessions to ONE row per identity: canonical name alone for crew,
-    /// canonical name + normalized group path for non-crew. The most-recent by recency
-    /// survives (tie-break: id descending, deterministic), folding older tenures into
-    /// a `+N` count. Output preserves first-seen order. The selected session, when it's
-    /// an older tenure, is promoted within its identity. Pure + deterministic.
+    /// Ascending comparator shared by survivor election and folded-session disclosure.
+    private static func survivorOrder(_ lhs: DashboardSession, _ rhs: DashboardSession) -> Bool {
+        let lhsRecency = recency(lhs)
+        let rhsRecency = recency(rhs)
+        return lhsRecency != rhsRecency ? lhsRecency < rhsRecency : lhs.id < rhs.id
+    }
+
+    /// Collapse sessions to ONE row per canonical name + normalized group path. The
+    /// most-recent by recency survives (tie-break: id descending, deterministic), folding
+    /// older tenures into a `+N` count. Output preserves first-seen order. The selected
+    /// session, when it's an older tenure, is promoted within its identity. Pure +
+    /// deterministic.
     public static func collapseSameName(_ sessions: [DashboardSession],
                                         selectedId: String? = nil) -> [CollapsedSession] {
         var order: [CollapseKey] = []                  // collapse keys in first-seen order
@@ -201,13 +213,22 @@ public enum SessionGrouping {
             // Winner: the selected session if present in this bucket, else most-recent
             // (recency desc, then id desc — total + deterministic).
             let winner = group.first { $0.id == selectedId }
-                ?? group.max { a, b in
-                    recency(a) != recency(b) ? recency(a) < recency(b) : a.id < b.id
-                }!
+                ?? group.max(by: survivorOrder)!
             let older = group.filter { $0.id != winner.id }
             return CollapsedSession(session: winner, olderCount: older.count,
                                     olderIds: older.map { $0.id })
         }
+    }
+
+    /// Resolve the sessions behind a collapsed row's `+N` against the live registry.
+    /// Unknown ids and the survivor id are dropped. Results use the survivor-election
+    /// order: recency descending, then id descending.
+    public static func foldedSessions(_ row: CollapsedSession,
+                                      registry: [String: DashboardSession]) -> [DashboardSession] {
+        guard row.olderCount > 0 else { return [] }
+        return row.olderIds.compactMap { registry[$0] }
+            .filter { $0.id != row.session.id }
+            .sorted { survivorOrder($1, $0) }
     }
 
     /// Case-insensitive substring search over the string the card actually shows
@@ -362,26 +383,18 @@ public enum SessionGrouping {
             .filter { !$0.sessions.isEmpty }
     }
 
-    // MARK: - Global crew collapse across directory groups (usability round 2, §3)
-    //
-    // `collapseSameName` folds tenures PER directory-group. A standing-crew canonical
-    // name (Joan/Pete/…) with tenures in MULTIPLE cwds therefore shows once per cwd →
-    // doubled across the list (the operator saw Pete twice: nos-cells + unend-e2e-cwd).
-    // The fix: fold every crew canonical name to ONE row across the whole tier — the
-    // survivor lands in its most-recent cwd-group and its `+N` counts ALL tenures
-    // regardless of cwd. Non-crew names keep per-cwd folding (a repeated non-crew name
-    // in two projects is genuinely two rows). Pure + deterministic.
+    // MARK: - Per-directory tenure collapse
 
     /// True when `key` (a `canonicalNameKey` result) is a folded standing-crew name —
     /// i.e. it equals one of the crew canonical keys. Non-crew keys (full lowercased
-    /// names, or a bare session id for anonymous sessions) return false.
+    /// names, or a bare session id for anonymous sessions) return false. This predicate
+    /// does not participate in collapsing; every name uses directory-scoped identity.
     public static func isCrewKey(_ key: String) -> Bool {
-        crewNames.contains { $0.lowercased() == key }
+        standingCrewNames.contains { $0.lowercased() == key }
     }
 
-    /// One directory subgroup after the global crew fold: the group's identity/pin,
-    /// plus its already-collapsed rows in first-seen order. `rows` is what the folder
-    /// renders; a crew survivor appears in exactly ONE group's rows across the tier.
+    /// One directory subgroup after same-name tenure collapse: the group's identity/pin,
+    /// plus its already-collapsed rows in first-seen order.
     public struct CollapsedDirectoryGroup: Sendable, Equatable, Identifiable {
         public struct ID: Sendable, Equatable, Hashable {
             public let tier: SessionTier
@@ -400,81 +413,29 @@ public enum SessionGrouping {
         }
     }
 
-    /// Collapse a tier's directory groups, folding crew canonical names GLOBALLY (one
-    /// row per crew name across all groups) while non-crew names fold per group path.
-    ///
-    /// Crew survivor: the selected session if it's a crew tenure, else the most-recent
-    /// crew tenure of that name across every group (recency desc, id-desc tie-break).
-    /// The survivor renders only in the group that actually holds it (its "home"), and
-    /// its `+N`/olderIds count ALL other tenures of the name in ANY group. Rows keep
-    /// first-seen order within each group; groups emptied by the fold are dropped. Pure.
-    public static func collapseGroupsFoldingCrew(_ groups: [DirectoryGroup],
-                                                 selectedId: String? = nil) -> [CollapsedDirectoryGroup] {
-        // 1) Gather every crew tenure across all groups, keyed by canonical crew name,
-        //    remembering which group index each tenure sits in.
-        var crewTenures: [String: [(session: DashboardSession, groupIndex: Int)]] = [:]
-        for (gi, group) in groups.enumerated() {
-            for s in group.sessions {
-                let key = canonicalNameKey(s)
-                if isCrewKey(key) { crewTenures[key, default: []].append((s, gi)) }
-            }
+    /// Collapse repeated tenures independently inside each directory group. Groups emptied
+    /// by the collapse are dropped; directory identity and pin state pass through unchanged.
+    public static func collapseGroups(_ groups: [DirectoryGroup],
+                                      selectedId: String? = nil) -> [CollapsedDirectoryGroup] {
+        groups.compactMap { group in
+            let rows = collapseSameName(group.sessions, selectedId: selectedId)
+            guard let first = rows.first else { return nil }
+            return CollapsedDirectoryGroup(
+                tier: classifyTier(first.session), cwd: group.cwd,
+                pinned: group.pinned, rows: rows)
         }
-        // 2) Per crew name: elect the survivor (selected wins, else most-recent) and
-        //    record its home group + the folded older tenures (across ALL groups).
-        struct CrewFold { let winnerId: String; let homeGroup: Int; let olderCount: Int; let olderIds: [String] }
-        var crewFold: [String: CrewFold] = [:]
-        for (key, tenures) in crewTenures {
-            let winner = tenures.first { $0.session.id == selectedId }
-                ?? tenures.max { a, b in
-                    recency(a.session) != recency(b.session)
-                        ? recency(a.session) < recency(b.session)
-                        : a.session.id < b.session.id
-                }!
-            let older = tenures.filter { $0.session.id != winner.session.id }
-            crewFold[key] = CrewFold(winnerId: winner.session.id, homeGroup: winner.groupIndex,
-                                     olderCount: older.count, olderIds: older.map { $0.session.id })
+    }
+
+    /// Row ids that need a directory subtitle: a row whose canonical name is shared by
+    /// another visible row in the same tier. Pure; input is one tier's collapsed groups.
+    public static func rowsNeedingDirectoryLabel(_ groups: [CollapsedDirectoryGroup]) -> Set<String> {
+        let rows = groups.flatMap(\.rows)
+        var counts: [String: Int] = [:]
+        for row in rows {
+            counts[canonicalNameKey(row.session), default: 0] += 1
         }
-        // 3) Rebuild each group's rows in first-seen order: crew rows emit only in their
-        //    home group (with the GLOBAL fold count); non-crew fold per group path.
-        var out: [CollapsedDirectoryGroup] = []
-        for (gi, group) in groups.enumerated() {
-            var order: [CollapseKey] = []
-            var nonCrewBuckets: [CollapseKey: [DashboardSession]] = [:]
-            for s in group.sessions {
-                let key = collapseKey(s)
-                switch key {
-                case let .crew(name):
-                    // Suppress crew tenures that live in another group (non-home).
-                    guard let fold = crewFold[name], fold.homeGroup == gi else { continue }
-                    if !order.contains(key) { order.append(key) }
-                case .nonCrew:
-                    if nonCrewBuckets[key] == nil { order.append(key) }
-                    nonCrewBuckets[key, default: []].append(s)
-                }
-            }
-            let rows: [CollapsedSession] = order.compactMap { key in
-                switch key {
-                case let .crew(name):
-                    guard let fold = crewFold[name],
-                          let winner = group.sessions.first(where: { $0.id == fold.winnerId }) else { return nil }
-                    return CollapsedSession(session: winner, olderCount: fold.olderCount, olderIds: fold.olderIds)
-                case .nonCrew:
-                    let bucket = nonCrewBuckets[key]!
-                    let winner = bucket.first { $0.id == selectedId }
-                        ?? bucket.max { a, b in
-                            recency(a) != recency(b) ? recency(a) < recency(b) : a.id < b.id
-                        }!
-                    let older = bucket.filter { $0.id != winner.id }
-                    return CollapsedSession(session: winner, olderCount: older.count,
-                                            olderIds: older.map { $0.id })
-                }
-            }
-            if !rows.isEmpty {
-                out.append(CollapsedDirectoryGroup(
-                    tier: classifyTier(rows[0].session), cwd: group.cwd,
-                    pinned: group.pinned, rows: rows))
-            }
-        }
-        return out
+        return Set(rows.compactMap { row in
+            counts[canonicalNameKey(row.session), default: 0] > 1 ? row.id : nil
+        })
     }
 }

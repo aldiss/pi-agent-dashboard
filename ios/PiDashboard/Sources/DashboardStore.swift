@@ -63,6 +63,9 @@ final class DashboardStore {
     var collapsedDirs = ListPrefsStore.loadCollapsedDirs() {
         didSet { ListPrefsStore.saveCollapsedDirs(collapsedDirs) }
     }
+    /// Collapsed rows expanded in-place for this process. Deliberately transient so a
+    /// relaunch restores the flood-control default.
+    private(set) var expandedFoldedRows: Set<String> = []
     /// Tier fold OFF-DEFAULT set (tier rawValues flipped away from their PWA default —
     /// see `TierFold`). Persisted so a folded tier stays folded across launches.
     /// Default (empty) = {standing-crew, drivers, cell-executor} expanded, rest collapsed.
@@ -744,6 +747,15 @@ final class DashboardStore {
     func toggleDirCollapsed(_ cwd: String) {
         guard !cwd.isEmpty else { return }
         if collapsedDirs.contains(cwd) { collapsedDirs.remove(cwd) } else { collapsedDirs.insert(cwd) }
+    }
+
+    /// Toggle transient disclosure of the older sessions folded behind one survivor row.
+    func toggleFoldedRow(_ id: String) {
+        if expandedFoldedRows.contains(id) {
+            expandedFoldedRows.remove(id)
+        } else {
+            expandedFoldedRows.insert(id)
+        }
     }
 
     /// Is `tier`'s section expanded? Resolved from the persisted off-default set via the
