@@ -44,7 +44,7 @@ could have failed. Where a cause is not established, the item says so instead of
 |---|---|---|---|
 | F1 | No image downscaling before send | SHIPPED `8f75604` | Web caps the long edge at 1568px @ 0.85 (~6× smaller base64 for a 12MP photo) and skips animated GIF. Native base64-encoded raw picker data. Ported with pure geometry + MIME policy; oversized HEIC re-encodes to JPEG and is labelled truthfully. |
 | F2 | Cannot pin a folder | SHIPPED `e54ea0f` | The app honours pins (`pinned_dirs_updated` inbound, pinned-first ordering) but has **no outbound** `pin_directory` / `unpin_directory` / `reorder_pinned_dirs`, and no context menu, long-press or swipe affordance to hang the control on. Needs a design decision, not just wiring. Reorder is a separate, heavier interaction. |
-| F3 | No `external` tier, no external-session source | OPEN | Web has 7 tiers including `external` (read-only Codex / Claude Code panes) and fetches an external-sessions response with owners/drivers plus cell grouping. Native has 6 tiers and none of that data path. Larger than it looks: a data-source integration, not a filter. |
+| F3 | No `external` tier, no external-session source | SHIPPED `88cc090` | Web has 7 tiers including `external` (read-only Codex / Claude Code panes) and fetches an external-sessions response with owners/drivers plus cell grouping. Native has 6 tiers and none of that data path. Larger than it looks: a data-source integration, not a filter. |
 | F4 | "Active only" filter missing | SHIPPED `d55e723` | Web exposes Folders / Hide ended / Hide stale / **Active only**; native exposes Folders / Hide ended / Hide stale / **Hidden**, and hardcodes `activeOnly: false`. The two clients cannot be driven to the same visible set. |
 | F5 | Composer wastes a full row when multiline | SHIPPED `e54ea0f` | Multiline moves attach + controls to their own full-width row with a spacer between, so the middle is empty by construction. Single-line keeps them inline. Deliberate layout (the stable text slot prevents editor teardown mid-stream), so changing it needs care. |
 | F6 | Crew tenures fold across directories; the web never folds | SHIPPED `3479746` | Native folds crew canonical names globally into one row; the web client has no same-name collapse at all and renders every tenure. Combined with B8 the folded tenures are unreachable. Largest remaining "I can't see all my sessions" contributor. |
@@ -88,3 +88,17 @@ that passed locally and failed on the slower runner; a tap that missed a chip
 clipped by a horizontal scroller; a compile break from a half-committed change; and
 a fold test selecting an ended card the UI would never render. None of those were
 visible to `swift test`.
+
+## Still open
+
+| ID | Title | Status | Detail |
+|---|---|---|---|
+| B10 | Socket accepted then dropped ~250ms later, repeatedly | OPEN — cause unattributed | Measured on the gateway log: the app connected and the socket died 186-337ms after accept, retrying ~2.3s apart, while a browser on the same server stayed connected and the server logged no reason. Ruled out with evidence: undecodable frames (unknown types decode to `.unknown`, bad frames are skipped), oversize snapshot (1.2MB against a 4MB cap), and auth rejection (no 401 for the app, and the log is confirmed to record 401s — 178 of them). NOT established: whether the client or the server closes it. The banner fix means the app no longer lies about the state, and the foreground probe stops self-inflicted replacement, but the trigger itself is unexplained. To attribute it: device-side client logs during a live flap, or a reproduction through the tunnel. |
+| N2 | Session card never shows a directory | PARTLY ADDRESSED | Duplicate visible names now carry a directory basename (`3479746`), which was the case that made "Pete twice" unreadable. The general question — should every card show its directory — is unresolved and is a design decision, not a defect. |
+
+## Verification debts — unchanged, must not be reported as passing
+
+| ID | Item | Status |
+|---|---|---|
+| V1 | Physical microphone acceptance | UNRUN — requires the operator's device |
+| V2 | Physical OAuth + real Keychain migration over an installed build | UNRUN — green results to date are against a memory stub, not the Security framework |
