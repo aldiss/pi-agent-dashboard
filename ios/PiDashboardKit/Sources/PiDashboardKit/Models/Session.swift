@@ -4,6 +4,7 @@ import Foundation
 /// Mirrors `SessionSource` in `packages/shared/src/types.ts`.
 public enum SessionSource: String, Codable, Sendable {
     case tui, zed, tmux, dashboard, terminal
+    case codex
     case claudeCode = "claude-code"
     case unknown
 }
@@ -11,6 +12,98 @@ public enum SessionSource: String, Codable, Sendable {
 /// Current status of a session. Mirrors `SessionStatus`.
 public enum SessionStatus: String, Codable, Sendable {
     case active, idle, streaming, ended
+}
+
+/// Runtime kind for a read-only tmux pane exposed by `/api/external-sessions`.
+public enum ExternalRuntime: String, Codable, Sendable, Equatable {
+    case codex
+    case claudeCode = "claude-code"
+}
+
+/// Liveness state for an external pane. Ended panes retain their last capture.
+public enum ExternalSessionState: String, Codable, Sendable, Equatable {
+    case live, ended
+}
+
+/// Typed mirror of one entry in `GET /api/external-sessions`. Runtime-detail fields
+/// remain optional because the live lightweight list can return identity fields only.
+public struct ExternalSession: Codable, Sendable, Equatable, Identifiable {
+    public let id: String
+    public let runtime: ExternalRuntime
+    public let tmuxSession: String
+    public let tmuxSocket: String
+    public let title: String
+    public let cwd: String?
+    public let runtimePid: Int?
+    public let state: ExternalSessionState?
+    public let model: String?
+    public let effort: String?
+    public let firstSeenAt: Double?
+    public let lastLiveAt: Double?
+    public let endedAt: Double?
+    public let output: String?
+    public let outputAt: Double?
+    public let outputChangedAt: Double?
+    public let lineCount: Int?
+}
+
+/// Sanitized ownership metadata keyed by external tmux session name.
+public struct ExternalSessionOwner: Codable, Sendable, Equatable {
+    public let owner: String
+    public let cell: String?
+}
+
+/// Canonical cell-driver identity returned beside external sessions.
+public struct ExternalSessionDriver: Codable, Sendable, Equatable {
+    public let realName: String
+    public let tmux: String?
+    public let cell: String?
+}
+
+/// Response envelope for `GET /api/external-sessions`.
+/// Older/list-only servers omit ownership metadata, matching the web client's
+/// compatibility defaults of an empty dictionary and array.
+public struct ExternalSessionsResponse: Codable, Sendable, Equatable {
+    public let sessions: [ExternalSession]
+    public let owners: [String: ExternalSessionOwner]
+    public let drivers: [ExternalSessionDriver]
+
+    public init(sessions: [ExternalSession],
+                owners: [String: ExternalSessionOwner] = [:],
+                drivers: [ExternalSessionDriver] = []) {
+        self.sessions = sessions
+        self.owners = owners
+        self.drivers = drivers
+    }
+
+    private enum CodingKeys: String, CodingKey { case sessions, owners, drivers }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        sessions = try container.decodeIfPresent([ExternalSession].self, forKey: .sessions) ?? []
+        owners = try container.decodeIfPresent(
+            [String: ExternalSessionOwner].self, forKey: .owners) ?? [:]
+        drivers = try container.decodeIfPresent(
+            [ExternalSessionDriver].self, forKey: .drivers) ?? []
+    }
+}
+
+/// Structural marker carried by a mapped read-only external session.
+public struct ExternalSessionMetadata: Codable, Sendable, Equatable {
+    public let runtime: ExternalRuntime
+    public let tmuxSession: String
+    public let readOnly: Bool
+    public let outputChangedAt: Double?
+    public let lineCount: Int?
+
+    public init(runtime: ExternalRuntime, tmuxSession: String, readOnly: Bool,
+                outputChangedAt: Double? = nil, lineCount: Int? = nil) {
+        self.runtime = runtime
+        self.tmuxSession = tmuxSession
+        self.readOnly = readOnly
+        self.outputChangedAt = outputChangedAt
+        self.lineCount = lineCount
+    }
 }
 
 /// Operator effort the NEXT step of a driver needs — the next-engagement badge.
@@ -96,6 +189,7 @@ public struct DashboardSession: Codable, Sendable, Identifiable, Equatable {
     public var cwd: String?
     public var name: String?
     public var source: String?
+    public var external: ExternalSessionMetadata?
     public var status: String?
     public var model: String?
     public var thinkingLevel: String?
@@ -126,6 +220,7 @@ public struct DashboardSession: Codable, Sendable, Identifiable, Equatable {
     public var sessionFile: String?
     public var sessionDir: String?
     public var pid: Int?
+    public var bridgeConnected: Bool?
     public var progress: DriverProgress?
     public var nextEngagement: DriverNextEngagement?
     public var processMetrics: ProcessMetrics?
@@ -135,6 +230,7 @@ public struct DashboardSession: Codable, Sendable, Identifiable, Equatable {
     public var sourceEnum: SessionSource? { source.flatMap(SessionSource.init(rawValue:)) }
     public var statusEnum: SessionStatus? { status.flatMap(SessionStatus.init(rawValue:)) }
     public var isEnded: Bool { status == "ended" }
+    public var isExternal: Bool { external != nil }
 
     /// Display name the card shows — name → first line of firstMessage → last path
     /// segment of cwd. Mirrors `getSessionDisplayName`. The firstMessage fallback is
@@ -164,5 +260,82 @@ public struct DashboardSession: Codable, Sendable, Identifiable, Equatable {
         self.status = status; self.startedAt = startedAt; self.lastActivityAt = lastActivityAt
         self.hidden = hidden; self.firstMessage = firstMessage; self.sessionFile = sessionFile
         self.groupCwd = groupCwd
+    }
+}
+
+/// Pure projection from the external-session payload into the ordinary card model.
+/// `now` is injected so the `firstSeenAt` fallback stays deterministic in tests.
+public enum ExternalSessionMapper {
+    public static func map(_ session: ExternalSession, now: Double) -> DashboardSession {
+        let startedAt = finiteTimestamp(session.firstSeenAt, fallback: now)
+        let outputChangedAt = finiteTimestamp(session.outputChangedAt)
+        let lastActivityAt = outputChangedAt
+            ?? finiteTimestamp(session.lastLiveAt, fallback: startedAt)
+        let endedAt = session.state == .ended
+            ? finiteTimestamp(session.endedAt, fallback: lastActivityAt)
+            : nil
+        let trimmedModel = session.model?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let model = trimmedModel.flatMap { $0.isEmpty ? nil : $0 } ?? "unknown model"
+        let trimmedEffort = session.effort?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let effort = trimmedEffort.flatMap { $0.isEmpty ? nil : $0 }
+
+        var mapped = DashboardSession(
+            id: session.id,
+            cwd: session.cwd ?? "",
+            name: session.title.isEmpty ? session.tmuxSession : session.title,
+            source: session.runtime.rawValue,
+            status: session.state == .ended ? "ended" : "active",
+            startedAt: startedAt,
+            lastActivityAt: lastActivityAt)
+        mapped.model = "\(session.runtime.rawValue)/\(model)"
+        mapped.thinkingLevel = effort
+        mapped.endedAt = endedAt
+        mapped.bridgeConnected = true
+        mapped.pid = session.runtimePid
+        mapped.external = ExternalSessionMetadata(
+            runtime: session.runtime,
+            tmuxSession: session.tmuxSession,
+            readOnly: true,
+            outputChangedAt: outputChangedAt,
+            lineCount: session.lineCount)
+        return mapped
+    }
+
+    private static func finiteTimestamp(_ value: Double?, fallback: Double) -> Double {
+        guard let value, value.isFinite else { return fallback }
+        return value
+    }
+
+    private static func finiteTimestamp(_ value: Double?) -> Double? {
+        guard let value, value.isFinite else { return nil }
+        return value
+    }
+}
+
+/// Fail-soft external-session refresh policy plus the list-only merge boundary.
+/// Networking stays injected so failure behavior is deterministic and unit-testable.
+public enum ExternalSessionSource {
+    public static let refreshInterval: Duration = .seconds(2)
+
+    public static func refresh(
+        current: [DashboardSession],
+        now: Double,
+        fetch: @Sendable () async throws -> ExternalSessionsResponse
+    ) async -> [DashboardSession] {
+        do {
+            let response = try await fetch()
+            return response.sessions.map { ExternalSessionMapper.map($0, now: now) }
+        } catch {
+            // Optional endpoint: retain the last good external snapshot. A cold failure
+            // therefore contributes no rows and cannot disturb the pi-session list.
+            return current
+        }
+    }
+
+    public static func merge(
+        piSessions: [DashboardSession],
+        externalSessions: [DashboardSession]
+    ) -> [DashboardSession] {
+        piSessions + externalSessions
     }
 }

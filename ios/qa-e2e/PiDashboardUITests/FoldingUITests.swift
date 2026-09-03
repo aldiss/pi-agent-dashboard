@@ -8,7 +8,7 @@ import PiDashboardKit
 ///     persists per cwd (`store.collapsedDirs` → `pi.dashboard.collapsedDirs`).
 ///   • TIER sections (`tier-section-<raw>`) fold a whole tier's groups. State persists per
 ///     tier rawValue (`store.tierFold` → `pi.dashboard.tierFold`) with the PWA default:
-///     {standing-crew, drivers, cell-executor} EXPANDED, the rest COLLAPSED.
+///     {standing-crew, external, drivers, cell-executor} EXPANDED, the rest COLLAPSED.
 ///
 /// Subjects are DERIVED from `UITestFixtures.sessions` via the same `SessionGrouping` the
 /// app uses (`groupByTier`), so a test targets the exact tier a fixture session lands in —
@@ -53,7 +53,7 @@ final class FoldingUITests: PiDashboardUITestCase {
         launchCleanFold()
         connectAndEnterList()
 
-        let expandedDefault: Set<SessionTier> = [.standingCrew, .drivers, .cellExecutor]
+        let expandedDefault = DEFAULT_EXPANDED_TIERS
         let present = presentTiers()
         var assertedExpanded = false, assertedCollapsed = false
 
@@ -167,17 +167,17 @@ final class FoldingUITests: PiDashboardUITestCase {
 
     // MARK: fixture-derived subjects
 
-    /// A default-EXPANDED tier (standing-crew / drivers / cell-executor) that has fixture
+    /// A default-EXPANDED tier that has fixture
     /// cards, plus its card ids. Fails clearly if the fixture covers none.
     private func foldableExpandedTier() -> (SessionTier, [String]) {
-        let expandedDefault: [SessionTier] = [.drivers, .standingCrew, .cellExecutor]
+        let expandedDefault = SESSION_TIER_ORDER.filter(DEFAULT_EXPANDED_TIERS.contains)
         let grouped = SessionGrouping.groupByTier(fixtureSessions)
         for tier in expandedDefault {
             if let entry = grouped.first(where: { $0.tier == tier }), !entry.sessions.isEmpty {
                 return (tier, entry.sessions.map { cardId($0) })
             }
         }
-        XCTFail("UITestFixtures covers no default-expanded tier with cards (need standing-crew/drivers/cell-executor)")
+        XCTFail("UITestFixtures covers no default-expanded tier with cards")
         return (.drivers, [])
     }
 

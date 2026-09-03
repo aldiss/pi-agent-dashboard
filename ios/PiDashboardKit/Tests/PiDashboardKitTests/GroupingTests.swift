@@ -6,6 +6,45 @@ import XCTest
 /// dashboard so the native app inherits the dashboard's ACTUAL grouping behavior.
 final class GroupingTests: XCTestCase {
 
+    func testExternalTierWinsBeforeWorkerCrewAndSourceRules() {
+        var crewAndSource = DashboardSession(
+            id: "external-crew", cwd: "/x", name: "Joan", source: "tui")
+        crewAndSource.external = ExternalSessionMetadata(
+            runtime: .claudeCode, tmuxSession: "cc-joan", readOnly: true)
+        XCTAssertEqual(SessionGrouping.classifyTier(crewAndSource), .external)
+
+        var worker = DashboardSession(
+            id: "external-worker", name: "subagent-worker-3f4a9c", source: "tmux")
+        worker.external = ExternalSessionMetadata(
+            runtime: .codex, tmuxSession: "cx-worker", readOnly: true)
+        XCTAssertEqual(SessionGrouping.classifyTier(worker), .external)
+    }
+
+    func testNonExternalSessionDoesNotClassifyAsExternal() {
+        let ordinary = DashboardSession(id: "ordinary", name: "Joan", source: "tui")
+        XCTAssertNotEqual(SessionGrouping.classifyTier(ordinary), .external)
+        XCTAssertEqual(SessionGrouping.classifyTier(ordinary), .standingCrew)
+    }
+
+    func testTierOrderMatchesWebWithExternalImmediatelyAfterStandingCrew() {
+        XCTAssertEqual(SESSION_TIER_ORDER, [
+            .standingCrew,
+            .external,
+            .drivers,
+            .cellExecutor,
+            .operatorChatPane,
+            .worker,
+            .other,
+        ])
+        XCTAssertEqual(SESSION_TIER_ORDER.firstIndex(of: .external),
+                       SESSION_TIER_ORDER.firstIndex(of: .standingCrew).map { $0 + 1 })
+    }
+
+    func testExternalTierIsExpandedByDefault() {
+        XCTAssertTrue(DEFAULT_EXPANDED_TIERS.contains(.external))
+        XCTAssertTrue(TierFold.isExpanded(.external, offDefault: []))
+    }
+
     func testClassifyTier_standingCrewBeatsSource() {
         // "Joan" on a tui session → standing-crew (crew rule precedes the tui rule).
         XCTAssertEqual(SessionGrouping.classifyTier(.init(id: "1", cwd: "/x", name: "Joan", source: "tui")), .standingCrew)

@@ -345,7 +345,7 @@ struct SessionCard: View {
     /// to life). a11y ids use the `card-` prefix so the qa-e2e session-card- counter
     /// is never miscounted.
     @ViewBuilder private var resumeRow: some View {
-        if session.status == "ended" {
+        if session.status == "ended", !session.isExternal {
             HStack {
                 Spacer(minLength: 0)
                 if store.isResuming(session.id) {

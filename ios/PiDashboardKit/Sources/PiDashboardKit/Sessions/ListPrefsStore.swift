@@ -51,7 +51,7 @@ public enum ListPrefsStore {
 
     /// The tier fold OFF-DEFAULT set (tier `rawValue`s flipped away from their default
     /// expand state — see `TierFold`). Empty ⇒ clean PWA defaults ({standing-crew,
-    /// drivers, cell-executor} expanded, the rest collapsed). Absent/garbage → empty.
+    /// external, drivers, cell-executor} expanded, the rest collapsed). Absent/garbage → empty.
     public static func loadTierFold(from defaults: UserDefaults = .standard) -> Set<String> {
         guard let arr = defaults.array(forKey: tierFoldKey) as? [String] else { return [] }
         return Set(arr)

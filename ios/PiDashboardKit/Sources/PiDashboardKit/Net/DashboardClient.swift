@@ -40,6 +40,8 @@ public enum DashboardClientError: Error, Sendable {
     /// REST returned 401 — the `pi_dash_token` cookie is missing/expired/rejected. The
     /// store clears the stored cookie and re-prompts GitHub sign-in.
     case unauthorized
+    /// A REST endpoint returned a non-success status other than 401.
+    case httpStatus(Int)
 }
 
 /// Live WebSocket client for the dashboard **browser** gateway. Opens the WS,
@@ -363,6 +365,20 @@ public struct RestClient: Sendable {
             return arr
         }
         return try JSONDecoder().decode([DashboardSession].self, from: data)
+    }
+
+    /// `GET /api/external-sessions` — read-only Codex / Claude Code tmux panes.
+    /// Unlike the legacy sessions endpoint, every non-2xx response is an error: the
+    /// response model has compatibility defaults, so decoding a 503 body could otherwise
+    /// look like a successful empty snapshot and erase the last known external rows.
+    public func externalSessions() async throws -> ExternalSessionsResponse {
+        let (data, response) = try await session.data(for: makeRequest("api/external-sessions"))
+        try Self.throwIfUnauthorized(response)
+        if let http = response as? HTTPURLResponse,
+           !(200..<300).contains(http.statusCode) {
+            throw DashboardClientError.httpStatus(http.statusCode)
+        }
+        return try JSONDecoder().decode(ExternalSessionsResponse.self, from: data)
     }
 
     /// Map a 401 to `.unauthorized`; other statuses pass through (decode decides).

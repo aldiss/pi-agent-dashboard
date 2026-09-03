@@ -43,6 +43,9 @@ final class DashboardStore {
 
     // Registry
     private(set) var sessions: [String: DashboardSession] = [:]
+    /// Read-only Codex / Claude Code panes. Kept outside the WebSocket-owned registry
+    /// because every authoritative `sessions_snapshot` replaces that registry.
+    private(set) var externalSessions: [String: DashboardSession] = [:]
     private(set) var orders: [String: [String]] = [:]
     private var pinnedDirectoriesState = PinnedDirectoriesState()
     var pinnedDirectories: [String] { pinnedDirectoriesState.paths }
@@ -69,7 +72,7 @@ final class DashboardStore {
     private(set) var expandedFoldedRows: Set<String> = []
     /// Tier fold OFF-DEFAULT set (tier rawValues flipped away from their PWA default —
     /// see `TierFold`). Persisted so a folded tier stays folded across launches.
-    /// Default (empty) = {standing-crew, drivers, cell-executor} expanded, rest collapsed.
+    /// Default (empty) = {standing-crew, external, drivers, cell-executor} expanded.
     var tierFold = ListPrefsStore.loadTierFold() {
         didSet { ListPrefsStore.saveTierFold(tierFold) }
     }
@@ -149,6 +152,7 @@ final class DashboardStore {
     private let idleAckDeadline: Duration
     private let queueAckDeadline: Duration
     private var consumeTask: Task<Void, Never>?
+    private var externalRefreshTask: Task<Void, Never>?
     /// Coalesces foreground recovery while liveness is evaluated or a replacement
     /// stream awaits its first authoritative snapshot.
     private var foregroundRecoveryInFlight: UUID?
@@ -231,6 +235,7 @@ final class DashboardStore {
             phase = .failed("Invalid URL"); return
         }
         let cookie = credential(for: url)
+        stopExternalSessionRefresh()
         base = url
         phase = .connecting
         let rest = RestClient(base: url, cookie: cookie)
@@ -249,6 +254,44 @@ final class DashboardStore {
         // auto-connects to it (skips the connect form).
         ConnectionPreferences.save(serverURL: serverURLString, token: nil)
         startStream(base: url)
+        startExternalSessionRefresh(base: url, cookie: cookie)
+    }
+
+    /// Poll the optional external-pane endpoint on the same cadence as the web client.
+    /// A failed refresh preserves the last successful snapshot; a cold failure stays
+    /// empty and never touches the ordinary pi-session registry.
+    private func startExternalSessionRefresh(base: URL, cookie: String?) {
+        externalRefreshTask?.cancel()
+        externalSessions.removeAll()
+        let rest = RestClient(base: base, cookie: cookie)
+        externalRefreshTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                let refreshed = await ExternalSessionSource.refresh(
+                    current: Array(self.externalSessions.values),
+                    now: Date().timeIntervalSince1970 * 1_000
+                ) {
+                    try await rest.externalSessions()
+                }
+                guard !Task.isCancelled, self.base == base else { return }
+                var registry: [String: DashboardSession] = [:]
+                for session in refreshed { registry[session.id] = session }
+                if registry != self.externalSessions {
+                    self.externalSessions = registry
+                }
+                do {
+                    try await Task.sleep(for: ExternalSessionSource.refreshInterval)
+                } catch {
+                    return
+                }
+            }
+        }
+    }
+
+    private func stopExternalSessionRefresh() {
+        externalRefreshTask?.cancel()
+        externalRefreshTask = nil
+        externalSessions.removeAll()
     }
 
     /// Called once from the root on first appear. If a server was persisted from a
@@ -324,6 +367,7 @@ final class DashboardStore {
               let origin = CredentialOrigin(url: base) else { return false }
 
         failPendingOperationsOnDisconnect()
+        stopExternalSessionRefresh()
         AuthCookieStore.clear(for: origin)
         await client.disconnect()
         phase = .authRequired(origin: origin.storageKey)
@@ -406,6 +450,7 @@ final class DashboardStore {
 
     func disconnect() {
         failPendingOperationsOnDisconnect()
+        stopExternalSessionRefresh()
         foregroundRecoveryInFlight = nil
         consumeTask?.cancel()
         consumeTask = nil
@@ -715,8 +760,11 @@ final class DashboardStore {
     /// per-tier directory subgroups (pinned-first). All via the core's pure helpers.
     var tierSections: [TierSection] {
         let now = Date().timeIntervalSince1970 * 1000
+        let listedSessions = ExternalSessionSource.merge(
+            piSessions: Array(sessions.values),
+            externalSessions: Array(externalSessions.values))
         var visible = SessionGrouping.filterSessions(
-            Array(sessions.values), activeOnly: activeOnly, showHidden: showHidden)
+            listedSessions, activeOnly: activeOnly, showHidden: showHidden)
         visible = SessionGrouping.filterStale(visible, staleHoursThreshold: staleHoursThreshold,
                                               hideStale: hideStale, now: now, selectedId: viewedSessionId)
         let searching = !search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -735,6 +783,14 @@ final class DashboardStore {
 
     var totalVisibleCount: Int {
         tierSections.reduce(0) { $0 + $1.groups.reduce(0) { $0 + $1.sessions.count } }
+    }
+
+    /// Combined lookup used only to recover rows folded inside the rendered list.
+    /// Mutating chat/session paths continue to resolve against `sessions` alone.
+    var listSessionRegistry: [String: DashboardSession] {
+        var registry = sessions
+        for (id, session) in externalSessions { registry[id] = session }
+        return registry
     }
 
     /// Is the directory folder at `cwd` expanded? Default true (absent from the
@@ -781,8 +837,8 @@ final class DashboardStore {
 
     /// Is `tier`'s section expanded? Resolved from the persisted off-default set via the
     /// core `TierFold`. Force-expanded whenever a search is active so a collapsed tier
-    /// never hides a match (mirrors the PWA). Default set: {standing-crew, drivers,
-    /// cell-executor} expanded, the rest collapsed.
+    /// never hides a match (mirrors the PWA). Default set: {standing-crew, external,
+    /// drivers, cell-executor} expanded, the rest collapsed.
     func isTierExpanded(_ tier: SessionTier) -> Bool {
         let searching = !search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         return TierFold.isExpanded(
@@ -803,6 +859,7 @@ final class DashboardStore {
     /// On detail appear: subscribe (resuming from the last applied seq when we've seen
     /// this session before, else a full replay) + mark viewed (session_view).
     func openSession(_ sid: String) async {
+        guard externalSessions[sid] == nil else { return }
         viewedSessionId = sid
         clearSendFailure(sid)
         await subscribe(sid)
@@ -810,6 +867,7 @@ final class DashboardStore {
     }
 
     func closeSession(_ sid: String) async {
+        guard externalSessions[sid] == nil else { return }
         if viewedSessionId == sid { viewedSessionId = nil }
         // Cluster 1: unsubscribe so an off-screen session STOPS receiving live events
         // (unbounded memory + wasted work otherwise); session_unview is UI-only.
@@ -988,6 +1046,7 @@ final class DashboardStore {
     /// failed + surfaces a banner so an undelivered message is visible.
     @discardableResult
     func sendPrompt(_ sid: String, text: String, images: [ImageContent]?) async -> Bool {
+        guard externalSessions[sid] == nil else { return false }
         guard !isUITest else { return true }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty || (images?.isEmpty == false) else { return false }
@@ -1068,7 +1127,7 @@ final class DashboardStore {
     /// `apply`. On a send throw the optimistic flag is rolled back so the button
     /// re-arms. UITest is a no-op (never touches a live session).
     func abort(_ sid: String) async {
-        guard !isUITest else { return }
+        guard !isUITest, externalSessions[sid] == nil else { return }
         aborting.insert(sid)
         do {
             try await client.abort(sessionId: sid)
@@ -1088,7 +1147,7 @@ final class DashboardStore {
     /// throw the optimistic flag is rolled back so the button re-arms. UITest is a
     /// no-op. RESUME only — fork/spawn are separate controls.
     func resume(_ sid: String) async {
-        guard !isUITest else { return }
+        guard !isUITest, externalSessions[sid] == nil else { return }
         resumingLocal.insert(sid)
         do {
             try await client.resume(sessionId: sid)

@@ -4,6 +4,7 @@ import Foundation
 /// `SessionTier` in `packages/client/src/lib/session-grouping.ts`.
 public enum SessionTier: String, Sendable, CaseIterable, Equatable {
     case standingCrew = "standing-crew"
+    case external = "external"
     case drivers = "drivers"
     case cellExecutor = "cell-executor"
     case operatorChatPane = "operator-chat-pane"
@@ -11,16 +12,18 @@ public enum SessionTier: String, Sendable, CaseIterable, Equatable {
     case other = "other"
 }
 
-/// Canonical tier display order (standing-crew → drivers → cell-executor →
-/// operator-chat-pane → worker → other).
+/// Canonical web tier display order. External panes sit directly below standing crew;
+/// placing them lower makes the read-only surface unreachable in a long list.
 public let SESSION_TIER_ORDER: [SessionTier] = [
-    .standingCrew, .drivers, .cellExecutor, .operatorChatPane, .worker, .other,
+    .standingCrew, .external, .drivers, .cellExecutor, .operatorChatPane, .worker, .other,
 ]
 
 /// Tiers whose section is EXPANDED by default. Tiers NOT listed (operator-chat-pane,
 /// worker, other) default COLLAPSED — they flood the list. Faithful port of the PWA
 /// `DEFAULT_EXPANDED_TIERS` in `packages/client/src/components/SessionList.tsx`.
-public let DEFAULT_EXPANDED_TIERS: Set<SessionTier> = [.standingCrew, .drivers, .cellExecutor]
+public let DEFAULT_EXPANDED_TIERS: Set<SessionTier> = [
+    .standingCrew, .external, .drivers, .cellExecutor,
+]
 
 /// Pure tier fold-state resolution — mirrors the PWA's single "off-default" set.
 /// The persisted set holds a tier's `rawValue` iff the user flipped it AWAY from its
@@ -73,6 +76,9 @@ public enum SessionGrouping {
     /// Classify a session into a `SessionTier`. Decision order matches the TS
     /// `classifyTier` exactly (first match wins).
     public static func classifyTier(_ session: DashboardSession) -> SessionTier {
+        // External panes classify FIRST and unconditionally. Otherwise their runtime
+        // source/name can fall through to a default-collapsed tier and hide the surface.
+        if session.external != nil { return .external }
         let name = session.name ?? ""
         if matches(name, "^subagent-worker-[0-9a-f]", caseInsensitive: true) { return .worker }
         if let f = session.sessionFile, matches(f, "/run-[0-9]+/session\\.jsonl$") { return .worker }

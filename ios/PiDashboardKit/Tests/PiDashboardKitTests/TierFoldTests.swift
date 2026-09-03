@@ -4,25 +4,26 @@ import XCTest
 /// Round 3.1 — foldable TIER sections (Standing Crew / Drivers / Cell Executor / …),
 /// mirroring the directory-fold pattern. The fold decision + persistence are pure
 /// (`TierFold` + `ListPrefsStore`), verified here via `swift test`. Defaults match the
-/// PWA `DEFAULT_EXPANDED_TIERS` ({standing-crew, drivers, cell-executor} expanded; the
-/// rest collapsed — they flood the list).
+/// PWA `DEFAULT_EXPANDED_TIERS` ({standing-crew, external, drivers, cell-executor}
+/// expanded; the rest collapsed — they flood the list).
 final class TierFoldTests: XCTestCase {
 
     // MARK: defaults match the PWA
 
     func testDefaultExpandedTiersIsExactlyThePwaSet() {
-        XCTAssertEqual(DEFAULT_EXPANDED_TIERS, [.standingCrew, .drivers, .cellExecutor])
+        XCTAssertEqual(DEFAULT_EXPANDED_TIERS, [.standingCrew, .external, .drivers, .cellExecutor])
         // and the other three are NOT in it (default-collapsed).
         for t in [SessionTier.operatorChatPane, .worker, .other] {
             XCTAssertFalse(DEFAULT_EXPANDED_TIERS.contains(t), "\(t) must default collapsed")
         }
     }
 
-    /// Empty off-default set = clean defaults: the PWA-expanded trio is expanded, the
+    /// Empty off-default set = clean defaults: the PWA-expanded quartet is expanded, the
     /// flood-prone trio is collapsed.
     func testEmptySetResolvesToDefaults() {
         let none: Set<String> = []
         XCTAssertTrue(TierFold.isExpanded(.standingCrew, offDefault: none))
+        XCTAssertTrue(TierFold.isExpanded(.external, offDefault: none))
         XCTAssertTrue(TierFold.isExpanded(.drivers, offDefault: none))
         XCTAssertTrue(TierFold.isExpanded(.cellExecutor, offDefault: none))
         XCTAssertFalse(TierFold.isExpanded(.operatorChatPane, offDefault: none))

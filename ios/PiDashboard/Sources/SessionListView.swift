@@ -158,22 +158,9 @@ struct SessionListView: View {
             }
             ForEach(visibleRows) { collapsed in
                 VStack(alignment: .leading, spacing: 8) {
-                    NavigationLink {
-                        ChatView(sessionId: collapsed.session.id, title: collapsed.session.displayName)
-                    } label: {
-                        VStack(alignment: .leading, spacing: 4) {
-                            SessionCard(session: collapsed.session)
-                            if directoryLabelIDs.contains(collapsed.session.id) {
-                                Text(directoryBasename(for: collapsed.session))
-                                    .font(.caption2)
-                                    .foregroundStyle(theme.textTertiary)
-                                    .lineLimit(1)
-                                    .padding(.horizontal, 12)
-                                    .accessibilityIdentifier("card-directory-label-\(collapsed.session.id)")
-                            }
-                        }
-                    }
-                    .buttonStyle(.pressableCard)
+                    sessionRow(
+                        collapsed.session,
+                        showsDirectoryLabel: directoryLabelIDs.contains(collapsed.session.id))
                     .accessibilityIdentifier("session-card-\(collapsed.session.id)")
                     .overlay(alignment: .topTrailing) {
                         if collapsed.olderCount > 0 {
@@ -183,20 +170,46 @@ struct SessionListView: View {
 
                     if store.expandedFoldedRows.contains(collapsed.session.id) {
                         ForEach(SessionGrouping.foldedSessions(
-                            collapsed, registry: store.sessions
+                            collapsed, registry: store.listSessionRegistry
                         )) { session in
-                            NavigationLink {
-                                ChatView(sessionId: session.id, title: session.displayName)
-                            } label: {
-                                SessionCard(session: session)
-                            }
-                            .buttonStyle(.pressableCard)
+                            sessionRow(session, showsDirectoryLabel: false)
                             .accessibilityIdentifier("session-card-\(session.id)")
                             .padding(.leading, 16)
                         }
                     }
                 }
             }
+        }
+    }
+
+    /// External panes have no native transcript data source in this increment. Render
+    /// their cards without a chat destination so composer, model, stop, and subscription
+    /// paths stay unreachable; ordinary pi sessions retain the existing NavigationLink.
+    @ViewBuilder private func sessionRow(
+        _ session: DashboardSession,
+        showsDirectoryLabel: Bool
+    ) -> some View {
+        let card = VStack(alignment: .leading, spacing: 4) {
+            SessionCard(session: session)
+            if showsDirectoryLabel {
+                Text(directoryBasename(for: session))
+                    .font(.caption2)
+                    .foregroundStyle(theme.textTertiary)
+                    .lineLimit(1)
+                    .padding(.horizontal, 12)
+                    .accessibilityIdentifier("card-directory-label-\(session.id)")
+            }
+        }
+
+        if session.isExternal {
+            card
+        } else {
+            NavigationLink {
+                ChatView(sessionId: session.id, title: session.displayName)
+            } label: {
+                card
+            }
+            .buttonStyle(.pressableCard)
         }
     }
 
@@ -306,6 +319,7 @@ struct SessionListView: View {
     private func tierLabel(_ tier: SessionTier) -> String {
         switch tier {
         case .standingCrew: return "Standing Crew"
+        case .external: return "Codex & Claude Code"
         case .drivers: return "Drivers"
         case .cellExecutor: return "Cell Executors"
         case .operatorChatPane: return "Operator Chat"
