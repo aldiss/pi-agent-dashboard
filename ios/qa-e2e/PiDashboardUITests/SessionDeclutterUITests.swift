@@ -149,7 +149,8 @@ final class SessionDeclutterUITests: PiDashboardUITestCase {
 
         toggle = scrollToControls()
         toggle.tap()
-        XCTAssertEqual(toggle.value as? String, "on", "toggle flips to on")
+        XCTAssertTrue(waitForValue(hideEndedToggle, equals: "on"),
+                      "toggle flips to on")
         XCTAssertFalse(endedCardExistsWithoutSearch(),
                        "toggling Hide ended ON hides the ended session without search")
     }

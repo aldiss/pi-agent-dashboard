@@ -273,6 +273,25 @@ class PiDashboardUITestCase: XCTestCase {
         return composerLayoutValue() == expected
     }
 
+    /// Poll an element's accessibility VALUE until it equals `expected`. SwiftUI
+    /// publishes a11y values asynchronously, so reading `.value` on the line after a
+    /// `tap()` can still observe the PRE-tap state — that raced green locally and red
+    /// on the slower CI runner. This waits for the transition instead of assuming it,
+    /// and still FAILS if the value never arrives (it is a bounded wait, not a retry
+    /// that eventually passes). Deadline poll, not `expectation(for:)`, to match
+    /// `waitForComposerLayout` and keep Swift 6 strict-concurrency clean.
+    @discardableResult
+    func waitForValue(_ id: String, equals expected: String, timeout: TimeInterval = 6) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if app.descendants(matching: .any).allElementsBoundByIndex
+                .first(where: { $0.identifier == id })?.value as? String == expected { return true }
+            usleep(150_000)
+        }
+        return app.descendants(matching: .any).allElementsBoundByIndex
+            .first(where: { $0.identifier == id })?.value as? String == expected
+    }
+
     /// Count of currently-rendered session cards (any element whose id starts with
     /// `session-card-` and is not a sub-label like `session-card-name`).
     func sessionCardIdentifiers() -> [String] {
