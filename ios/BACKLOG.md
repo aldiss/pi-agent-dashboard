@@ -28,8 +28,8 @@ could have failed. Where a cause is not established, the item says so instead of
 | ID | Title | Status | What is established, and what is not |
 |---|---|---|---|
 | B6 | Context shows 100% for a session that is at 45% | OPEN | Operationally serious: the operator rotates a seat above 50%, and the app is the only view available from mobile. **Server is correct** — live Hearth-19 payload is `contextTokens 450620 / contextWindow 1000000` → 45%, matching the TUI. Both server broadcast paths set tokens and window together. Native formula is correct. A proposed "it shows the cache-hit ratio" explanation is **refuted**: cacheRead is 22.8M and never enters the calculation. **Cause not established** — remaining candidates are client-side staleness or patch merge. Contract test landed (`0805de9`) pinning 45%-not-100% plus the stale-window arithmetic that produces a false 100%. |
-| B7 | Scrolling back through history is yanked to the bottom by new messages | OPEN | Root cause found. Auto-follow is gated on distance-from-bottom, measured by a 1px marker at the end of a **lazy** list. Scrolling far up destroys the marker; its preference then reverts to the default `0`, which reads as "at the bottom", so the guard passes and the view snaps down. Scrolling up does not disable follow — it guarantees it. The code comment claims the opposite, which is why it shipped. **Second defect, same cause:** the same value drives mark-as-read, so scrolling up silently clears unread state for messages never seen. |
-| B8 | The `+N` badge is inert — folded sessions are unreachable | OPEN | `olderIds` is computed and unit-tested but read by no view; tapping opens the surviving row. Any session folded behind `+N` cannot be reached at all. Raised in severity by F6: crew tenures fold globally across directories. |
+| B7 | Scrolling back through history is yanked to the bottom by new messages | SHIPPED `d55e723` | Root cause found. Auto-follow is gated on distance-from-bottom, measured by a 1px marker at the end of a **lazy** list. Scrolling far up destroys the marker; its preference then reverts to the default `0`, which reads as "at the bottom", so the guard passes and the view snaps down. Scrolling up does not disable follow — it guarantees it. The code comment claims the opposite, which is why it shipped. **Second defect, same cause:** the same value drives mark-as-read, so scrolling up silently clears unread state for messages never seen. |
+| B8 | The `+N` badge is inert — folded sessions are unreachable | SHIPPED `3479746` | `olderIds` is computed and unit-tested but read by no view; tapping opens the surviving row. Any session folded behind `+N` cannot be reached at all. Raised in severity by F6: crew tenures fold globally across directories. |
 
 ## Bugs — not the app
 
@@ -42,12 +42,12 @@ could have failed. Where a cause is not established, the item says so instead of
 
 | ID | Title | Status | Detail |
 |---|---|---|---|
-| F1 | No image downscaling before send | IN PROGRESS | Web caps the long edge at 1568px @ 0.85 (~6× smaller base64 for a 12MP photo) and skips animated GIF. Native base64-encoded raw picker data. Ported with pure geometry + MIME policy; oversized HEIC re-encodes to JPEG and is labelled truthfully. |
-| F2 | Cannot pin a folder | OPEN | The app honours pins (`pinned_dirs_updated` inbound, pinned-first ordering) but has **no outbound** `pin_directory` / `unpin_directory` / `reorder_pinned_dirs`, and no context menu, long-press or swipe affordance to hang the control on. Needs a design decision, not just wiring. Reorder is a separate, heavier interaction. |
+| F1 | No image downscaling before send | SHIPPED `8f75604` | Web caps the long edge at 1568px @ 0.85 (~6× smaller base64 for a 12MP photo) and skips animated GIF. Native base64-encoded raw picker data. Ported with pure geometry + MIME policy; oversized HEIC re-encodes to JPEG and is labelled truthfully. |
+| F2 | Cannot pin a folder | SHIPPED `e54ea0f` | The app honours pins (`pinned_dirs_updated` inbound, pinned-first ordering) but has **no outbound** `pin_directory` / `unpin_directory` / `reorder_pinned_dirs`, and no context menu, long-press or swipe affordance to hang the control on. Needs a design decision, not just wiring. Reorder is a separate, heavier interaction. |
 | F3 | No `external` tier, no external-session source | OPEN | Web has 7 tiers including `external` (read-only Codex / Claude Code panes) and fetches an external-sessions response with owners/drivers plus cell grouping. Native has 6 tiers and none of that data path. Larger than it looks: a data-source integration, not a filter. |
-| F4 | "Active only" filter missing | OPEN | Web exposes Folders / Hide ended / Hide stale / **Active only**; native exposes Folders / Hide ended / Hide stale / **Hidden**, and hardcodes `activeOnly: false`. The two clients cannot be driven to the same visible set. |
-| F5 | Composer wastes a full row when multiline | OPEN | Multiline moves attach + controls to their own full-width row with a spacer between, so the middle is empty by construction. Single-line keeps them inline. Deliberate layout (the stable text slot prevents editor teardown mid-stream), so changing it needs care. |
-| F6 | Crew tenures fold across directories; the web never folds | OPEN | Native folds crew canonical names globally into one row; the web client has no same-name collapse at all and renders every tenure. Combined with B8 the folded tenures are unreachable. Largest remaining "I can't see all my sessions" contributor. |
+| F4 | "Active only" filter missing | SHIPPED `d55e723` | Web exposes Folders / Hide ended / Hide stale / **Active only**; native exposes Folders / Hide ended / Hide stale / **Hidden**, and hardcodes `activeOnly: false`. The two clients cannot be driven to the same visible set. |
+| F5 | Composer wastes a full row when multiline | SHIPPED `e54ea0f` | Multiline moves attach + controls to their own full-width row with a spacer between, so the middle is empty by construction. Single-line keeps them inline. Deliberate layout (the stable text slot prevents editor teardown mid-stream), so changing it needs care. |
+| F6 | Crew tenures fold across directories; the web never folds | SHIPPED `3479746` | Native folds crew canonical names globally into one row; the web client has no same-name collapse at all and renders every tenure. Combined with B8 the folded tenures are unreachable. Largest remaining "I can't see all my sessions" contributor. |
 
 ## Verification debts — must not be reported as passing
 
@@ -55,7 +55,7 @@ could have failed. Where a cause is not established, the item says so instead of
 |---|---|---|
 | V1 | Physical microphone acceptance | UNRUN — requires the operator's device |
 | V2 | Physical OAuth + real Keychain migration over an installed build | UNRUN — green results to date are against a memory stub, not the Security framework |
-| V3 | On-screen render check for B4 | UNRUN — three local simulator attempts died before any assertion (CoreSimulator "Failed to locate promise" ×2, Mach -308 once) on a box at 196 five-minute load. CI runs this suite nightly/on-demand only; a push-triggered green tick does **not** cover it. Triggered explicitly via workflow_dispatch. |
+| V3 | On-screen render check for B4 | DISCHARGED — passed on CI and locally. Formerly UNRUN — three local simulator attempts died before any assertion (CoreSimulator "Failed to locate promise" ×2, Mach -308 once) on a box at 196 five-minute load. CI runs this suite nightly/on-demand only; a push-triggered green tick does **not** cover it. Triggered explicitly via workflow_dispatch. |
 
 ---
 
@@ -72,6 +72,19 @@ could have failed. Where a cause is not established, the item says so instead of
 
 | ID | Title | Status | Detail |
 |---|---|---|---|
-| F7 | Filter chips overflow the screen | OPEN | The filter row is a horizontal `ScrollView`. Adding "Active only" (F4) made five chips, so the row now overflows and **"Hidden" is off-screen by default** — reachable only by scrolling a control strip most people will not think to scroll. Surfaced by the rendering gate: a clipped chip reports `isHittable` while its centre lies outside the window, so taps missed. The test now scrolls the chip into view before tapping; the UI question (wrap the row, shrink the chips, or move some filters into a menu) is unresolved and is mine, not the test's. |
-| N1 | Crew roster duplicated in a second list | IN PROGRESS | `classifyTier` knows ten names; the fold list knows eight — Harry and Dawn absent — so their tenures never fold even in one directory. Same roster-drift as B3 (`c531f10`) recurring in a different list. Being fixed at the root (single source both paths consume) plus a test that fails if they ever disagree. |
+| F7 | Filter chips overflow the screen | SHIPPED `e54ea0f` | The filter row is a horizontal `ScrollView`. Adding "Active only" (F4) made five chips, so the row now overflows and **"Hidden" is off-screen by default** — reachable only by scrolling a control strip most people will not think to scroll. Surfaced by the rendering gate: a clipped chip reports `isHittable` while its centre lies outside the window, so taps missed. The test now scrolls the chip into view before tapping; the UI question (wrap the row, shrink the chips, or move some filters into a menu) is unresolved and is mine, not the test's. |
+| N1 | Crew roster duplicated in a second list | SHIPPED `3479746` | `classifyTier` knows ten names; the fold list knows eight — Harry and Dawn absent — so their tenures never fold even in one directory. Same roster-drift as B3 (`c531f10`) recurring in a different list. Being fixed at the root (single source both paths consume) plus a test that fails if they ever disagree. |
 | N2 | Session card never shows a directory | OPEN | `SessionCard` renders name, model, branch, age, status — never `cwd`. `displayName` falls back to the directory basename only when name AND firstMessage are both empty, which never happens for a named crew session. This is why "Pete twice" read as a bug: the rows were not wrong, they were indistinguishable, and with Folders off there is no header either, so they are pixel-identical. |
+
+## Gate status
+
+The rendering gate is GREEN and binding as of `e54ea0f` (run 33734620173): seven
+critical rendering tests execute on every push, ~12 min. Full suite nightly.
+Branch protection must REQUIRE the check for it to block a merge — a workflow file
+cannot enforce that, and only the operator can set it.
+
+First fully-green gate run. It has already caught, in order: a toggle-value race
+that passed locally and failed on the slower runner; a tap that missed a chip
+clipped by a horizontal scroller; a compile break from a half-committed change; and
+a fold test selecting an ended card the UI would never render. None of those were
+visible to `swift test`.
