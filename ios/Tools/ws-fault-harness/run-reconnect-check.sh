@@ -12,6 +12,7 @@
 # Runs on the command line: no simulator, no signing, no network. ~45s.
 #
 # Usage: ./run-reconnect-check.sh          # drop+reconnect (the regression)
+#        ./run-reconnect-check.sh session-lifecycle # healthy full chat/foreground/idle lifecycle
 #        ./run-reconnect-check.sh revalidate-idle # idle healthy socket answers active probes
 #        ./run-reconnect-check.sh revalidate-halfopen # half-open socket recovers after probe timeout
 #        ./run-reconnect-check.sh cross-origin # A credential must not reach B
@@ -40,6 +41,7 @@ EDIT_AT=-1
 REVALIDATE_AT=-1
 REVALIDATE_COUNT=1
 REVALIDATE_INTERVAL=0
+LIFECYCLE_CYCLE=off
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP="$HERE/../../PiDashboard/Sources"
 KIT="$HERE/../../PiDashboardKit"
@@ -54,6 +56,7 @@ PROBE_SCENARIO=default
 trap 'if [ -n "${SRV_PID:-}" ]; then kill "$SRV_PID" 2>/dev/null || true; fi; rm -rf "$WORK"' EXIT
 
 case "$MODE" in
+  session-lifecycle)  SERVER_MODE=alive-idle; FAULT_AT=8; BUDGET=36; SEND_AT=-1; LATE_ECHO=off; RESET_CYCLE=off; PROMPT_CYCLE=off; PROMPT_DUPLICATE=off; QUEUE_CYCLE=off; PROMPT_ANSWER=none; COMPETING=single; PROBE_SCENARIO=session-lifecycle; LIFECYCLE_CYCLE=on; LABEL="healthy full session lifecycle with silent idle" ;;
   revalidate-idle)     SERVER_MODE=alive-idle; FAULT_AT=8; BUDGET=18; SEND_AT=-1; LATE_ECHO=off; RESET_CYCLE=off; PROMPT_CYCLE=off; PROMPT_DUPLICATE=off; QUEUE_CYCLE=off; PROMPT_ANSWER=none; COMPETING=single; REVALIDATE_AT=4; REVALIDATE_COUNT=5; REVALIDATE_INTERVAL=3; PROBE_SCENARIO=revalidate-idle; LABEL="five foreground returns on a healthy idle socket" ;;
   revalidate-halfopen) SERVER_MODE=stall; FAULT_AT=3; BUDGET=12; SEND_AT=-1; LATE_ECHO=off; RESET_CYCLE=off; PROMPT_CYCLE=off; PROMPT_DUPLICATE=off; QUEUE_CYCLE=off; PROMPT_ANSWER=none; COMPETING=single; REVALIDATE_AT=2; REVALIDATE_COUNT=5; REVALIDATE_INTERVAL=0.25; PROBE_SCENARIO=revalidate-halfopen; LABEL="repeated foreground returns during a half-open probe" ;;
   cross-origin) SERVER_MODE=alive; FAULT_AT=8; BUDGET=6; SEND_AT=-1; LATE_ECHO=off; RESET_CYCLE=off; PROMPT_CYCLE=off; PROMPT_DUPLICATE=off; QUEUE_CYCLE=off; PROMPT_ANSWER=none; COMPETING=single; PROBE_SCENARIO=cross-origin; LABEL="same-origin negative control followed by foreign-origin connect" ;;
@@ -73,7 +76,7 @@ case "$MODE" in
   model-empty)          SERVER_MODE=alive; FAULT_AT=8; BUDGET=6; SEND_AT=-1; LATE_ECHO=off; RESET_CYCLE=off; PROMPT_CYCLE=off; PROMPT_DUPLICATE=off; QUEUE_CYCLE=off; PROMPT_ANSWER=none; MODEL_CYCLE=empty; MODEL_PROBE=empty; COMPETING=single; LABEL="empty model catalogue reaches loaded state" ;;
   send-same-recover)    SERVER_MODE=alive; FAULT_AT=8; BUDGET=16; SEND_AT=3; LATE_ECHO=off; RESET_CYCLE=off; PROMPT_CYCLE=off; PROMPT_DUPLICATE=off; QUEUE_CYCLE=off; PROMPT_ANSWER=none; MODEL_PROBE=off; COMPETING=same; IDLE_FIRST_ACK=on; LABEL="ack A must not clear same-value restored draft B" ;;
   send-edit-recover)    SERVER_MODE=alive; FAULT_AT=8; BUDGET=16; SEND_AT=3; LATE_ECHO=off; RESET_CYCLE=off; PROMPT_CYCLE=off; PROMPT_DUPLICATE=off; QUEUE_CYCLE=off; PROMPT_ANSWER=none; MODEL_PROBE=off; COMPETING=single; IDLE_FIRST_ACK=on; EDIT_AT=10; LABEL="late ack must preserve operator whitespace edit" ;;
-  *) echo "unknown mode '$MODE' (want: revalidate-idle | revalidate-halfopen | cross-origin | auth-reject | close | stall | send-loss | send-recover | send-partial-recover | reset-replay | prompt-cycle | prompt-duplicate)" >&2; exit 2 ;;
+  *) echo "unknown mode '$MODE' (want: session-lifecycle | revalidate-idle | revalidate-halfopen | cross-origin | auth-reject | close | stall | send-loss | send-recover | send-partial-recover | reset-replay | prompt-cycle | prompt-duplicate)" >&2; exit 2 ;;
 esac
 
 # Build a throwaway package around the REAL store sources (symlinked, never copied —
@@ -104,7 +107,156 @@ fi
 
 TRACE="$WORK/trace.jsonl"
 MODEL_PROBE="${MODEL_PROBE:-off}"
-node "$HERE/ws-fault-server.mjs" --mode="$SERVER_MODE" --after="$FAULT_AT" --port="$PORT" --lateEcho="$LATE_ECHO" --resetCycle="$RESET_CYCLE" --promptCycle="$PROMPT_CYCLE" --promptDuplicate="$PROMPT_DUPLICATE" --queueCycle="$QUEUE_CYCLE" --queueLateAck="$QUEUE_LATE_ACK" --modelCycle="$MODEL_CYCLE" --idleFirstAck="$IDLE_FIRST_ACK" --trace="$TRACE" >"$WORK/srv.log" 2>&1 &
+
+# Read server-owned connection events only. This assertion is shared by the forced
+# two-store control and the positive lifecycle run, so the control proves both fields
+# are live measurements rather than counters that happen to stay at one.
+socket_trace_stats() {
+  awk '
+    /"ev":"upgraded"/ {
+      accepted += 1
+      live += 1
+      if (live > max_live) max_live = live
+    }
+    /"ev":"socket_closed"/ { if (live > 0) live -= 1 }
+    END { print accepted + 0, max_live + 0 }
+  ' "$1"
+}
+
+assert_single_socket_trace() {
+  local stats accepted max_live
+  stats="$(socket_trace_stats "$1")"
+  read -r accepted max_live <<<"$stats"
+  [ "$accepted" -eq 1 ] && [ "$max_live" -eq 1 ]
+}
+
+print_lifecycle_failure_timeline() {
+  local trace_file="$1" probe_file="$2"
+  echo "server lifecycle timeline:"
+  awk '
+    function trace_time(line, value) {
+      value = line
+      sub(/^\{"t":/, "", value)
+      sub(/,.*/, "", value)
+      return value + 0
+    }
+    function connection_number(line, value) {
+      value = line
+      sub(/.*"connectionNumber":/, "", value)
+      sub(/[^0-9].*/, "", value)
+      return value
+    }
+    function enter_idle_if_due(now) {
+      if (stage == "foreground-2" && foreground_2_at >= 0 \
+          && now - foreground_2_at >= 1) {
+        stage = "silent-idle"
+      }
+    }
+    BEGIN {
+      stage = "initial"
+      foreground_2_at = -1
+    }
+    /"ev":"upgraded"/ {
+      now = trace_time($0)
+      enter_idle_if_due(now)
+      accepted += 1
+      printf "  t=%.2f ACCEPTED#%d connection=%s after=%s\n", \
+        now, accepted, connection_number($0), stage
+      next
+    }
+    /"ev":"socket_closed"/ {
+      now = trace_time($0)
+      enter_idle_if_due(now)
+      printf "  t=%.2f socket-closed connection=%s stage=%s\n", \
+        now, connection_number($0), stage
+      next
+    }
+    /"ev":"sent","type":"sessions_snapshot"/ {
+      now = trace_time($0)
+      printf "  t=%.2f snapshot\n", now
+      if (accepted == 1) stage = "snapshot"
+      next
+    }
+    /"ev":"rx","type":"subscribe","sessionId":"sess-probe-1"/ {
+      now = trace_time($0)
+      printf "  t=%.2f subscribe sess-probe-1\n", now
+      if (accepted == 1) stage = "first-chat"
+      next
+    }
+    /"ev":"sent","type":"event"/ {
+      now = trace_time($0)
+      printf "  t=%.2f live event\n", now
+      if (accepted == 1) stage = "live"
+      next
+    }
+    /"ev":"sent","type":"session_updated"/ {
+      now = trace_time($0)
+      printf "  t=%.2f session_updated\n", now
+      if (accepted == 1) stage = "update"
+      next
+    }
+    /"ev":"rx_ws_ping"/ {
+      now = trace_time($0)
+      ping += 1
+      if (accepted == 1) {
+        if (ping == 1) stage = "foreground-1"
+        else if (ping == 2) {
+          stage = "foreground-2"
+          foreground_2_at = now
+        } else stage = "silent-idle"
+      }
+      printf "  t=%.2f ws-ping#%d stage=%s\n", now, ping, stage
+      next
+    }
+    /"ev":"rx","type":"unsubscribe","sessionId":"sess-probe-1"/ {
+      now = trace_time($0)
+      printf "  t=%.2f unsubscribe sess-probe-1\n", now
+      if (accepted == 1) stage = "left-first"
+      next
+    }
+    /"ev":"rx","type":"subscribe","sessionId":"sess-probe-2"/ {
+      now = trace_time($0)
+      printf "  t=%.2f subscribe sess-probe-2\n", now
+      if (accepted == 1) stage = "second-chat"
+      next
+    }
+  ' "$trace_file"
+  echo "client lifecycle checkpoints:"
+  grep 'lifecycle ' "$probe_file" | sed 's/^/  /' || true
+}
+
+if [ "$MODE" = "session-lifecycle" ]; then
+  CONTROL_TRACE="$WORK/control-trace.jsonl"
+  node "$HERE/ws-fault-server.mjs" --mode="$SERVER_MODE" --after="$FAULT_AT" --port="$PORT" --lateEcho="$LATE_ECHO" --resetCycle="$RESET_CYCLE" --promptCycle="$PROMPT_CYCLE" --promptDuplicate="$PROMPT_DUPLICATE" --queueCycle="$QUEUE_CYCLE" --queueLateAck="$QUEUE_LATE_ACK" --modelCycle="$MODEL_CYCLE" --idleFirstAck="$IDLE_FIRST_ACK" --lifecycleCycle="$LIFECYCLE_CYCLE" --trace="$CONTROL_TRACE" >"$WORK/control-srv.log" 2>&1 &
+  SRV_PID=$!
+  sleep 1
+  if ! kill -0 "$SRV_PID" 2>/dev/null; then
+    cat "$WORK/control-srv.log" >&2
+    echo "LIFECYCLE CONTROL SERVER FAILED TO START" >&2
+    exit 1
+  fi
+  if ! "$WORK/.build/debug/StoreProbe" "$TARGET_URL" 5 0 -1 -1 single none off -1 session-lifecycle-control "$ORIGIN_A_URL" "$ORIGIN_B_URL" 1 0 >"$WORK/control-probe.log" 2>&1; then
+    cat "$WORK/control-probe.log" >&2
+    echo "FAIL: lifecycle must-fail control could not force two real stores online." >&2
+    exit 1
+  fi
+  kill "$SRV_PID" 2>/dev/null || true
+  wait "$SRV_PID" 2>/dev/null || true
+  SRV_PID=
+
+  read -r CONTROL_CONNECTIONS CONTROL_MAX_LIVE <<<"$(socket_trace_stats "$CONTROL_TRACE")"
+  if [ "$CONTROL_CONNECTIONS" -ne 2 ] || [ "$CONTROL_MAX_LIVE" -ne 2 ]; then
+    echo "FAIL: lifecycle must-fail control produced ACCEPTED=$CONTROL_CONNECTIONS max-live=$CONTROL_MAX_LIVE; want 2/2." >&2
+    exit 1
+  fi
+  if assert_single_socket_trace "$CONTROL_TRACE"; then
+    echo "FAIL: single-socket assertion accepted the forced two-socket control." >&2
+    exit 1
+  fi
+  echo "must-fail control: forced real second socket rejected (ACCEPTED=$CONTROL_CONNECTIONS max-live=$CONTROL_MAX_LIVE)."
+fi
+
+node "$HERE/ws-fault-server.mjs" --mode="$SERVER_MODE" --after="$FAULT_AT" --port="$PORT" --lateEcho="$LATE_ECHO" --resetCycle="$RESET_CYCLE" --promptCycle="$PROMPT_CYCLE" --promptDuplicate="$PROMPT_DUPLICATE" --queueCycle="$QUEUE_CYCLE" --queueLateAck="$QUEUE_LATE_ACK" --modelCycle="$MODEL_CYCLE" --idleFirstAck="$IDLE_FIRST_ACK" --lifecycleCycle="$LIFECYCLE_CYCLE" --trace="$TRACE" >"$WORK/srv.log" 2>&1 &
 SRV_PID=$!
 sleep 1
 if ! kill -0 "$SRV_PID" 2>/dev/null; then
@@ -120,13 +272,8 @@ PROBE_RESULT=0
 kill $SRV_PID 2>/dev/null || true
 sleep 0.3
 
-CONNECTIONS=$(grep -c '"ev":"upgraded"' "$TRACE" || true)
+read -r CONNECTIONS MAX_LIVE <<<"$(socket_trace_stats "$TRACE")"
 SUBSCRIBES=$(grep -c '"type":"subscribe"' "$TRACE" || true)
-MAX_LIVE=$(awk '
-  /"ev":"upgraded"/ { live += 1; if (live > max) max = live }
-  /"ev":"socket_closed"/ { if (live > 0) live -= 1 }
-  END { print max + 0 }
-' "$TRACE")
 RX_WS_PINGS=$(grep -c '"ev":"rx_ws_ping"' "$TRACE" || true)
 APP_UPDATES=$(grep -c '"ev":"sent","type":"session_updated"' "$TRACE" || true)
 STALLED_WS_PINGS=$(grep -c '"ev":"rx_ws_ping_stalled"' "$TRACE" || true)
@@ -137,18 +284,90 @@ echo "connections=$CONNECTIONS  subscribe frames received=$SUBSCRIBES"
 # exercised), or reconnects that left the chat unsubscribed (the regression).
 if [[ "$MODE" != auth-reject && "$MODE" != prompt-* && "$MODE" != queue-loss && "$MODE" != queue-recover \
       && "$MODE" != model-* && "$MODE" != send-same-recover && "$MODE" != send-edit-recover \
-      && "$MODE" != revalidate-idle ]] \
+      && "$MODE" != revalidate-idle && "$MODE" != session-lifecycle ]] \
     && [ "$CONNECTIONS" -lt 2 ]; then
   echo "FAIL: only $CONNECTIONS connection(s) — the drop never triggered a reconnect," >&2
   echo "      so this run proves nothing. Check the fault server log: $WORK/srv.log" >&2
   exit 1
 fi
-if [ "$CONNECTIONS" != "$SUBSCRIBES" ]; then
+if [ "$MODE" != "session-lifecycle" ] && [ "$CONNECTIONS" != "$SUBSCRIBES" ]; then
   echo "FAIL: $((CONNECTIONS - SUBSCRIBES)) connection(s) left the chat unsubscribed." >&2
   echo "      The app would look connected while the open chat received nothing." >&2
   exit 1
 fi
-if [ "$MODE" = "revalidate-idle" ]; then
+if [ "$MODE" = "session-lifecycle" ]; then
+  FOREGROUND_RETURNS=$(grep -c 'lifecycle foreground return' "$PROBE_OUT" || true)
+  SNAPSHOTS=$(grep -c '"ev":"sent","type":"sessions_snapshot"' "$TRACE" || true)
+  LIVE_EVENTS=$(grep -c '"ev":"sent","type":"event"' "$TRACE" || true)
+  FIRST_SUBSCRIBES=$(grep -c '"type":"subscribe","sessionId":"sess-probe-1"' "$TRACE" || true)
+  FIRST_UNSUBSCRIBES=$(grep -c '"type":"unsubscribe","sessionId":"sess-probe-1"' "$TRACE" || true)
+  SECOND_SUBSCRIBES=$(grep -c '"type":"subscribe","sessionId":"sess-probe-2"' "$TRACE" || true)
+  ACCEPTED_LINE=$(grep -n '"ev":"upgraded"' "$TRACE" | head -1 | cut -d: -f1 || true)
+  SNAPSHOT_LINE=$(grep -n '"ev":"sent","type":"sessions_snapshot"' "$TRACE" | head -1 | cut -d: -f1 || true)
+  FIRST_SUBSCRIBE_LINE=$(grep -n '"type":"subscribe","sessionId":"sess-probe-1"' "$TRACE" | head -1 | cut -d: -f1 || true)
+  LIVE_EVENT_LINE=$(grep -n '"ev":"sent","type":"event"' "$TRACE" | head -1 | cut -d: -f1 || true)
+  UPDATE_LINE=$(grep -n '"ev":"sent","type":"session_updated"' "$TRACE" | head -1 | cut -d: -f1 || true)
+  FIRST_PING_LINE=$(grep -n '"ev":"rx_ws_ping"' "$TRACE" | sed -n '1s/:.*//p' || true)
+  FIRST_UNSUBSCRIBE_LINE=$(grep -n '"type":"unsubscribe","sessionId":"sess-probe-1"' "$TRACE" | head -1 | cut -d: -f1 || true)
+  SECOND_SUBSCRIBE_LINE=$(grep -n '"type":"subscribe","sessionId":"sess-probe-2"' "$TRACE" | head -1 | cut -d: -f1 || true)
+  SECOND_PING_LINE=$(grep -n '"ev":"rx_ws_ping"' "$TRACE" | sed -n '2s/:.*//p' || true)
+  if [ -n "$SECOND_PING_LINE" ]; then
+    APPLICATION_FRAMES_DURING_IDLE=$(awk -v after="$SECOND_PING_LINE" 'NR > after && /"ev":"sent"/ { count += 1 } END { print count + 0 }' "$TRACE")
+  else
+    APPLICATION_FRAMES_DURING_IDLE=-1
+  fi
+
+  echo "lifecycle trace: ACCEPTED=$CONNECTIONS max-live=$MAX_LIVE snapshots=$SNAPSHOTS subscribes=$FIRST_SUBSCRIBES+$SECOND_SUBSCRIBES live-events=$LIVE_EVENTS updates=$APP_UPDATES ws-pings=$RX_WS_PINGS idle-app-frames=$APPLICATION_FRAMES_DURING_IDLE"
+  if [ "$PROBE_RESULT" -ne 0 ]; then
+    echo "FAIL: lifecycle StoreProbe exited $PROBE_RESULT." >&2
+    print_lifecycle_failure_timeline "$TRACE" "$PROBE_OUT" >&2
+    exit 1
+  fi
+  if ! assert_single_socket_trace "$TRACE"; then
+    echo "FAIL: lifecycle requires ACCEPTED == 1 and max-live == 1; got $CONNECTIONS/$MAX_LIVE." >&2
+    print_lifecycle_failure_timeline "$TRACE" "$PROBE_OUT" >&2
+    exit 1
+  fi
+  if [ "$SNAPSHOTS" -ne 1 ] || [ "$FIRST_SUBSCRIBES" -ne 1 ] \
+      || [ "$FIRST_UNSUBSCRIBES" -ne 1 ] || [ "$SECOND_SUBSCRIBES" -ne 1 ]; then
+    echo "FAIL: lifecycle did not snapshot, open first chat, leave it, and open second chat exactly once." >&2
+    exit 1
+  fi
+  if [ "$LIVE_EVENTS" -ne 1 ] || [ "$APP_UPDATES" -ne 1 ]; then
+    echo "FAIL: lifecycle server did not emit exactly one live event and one session_updated frame." >&2
+    exit 1
+  fi
+  if [ "$FOREGROUND_RETURNS" -ne 2 ] || [ "$RX_WS_PINGS" -lt 3 ]; then
+    echo "FAIL: lifecycle needs two foreground probes plus a passive 22s control ping; got returns=$FOREGROUND_RETURNS pings=$RX_WS_PINGS." >&2
+    exit 1
+  fi
+  if [ -z "$ACCEPTED_LINE" ] || [ -z "$SNAPSHOT_LINE" ] || [ -z "$FIRST_SUBSCRIBE_LINE" ] \
+      || [ -z "$LIVE_EVENT_LINE" ] || [ -z "$UPDATE_LINE" ] \
+      || [ -z "$FIRST_PING_LINE" ] || [ -z "$FIRST_UNSUBSCRIBE_LINE" ] \
+      || [ -z "$SECOND_SUBSCRIBE_LINE" ] || [ -z "$SECOND_PING_LINE" ] \
+      || [ "$ACCEPTED_LINE" -ge "$SNAPSHOT_LINE" ] \
+      || [ "$SNAPSHOT_LINE" -ge "$FIRST_SUBSCRIBE_LINE" ] \
+      || [ "$FIRST_SUBSCRIBE_LINE" -ge "$LIVE_EVENT_LINE" ] \
+      || [ "$LIVE_EVENT_LINE" -ge "$UPDATE_LINE" ] \
+      || [ "$UPDATE_LINE" -ge "$FIRST_PING_LINE" ] \
+      || [ "$FIRST_PING_LINE" -ge "$FIRST_UNSUBSCRIBE_LINE" ] \
+      || [ "$FIRST_UNSUBSCRIBE_LINE" -ge "$SECOND_SUBSCRIBE_LINE" ] \
+      || [ "$SECOND_SUBSCRIBE_LINE" -ge "$SECOND_PING_LINE" ]; then
+    echo "FAIL: server trace does not preserve snapshot/chat/live/foreground/switch/foreground order." >&2
+    exit 1
+  fi
+  if [ "$APPLICATION_FRAMES_DURING_IDLE" -ne 0 ]; then
+    echo "FAIL: server emitted $APPLICATION_FRAMES_DURING_IDLE application frame(s) after the second foreground probe." >&2
+    exit 1
+  fi
+  if ! grep -q 'lifecycle received live event + session_updated' "$PROBE_OUT" \
+      || ! grep -q 'lifecycle final: phase=connected viewed=sess-probe-2 sessions=2' "$PROBE_OUT"; then
+    echo "FAIL: real DashboardStore did not observe the live frames or finish the idle window connected on session 2." >&2
+    grep 'lifecycle' "$PROBE_OUT" >&2 || true
+    exit 1
+  fi
+  echo "PASS: full lifecycle held ACCEPTED == 1 and max-live == 1 through the silent idle window."
+elif [ "$MODE" = "revalidate-idle" ]; then
   REVALIDATIONS=$(grep -c 'simulating foreground return' "$PROBE_OUT" || true)
   echo "idle revalidate trace: ACCEPTED=$CONNECTIONS max-live=$MAX_LIVE revalidates=$REVALIDATIONS rx_ws_ping=$RX_WS_PINGS"
   if [ "$PROBE_RESULT" -ne 0 ]; then

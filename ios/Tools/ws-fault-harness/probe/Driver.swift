@@ -67,6 +67,106 @@ struct RealStoreProbe {
         print("[store] cross-origin final: A=\(AuthCookieStore.probeContains(originKey: originA.storageKey)) B=\(AuthCookieStore.probeContains(originKey: originB.storageKey))")
     }
 
+    private static func waitUntil(
+        timeout: TimeInterval,
+        condition: () -> Bool
+    ) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if condition() { return true }
+            try? await Task.sleep(for: .milliseconds(50))
+        }
+        return condition()
+    }
+
+    /// Mandatory must-fail control for the lifecycle socket-count assertion. Both
+    /// real stores remain connected together long enough for the server trace to
+    /// record ACCEPTED=2 and max-live=2. The shell suppresses this probe's output.
+    private static func runSessionLifecycleControl(url: String) async {
+        let first = DashboardStore(idleAckDeadline: .seconds(5), queueAckDeadline: .seconds(8))
+        first.serverURLString = url
+        await first.connect()
+        guard await waitUntil(timeout: 4, condition: {
+            "\(first.phase)" == "connected" && first.sessions.count == 2
+        }) else {
+            print("[store] lifecycle control failed to connect first store")
+            exit(3)
+        }
+
+        let second = DashboardStore(idleAckDeadline: .seconds(5), queueAckDeadline: .seconds(8))
+        second.serverURLString = url
+        await second.connect()
+        guard await waitUntil(timeout: 4, condition: {
+            "\(second.phase)" == "connected" && second.sessions.count == 2
+        }) else {
+            print("[store] lifecycle control failed to connect second store")
+            exit(3)
+        }
+
+        try? await Task.sleep(for: .milliseconds(500))
+        second.disconnect()
+        first.disconnect()
+        try? await Task.sleep(for: .milliseconds(500))
+    }
+
+    /// Replays the observed operator lifecycle against a healthy socket. Delays keep
+    /// navigation/foreground actions distinct, then the final idle window crosses the
+    /// production 22-second control-ping cadence with no server application traffic.
+    private static func runSessionLifecycle(url: String, start: Date) async {
+        func el() -> String { String(format: "%.2f", Date().timeIntervalSince(start)) }
+        let store = DashboardStore(idleAckDeadline: .seconds(5), queueAckDeadline: .seconds(8))
+        store.serverURLString = url
+        await store.connect()
+        guard await waitUntil(timeout: 5, condition: {
+            "\(store.phase)" == "connected"
+                && store.sessions["sess-probe-1"] != nil
+                && store.sessions["sess-probe-2"] != nil
+        }) else {
+            print("[store \(el())s] lifecycle FAIL: snapshot not received")
+            exit(3)
+        }
+        print("[store \(el())s] lifecycle snapshot received; sessions=\(store.sessions.count)")
+
+        try? await Task.sleep(for: .seconds(1))
+        await store.openSession("sess-probe-1")
+        print("[store \(el())s] lifecycle opened sess-probe-1")
+        guard await waitUntil(timeout: 5, condition: {
+            store.chatState("sess-probe-1").messages.contains {
+                $0.content == "lifecycle live event"
+            } && store.sessions["sess-probe-1"]?.status == "idle"
+        }) else {
+            print("[store \(el())s] lifecycle FAIL: live event/session update not received")
+            exit(3)
+        }
+        print("[store \(el())s] lifecycle received live event + session_updated")
+
+        try? await Task.sleep(for: .milliseconds(1_250))
+        print("[store \(el())s] lifecycle foreground return 1/2 -> revalidate()")
+        store.revalidate()
+        try? await Task.sleep(for: .seconds(1))
+
+        await store.closeSession("sess-probe-1")
+        print("[store \(el())s] lifecycle left sess-probe-1")
+        try? await Task.sleep(for: .milliseconds(750))
+        await store.openSession("sess-probe-2")
+        print("[store \(el())s] lifecycle opened sess-probe-2")
+
+        try? await Task.sleep(for: .milliseconds(1_250))
+        print("[store \(el())s] lifecycle foreground return 2/2 -> revalidate()")
+        store.revalidate()
+        try? await Task.sleep(for: .seconds(1))
+
+        print("[store \(el())s] lifecycle idle window started")
+        try? await Task.sleep(for: .seconds(24))
+        guard "\(store.phase)" == "connected", store.viewedSessionId == "sess-probe-2" else {
+            print("[store \(el())s] lifecycle FAIL: socket/view changed during idle")
+            exit(3)
+        }
+        print("[store \(el())s] lifecycle final: phase=\(store.phase) viewed=\(store.viewedSessionId ?? "none") sessions=\(store.sessions.count)")
+        store.disconnect()
+        try? await Task.sleep(for: .milliseconds(500))
+    }
+
     static func main() async {
         let url = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : "http://127.0.0.1:8850"
         let budget = CommandLine.arguments.count > 2 ? Double(CommandLine.arguments[2])! : 40
@@ -79,6 +179,16 @@ struct RealStoreProbe {
 
         if scenario == "cross-origin" {
             await runCrossOrigin(originAURL: originAURL, originBURL: originBURL, start: start)
+            return
+        }
+
+        if scenario == "session-lifecycle-control" {
+            await runSessionLifecycleControl(url: url)
+            return
+        }
+
+        if scenario == "session-lifecycle" {
+            await runSessionLifecycle(url: url, start: start)
             return
         }
 

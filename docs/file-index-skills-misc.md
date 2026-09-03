@@ -63,6 +63,6 @@
 | `ios/qa-e2e/PiDashboardUITests/FoldingUITests.swift` | Covers hermetic tier and directory folding, persistence, and directory-header pin context menu. |
 | `ios/qa-e2e/PiDashboardUITests/ModelPickerUITests.swift` | Queries model rows through stable `model-row-*` accessibility identifiers. Avoids indexed snapshots. |
 | `ios/qa-e2e/PiDashboardUITests/SessionDeclutterUITests.swift` | Verifies Hide ended with no search. Verifies matching search reveal, clearing-search re-hide, and OFF-to-ON hide transition. Scans folded lazy list without fixture skip. |
-| `ios/Tools/ws-fault-harness/probe/Driver.swift` | Drives repeated `DashboardStore.revalidate()` calls for foreground-transition storms. |
-| `ios/Tools/ws-fault-harness/run-reconnect-check.sh` | Checks healthy-idle retention and half-open recovery bounds. |
-| `ios/Tools/ws-fault-harness/ws-fault-server.mjs` | Emulates healthy-idle and half-open WebSocket paths with control-frame traces. |
+| `ios/Tools/ws-fault-harness/probe/Driver.swift` | Drives two-chat `DashboardStore` session lifecycle plus concurrent-store negative control. |
+| `ios/Tools/ws-fault-harness/run-reconnect-check.sh` | Validates `session-lifecycle` server trace (`ACCEPTED == 1`, `max-live == 1`) and rejects `2/2` negative control. |
+| `ios/Tools/ws-fault-harness/ws-fault-server.mjs` | Serves two-session snapshot and timed live frames, then stays application-silent while answering WebSocket pings. |

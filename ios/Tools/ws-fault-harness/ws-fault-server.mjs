@@ -35,6 +35,7 @@ const QUEUE_CYCLE = args.queueCycle === "on";
 const QUEUE_LATE_ACK = args.queueLateAck === "on";
 const MODEL_CYCLE = args.modelCycle ?? "off";
 const IDLE_FIRST_ACK = args.idleFirstAck === "on";
+const LIFECYCLE_CYCLE = args.lifecycleCycle === "on";
 let connectionCount = 0;
 let rejectedUpgradeCount = 0;
 let idleAckScheduled = false;
@@ -104,18 +105,33 @@ function makeParser(onFrame) {
   };
 }
 
+const probeSessions = [
+  {
+    id: "sess-probe-1",
+    cwd: "/tmp/probe",
+    status: "working",
+    startedAt: Date.now(),
+    lastActivity: Date.now(),
+  },
+];
+if (LIFECYCLE_CYCLE) {
+  probeSessions.push({
+    id: "sess-probe-2",
+    cwd: "/tmp/probe",
+    status: "idle",
+    startedAt: Date.now(),
+    lastActivity: Date.now(),
+  });
+}
+
 const snapshot = {
   type: "sessions_snapshot",
-  sessions: [
-    {
-      id: "sess-probe-1",
-      cwd: "/tmp/probe",
-      status: "working",
-      startedAt: Date.now(),
-      lastActivity: Date.now(),
-    },
-  ],
-  orders: { "/tmp/probe": ["sess-probe-1"] },
+  sessions: probeSessions,
+  orders: {
+    "/tmp/probe": LIFECYCLE_CYCLE
+      ? ["sess-probe-1", "sess-probe-2"]
+      : ["sess-probe-1"],
+  },
 };
 
 const server = http.createServer((req, res) => {
@@ -171,9 +187,10 @@ server.on("upgrade", (req, socket) => {
       "Upgrade: websocket\r\nConnection: Upgrade\r\n" +
       `Sec-WebSocket-Accept: ${accept}\r\n\r\n`
   );
-  trace({ ev: "upgraded", path: req.url });
+  trace({ ev: "upgraded", path: req.url, connectionNumber });
 
   let faulted = false;
+  let lifecycleFramesScheduled = false;
   const send = (obj) => {
     if (faulted) return;
     socket.write(encodeFrame(JSON.stringify(obj)));
@@ -267,8 +284,26 @@ server.on("upgrade", (req, socket) => {
           event: { eventType: "message_start", timestamp: Date.now(),
             data: { message: { role: "user", content: "after reset live" } } },
         });
-      } else if (MODE !== "alive-idle") {
+      } else if (MODE !== "alive-idle" || LIFECYCLE_CYCLE) {
         send({ type: "event_replay", sessionId: msg.sessionId, events: [], isLast: true });
+      }
+      if (LIFECYCLE_CYCLE && msg.sessionId === "sess-probe-1" && !lifecycleFramesScheduled) {
+        lifecycleFramesScheduled = true;
+        setTimeout(() => send({
+          type: "event",
+          sessionId: msg.sessionId,
+          seq: 1,
+          event: {
+            eventType: "message_start",
+            timestamp: Date.now(),
+            data: { message: { role: "assistant", content: "lifecycle live event" } },
+          },
+        }), 700);
+        setTimeout(() => send({
+          type: "session_updated",
+          sessionId: msg.sessionId,
+          updates: { status: "idle", lastActivity: Date.now() },
+        }), 1_400);
       }
       if (QUEUE_CYCLE && connectionNumber === 1) {
         send({ type: "event", sessionId: msg.sessionId, seq: 1,
@@ -314,7 +349,7 @@ server.on("upgrade", (req, socket) => {
   });
 
   socket.on("data", parser);
-  socket.on("close", () => trace({ ev: "socket_closed" }));
+  socket.on("close", () => trace({ ev: "socket_closed", connectionNumber }));
 
   if (MODE !== "alive" && MODE !== "alive-idle") {
     setTimeout(() => {
