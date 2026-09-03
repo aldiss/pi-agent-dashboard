@@ -39,7 +39,75 @@ final class ContextUsageDisplayTests: XCTestCase {
         return s
     }
 
-    /// The headline assertion: 47%, never 100%.
+    /// A tokens-only patch must not combine fresh usage with a window retained from
+    /// an earlier model. With no trustworthy pair, the card hides context usage.
+    func testTokensOnlyPatchInvalidatesStaleContextReading() throws {
+        var s = liveHearthSession()
+        s.contextTokens = 120_000
+        s.contextWindow = 200_000
+
+        let patch = try JSONDecoder().decode(SessionPatch.self, from: Data(#"""
+        {"contextTokens":450620}
+        """#.utf8))
+        patch.apply(to: &s)
+
+        XCTAssertEqual(s.contextTokens, LiveHearth.contextTokens)
+        XCTAssertNil(s.contextWindow, "tokens without a co-issued window invalidate the stale denominator")
+        XCTAssertNil(s.contextFraction, "the card must hide context instead of reporting a fabricated 100%")
+    }
+
+    /// The mirror of the incident: a window arriving WITHOUT its tokens is just as
+    /// unsafe, because a fresh denominator against a stale numerator understates
+    /// usage — the direction that hides a seat which genuinely needs rotating.
+    /// Implemented symmetrically but previously untested, so the branch could have
+    /// regressed silently.
+    func testWindowWithoutTokensInvalidatesStaleReading() throws {
+        var s = liveHearthSession()
+        s.contextTokens = 180_000          // stale numerator from an earlier turn
+
+        let patch = try JSONDecoder().decode(SessionPatch.self, from: Data(#"""
+        {"contextWindow":1000000}
+        """#.utf8))
+        patch.apply(to: &s)
+
+        XCTAssertEqual(s.contextWindow, LiveHearth.contextWindow)
+        XCTAssertNil(s.contextTokens, "a window without co-issued tokens invalidates the stale numerator")
+        XCTAssertNil(s.contextFraction, "an unpaired window must not render a reassuring 18%")
+    }
+
+    /// A present-but-null context key is still an attempted measurement update,
+    /// so it must clear an older pair rather than leave a confident stale reading.
+    func testNullContextKeyInvalidatesStaleContextReading() throws {
+        var s = liveHearthSession()
+
+        let patch = try JSONDecoder().decode(SessionPatch.self, from: Data(#"""
+        {"contextTokens":null}
+        """#.utf8))
+        patch.apply(to: &s)
+
+        XCTAssertNil(s.contextTokens)
+        XCTAssertNil(s.contextWindow)
+        XCTAssertNil(s.contextFraction)
+    }
+
+    /// Control: a normal patch carrying both fields updates the reading.
+    func testContextPairPatchReportsFortyFivePercent() throws {
+        var s = liveHearthSession()
+        s.contextTokens = 120_000
+        s.contextWindow = 200_000
+
+        let patch = try JSONDecoder().decode(SessionPatch.self, from: Data(#"""
+        {"contextTokens":450620,"contextWindow":1000000}
+        """#.utf8))
+        patch.apply(to: &s)
+
+        let frac = try XCTUnwrap(s.contextFraction)
+        XCTAssertEqual(frac, 0.4506, accuracy: 0.0005)
+        XCTAssertEqual(Int((frac * 100).rounded()), 45,
+                       "a co-issued context pair must replace the previous model's pair")
+    }
+
+    /// The headline assertion: 45%, never 100%.
     func testLiveHearthPayloadReportsFortyFivePercentNotFull() {
         let frac = liveHearthSession().contextFraction
         XCTAssertNotNil(frac, "context fraction must resolve for the live payload")

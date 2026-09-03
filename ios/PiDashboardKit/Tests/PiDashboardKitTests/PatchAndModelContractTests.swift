@@ -26,7 +26,7 @@ final class PatchAndModelContractTests: XCTestCase {
         base.contextWindow = 200_000
 
         let patch = try JSONDecoder().decode(SessionPatch.self, from: Data(#"""
-        {"status":"streaming","currentTool":"bash","contextTokens":51000}
+        {"status":"streaming","currentTool":"bash","contextTokens":51000,"contextWindow":1000000}
         """#.utf8))
         patch.apply(to: &base)
 
@@ -34,12 +34,12 @@ final class PatchAndModelContractTests: XCTestCase {
         XCTAssertEqual(base.status, "streaming")
         XCTAssertEqual(base.currentTool, "bash")
         XCTAssertEqual(base.contextTokens, 51_000)
+        XCTAssertEqual(base.contextWindow, 1_000_000)
         // untouched
         XCTAssertEqual(base.name, "Original")
         XCTAssertEqual(base.cwd, "/repo")
         XCTAssertEqual(base.model, "anthropic/opus")
         XCTAssertEqual(base.gitBranch, "main")
-        XCTAssertEqual(base.contextWindow, 200_000)
         XCTAssertEqual(base.startedAt, 1000)
     }
 

@@ -33,7 +33,8 @@ public enum PatchField<T: Equatable & Sendable>: Sendable, Equatable {
 /// `null` genuinely CLEARS them (PR closed → gitPrNumber:null → PR badge disappears),
 /// while absent leaves them untouched. The value-only fields (status/tokens/cost/…)
 /// stay plain `Optional` — a `null` there is just "absent" (they're never
-/// meaningfully cleared to nil in the protocol).
+/// meaningfully cleared to nil in the protocol). Context tokens/window are the
+/// exception: they form one measurement and apply atomically when either is present.
 public struct SessionPatch: Sendable, Equatable {
     // Clearable (tri-state).
     public var name: PatchField<String>
@@ -65,6 +66,9 @@ public struct SessionPatch: Sendable, Equatable {
     public var processes: [ProcessEntry]?
     public var worktree: Worktree?
     public var groupCwd: String?
+    /// Decoder-level presence survives Optional's absent/null collapse so an
+    /// incomplete or cleared measurement can invalidate an older pair.
+    private var hasContextUpdate: Bool
 
     /// Apply present patch fields onto an existing session. Tri-state clearable fields
     /// clear on `.cleared`, set on `.value`, no-op on `.absent`.
@@ -86,8 +90,13 @@ public struct SessionPatch: Sendable, Equatable {
         if let v = cacheRead { s.cacheRead = v }
         if let v = cacheWrite { s.cacheWrite = v }
         if let v = cost { s.cost = v }
-        if let v = contextTokens { s.contextTokens = v }
-        if let v = contextWindow { s.contextWindow = v }
+        // Never combine fresh context usage with a window retained from another
+        // update/model. A partial measurement preserves its supplied half but
+        // invalidates the missing half, making contextFraction unknown.
+        if hasContextUpdate || contextTokens != nil || contextWindow != nil {
+            s.contextTokens = contextTokens
+            s.contextWindow = contextWindow
+        }
         if let v = hidden { s.hidden = v }
         if let v = firstMessage { s.firstMessage = v }
         if let v = pid { s.pid = v }
@@ -136,6 +145,7 @@ extension SessionPatch: Decodable {
         currentTool = PatchField.decode(String.self, from: c, forKey: .currentTool)
         // Value-only fields — a garbled field degrades to nil (Cluster 6), never throws.
         func opt<V: Decodable>(_ key: K) -> V? { (try? c.decodeIfPresent(V.self, forKey: key)) ?? nil }
+        hasContextUpdate = c.contains(.contextTokens) || c.contains(.contextWindow)
         status = opt(.status); endedAt = opt(.endedAt); lastActivityAt = opt(.lastActivityAt)
         unread = opt(.unread); resuming = opt(.resuming); tokensIn = opt(.tokensIn)
         tokensOut = opt(.tokensOut); cacheRead = opt(.cacheRead); cacheWrite = opt(.cacheWrite)
@@ -157,5 +167,6 @@ extension SessionPatch {
         contextTokens = nil; contextWindow = nil; hidden = nil; firstMessage = nil; pid = nil
         progress = nil; nextEngagement = nil; processMetrics = nil; processes = nil
         worktree = nil; groupCwd = nil
+        hasContextUpdate = false
     }
 }

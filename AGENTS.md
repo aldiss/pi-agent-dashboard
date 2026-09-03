@@ -133,6 +133,7 @@ Why this exists: AGENTS.md ballooned to 107 KB (~27k tokens) by accreting per-ch
 
 See [docs/architecture.md](docs/architecture.md) for full details.
 - See [docs/electron-bootstrap-flow.md](docs/electron-bootstrap-flow.md) for the Electron app→server bootstrap state machine and end states.
+- See [docs/file-index-ios.md](docs/file-index-ios.md) for native iOS file map.
 
 - **Bridge Extension** (`src/extension/`) — Runs in every pi session, forwards events via WebSocket
 - **Dashboard Server** (`src/server/`) — Aggregates events, in-memory + JSON persistence, dual WebSocket servers
@@ -582,5 +583,4 @@ When creating OpenSpec change artifacts, always place them at `openspec/changes/
 ## Diagram Style
 
 When creating diagrams, use Mermaid syntax (```mermaid blocks) instead of ASCII box drawings. This applies to explore mode, design documents, and all other artifacts.
-
 
