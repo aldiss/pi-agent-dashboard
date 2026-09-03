@@ -338,8 +338,25 @@ class PiDashboardUITestCase: XCTestCase {
         element.typeText(newValue)
     }
 
+    /// Attach a screenshot for debugging. BEST-EFFORT BY DESIGN: on a loaded CI
+    /// runner `XCUIScreen.main.screenshot()` can time out ("Failed to get
+    /// screenshot: Timed out while requesting screenshot"), and that failed an
+    /// otherwise-passing gate run. A diagnostic aid must never decide a verdict --
+    /// a gate that goes red for reasons nobody can act on stops being read. The
+    /// capture is therefore allowed to fail; the TEST's own assertions still
+    /// decide pass or fail, and a skipped capture is announced so a missing
+    /// attachment is never mistaken for one that was never requested.
     func attach(_ name: String) {
-        let shot = XCUIScreen.main.screenshot()
+        var shot: XCUIScreenshot?
+        let done = DispatchSemaphore(value: 0)
+        DispatchQueue.global(qos: .userInitiated).async {
+            shot = XCUIScreen.main.screenshot()
+            done.signal()
+        }
+        guard done.wait(timeout: .now() + 10) == .success, let shot else {
+            XCTContext.runActivity(named: "screenshot unavailable: \(name)") { _ in }
+            return
+        }
         let a = XCTAttachment(screenshot: shot)
         a.name = name
         a.lifetime = .keepAlways

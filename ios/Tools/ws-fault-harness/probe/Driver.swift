@@ -119,8 +119,8 @@ struct RealStoreProbe {
         await store.connect()
         guard await waitUntil(timeout: 5, condition: {
             "\(store.phase)" == "connected"
-                && store.sessions["sess-probe-1"] != nil
-                && store.sessions["sess-probe-2"] != nil
+                && store.sessions["sess-probe-1"]?.status == "streaming"
+                && store.sessions["sess-probe-2"]?.status == "idle"
         }) else {
             print("[store \(el())s] lifecycle FAIL: snapshot not received")
             exit(3)

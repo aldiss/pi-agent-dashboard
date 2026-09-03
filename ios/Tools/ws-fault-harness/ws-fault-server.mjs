@@ -109,9 +109,9 @@ const probeSessions = [
   {
     id: "sess-probe-1",
     cwd: "/tmp/probe",
-    status: "working",
+    status: "streaming",
     startedAt: Date.now(),
-    lastActivity: Date.now(),
+    lastActivityAt: Date.now(),
   },
 ];
 if (LIFECYCLE_CYCLE) {
@@ -120,7 +120,7 @@ if (LIFECYCLE_CYCLE) {
     cwd: "/tmp/probe",
     status: "idle",
     startedAt: Date.now(),
-    lastActivity: Date.now(),
+    lastActivityAt: Date.now(),
   });
 }
 
@@ -294,7 +294,7 @@ server.on("upgrade", (req, socket) => {
           sessionId: msg.sessionId,
           seq: 1,
           event: {
-            eventType: "message_start",
+            eventType: "message_end",
             timestamp: Date.now(),
             data: { message: { role: "assistant", content: "lifecycle live event" } },
           },
@@ -302,7 +302,7 @@ server.on("upgrade", (req, socket) => {
         setTimeout(() => send({
           type: "session_updated",
           sessionId: msg.sessionId,
-          updates: { status: "idle", lastActivity: Date.now() },
+          updates: { status: "idle", lastActivityAt: Date.now() },
         }), 1_400);
       }
       if (QUEUE_CYCLE && connectionNumber === 1) {
@@ -370,7 +370,7 @@ server.on("upgrade", (req, socket) => {
   // Only `alive` emits application traffic. `alive-idle` stays silent after the
   // snapshot while continuing to answer protocol-level pings above.
   const beat = MODE === "alive" ? setInterval(() => {
-    send({ type: "session_updated", sessionId: "sess-probe-1", updates: { lastActivity: Date.now() } });
+    send({ type: "session_updated", sessionId: "sess-probe-1", updates: { lastActivityAt: Date.now() } });
   }, 5000) : null;
   socket.on("close", () => {
     if (beat) clearInterval(beat);

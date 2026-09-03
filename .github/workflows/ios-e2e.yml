@@ -44,6 +44,7 @@ jobs:
           ./run-reconnect-check.sh stall
           ./run-reconnect-check.sh revalidate-idle
           ./run-reconnect-check.sh revalidate-halfopen
+          ./run-reconnect-check.sh session-lifecycle
 
   e2e-smoke:
     name: E2E smoke gate (critical rendering)
