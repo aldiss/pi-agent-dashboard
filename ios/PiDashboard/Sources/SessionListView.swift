@@ -55,15 +55,18 @@ struct SessionListView: View {
             .background(theme.bgTertiary)
             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
 
-            ScrollView(.horizontal, showsIndicators: false) {
+            VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 8) {
                     toggleChip("Folders", isOn: store.folders, id: "toggle-folders") { store.folders.toggle() }
                     toggleChip("Hide ended", isOn: store.hideEnded, id: "toggle-hide-ended") { store.hideEnded.toggle() }
                     toggleChip("Hide stale", isOn: store.hideStale, id: "toggle-hide-stale") { store.hideStale.toggle() }
+                }
+                HStack(spacing: 8) {
                     toggleChip("Active only", isOn: store.activeOnly, id: "toggle-active-only") { store.activeOnly.toggle() }
                     toggleChip("Hidden", isOn: store.showHidden, id: "toggle-show-hidden") { store.showHidden.toggle() }
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
@@ -86,13 +89,17 @@ struct SessionListView: View {
     private func tierSection(_ section: TierSection) -> some View {
         let collapsedGroups = SessionGrouping.collapseGroups(
             section.groups, selectedId: store.viewedSessionId)
+        let collapsedGroupIDs = Set(collapsedGroups
+            .filter { !store.isDirExpanded($0.cwd) }
+            .map(\.id))
         let directoryLabelIDs = SessionGrouping.rowsNeedingDirectoryLabel(collapsedGroups)
         let count = collapsedGroups.reduce(0) { $0 + $1.rows.count }
         let expanded = store.isTierExpanded(section.tier)
         return Section {
             if expanded {
                 ForEach(collapsedGroups) { group in
-                    directoryGroup(group, directoryLabelIDs: directoryLabelIDs)
+                    directoryGroup(group, directoryLabelIDs: directoryLabelIDs,
+                                   collapsedGroupIDs: collapsedGroupIDs)
                 }
             }
         } header: {
@@ -138,53 +145,54 @@ struct SessionListView: View {
 
     @ViewBuilder private func directoryGroup(
         _ group: SessionGrouping.CollapsedDirectoryGroup,
-        directoryLabelIDs: Set<String>
+        directoryLabelIDs: Set<String>,
+        collapsedGroupIDs: Set<SessionGrouping.CollapsedDirectoryGroup.ID>
     ) -> some View {
         let hasHeader = store.folders && !group.cwd.isEmpty
-        let expanded = store.isDirExpanded(group.cwd)
+        let expanded = !collapsedGroupIDs.contains(group.id)
+        let visibleRows = SessionGrouping.visibleRows(
+            in: [group], collapsedGroupIDs: collapsedGroupIDs)
         VStack(alignment: .leading, spacing: 8) {
             if hasHeader {
                 directoryHeader(group, expanded: expanded)
             }
-            if !hasHeader || expanded {
-                ForEach(group.rows) { collapsed in
-                    VStack(alignment: .leading, spacing: 8) {
-                        NavigationLink {
-                            ChatView(sessionId: collapsed.session.id, title: collapsed.session.displayName)
-                        } label: {
-                            VStack(alignment: .leading, spacing: 4) {
-                                SessionCard(session: collapsed.session)
-                                if directoryLabelIDs.contains(collapsed.session.id) {
-                                    Text(directoryBasename(for: collapsed.session))
-                                        .font(.caption2)
-                                        .foregroundStyle(theme.textTertiary)
-                                        .lineLimit(1)
-                                        .padding(.horizontal, 12)
-                                        .accessibilityIdentifier("card-directory-label-\(collapsed.session.id)")
-                                }
+            ForEach(visibleRows) { collapsed in
+                VStack(alignment: .leading, spacing: 8) {
+                    NavigationLink {
+                        ChatView(sessionId: collapsed.session.id, title: collapsed.session.displayName)
+                    } label: {
+                        VStack(alignment: .leading, spacing: 4) {
+                            SessionCard(session: collapsed.session)
+                            if directoryLabelIDs.contains(collapsed.session.id) {
+                                Text(directoryBasename(for: collapsed.session))
+                                    .font(.caption2)
+                                    .foregroundStyle(theme.textTertiary)
+                                    .lineLimit(1)
+                                    .padding(.horizontal, 12)
+                                    .accessibilityIdentifier("card-directory-label-\(collapsed.session.id)")
                             }
                         }
-                        .buttonStyle(.pressableCard)
-                        .accessibilityIdentifier("session-card-\(collapsed.session.id)")
-                        .overlay(alignment: .topTrailing) {
-                            if collapsed.olderCount > 0 {
-                                foldToggle(collapsed)
-                            }
+                    }
+                    .buttonStyle(.pressableCard)
+                    .accessibilityIdentifier("session-card-\(collapsed.session.id)")
+                    .overlay(alignment: .topTrailing) {
+                        if collapsed.olderCount > 0 {
+                            foldToggle(collapsed)
                         }
+                    }
 
-                        if store.expandedFoldedRows.contains(collapsed.session.id) {
-                            ForEach(SessionGrouping.foldedSessions(
-                                collapsed, registry: store.sessions
-                            )) { session in
-                                NavigationLink {
-                                    ChatView(sessionId: session.id, title: session.displayName)
-                                } label: {
-                                    SessionCard(session: session)
-                                }
-                                .buttonStyle(.pressableCard)
-                                .accessibilityIdentifier("session-card-\(session.id)")
-                                .padding(.leading, 16)
+                    if store.expandedFoldedRows.contains(collapsed.session.id) {
+                        ForEach(SessionGrouping.foldedSessions(
+                            collapsed, registry: store.sessions
+                        )) { session in
+                            NavigationLink {
+                                ChatView(sessionId: session.id, title: session.displayName)
+                            } label: {
+                                SessionCard(session: session)
                             }
+                            .buttonStyle(.pressableCard)
+                            .accessibilityIdentifier("session-card-\(session.id)")
+                            .padding(.leading, 16)
                         }
                     }
                 }
@@ -264,6 +272,24 @@ struct SessionListView: View {
         .accessibilityIdentifier("dir-group-\(group.basename)")
         .accessibilityLabel("\(expanded ? "Collapse" : "Expand") \(group.basename)")
         .accessibilityAddTraits(.isHeader)
+        .contextMenu {
+            if let action = DirectoryPinAction.resolve(cwd: group.cwd, pinned: group.pinned) {
+                Button {
+                    Task {
+                        switch action {
+                        case .pin:
+                            await store.pinDirectory(group.cwd)
+                        case .unpin:
+                            await store.unpinDirectory(group.cwd)
+                        }
+                    }
+                } label: {
+                    Label(action == .pin ? "Pin folder" : "Unpin folder",
+                          systemImage: action == .pin ? "pin" : "pin.slash")
+                }
+                .accessibilityIdentifier("dir-pin-toggle-\(group.basename)")
+            }
+        }
     }
 
     private var emptyState: some View {

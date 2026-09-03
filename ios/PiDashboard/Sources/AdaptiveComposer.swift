@@ -71,7 +71,7 @@ struct AdaptiveComposer: View {
 
     var body: some View {
         VStack(spacing: 8) {
-            if queuedCount > 0 { queueBadge }
+            if queueBadgePlacement == .ownRow { ownRowQueueBadge }
             if voice.permissionDenied { micPermissionHint }
             else if let err = voice.errorMessage { micErrorHint(err) }
             if !images.isEmpty { imagePreview }
@@ -140,7 +140,12 @@ struct AdaptiveComposer: View {
             }
             if isMultiline {
                 // multiline: attach + controls drop to their own row UNDER the editor.
-                HStack(spacing: 8) { attachButton; Spacer(); controlCluster }
+                HStack(spacing: 8) {
+                    attachButton
+                    Spacer()
+                    inlineQueueBadge
+                    controlCluster
+                }
             }
         }
         .padding(.horizontal, 12)
@@ -324,7 +329,24 @@ struct AdaptiveComposer: View {
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
-    private var queueBadge: some View {
+    private var queueBadgePlacement: QueueBadgePlacement {
+        ComposerLayout.queueBadgePlacement(
+            queuedCount: queuedCount,
+            isMultiline: isMultiline)
+    }
+
+    private var ownRowQueueBadge: some View {
+        queueBadgeVisual
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder private var inlineQueueBadge: some View {
+        if queueBadgePlacement == .inlineControls {
+            queueBadgeVisual
+        }
+    }
+
+    private var queueBadgeVisual: some View {
         HStack(spacing: 6) {
             // Queued work is a STATUS (pending send), not an interactive control, so it
             // carries the amber working hue — never the blue/terracotta interaction
@@ -336,7 +358,6 @@ struct AdaptiveComposer: View {
         .padding(.horizontal, 10).padding(.vertical, 4)
         .background(theme.bgTertiary)
         .clipShape(Capsule())
-        .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityIdentifier("mobile-composer-queue-badge")
     }
 

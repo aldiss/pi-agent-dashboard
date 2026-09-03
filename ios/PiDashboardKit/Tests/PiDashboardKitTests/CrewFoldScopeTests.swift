@@ -3,9 +3,10 @@ import XCTest
 
 final class CrewFoldScopeTests: XCTestCase {
     private func session(_ id: String, name: String? = nil, cwd: String? = nil,
+                         status: String? = nil,
                          groupCwd: String? = nil,
                          lastActivityAt: Double? = nil) -> DashboardSession {
-        DashboardSession(id: id, cwd: cwd, name: name,
+        DashboardSession(id: id, cwd: cwd, name: name, status: status,
                          lastActivityAt: lastActivityAt, groupCwd: groupCwd)
     }
 
@@ -25,6 +26,25 @@ final class CrewFoldScopeTests: XCTestCase {
         XCTAssertEqual(out.count, 2)
         XCTAssertEqual(out.map(\.rows.count), [1, 1])
         XCTAssertTrue(out.flatMap(\.rows).allSatisfy { $0.olderCount == 0 })
+    }
+
+    func testCollapsingDirectoryKeepsSiblingDirectoryRows() {
+        let sessions = [
+            session("fix-pete", name: "Pete", cwd: "/orchestration-state",
+                    status: "streaming", lastActivityAt: 300),
+            session("fix-pete-same-cwd", name: "Pete", cwd: "/orchestration-state",
+                    status: "ended", lastActivityAt: 200),
+            session("fix-pete-2", name: "Pete", cwd: "/unend-e2e-cwd",
+                    status: "ended", lastActivityAt: 100),
+        ]
+        let groups = collapse(SessionGrouping.groupTierByFolder(sessions, folders: true))
+        let folded = groups.first { $0.cwd == "/orchestration-state" }!
+
+        let visible = SessionGrouping.visibleRows(
+            in: groups, collapsedGroupIDs: [folded.id])
+
+        XCTAssertEqual(Set(visible.map(\.session.id)), ["fix-pete-2"],
+                       "collapsing directory A must preserve directory B rows")
     }
 
     func testCrewNameInTwoDirectoriesSurvivesFoldersOff() {

@@ -44,7 +44,8 @@ final class DashboardStore {
     // Registry
     private(set) var sessions: [String: DashboardSession] = [:]
     private(set) var orders: [String: [String]] = [:]
-    private(set) var pinnedDirectories: [String] = []
+    private var pinnedDirectoriesState = PinnedDirectoriesState()
+    var pinnedDirectories: [String] { pinnedDirectoriesState.paths }
 
     // Filters (mirror the PWA toggles)
     var folders = true
@@ -511,7 +512,7 @@ final class DashboardStore {
             orders[cwd] = ids
 
         case .pinnedDirsUpdated(let paths):
-            pinnedDirectories = paths
+            reconcilePinnedDirectories(paths)
 
         case .eventReplay(let sid, let events, let isLast):
             // Reset-before-authoritative-replay (Cluster 1): if we subscribed with
@@ -756,6 +757,26 @@ final class DashboardStore {
         } else {
             expandedFoldedRows.insert(id)
         }
+    }
+
+    /// Optimistically pin a server-known cwd. The server's full-list broadcast remains
+    /// authoritative; a local write failure rolls back only if no broadcast replaced it.
+    func pinDirectory(_ cwd: String) async {
+        guard pinnedDirectoriesState.beginPin(path: cwd) else { return }
+        let sent = await safeSend(.pinDirectory(path: cwd))
+        pinnedDirectoriesState.finishSend(succeeded: sent)
+    }
+
+    /// Optimistically unpin every canonically-equivalent path, then reconcile from the
+    /// next authoritative full-list broadcast. The outbound path stays verbatim.
+    func unpinDirectory(_ cwd: String) async {
+        guard pinnedDirectoriesState.beginUnpin(path: cwd) else { return }
+        let sent = await safeSend(.unpinDirectory(path: cwd))
+        pinnedDirectoriesState.finishSend(succeeded: sent)
+    }
+
+    private func reconcilePinnedDirectories(_ paths: [String]) {
+        pinnedDirectoriesState.reconcileAuthoritative(paths)
     }
 
     /// Is `tier`'s section expanded? Resolved from the persisted off-default set via the
@@ -1267,7 +1288,7 @@ final class DashboardStore {
         for s in fixtures { registry[s.id] = s }
         sessions = registry
         orders = UITestFixtures.orders
-        pinnedDirectories = UITestFixtures.pinned
+        reconcilePinnedDirectories(UITestFixtures.pinned)
         // Seed a chat for every fixture session that scripts one (non-empty transcript).
         for s in fixtures {
             let chat = UITestFixtures.chat(for: s.id)
@@ -1304,7 +1325,7 @@ final class DashboardStore {
         for s in snapshot.sessions { registry[s.id] = s }
         sessions = registry
         orders = snapshot.orders
-        pinnedDirectories = snapshot.pinned
+        reconcilePinnedDirectories(snapshot.pinned)
         health = HealthStatus(ok: true, version: "fixture", mode: "production",
                               uptime: 1, starter: "UITest", pid: 0,
                               server: .init(activeSessions: registry.count, totalSessions: registry.count, eventStoreSessions: 0))

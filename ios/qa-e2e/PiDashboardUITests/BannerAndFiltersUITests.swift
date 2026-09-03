@@ -44,6 +44,27 @@ final class BannerAndFiltersUITests: PiDashboardUITestCase {
 
     // MARK: F7 — filters
 
+    /// Every frequently-used filter is fully visible at the untouched initial scroll
+    /// position. `isHittable` is insufficient: a clipped chip can report true while its
+    /// tap centre lies outside the window. Frame containment is the actual contract.
+    func testF7_AllFilterChipsFitInsideStandardIPhoneWindowWithoutScrolling() {
+        enterList()
+        let windowFrame = app.windows.firstMatch.frame
+        let chipIDs = [
+            "toggle-folders", "toggle-hide-ended", "toggle-hide-stale",
+            "toggle-active-only", "toggle-show-hidden",
+        ]
+
+        for id in chipIDs {
+            let chip = waitFor(id)
+            XCTAssertGreaterThan(chip.frame.width, 0, "\(id) has measurable width")
+            XCTAssertGreaterThan(chip.frame.height, 0, "\(id) has measurable height")
+            XCTAssertTrue(
+                windowFrame.contains(chip.frame),
+                "\(id) frame \(chip.frame) must fit inside window \(windowFrame) without scrolling")
+        }
+    }
+
     /// Search narrows the card set: searching a session's display name keeps its card and
     /// drops a distinct-named sibling (name → firstMessage → cwd-basename match, mirrors
     /// filterByQuery). Subjects derived from `UITestFixtures` (two sessions whose display

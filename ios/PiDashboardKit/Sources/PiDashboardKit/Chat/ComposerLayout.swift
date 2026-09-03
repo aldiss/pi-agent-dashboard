@@ -1,5 +1,9 @@
 import Foundation
 
+public enum QueueBadgePlacement: Sendable, Equatable {
+    case hidden, ownRow, inlineControls
+}
+
 /// Pure port of the `MobileComposer` adaptive single-row ⇄ column layout decision,
 /// with asymmetric hysteresis. Mirrors `MobileComposer.tsx` @ dda5919:
 ///
@@ -15,6 +19,16 @@ public enum ComposerLayout {
     public static let wrapHeightThreshold: Double = 45
     public static let minHeight: Double = 36
     public static let maxHeight: Double = 200
+
+    /// Queued work uses the multiline controls row's empty middle; the single-row
+    /// layout keeps the badge in its own row because its controls have no spare width.
+    public static func queueBadgePlacement(
+        queuedCount: Int,
+        isMultiline: Bool
+    ) -> QueueBadgePlacement {
+        guard queuedCount > 0 else { return .hidden }
+        return isMultiline ? .inlineControls : .ownRow
+    }
 
     /// Decide the adaptive layout. `previous` is the current `isMultiline` state;
     /// `contentHeight` is the measured intrinsic height of the text.

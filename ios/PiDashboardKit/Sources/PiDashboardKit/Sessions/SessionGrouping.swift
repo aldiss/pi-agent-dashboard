@@ -426,6 +426,17 @@ public enum SessionGrouping {
         }
     }
 
+    /// Rows left visible after applying directory folds. Fold identity matches the
+    /// `(tier, cwd)` identity SwiftUI uses for each rendered directory group.
+    public static func visibleRows(
+        in groups: [CollapsedDirectoryGroup],
+        collapsedGroupIDs: Set<CollapsedDirectoryGroup.ID>
+    ) -> [CollapsedSession] {
+        groups.flatMap { group in
+            collapsedGroupIDs.contains(group.id) ? [] : group.rows
+        }
+    }
+
     /// Row ids that need a directory subtitle: a row whose canonical name is shared by
     /// another visible row in the same tier. Pure; input is one tier's collapsed groups.
     public static func rowsNeedingDirectoryLabel(_ groups: [CollapsedDirectoryGroup]) -> Set<String> {

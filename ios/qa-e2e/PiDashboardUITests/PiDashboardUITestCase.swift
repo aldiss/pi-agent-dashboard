@@ -272,18 +272,15 @@ class PiDashboardUITestCase: XCTestCase {
         return composerLayoutValue() == expected
     }
 
-    /// Tap a filter chip RELIABLY. The chip row is a horizontal `ScrollView`, so a chip
-    /// near the trailing edge can report `isHittable` while its CENTRE — the point `tap()`
-    /// actually targets — lies outside the visible area, and the tap lands on nothing.
-    /// That is a miss, not a slow update, so waiting longer never fixes it. Scroll the row
-    /// until the chip's frame sits fully inside the window, then tap.
+    /// Tap a filter chip only when its full frame lies inside the window. A clipped chip
+    /// can report `isHittable` while its tap centre lies off-screen. The fixed two-row
+    /// layout should satisfy this immediately; the fallback keeps older builds diagnosable.
     @discardableResult
     func tapChip(_ id: String, timeout: TimeInterval = 6) -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
-            let chip = app.descendants(matching: .any).allElementsBoundByIndex
-                .first { $0.identifier == id }
-            if let chip, chip.exists {
+            let chip = el(id)
+            if chip.exists {
                 let window = app.windows.element(boundBy: 0).frame
                 let f = chip.frame
                 if f.minX >= window.minX, f.maxX <= window.maxX, f.width > 0 {
@@ -309,12 +306,10 @@ class PiDashboardUITestCase: XCTestCase {
     func waitForValue(_ id: String, equals expected: String, timeout: TimeInterval = 6) -> Bool {
         let deadline = Date().addingTimeInterval(timeout)
         while Date() < deadline {
-            if app.descendants(matching: .any).allElementsBoundByIndex
-                .first(where: { $0.identifier == id })?.value as? String == expected { return true }
+            if el(id).value as? String == expected { return true }
             usleep(150_000)
         }
-        return app.descendants(matching: .any).allElementsBoundByIndex
-            .first(where: { $0.identifier == id })?.value as? String == expected
+        return el(id).value as? String == expected
     }
 
     /// Count of currently-rendered session cards (any element whose id starts with

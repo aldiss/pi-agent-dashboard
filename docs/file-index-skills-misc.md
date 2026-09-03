@@ -52,10 +52,13 @@
 | `ios/PiDashboardKit/Tests/PiDashboardKitTests/ForegroundProbeTests.swift` | Covers pong, timeout, error, late-pong, and passive-deadline probe contracts. |
 | `ios/PiDashboardKit/Tests/PiDashboardKitTests/GroupingTests.swift` | Covers grouping, ordering, stale filtering, and active-only `status`/`endedAt` semantics. |
 | `ios/PiDashboardKit/Tests/PiDashboardKitTests/ImageResizePolicyTests.swift` | Covers landscape, portrait, square, rounding, 1 px floor, custom cap, no-upscale, exact-cap, degenerate-input, constants, and GIF exclusion contracts. |
+| `ios/PiDashboardKit/Tests/PiDashboardKitTests/PinDirectoryMessageTests.swift` | Covers exact pin/unpin/reorder payloads, optimistic rollback, authoritative reconciliation, mutation overlap exclusion, production reducer routing, and flat-bucket action absence. |
 | `ios/PiDashboardKit/Tests/PiDashboardKitTests/ProtocolTests.swift` | Covers server-frame decoding, patching, and snapshot-gated connection readiness/backoff transitions. |
+| `ios/PiDashboardKit/Tests/PiDashboardKitTests/QueueBadgePlacementTests.swift` | Covers queue badge placement matrix, exclusive rendering, and one unconditional `textEditor` slot. |
 | `ios/PiDashboardKit/Tests/PiDashboardKitTests/StandingCrewRosterTests.swift` | Locks shared ten-name roster. Verifies classification and same-directory folding parity. Rejects non-crew and crew-prefix near names. |
 | `ios/qa-e2e/PiDashboardUITests/AccessibilityUITests.swift` | Selects repeated `session-card-status` elements by raw accessibility value. Verifies `Status: Working` non-color speech. |
 | `ios/qa-e2e/PiDashboardUITests/ComposerFocusUITests.swift` | Covers stable editor focus and draft across layout changes. Requires long no-newline programmatic seed to flip multiline after async measurement. |
+| `ios/qa-e2e/PiDashboardUITests/FoldingUITests.swift` | Covers hermetic tier and directory folding, persistence, and directory-header pin context menu. |
 | `ios/qa-e2e/PiDashboardUITests/ModelPickerUITests.swift` | Queries model rows through stable `model-row-*` accessibility identifiers. Avoids indexed snapshots. |
 | `ios/qa-e2e/PiDashboardUITests/SessionDeclutterUITests.swift` | Verifies Hide ended with no search. Verifies matching search reveal, clearing-search re-hide, and OFF-to-ON hide transition. Scans folded lazy list without fixture skip. |
 | `ios/Tools/ws-fault-harness/probe/Driver.swift` | Drives repeated `DashboardStore.revalidate()` calls for foreground-transition storms. |

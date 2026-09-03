@@ -80,22 +80,60 @@ final class FoldingUITests: PiDashboardUITestCase {
     /// Within a tier that spans ≥2 cwds, folding ONE directory folder hides only THAT
     /// folder's card; a sibling folder's card stays visible. Tapping again restores it.
     func testDirectoryFolderFoldsViaHeaderHidingOnlyItsCards() {
-        launchCleanFold()
+        launchCleanFold(["-pi.dashboard.hideEnded", "NO"])
         connectAndEnterList()
+        XCTAssertEqual(waitFor("toggle-hide-ended").value as? String, "off",
+                       "the fold scenario keeps its ended sibling visible")
 
         let (basename, foldedCard, siblingCard) = twoCwdTier()
         let header = waitFor("dir-group-\(basename)", 6)
         XCTAssertTrue(waitForAppear(foldedCard, 6), "the folder's card shows while expanded")
-        XCTAssertTrue(exists(siblingCard), "the sibling folder's card is present too")
+        XCTAssertTrue(waitForAppear(siblingCard, 6), "the sibling folder's card is present too")
         attach("folding-dir-expanded")
 
         header.tap()
         XCTAssertTrue(waitForGone(foldedCard, 6), "folding the directory hides its card")
-        XCTAssertTrue(exists(siblingCard), "a sibling directory folder is unaffected")
+        XCTAssertTrue(waitForAppear(siblingCard, 6), "a sibling directory folder is unaffected")
         attach("folding-dir-collapsed")
 
         header.tap()
         XCTAssertTrue(waitForAppear(foldedCard, 6), "unfolding the directory restores its card")
+    }
+
+    /// A directory header's long-press menu exposes the one-tap Pin/Unpin action. Fixture
+    /// mode suppresses network mutation, so this proves the real menu wiring plus the
+    /// optimistic state transition; wire and failed-send rollback stay Kit-tested.
+    func testDirectoryHeaderContextMenuPinsAndUnpins() {
+        launchCleanFold()
+        connectAndEnterList()
+
+        let cwd = UITestFixtures.cwdArchDriver
+        let basename = URL(fileURLWithPath: cwd).lastPathComponent
+        let headerID = "dir-group-\(basename)"
+        let actionID = "dir-pin-toggle-\(basename)"
+        XCTAssertTrue(swipeToFullyReveal(headerID),
+                      "unpinned fixture directory header is fully inside the window")
+
+        el(headerID).press(forDuration: 1)
+        var action = waitFor(actionID)
+        XCTAssertEqual(action.label, "Pin folder")
+        action.tap()
+        XCTAssertTrue(waitForGone(actionID, 6), "pin menu dismisses after the action")
+
+        XCTAssertTrue(swipeToFullyReveal(headerID),
+                      "optimistically pinned directory is fully inside the window")
+        el(headerID).press(forDuration: 1)
+        action = waitFor(actionID)
+        XCTAssertEqual(action.label, "Unpin folder")
+        action.tap()
+        XCTAssertTrue(waitForGone(actionID, 6), "unpin menu dismisses after the action")
+
+        XCTAssertTrue(swipeToFullyReveal(headerID),
+                      "optimistically unpinned directory is fully inside the window")
+        el(headerID).press(forDuration: 1)
+        action = waitFor(actionID)
+        XCTAssertEqual(action.label, "Pin folder",
+                       "unpinning must restore the inverse action")
     }
 
     // MARK: persistence across relaunch
@@ -149,9 +187,8 @@ final class FoldingUITests: PiDashboardUITestCase {
     }
 
     /// A tier that spans ≥2 distinct cwds with RENDERED cards: returns (foldedBasename, its
-    /// card id, a sibling-cwd card id). Uses `renderedSessions` (crew-collapse SURVIVORS) so
-    /// it never picks a folded-away tenure (e.g. the older `fix-pete-2`, which shares its row
-    /// with the `fix-pete` survivor and has no standalone card). Fails clearly if none.
+    /// card id, a sibling-cwd card id). Uses per-directory collapse survivors so an older
+    /// same-directory tenure is never selected. Fails clearly if none.
     private func twoCwdTier() -> (String, String, String) {
         for entry in SessionGrouping.groupByTier(renderedSessions) {
             let byCwd = Dictionary(grouping: entry.sessions) { $0.cwd ?? "" }
@@ -202,5 +239,29 @@ final class FoldingUITests: PiDashboardUITestCase {
             if el(id).exists { return true }
         }
         return el(id).exists
+    }
+
+    /// Reset toward the top, then scan the list until the full header frame lies inside
+    /// the window. Existence alone is insufficient for a long press on a clipped row.
+    private func swipeToFullyReveal(_ id: String, _ maxSwipes: Int = 6) -> Bool {
+        func isFullyInsideWindow() -> Bool {
+            let element = el(id)
+            guard element.exists else { return false }
+            let frame = element.frame
+            return frame.width > 0 && frame.height > 0
+                && app.windows.firstMatch.frame.contains(frame)
+        }
+
+        if isFullyInsideWindow() { return true }
+        let list = el("session-list")
+        for _ in 0..<maxSwipes {
+            list.swipeDown()
+            if isFullyInsideWindow() { return true }
+        }
+        for _ in 0..<(maxSwipes * 2) {
+            list.swipeUp()
+            if isFullyInsideWindow() { return true }
+        }
+        return isFullyInsideWindow()
     }
 }

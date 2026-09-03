@@ -131,6 +131,12 @@ final class ProtocolRoundTripTests: XCTestCase {
         let m = try decode(#"{"type":"pinned_dirs_updated","paths":["/x","/y"]}"#)
         guard case .pinnedDirsUpdated(let paths) = m else { return XCTFail("expected pinned_dirs_updated") }
         XCTAssertEqual(paths, ["/x", "/y"])
+
+        let empty = try decode(#"{"type":"pinned_dirs_updated","paths":[]}"#)
+        guard case .pinnedDirsUpdated(let emptyPaths) = empty else {
+            return XCTFail("expected empty pinned_dirs_updated")
+        }
+        XCTAssertEqual(emptyPaths, [], "unpinning the final directory broadcasts an empty list")
     }
 
     func testDecodeSessionStateReset() throws {

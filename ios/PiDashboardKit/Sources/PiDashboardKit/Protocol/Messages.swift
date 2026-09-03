@@ -177,6 +177,68 @@ extension ServerMessage: Decodable {
     }
 }
 
+/// Optimistic pinned-directory state with one rollback owner at a time. Every server
+/// broadcast advances the authoritative revision, even when its value equals optimism.
+public struct PinnedDirectoriesState: Sendable, Equatable {
+    private struct Pending: Sendable, Equatable {
+        let before: [String]
+        let authoritativeRevision: UInt64
+    }
+
+    public private(set) var paths: [String]
+    private var authoritativeRevision: UInt64 = 0
+    private var pending: Pending?
+
+    public init(paths: [String] = []) {
+        self.paths = paths
+    }
+
+    public mutating func beginPin(path: String) -> Bool {
+        guard pending == nil, !path.isEmpty else { return false }
+        let key = SessionGrouping.pathKey(path)
+        guard !paths.contains(where: { SessionGrouping.pathKey($0) == key }) else {
+            return false
+        }
+        pending = Pending(before: paths, authoritativeRevision: authoritativeRevision)
+        paths.append(path)
+        return true
+    }
+
+    public mutating func beginUnpin(path: String) -> Bool {
+        guard pending == nil, !path.isEmpty else { return false }
+        let key = SessionGrouping.pathKey(path)
+        let optimistic = paths.filter { SessionGrouping.pathKey($0) != key }
+        guard optimistic != paths else { return false }
+        pending = Pending(before: paths, authoritativeRevision: authoritativeRevision)
+        paths = optimistic
+        return true
+    }
+
+    public mutating func reconcileAuthoritative(_ paths: [String]) {
+        authoritativeRevision &+= 1
+        self.paths = paths
+    }
+
+    public mutating func finishSend(succeeded: Bool) {
+        guard let pending else { return }
+        self.pending = nil
+        if !succeeded, pending.authoritativeRevision == authoritativeRevision {
+            paths = pending.before
+        }
+    }
+}
+
+/// Pin action available for a rendered directory header. The folders-off flat bucket
+/// has an empty cwd and therefore no action.
+public enum DirectoryPinAction: Sendable, Equatable {
+    case pin, unpin
+
+    public static func resolve(cwd: String, pinned: Bool) -> Self? {
+        guard !cwd.isEmpty else { return nil }
+        return pinned ? .unpin : .pin
+    }
+}
+
 /// Browser → Server WebSocket messages (the subset the native client sends).
 /// Faithful to `BrowserToServerMessage` in `packages/shared/src/browser-protocol.ts`.
 public enum ClientMessage: Sendable, Encodable {
@@ -196,6 +258,9 @@ public enum ClientMessage: Sendable, Encodable {
     case shutdown(sessionId: String)
     case forceKill(sessionId: String)
     case spawnSession(cwd: String, requestId: String?)
+    case pinDirectory(path: String)
+    case unpinDirectory(path: String)
+    case reorderPinnedDirs(paths: [String])
     case promptResponse(sessionId: String, promptId: String, answer: String?,
                         cancelled: Bool, source: String)
 
@@ -242,6 +307,13 @@ public enum ClientMessage: Sendable, Encodable {
             try c.encode("spawn_session", forKey: DynamicKey("type"))
             try c.encode(cwd, forKey: DynamicKey("cwd"))
             try c.encodeIfPresent(reqId, forKey: DynamicKey("requestId"))
+        case .pinDirectory(let path):
+            try put("pin_directory", [("path", path)])
+        case .unpinDirectory(let path):
+            try put("unpin_directory", [("path", path)])
+        case .reorderPinnedDirs(let paths):
+            try c.encode("reorder_pinned_dirs", forKey: DynamicKey("type"))
+            try c.encode(paths, forKey: DynamicKey("paths"))
         case .promptResponse(let sid, let promptId, let answer, let cancelled, let source):
             try c.encode("prompt_response", forKey: DynamicKey("type"))
             try c.encode(sid, forKey: DynamicKey("sessionId"))

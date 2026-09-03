@@ -51,7 +51,10 @@ jobs:
     if: github.event_name == 'push' || github.event_name == 'pull_request'
     # Eight exact rendering tests. Expected ~10-15min on a cold hosted runner;
     # 20min keeps infrastructure stalls bounded without masking a red test.
-    timeout-minutes: 20
+    # 20 was too tight: a cold GitHub runner is ~3x slower than local, and the
+    # first gate run was CANCELLED mid-suite rather than reporting a verdict.
+    # A cancelled gate is as useless as an ignored red one.
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
       - name: Select newest Xcode
