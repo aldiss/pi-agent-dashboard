@@ -1,19 +1,17 @@
 name: iOS E2E
 
-# Runs the native-iOS regression suite on a GitHub-hosted macOS runner, OFF the
-# operator's working machine. Core unit tests (swift test) + the full XCUITest
-# simulator suite (the ~500-CPU-load cold compile is fine on a dedicated runner).
-# Only fires on the iOS branch / iOS path changes — never touches the web CI.
+# Runs native-iOS regression checks on a GitHub-hosted macOS runner, OFF the
+# operator's working machine. A focused rendering smoke suite gates branch pushes
+# and pull requests; the full XCUITest suite remains nightly + on-demand.
+# Every iOS-branch push gets a result; other pull requests stay iOS-path scoped.
 
 on:
   push:
     branches: [feat/native-ios-tests]
-    paths:
-      - 'ios/**'
-      - '.github/workflows/ios-e2e.yml'
   pull_request:
     paths:
       - 'ios/**'
+      - '.github/workflows/ios-e2e.yml'
   schedule:
     - cron: '0 5 * * *'   # nightly 05:00 UTC — full E2E on a dedicated runner, off every-push
   workflow_dispatch:
@@ -47,12 +45,64 @@ jobs:
           ./run-reconnect-check.sh revalidate-idle
           ./run-reconnect-check.sh revalidate-halfopen
 
+  e2e-smoke:
+    name: E2E smoke gate (critical rendering)
+    runs-on: macos-latest
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    # Eight exact rendering tests. Expected ~10-15min on a cold hosted runner;
+    # 20min keeps infrastructure stalls bounded without masking a red test.
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select newest Xcode
+        run: |
+          sudo xcode-select -s "$(ls -d /Applications/Xcode_*.app 2>/dev/null | sort -V | tail -1 || echo /Applications/Xcode.app)"
+          xcodebuild -version
+      - name: Install xcodegen
+        run: brew install xcodegen
+      - name: Generate project
+        working-directory: ios/PiDashboard
+        run: xcodegen generate
+      - name: Pick a simulator
+        run: |
+          echo "Available iPhone simulators:"
+          xcrun simctl list devices available | grep -i iPhone || true
+          NAME=$(xcrun simctl list devices available | grep -oE 'iPhone [0-9]+' | sort -V | uniq | tail -1)
+          if [ -z "$NAME" ]; then echo "No iPhone simulator found" >&2; exit 1; fi
+          echo "SIM_NAME=$NAME" >> "$GITHUB_ENV"
+          echo "Selected simulator: $NAME"
+      - name: xcodebuild smoke test
+        working-directory: ios/PiDashboard
+        run: |
+          set -o pipefail
+          xcodebuild test \
+            -project PiDashboard.xcodeproj \
+            -scheme PiDashboard \
+            -destination "platform=iOS Simulator,name=${SIM_NAME}" \
+            -resultBundlePath SmokeTestResults.xcresult \
+            -only-testing:PiDashboardUITests/ConnectAndListUITests/testF2_ListShowsTiersAndCardFields \
+            -only-testing:PiDashboardUITests/SessionDeclutterUITests/testHideEndedSearchRevealsMatchAndClearingRehides \
+            -only-testing:PiDashboardUITests/SessionDeclutterUITests/testEndedVisibleWhenHideEndedForcedOff \
+            -only-testing:PiDashboardUITests/TierRowCorrespondenceUITests/testCardsRenderUnderTheirOwnTierHeaderWithFoldersOff \
+            -only-testing:PiDashboardUITests/ComposerUITests/testF4_ComposerHysteresisSingleRowMultilineRevert \
+            -only-testing:PiDashboardUITests/ComposerFocusUITests/testProgrammaticLongLineSeedFlipsToMultiline \
+            -only-testing:PiDashboardUITests/ModelPickerUITests/testSelectingModelRowUpdatesSession \
+            -only-testing:PiDashboardUITests/AccessibilityUITests/testStatusHasNonColorSpokenLabel \
+            CODE_SIGNING_ALLOWED=NO
+      - name: Upload smoke result bundle
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-e2e-smoke-xcresult
+          path: ios/PiDashboard/SmokeTestResults.xcresult
+          if-no-files-found: ignore
+
   e2e:
-    name: E2E XCUITest (simulator)
+    name: E2E full suite (nightly/manual)
     runs-on: macos-latest
     # Full XCUITest suite is ~40min+ on GitHub's macOS runner (~2x local box, serial run).
-    # TOO HEAVY for every-push: runs NIGHTLY + on-demand only. Core (swift test, ~50s) is the
-    # every-push gate. 55min gives headroom over the ~40min slow-runner wall time.
+    # Keep it nightly + on-demand; the focused rendering suite is the every-push gate.
+    # 55min gives headroom over the ~40min slow-runner wall time.
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     timeout-minutes: 55
     steps:

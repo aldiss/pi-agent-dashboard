@@ -54,12 +54,14 @@ final class AccessibilityUITests: PiDashboardUITestCase {
         let subject = fixtureSession(status: "streaming")
         launch()
         connectAndEnterList()
-        let field = waitFor("list-search")
-        field.tap()
-        field.typeText(subject.displayName)
-        _ = waitFor(cardId(subject), 6)
 
-        let status = waitFor("session-card-status", 6)
+        // `session-card-status` intentionally repeats once per card. Select by the raw
+        // accessibility value instead of whichever duplicate happens to snapshot first.
+        let status = app.descendants(matching: .any)
+            .matching(identifier: "session-card-status")
+            .matching(NSPredicate(format: "value == %@", subject.status ?? ""))
+            .firstMatch
+        XCTAssertTrue(status.waitForExistence(timeout: 6), "a rendered streaming status chip appears")
         XCTAssertTrue(status.label.hasPrefix("Status:"), "status speaks 'Status: <word>' (got '\(status.label)')")
         XCTAssertTrue(status.label.contains("Working"), "streaming speaks as 'Working' — a non-color cue")
         attach("a11y-status-word")

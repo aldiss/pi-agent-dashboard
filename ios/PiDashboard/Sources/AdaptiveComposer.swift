@@ -37,12 +37,10 @@ struct AdaptiveComposer: View {
     @State private var photoItems: [PhotosPickerItem] = []
     @State private var voice = VoiceRecorder()
     @State private var micPulse = false
-    /// Armed by a programmatic append (voice transcript / probe seed) so the NEXT
-    /// measured-height update triggers ONE layout recompute — a dictated/seeded long
-    /// no-newline line sets `text` in one shot, so the `.onChange(of: text)` recompute
-    /// runs against the PRE-append (stale) height and can't flip; the real wrapped
-    /// height arrives async via `onHeightChange`, and this flag lets that one landing
-    /// re-flip. One-shot so ordinary streaming re-renders never churn `isMultiline`.
+    /// Armed by a programmatic append (voice transcript / probe seed) so the next
+    /// measured-height update FOR THAT TEXT triggers one layout recompute. A queued
+    /// pre-append measurement must not consume it before the real wrapped height lands.
+    /// One-shot so ordinary streaming re-renders never churn `isMultiline`.
     @State private var pendingProgrammaticLayout = false
     /// Marks the NEXT `text` change as programmatic (send-clear / voice-append) so the
     /// text view force-applies it; a lagging streaming re-render never clobbers typing.
@@ -88,19 +86,6 @@ struct AdaptiveComposer: View {
         // marker elements instead, leaving the controls' own ids intact.
         .overlay(alignment: .topLeading) { composerMarkers }
         .onChange(of: text) { _, _ in recomputeLayout() }
-        // A voice/probe append sets `text` in ONE shot: the `.onChange(of: text)` above
-        // recomputes against the PRE-append (stale) `measuredHeight`, so a long dictated
-        // no-newline line can't flip on that pass. The real wrapped height lands async via
-        // `onHeightChange`; recompute ONCE here to let it flip. One-shot-gated
-        // (`pendingProgrammaticLayout`) so ordinary streaming re-renders that also move
-        // `measuredHeight` never churn `isMultiline` — the exact teardown the height-driven
-        // recompute was removed to avoid.
-        .onChange(of: measuredHeight) { _, _ in
-            if pendingProgrammaticLayout {
-                pendingProgrammaticLayout = false
-                recomputeLayout()
-            }
-        }
         .onChange(of: photoItems) { _, items in Task { await loadImages(items) } }
         .onAppear {
             voice.configure(base: serverBase, token: serverToken, cookie: serverCookie)
@@ -174,11 +159,17 @@ struct AdaptiveComposer: View {
             text: $text,
             minHeight: ComposerLayout.minHeight,
             maxHeight: ComposerLayout.maxHeight,
-            // Height feeds the frame + the NEXT text-driven recompute ONLY. It must NOT
-            // itself drive `recomputeLayout` — that let every per-updateUIView measure
-            // (fired on each streaming re-render) churn `isMultiline` → teardown. Layout
-            // now flips purely from `.onChange(of: text)`.
-            onHeightChange: { h in measuredHeight = h },
+            // Ignore queued measurements for older text. A programmatic voice/seed update
+            // gets exactly one matching async-height recompute; ordinary measurements only
+            // resize the stable editor and never drive the layout state.
+            onHeightChange: { h, measuredText in
+                guard measuredText == text else { return }
+                measuredHeight = h
+                if pendingProgrammaticLayout {
+                    pendingProgrammaticLayout = false
+                    recomputeLayout(contentHeight: h)
+                }
+            },
             signal: textSignal,
             textColor: theme.textPrimary,
             placeholderColor: theme.textTertiary,
@@ -376,12 +367,14 @@ struct AdaptiveComposer: View {
 
     // MARK: actions
 
-    /// Recompute the single-row⇄multiline layout. Driven ONLY by `.onChange(of: text)`
-    /// (a real edit), never by the per-`updateUIView` height callback — so a streaming
-    /// re-render can't churn `isMultiline` and tear the text view down. Reads the latest
-    /// `measuredHeight`, which `textViewDidChange` refreshed synchronously on the edit.
-    private func recomputeLayout() {
-        isMultiline = ComposerLayout.isMultiline(previous: isMultiline, text: text, contentHeight: measuredHeight)
+    /// Recompute after a real text edit, plus one matching async measurement for a
+    /// programmatic edit. Routine `updateUIView` measurements never call this, so a
+    /// streaming re-render cannot churn `isMultiline`.
+    private func recomputeLayout(contentHeight: Double? = nil) {
+        isMultiline = ComposerLayout.isMultiline(
+            previous: isMultiline,
+            text: text,
+            contentHeight: contentHeight ?? measuredHeight)
     }
 
     private func send() {

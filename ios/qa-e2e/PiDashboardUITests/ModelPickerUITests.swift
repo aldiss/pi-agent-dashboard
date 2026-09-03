@@ -60,9 +60,13 @@ final class ModelPickerUITests: PiDashboardUITestCase {
     func testSelectingModelRowUpdatesSession() throws {
         openModelPicker()
         _ = waitFor("model-picker", 6)
-        let hasRow = app.descendants(matching: .any).allElementsBoundByIndex
-            .contains { $0.identifier.hasPrefix("model-row-") }
-        guard hasRow else {
+        // Query the row by its accessibility-id contract. Materializing every descendant
+        // as `allElementsBoundByIndex` creates stale index snapshots while SwiftUI updates
+        // the sheet's loading tree (the observed failure tried to resolve index 120).
+        let row = app.descendants(matching: .any)
+            .matching(NSPredicate(format: "identifier BEGINSWITH %@", "model-row-"))
+            .firstMatch
+        guard row.exists else {
             throw XCTSkip("""
             No model rows to select — `requestModels` no-ops under -uitest and `UITestFixtures` \
             seeds no `availableModels`, so the sheet shows "Loading models…". To exercise selection, \
@@ -71,8 +75,6 @@ final class ModelPickerUITests: PiDashboardUITestCase {
             round-trip); this is the e2e wiring.
             """)
         }
-        let row = app.descendants(matching: .any).allElementsBoundByIndex
-            .first { $0.identifier.hasPrefix("model-row-") }!
         row.tap()
         attach("modelpicker-selected")
     }

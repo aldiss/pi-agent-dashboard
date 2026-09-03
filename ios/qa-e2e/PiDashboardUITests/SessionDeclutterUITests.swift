@@ -15,13 +15,11 @@ import PiDashboardKit
 /// across runs (the toggle persists to `UserDefaults`, so a bare launch would inherit a
 /// prior run's value) — no app-side test hook.
 ///
-/// A11y note: the ended fixture session (derived via `fixtureSession(status: "ended")`)
-/// can live in the WORKER tier near the bottom of the list, where a `LazyVStack` may not
-/// realize it into the a11y tree. To make its presence/absence observable regardless of
-/// scroll position, each toggle assertion first narrows the list with `list-search` on the
-/// ended session's display name (`endedQuery`) — collapsing the list to that one card.
-/// `filterEnded` runs BEFORE `filterByQuery`, so a hidden ended session is dropped before
-/// the query even applies: search ⇒ empty when hidden, the card when shown. The toggle signal.
+/// A11y note: the ended fixture can sit in a collapsed tier/directory below the visible
+/// `LazyVStack` window. No-search assertions therefore unfold and scan the list before
+/// deciding whether its card exists. Search has different semantics: it deliberately
+/// bypasses Hide ended and force-opens matching tiers/directories, so an ended match must
+/// render while the query is active.
 @MainActor
 final class SessionDeclutterUITests: PiDashboardUITestCase {
 
@@ -29,8 +27,7 @@ final class SessionDeclutterUITests: PiDashboardUITestCase {
     /// contract set (the fixture seeds ≥1 `status == "ended"` session).
     private var endedSession: DashboardSession { fixtureSession(status: "ended") }
     private var endedCard: String { cardId(endedSession) }
-    /// A search token that narrows to ONLY the ended session (its display name), so the
-    /// ended card is the sole on-screen row for a deterministic present/absent read.
+    /// A search token that narrows to the ended session by display name.
     private var endedQuery: String { endedSession.displayName }
     private let hideEndedToggle = "toggle-hide-ended"
 
@@ -44,16 +41,60 @@ final class SessionDeclutterUITests: PiDashboardUITestCase {
         field.typeText(query)
     }
 
-    /// Expand the ended session's tier fold ONCE (persists in the store across search /
-    /// toggle), so the round3-1 default-COLLAPSED `.other` tier (home of the ended fixture
-    /// session `fix-atlas`) never hides its card — leaving the hideEnded FILTER as the only
-    /// variable the toggle drives. Must run while NO search is active (toggleTier no-ops
-    /// during search) and with hideEnded OFF so the tier has a visible session to realize
-    /// the header. No-op if already expanded.
-    private func expandEndedTier() {
-        let header = "tier-section-\(tierOf(endedSession).rawValue)"
-        guard waitForAppear(header, 4) else { return }
-        if (el(header).value as? String) == "collapsed" { el(header).tap() }
+    /// Return to the list controls after a no-search scan moved the LazyVStack downward.
+    @discardableResult
+    private func scrollToControls() -> XCUIElement {
+        let list = el("session-list")
+        for _ in 0..<8 {
+            let toggle = el(hideEndedToggle)
+            if toggle.exists && toggle.isHittable { return toggle }
+            list.swipeDown()
+        }
+        let toggle = waitFor(hideEndedToggle)
+        XCTAssertTrue(toggle.isHittable, "Hide ended control is reachable after scrolling to top")
+        return toggle
+    }
+
+    /// Look for the ended card with NO query active. Expands its tier and directory when
+    /// encountered, then scans through the LazyVStack so an off-screen row cannot masquerade
+    /// as a filtered row.
+    private func endedCardExistsWithoutSearch() -> Bool {
+        _ = scrollToControls()
+        let list = el("session-list")
+        let tierHeader = "tier-section-\(tierOf(endedSession).rawValue)"
+        let directoryHeader = endedSession.cwd.map {
+            "dir-group-\(URL(fileURLWithPath: $0).lastPathComponent)"
+        }
+
+        for _ in 0..<10 {
+            if el(endedCard).exists { return true }
+
+            let tier = el(tierHeader)
+            if tier.exists, tier.isHittable, (tier.value as? String) == "collapsed" {
+                tier.tap()
+                usleep(150_000)
+                continue
+            }
+
+            if let directoryHeader {
+                // Directory ids use basenames and can repeat across tiers. Pick the
+                // currently visible match instead of `.firstMatch`, which may be an
+                // off-screen duplicate from an earlier tier.
+                let directory = app.descendants(matching: .any)
+                    .matching(identifier: directoryHeader)
+                    .allElementsBoundByIndex
+                    .first { $0.exists && $0.isHittable }
+                if let directory, directory.label.hasPrefix("Expand ") {
+                    directory.tap()
+                    usleep(150_000)
+                    continue
+                }
+            }
+
+            if el(endedCard).exists { return true }
+            list.swipeUp()
+        }
+        return el(endedCard).exists
     }
 
     private func clearSearch() {
@@ -64,82 +105,53 @@ final class SessionDeclutterUITests: PiDashboardUITestCase {
         }
     }
 
-    // MARK: ended hidden by default → toggle reveals → toggle re-hides
+    // MARK: Hide ended + search reveal
 
-    /// With `hideEnded` at its DEFAULT (on), the ended fixture card is filtered out; toggling
-    /// "Hide ended" OFF reveals it; toggling ON hides it again.
-    ///
-    /// The "hidden" halves (waitForGone) always run — they're the core filter contract. The
-    /// "revealed" half needs the ended card to actually RENDER, but the shipped fixture has no
-    /// standalone-rendering ended session (`fix-atlas` sits in a pinned-cwd `.other` group that
-    /// doesn't render as a card in fixture mode; `fix-pete-2` crew-folds), so the reveal is
-    /// assert-if-present / skip-if-absent. PENDING fixture: a standalone ended session in a
-    /// default-expanded tier.
-    func testEndedHiddenByDefaultToggleRevealsAndReHides() throws {
+    /// Hide ended ON removes the ended card with no query. A matching search is a reveal
+    /// operation, so it restores that exact card without changing the toggle; clearing the
+    /// query applies Hide ended again.
+    func testHideEndedSearchRevealsMatchAndClearingRehides() {
         launchForcing(hideEnded: true)
         connectAndEnterList()
 
-        // The toggle reflects the forced default: ON.
-        let toggle = waitFor(hideEndedToggle)
+        let toggle = scrollToControls()
         XCTAssertEqual(toggle.value as? String, "on", "Hide ended defaults on")
 
-        // Default (hidden): search yields NO card (ended filtered before query).
-        search(endedQuery)
-        XCTAssertTrue(waitForGone(endedCard, 6),
-                      "ended session hidden by default — search finds nothing")
+        XCTAssertFalse(endedCardExistsWithoutSearch(),
+                       "Hide ended ON filters the ended session when no search is active")
         attach("declutter-ended-hidden-default")
 
-        // Toggle OFF → the ended card should appear. Clear search, expand the `.other` fold,
-        // re-search. If the ended card still can't render (fixture limitation), SKIP the
-        // reveal half — the hidden-by-default contract above already ran.
-        toggle.tap()
-        XCTAssertEqual(toggle.value as? String, "off", "toggle flips to off")
-        clearSearch()
-        expandEndedTier()
+        _ = scrollToControls()
         search(endedQuery)
-        guard waitForAppear(endedCard, 6) else {
-            throw XCTSkip("""
-            The ended fixture session can't be realized as a card (no standalone-rendering ended \
-            session: `fix-atlas` is in a pinned-cwd `.other` group that doesn't render in fixture \
-            mode, `fix-pete-2` crew-folds). The hide-ended FILTER contract (hidden by default) ran; \
-            the reveal half needs a rendered ended card. PENDING fixture: a standalone ended session \
-            in a default-expanded tier. Filter algebra is unit-covered (filterEnded).
-            """)
-        }
-        attach("declutter-ended-revealed")
+        XCTAssertTrue(waitForAppear(endedCard, 6),
+                      "a matching search reveals the ended session while Hide ended remains ON")
+        XCTAssertEqual(el(hideEndedToggle).value as? String, "on",
+                       "search reveal does not mutate Hide ended")
+        attach("declutter-ended-search-revealed")
 
-        // Toggle ON again → hidden once more (the filter re-hides regardless of the fold).
-        toggle.tap()
-        XCTAssertEqual(toggle.value as? String, "on", "toggle flips back to on")
-        XCTAssertTrue(waitForGone(endedCard, 6),
-                      "toggling Hide ended ON hides the ended session again")
+        clearSearch()
+        XCTAssertFalse(endedCardExistsWithoutSearch(),
+                       "clearing search reapplies Hide ended")
     }
 
-    /// The mirror launch: forced `hideEnded` OFF → the ended card should be visible; toggling
-    /// ON hides it. The hide half always runs; the visible half is assert-if-present /
-    /// skip-if-absent (same fixture limitation as above).
-    func testEndedVisibleWhenHideEndedForcedOff() throws {
+    /// Forced Hide ended OFF renders the ended card with no query. Toggling ON with no
+    /// query removes it. The same unfold-and-scan path proves both states.
+    func testEndedVisibleWhenHideEndedForcedOff() {
         launchForcing(hideEnded: false)
         connectAndEnterList()
 
-        let toggle = waitFor(hideEndedToggle)
+        var toggle = scrollToControls()
         XCTAssertEqual(toggle.value as? String, "off", "Hide ended forced off at launch")
 
-        expandEndedTier()
-        search(endedQuery)
-        guard waitForAppear(endedCard, 6) else {
-            throw XCTSkip("""
-            The ended fixture session can't be realized as a card (no standalone-rendering ended \
-            session — see the sibling test). PENDING fixture: a standalone ended session in a \
-            default-expanded tier. Filter algebra is unit-covered (filterEnded).
-            """)
-        }
+        XCTAssertTrue(endedCardExistsWithoutSearch(),
+                      "Hide ended OFF renders the ended session without search")
         attach("declutter-ended-visible-off")
 
+        toggle = scrollToControls()
         toggle.tap()
         XCTAssertEqual(toggle.value as? String, "on", "toggle flips to on")
-        XCTAssertTrue(waitForGone(endedCard, 6),
-                      "toggling Hide ended ON hides the ended session")
+        XCTAssertFalse(endedCardExistsWithoutSearch(),
+                       "toggling Hide ended ON hides the ended session without search")
     }
 
     // MARK: tenure collapse (+N) — authored; skips pending a same-name fixture

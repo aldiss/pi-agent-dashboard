@@ -34,10 +34,11 @@
 
 | File | Purpose |
 |------|---------|
-| `.github/workflows/ios-e2e.yml` | Runs native iOS Swift and reconnect checks, including `revalidate-idle` and `revalidate-halfopen`. |
-| `ios/PiDashboard/Sources/AdaptiveComposer.swift` | Downscales oversized JPEG, PNG, WebP, HEIC, and HEIF attachments before base64 send. Preserves GIF bytes. Labels HEIC/HEIF re-encodes as JPEG. |
+| `.github/workflows/ios-e2e.yml` | Runs native iOS Swift and reconnect checks. Gates `feat/native-ios-tests` pushes and iOS-path pull requests with eight-test XCUITest rendering smoke (~10–15 min). Runs full XCUITest nightly or manual (~40 min). |
+| `ios/PiDashboard/Sources/AdaptiveComposer.swift` | Keeps `textEditor` stable across single-row/multiline layout. Recomputes voice/seed programmatic layout once from matching-text async height. Downscales oversized JPEG, PNG, WebP, HEIC, and HEIF attachments before base64 send. Preserves GIF bytes. Labels HEIC/HEIF re-encodes as JPEG. |
 | `ios/PiDashboard/Sources/ChatView.swift` | Gates chat auto-follow and live read marking on present near-bottom sentinel measurement. |
 | `ios/PiDashboard/Sources/DashboardStore.swift` | Owns native dashboard state: snapshot-gated readiness/backoff, frame-driven connection phase, foreground recovery, auth, base identity, list filters. |
+| `ios/PiDashboard/Sources/GrowingTextView.swift` | Reports intrinsic height with exact measured text. Lets composer reject stale async measurements. |
 | `ios/PiDashboard/Sources/SessionListView.swift` | Renders tier-qualified session groups and Folders, Hide ended, Hide stale, Active only, Hidden filter chips. |
 | `ios/PiDashboardKit/Sources/PiDashboardKit/Chat/ChatWindow.swift` | Defines chat windowing and pure `ChatViewportPolicy` decisions from optional bottom distance. |
 | `ios/PiDashboardKit/Sources/PiDashboardKit/Chat/ImageResizePolicy.swift` | Defines pure long-edge geometry and resizable MIME policy. Caps at 1568 px, preserves aspect ratio, rejects upscaling and degenerate inputs, excludes GIF. |
@@ -50,6 +51,10 @@
 | `ios/PiDashboardKit/Tests/PiDashboardKitTests/GroupingTests.swift` | Covers grouping, ordering, stale filtering, and active-only `status`/`endedAt` semantics. |
 | `ios/PiDashboardKit/Tests/PiDashboardKitTests/ImageResizePolicyTests.swift` | Covers landscape, portrait, square, rounding, 1 px floor, custom cap, no-upscale, exact-cap, degenerate-input, constants, and GIF exclusion contracts. |
 | `ios/PiDashboardKit/Tests/PiDashboardKitTests/ProtocolTests.swift` | Covers server-frame decoding, patching, and snapshot-gated connection readiness/backoff transitions. |
+| `ios/qa-e2e/PiDashboardUITests/AccessibilityUITests.swift` | Selects repeated `session-card-status` elements by raw accessibility value. Verifies `Status: Working` non-color speech. |
+| `ios/qa-e2e/PiDashboardUITests/ComposerFocusUITests.swift` | Covers stable editor focus and draft across layout changes. Requires long no-newline programmatic seed to flip multiline after async measurement. |
+| `ios/qa-e2e/PiDashboardUITests/ModelPickerUITests.swift` | Queries model rows through stable `model-row-*` accessibility identifiers. Avoids indexed snapshots. |
+| `ios/qa-e2e/PiDashboardUITests/SessionDeclutterUITests.swift` | Verifies Hide ended with no search. Verifies matching search reveal, clearing-search re-hide, and OFF-to-ON hide transition. Scans folded lazy list without fixture skip. |
 | `ios/Tools/ws-fault-harness/probe/Driver.swift` | Drives repeated `DashboardStore.revalidate()` calls for foreground-transition storms. |
 | `ios/Tools/ws-fault-harness/run-reconnect-check.sh` | Checks healthy-idle retention and half-open recovery bounds. |
 | `ios/Tools/ws-fault-harness/ws-fault-server.mjs` | Emulates healthy-idle and half-open WebSocket paths with control-frame traces. |

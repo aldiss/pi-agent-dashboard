@@ -21,8 +21,9 @@ struct GrowingTextView: UIViewRepresentable {
     @Binding var text: String
     let minHeight: CGFloat
     let maxHeight: CGFloat
-    /// Called with the measured intrinsic content height on every change.
-    let onHeightChange: (CGFloat) -> Void
+    /// Called with intrinsic height plus the exact text measured. The text provenance lets
+    /// the composer discard an older async measurement after a programmatic binding update.
+    let onHeightChange: (CGFloat, String) -> Void
     var isEnabled: Bool = true
     /// Marks a binding change as programmatic so `updateUIView` force-applies it even
     /// while the field is first responder (send-clear / voice-append), without ever
@@ -139,7 +140,8 @@ struct GrowingTextView: UIViewRepresentable {
         let size = tv.sizeThatFits(CGSize(width: tv.bounds.width, height: .greatestFiniteMagnitude))
         // Report async: updateUIView runs inside SwiftUI's render pass; mutating the
         // composer's @State (measuredHeight) synchronously here is a same-cycle write.
-        DispatchQueue.main.async { onHeightChange(size.height) }
+        let measuredText = tv.text ?? ""
+        DispatchQueue.main.async { onHeightChange(size.height, measuredText) }
         tv.isScrollEnabled = size.height > maxHeight
     }
 
@@ -156,7 +158,7 @@ struct GrowingTextView: UIViewRepresentable {
             // Skip when unlaid-out (width 0) — no wrong-width fallback.
             guard tv.bounds.width > 0 else { return }
             let size = tv.sizeThatFits(CGSize(width: tv.bounds.width, height: .greatestFiniteMagnitude))
-            parent.onHeightChange(size.height)
+            parent.onHeightChange(size.height, tv.text)
             tv.isScrollEnabled = size.height > parent.maxHeight
         }
     }
