@@ -4,6 +4,7 @@
  * See change: add-folder-task-checker-and-spawn-attach.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { createSpawnTestContext } from "../test-support/spawn-policy-fixture.js";
 
 vi.mock("../process-manager.js", () => ({
   spawnPiSession: vi.fn(),
@@ -14,6 +15,13 @@ vi.mock("../../../shared/src/config.js", () => ({
 vi.mock("@blackbelt-technology/pi-dashboard-shared/config.js", () => ({
   loadConfig: () => ({ spawnStrategy: "headless" as const }),
 }));
+vi.mock("../spawn-preflight.js", () => ({
+  preflightSpawn: vi.fn(() => ({ ok: true, reasons: [] })),
+}));
+vi.mock("../spawn-register-watchdog.js", () => ({
+  getSpawnRegisterWatchdog: vi.fn(() => ({ arm: vi.fn() })),
+}));
+vi.mock("../spawn-failure-log.js", () => ({ appendSpawnFailure: vi.fn() }));
 
 import { handleSpawnSession } from "../browser-handlers/session-action-handler.js";
 import { spawnPiSession } from "../process-manager.js";
@@ -21,6 +29,7 @@ import { spawnPiSession } from "../process-manager.js";
 function makeCtx() {
   const enqueue = vi.fn();
   const ctx = {
+    ...createSpawnTestContext(),
     ws: { readyState: 1 } as unknown as WebSocket,
     headlessPidRegistry: { register: vi.fn() },
     pendingDashboardSpawns: new Map<string, number>(),
@@ -93,6 +102,7 @@ describe("handleSpawnSession — attachProposal", () => {
   it("works when pendingAttachRegistry is undefined (back-compat)", async () => {
     (spawnPiSession as any).mockResolvedValueOnce({ success: true });
     const ctx: any = {
+      ...createSpawnTestContext(),
       ws: { readyState: 1 },
       headlessPidRegistry: { register: vi.fn() },
       pendingDashboardSpawns: new Map(),

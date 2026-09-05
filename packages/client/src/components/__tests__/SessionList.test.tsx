@@ -185,6 +185,14 @@ describe("SessionList external sessions", () => {
 });
 
 describe("SessionList spawn button", () => {
+  it("threads Codex runtime as a third argument without changing attachment semantics", () => {
+    const onSpawn = vi.fn();
+    render(<TestRouter><ThemeProvider><SessionList sessions={[makeSession({ cwd: "/my/project" })]} onSelect={() => {}} onSpawnSession={onSpawn} /></ThemeProvider></TestRouter>);
+    fireEvent.change(screen.getByRole("combobox", { name: "Session runtime" }), { target: { value: "codex" } });
+    fireEvent.click(screen.getByTestId("spawn-session-btn"));
+    expect(onSpawn).toHaveBeenCalledExactlyOnceWith("/my/project", undefined, "codex");
+  });
+
   it("should render spawn button on folder card when onSpawnSession is provided", () => {
     const onSpawn = vi.fn();
     render(

@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import type { SessionRuntime } from "./types.js";
 
 /**
  * Session metadata stored as a sidecar `.meta.json` file
@@ -9,6 +10,9 @@ import path from "node:path";
  * All fields are optional — a minimal `{ source: "dashboard" }` is valid.
  */
 export interface SessionMeta {
+  runtime?: SessionRuntime;
+  codexThreadId?: string;
+  codexThreadPath?: string;
   // Dashboard-owned (user-set via UI)
   source?: string;
   name?: string;

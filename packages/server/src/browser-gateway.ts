@@ -67,6 +67,8 @@ import { deriveAuthor } from "./derive-author.js";
 import { buildPromptResponseForward } from "./prompt-response-forward.js";
 import type { TerminalManager } from "./terminal-manager.js";
 import type { BrowserHandlerContext } from "./browser-handlers/handler-context.js";
+import type { SpawnGate } from "./spawn-authz.js";
+import type { CodexRuntimeManager } from "./runtime/runtime-manager.js";
 import { authorizeWsMessage } from "./ws-session-gate.js";
 import { handleSubscribe } from "./browser-handlers/subscription-handler.js";
 import { handleSendPrompt, handleResumeSession, handleSpawnSession, handleShutdown, handleAbort, handleFlowControl, handleForceKill, handleKillProcess } from "./browser-handlers/session-action-handler.js";
@@ -102,7 +104,7 @@ export interface BrowserGateway {
   /** Tell browser subscribers to reset accumulated state for a session (bridge reconnected) */
   broadcastSessionStateReset(sessionId: string): void;
   /** Shut down all tracked headless child processes */
-  shutdownHeadlessProcesses(): void;
+  shutdownHeadlessProcesses(): Promise<void>;
   /** Registry for linking headless PIDs to session IDs */
   headlessPidRegistry: HeadlessPidRegistry;
   /** Registry for pending auto-resume prompts */
@@ -169,6 +171,8 @@ export function createBrowserGateway(
   cellAccess?: CellAccessController,
   /** Read-only assistant-message rendering service. */
   translator?: DashboardTranslator,
+  spawnGate?: SpawnGate,
+  getRuntimeManager?: () => CodexRuntimeManager | undefined,
 ): BrowserGateway {
   // perMessageDeflate enabled: the sessions_snapshot frame is ~345 KB uncompressed
   // at ~380 sessions and re-ships on every (re)connect; gzip of the identical payload
@@ -520,6 +524,11 @@ export function createBrowserGateway(
   });
 
   wss.on("connection", (ws, req) => {
+    const spawnConnection = Object.freeze({
+      remoteAddress: req?.socket?.remoteAddress ?? null,
+      origin: typeof req?.headers?.origin === "string" ? req.headers.origin : null,
+      forwarded: req?.headers?.["x-forwarded-for"] !== undefined || req?.headers?.forwarded !== undefined,
+    });
     const remoteAddr = req?.socket?.remoteAddress ?? 'unknown';
     const origin = req?.headers?.origin ?? 'no-origin';
     const ua = req?.headers?.['user-agent'] ?? 'no-ua';
@@ -612,6 +621,9 @@ export function createBrowserGateway(
           // from `ctx.principal` (never the message body). See auth-merge
           // contract invariants #1, #2.
           principal: principals.get(ws) ?? null,
+          ...spawnConnection,
+          spawnGate,
+          runtimeManager: getRuntimeManager?.(),
           requireBrowserAuth,
           ...(operatorUsers ? { operatorUsers } : {}),
           ...(operatorSet ? { operatorSet } : {}),
@@ -768,7 +780,7 @@ export function createBrowserGateway(
             await handleSendPrompt(msg, ctx);
             break;
           case "abort":
-            handleAbort(msg, ctx);
+            await handleAbort(msg, ctx);
             break;
           case "force_kill":
             await handleForceKill(msg, ctx);
@@ -780,7 +792,7 @@ export function createBrowserGateway(
             handleKillProcess(msg, ctx);
             break;
           case "shutdown":
-            handleShutdown(msg, ctx);
+            await handleShutdown(msg, ctx);
             break;
           case "rename_session":
             handleRenameSession(msg, ctx);
@@ -1203,7 +1215,7 @@ export function createBrowserGateway(
     clearPromptRequest,
 
     shutdownHeadlessProcesses() {
-      headlessPidRegistry.killAll();
+      return headlessPidRegistry.killAll();
     },
 
     headlessPidRegistry,

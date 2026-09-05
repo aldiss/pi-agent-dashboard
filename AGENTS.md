@@ -217,6 +217,8 @@ Do **not**:
 
 > **Full file map**: see [`docs/file-index.md`](docs/file-index.md) — a thin index of per-area split files (`docs/file-index-<area>.md`). Read the relevant split on demand when locating a file or understanding its full responsibilities (incl. change-history annotations).
 
+> Client hooks: [docs/file-index-client-hooks.md](docs/file-index-client-hooks.md).
+
 This section lists only the **architectural backbone** — the files agents touch most often or need to know about for any non-trivial change. For everything else (renderers, individual tool cards, narrow helpers, build/CI internals) consult the appropriate split via `docs/file-index.md`.
 
 ### Protocol & types

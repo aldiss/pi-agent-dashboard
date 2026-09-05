@@ -379,6 +379,13 @@ export function registerDefaultTools(registry: ToolRegistry, deps?: StrategyDeps
   registry.register(piExecutorDef(deps));
   registry.register(openspecExecutorDef(deps));
   registry.register(npmExecutorDef(deps));
+  registry.register({
+    name: "codex",
+    kind: "executor",
+    strategies: [overrideStrategy("codex", deps), npmGlobalStrategy("@openai/codex", "bin/codex.js", deps), whereStrategy("codex", deps)],
+    toArgv: nodeScriptToArgv,
+    classify,
+  });
 
   // Native binaries — no interpreter needed.
   registry.register(binaryDef("node", deps));

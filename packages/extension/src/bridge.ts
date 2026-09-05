@@ -464,6 +464,10 @@ function initBridge(pi: ExtensionAPI) {
     onMessage: safe(async (data: unknown) => {
       if (!isActive()) return; // Stale listener guard
       const msg = data as ServerToExtensionMessage;
+      if (msg.type === "spawn_result") {
+        if (!msg.success) cachedCtx?.ui?.notify?.(msg.message, "error");
+        return;
+      }
       // Extension UI System (Phase 1): browser-originated action / data
       // request. Re-emit on pi.events; the listener either populates
       // data.items synchronously or calls _reply asynchronously.

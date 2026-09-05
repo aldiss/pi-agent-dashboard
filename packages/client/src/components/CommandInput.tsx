@@ -1,7 +1,7 @@
 import React, { useState, useCallback, useRef, useEffect, useMemo, type ReactNode } from "react";
 import { Icon } from "@mdi/react";
 import { mdiFlash, mdiClipboardText, mdiWrench, mdiFolder, mdiFile, mdiStop, mdiAlert, mdiConsole, mdiClose, mdiSend } from "@mdi/js";
-import type { CommandInfo, ImageContent, FileEntry } from "@blackbelt-technology/pi-dashboard-shared/types.js";
+import type { CommandInfo, ImageContent, FileEntry, SessionRuntime } from "@blackbelt-technology/pi-dashboard-shared/types.js";
 import { useImagePaste } from "../hooks/useImagePaste.js";
 import { ImagePreviewStrip } from "./ImagePreviewStrip.js";
 import { useMobile } from "../hooks/useMobile.js";
@@ -21,6 +21,7 @@ const BUILTIN_COMMANDS: CommandInfo[] = [
 ];
 
 interface Props {
+  runtime?: SessionRuntime;
   commands: CommandInfo[];
   onSend: (text: string, images?: ImageContent[]) => void;
   onListFiles?: (query: string) => void;
@@ -164,15 +165,17 @@ async function spoolDawnDictation(
   return `process this dictation entry: ${result.entryPath}`;
 }
 
-export function CommandInput({ commands: externalCommands, onSend, onListFiles, fileResults, disabled, sessionStatus, retrying, onAbort, onForceKill, pendingPrompt, onCancelPending, sessionId, sessionName, draft, onDraftChange, history, images, onImagesChange, queuedCount }: Props) {
+export function CommandInput({ runtime, commands: externalCommands, onSend, onListFiles, fileResults, disabled: inputDisabled, sessionStatus, retrying, onAbort, onForceKill, pendingPrompt, onCancelPending, sessionId, sessionName, draft, onDraftChange, history, images, onImagesChange, queuedCount }: Props) {
   // Treat retry-sleep as "still working" for Stop/Force-Stop visibility.
   const isWorking = sessionStatus === "streaming" || retrying === true;
+  const disabled = inputDisabled || (runtime === "codex" && isWorking);
   // Merge server commands with built-in commands, avoiding duplicates
   const commands = useMemo(() => {
+    if (runtime === "codex") return [];
     const names = new Set(externalCommands.map((c) => c.name));
     const builtins = BUILTIN_COMMANDS.filter((c) => !names.has(c.name));
     return [...builtins, ...externalCommands];
-  }, [externalCommands]);
+  }, [externalCommands, runtime]);
   // Controlled when `draft` prop is provided, otherwise fall back to local state
   // (preserves backward-compat for callers/tests that don't pass `draft`).
   const isControlled = draft !== undefined;
@@ -360,6 +363,7 @@ export function CommandInput({ commands: externalCommands, onSend, onListFiles, 
   // entry path downstream; any failure preserves the exact visible text AND the
   // pending capture and sends nothing (no raw fallback).
   const dawnSubmit = useCallback(async (finalText: string, sendImages?: ImageContent[]): Promise<boolean> => {
+    if (runtime === "codex" && (disabled || pendingPrompt)) return false;
     const trimmed = finalText.trim();
     const hasContent = trimmed.length > 0 || (sendImages !== undefined && sendImages.length > 0);
     if (sessionName !== DAWN_SESSION_NAME || !sessionId || !dawnPendingRef.current) {
@@ -384,7 +388,7 @@ export function CommandInput({ commands: externalCommands, onSend, onListFiles, 
     } finally {
       dawnSendInFlightRef.current = false;
     }
-  }, [sessionName, sessionId, onSend, clearDawnPending]);
+  }, [sessionName, sessionId, onSend, clearDawnPending, runtime, disabled, pendingPrompt]);
 
   // Bind pending per session + explicit-clear: a session switch or an emptied
   // composer safely drops the pending dictation (text + audio) and re-enables
@@ -790,7 +794,7 @@ export function CommandInput({ commands: externalCommands, onSend, onListFiles, 
           }}
           onKeyDown={handleKeyDown}
           onPaste={handlePaste}
-          placeholder="Message, /command, !shell, or @file..."
+          placeholder={runtime === "codex" ? "Message Codex..." : "Message, /command, !shell, or @file..."}
           disabled={disabled || pendingPrompt}
           rows={1}
           className="flex-1 bg-[var(--bg-tertiary)] rounded-lg px-4 py-1.5 text-base text-[var(--text-primary)] placeholder-gray-500 border border-[var(--border-secondary)] focus:border-blue-500 focus:outline-none disabled:opacity-50 resize-none"

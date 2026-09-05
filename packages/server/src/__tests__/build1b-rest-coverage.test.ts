@@ -17,7 +17,7 @@
  *   (2) per-route operator-only enforcement for the 11 untested routes: op-2 →
  *       403 on each (real server). Red-arm: misclassify any as co-drive → RED.
  */
-import { describe, it, expect, afterEach, beforeEach } from "vitest";
+import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -28,6 +28,12 @@ import { loadConfig } from "@blackbelt-technology/pi-dashboard-shared/config.js"
 import { signToken, COOKIE_NAME } from "../auth.js";
 import { createTestServer, type TestServerHandle } from "../test-support/test-server.js";
 import { actionClass, type SessionWriteAction } from "../session-authz.js";
+import { spawnPiSession } from "../process-manager.js";
+
+vi.mock("../process-manager.js", async (original) => ({
+  ...await original<typeof import("../process-manager.js")>(),
+  spawnPiSession: vi.fn().mockResolvedValue({ success: true, message: "fixture spawn" }),
+}));
 
 // ── (1) route-table introspection: every session-write POST is gated ─────────
 interface CollectedRoute {
@@ -153,6 +159,7 @@ describe("Build 1b PUSHBACK-1 FOLD-B — per-route operator-only enforcement (op
   const SECRET = "b1b-foldb-perroute-secret";
 
   beforeEach(() => {
+    vi.mocked(spawnPiSession).mockClear();
     testDir = fs.mkdtempSync(path.join(os.tmpdir(), "b1b-foldb-"));
     fs.mkdirSync(path.join(testDir, ".pi", "dashboard"), { recursive: true });
     configFile = path.join(testDir, ".pi", "dashboard", "config.json");
@@ -209,6 +216,7 @@ describe("Build 1b PUSHBACK-1 FOLD-B — per-route operator-only enforcement (op
       expect(res.status, `op-2 ${r.label} must be 403`).toBe(403);
       expect((await res.json()).reason, `op-2 ${r.label} reason`).toBe("operator-only");
     }
+    expect(spawnPiSession).not.toHaveBeenCalled();
   }, 30000);
 
   it("op-1 (operator) is NOT refused by the gate on the same 11 routes (gate allows; handler may 4xx/5xx on body)", async () => {
@@ -223,5 +231,6 @@ describe("Build 1b PUSHBACK-1 FOLD-B — per-route operator-only enforcement (op
       });
       expect([401, 403], `op-1 ${r.label} must NOT be gate-refused (got ${res.status})`).not.toContain(res.status);
     }
+    expect(spawnPiSession).toHaveBeenCalledOnce();
   }, 30000);
 });

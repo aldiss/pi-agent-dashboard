@@ -10,7 +10,7 @@ import { encodeFolderPath } from "../lib/folder-encoding.js";
 import { DndContext, closestCenter, PointerSensor, TouchSensor, useSensor, useSensors, type DragEndEvent } from "@dnd-kit/core";
 import { SortableContext, verticalListSortingStrategy, arrayMove } from "@dnd-kit/sortable";
 import { SortablePinnedGroup } from "./SortablePinnedGroup.js";
-import type { DashboardSession, OpenSpecData, CommandInfo, FlowInfo, ImageContent } from "@blackbelt-technology/pi-dashboard-shared/types.js";
+import type { DashboardSession, OpenSpecData, CommandInfo, FlowInfo, ImageContent, SessionRuntime } from "@blackbelt-technology/pi-dashboard-shared/types.js";
 import type { ExternalSessionsResponse } from "@blackbelt-technology/pi-dashboard-shared/external-session.js";
 import type { TerminalSession } from "@blackbelt-technology/pi-dashboard-shared/terminal-types.js";
 import {
@@ -107,7 +107,7 @@ interface Props {
   onResumeKeepPosition?: (sessionId: string) => void;
   onHideSession?: (sessionId: string) => void;
   onUnhideSession?: (sessionId: string) => void;
-  onSpawnSession?: (cwd: string, attachProposal?: string) => void;
+  onSpawnSession?: (cwd: string, attachProposal?: string, runtime?: SessionRuntime) => void;
   onSpawnWorktree?: (cwd: string) => void;
   spawningCwds?: Set<string>;
   spawnResult?: { success: boolean; message: string } | null;
@@ -644,7 +644,7 @@ export function SessionList({ sessions, cellGrouping, selectedId, onSelect, hasL
               editorAvailable={editorAvailable}
               nativeEditors={editorMap.get(group.cwd) ?? []}
               spawningDisabled={spawningCwds?.has(group.cwd)}
-              onSpawnSession={() => onSpawnSession?.(group.cwd)}
+              onSpawnSession={(runtime) => runtime ? onSpawnSession?.(group.cwd, undefined, runtime) : onSpawnSession?.(group.cwd)}
               onSpawnWorktree={onSpawnWorktree ? () => onSpawnWorktree(group.cwd) : undefined}
               onOpenTerminals={() => onOpenTerminals?.(group.cwd)}
               onOpenEditor={() => onOpenEditor?.(group.cwd)}

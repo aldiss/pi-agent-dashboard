@@ -2,6 +2,21 @@
  * WebSocket connection manager with exponential backoff reconnection
  * and message buffering during disconnection.
  */
+import { readBridgeToken } from "@blackbelt-technology/pi-dashboard-shared/bridge-token.js";
+
+function isLoopbackUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== "ws:" && parsed.protocol !== "wss:") return false;
+    // URL canonicalizes numeric hosts and IPv6; never trust DNS suffix matches.
+    const host = parsed.hostname;
+    return host === "localhost" || host === "[::1]"
+      || /^127\.\d+\.\d+\.\d+$/.test(host)
+      || /^\[::ffff:7f[0-9a-f]{2}:[0-9a-f]{1,4}\]$/.test(host);
+  } catch {
+    return false;
+  }
+}
 
 export interface ConnectionManagerOptions {
   url: string;
@@ -158,7 +173,11 @@ export class ConnectionManager {
 
   private createConnection(): void {
     try {
-      this.ws = new this.WS(this.url);
+      // Re-read on reconnect so existing bridges pick up token rollout/rotation.
+      const token = isLoopbackUrl(this.url) ? readBridgeToken() : null;
+      this.ws = token
+        ? new this.WS(this.url, ["pi-bridge", `pi-bridge-token.${token}`])
+        : new this.WS(this.url);
     } catch {
       // Constructor failed — schedule reconnect
       this.ws = null;

@@ -2,14 +2,21 @@
  * Tests for session control REST API endpoints (session-api.ts).
  */
 import { describe, it, expect, afterAll, beforeAll, vi } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { createServer, type DashboardServer } from "../server.js";
 import { spawnPiSession } from "../process-manager.js";
+import { COOKIE_NAME, signToken } from "../auth.js";
 
 const mockSpawnPiSession = vi.mocked(spawnPiSession);
 
 const httpPort = 19200;
 const piPort = 19201;
 let server: DashboardServer;
+let fixtureDir: string;
+const SECRET = "session-api-fixture-signing-key";
+const operatorCookie = `${COOKIE_NAME}=${signToken({ sub: "operator@example.com", username: "operator", name: "Operator", provider: "github" }, SECRET)}`;
 
 // Injectable post-respawn VERIFY-gate seam (build-gate item 2). Default passes;
 // individual tests override `verifyImpl` to exercise the gate-rejection path.
@@ -34,10 +41,10 @@ function url(path: string) {
   return `http://localhost:${httpPort}${path}`;
 }
 
-async function postJson(path: string, body?: Record<string, unknown>) {
+async function postJson(path: string, body?: Record<string, unknown>, authenticated = true) {
   return fetch(url(path), {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...(authenticated ? { Cookie: operatorCookie } : {}) },
     body: JSON.stringify(body ?? {}),
   });
 }
@@ -46,7 +53,7 @@ async function postJson(path: string, body?: Record<string, unknown>) {
 function registerSession(id: string, overrides?: Record<string, unknown>) {
   server.sessionManager.register({
     id,
-    cwd: "/tmp/test",
+    cwd: fixtureDir,
     source: "tui" as const,
     startedAt: Date.now(),
     ...overrides,
@@ -56,6 +63,7 @@ function registerSession(id: string, overrides?: Record<string, unknown>) {
 
 describe("Session Control REST API", () => {
   beforeAll(async () => {
+    fixtureDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "session-api-fixture-")));
     server = await createServer({
       port: httpPort,
       piPort,
@@ -63,12 +71,20 @@ describe("Session Control REST API", () => {
       autoShutdown: false,
       shutdownIdleSeconds: 999,
       tunnel: false,
+      fixtureMode: true,
+      authConfig: {
+        secret: SECRET,
+        providers: { github: { clientId: "fixture", clientSecret: "fixture" } },
+        operatorUsers: ["operator@example.com"],
+        requireBrowserAuth: false,
+      },
     editor: { idleTimeoutMinutes: 10, maxInstances: 3 },
       resurrectVerify: (sessionId: string) => {
         verifyCalls.push(sessionId);
         return verifyImpl(sessionId);
       },
     });
+    registerSession("fixture-cwd-root");
     await server.start();
   });
 
@@ -76,6 +92,7 @@ describe("Session Control REST API", () => {
     if (server) {
       try { await server.stop(); } catch { /* */ }
     }
+    if (fixtureDir) fs.rmSync(fixtureDir, { recursive: true, force: true });
   });
 
   // ── prompt ──────────────────────────────────────────────────────
@@ -204,7 +221,7 @@ describe("Session Control REST API", () => {
   });
 
   it("POST /api/session/:id/resurrect — 400 for claude-code session (read-only)", async () => {
-    registerSession("cc-resurrect", { source: "claude-code", sessionFile: "/path/cc.jsonl" });
+    registerSession("cc-resurrect", { source: "claude-code", sessionFile: path.join(fixtureDir, "cc.jsonl") });
     const res = await postJson("/api/session/cc-resurrect/resurrect");
     expect(res.status).toBe(400);
     expect((await res.json()).error).toMatch(/read-only/);
@@ -217,7 +234,7 @@ describe("Session Control REST API", () => {
     // returns success only after the gate runs. See change: unend-mechanism-v2.
     verifyImpl = async () => ({ ok: true, retried: false, attempts: 1 });
     verifyCalls.length = 0;
-    registerSession("ended-resurrect", { sessionFile: "/path/ended.jsonl" });
+    registerSession("ended-resurrect", { sessionFile: path.join(fixtureDir, "ended.jsonl") });
     server.sessionManager.update("ended-resurrect", { status: "ended", endedAt: Date.now() });
     const res = await postJson("/api/session/ended-resurrect/resurrect");
     expect(res.status).toBe(200);
@@ -237,14 +254,14 @@ describe("Session Control REST API", () => {
     // config-file default.
     verifyImpl = async () => ({ ok: true, retried: false, attempts: 1 });
     mockSpawnPiSession.mockClear();
-    registerSession("pinned-resurrect", { sessionFile: "/path/pinned.jsonl" });
+    registerSession("pinned-resurrect", { sessionFile: path.join(fixtureDir, "pinned.jsonl") });
     server.sessionManager.update("pinned-resurrect", { status: "ended", endedAt: Date.now() });
     const res = await postJson("/api/session/pinned-resurrect/resurrect");
     expect(res.status).toBe(200);
     expect(mockSpawnPiSession).toHaveBeenCalledTimes(1);
     const [, opts] = mockSpawnPiSession.mock.calls[0]!;
     expect(opts).toMatchObject({
-      sessionFile: "/path/pinned.jsonl",
+      sessionFile: path.join(fixtureDir, "pinned.jsonl"),
       mode: "continue",
       strategy: "tmux",
       pinDashboardUrl: `ws://localhost:${piPort}`,
@@ -262,7 +279,7 @@ describe("Session Control REST API", () => {
       retried: true,
       attempts: 2,
     });
-    registerSession("verify-reject", { sessionFile: "/path/reject.jsonl" });
+    registerSession("verify-reject", { sessionFile: path.join(fixtureDir, "reject.jsonl") });
     server.sessionManager.update("verify-reject", { status: "ended", endedAt: Date.now() });
     const res = await postJson("/api/session/verify-reject/resurrect");
     expect(res.status).toBe(503);
@@ -301,15 +318,33 @@ describe("Session Control REST API", () => {
 
   // ── spawn ───────────────────────────────────────────────────────
 
-  it("POST /api/session/spawn — 400 when cwd missing", async () => {
+  it("POST /api/session/spawn — 403 when cwd policy rejects a missing cwd", async () => {
     const res = await postJson("/api/session/spawn", {});
-    expect(res.status).toBe(400);
+    // Independent cwd authorization runs before the legacy body-shape check.
+    expect(res.status).toBe(403);
+    expect((await res.json()).error).toBe("Spawn refused: cwd-not-permitted");
   });
 
   it("POST /api/session/spawn — success with valid cwd", async () => {
-    const res = await postJson("/api/session/spawn", { cwd: "/tmp/project" });
+    const res = await postJson("/api/session/spawn", { cwd: fixtureDir });
     expect(res.status).toBe(200);
     expect((await res.json()).success).toBe(true);
+  });
+
+  it("POST /api/session/spawn — anonymous auth-off request cannot spawn", async () => {
+    mockSpawnPiSession.mockClear();
+    const res = await postJson("/api/session/spawn", { cwd: fixtureDir }, false);
+    expect(res.status).toBe(401);
+    expect(mockSpawnPiSession).not.toHaveBeenCalled();
+  });
+
+  it("POST /api/session/:id/resurrect — anonymous auth-off request cannot relaunch", async () => {
+    registerSession("anonymous-resurrect", { sessionFile: path.join(fixtureDir, "anonymous.jsonl") });
+    server.sessionManager.update("anonymous-resurrect", { status: "ended", endedAt: Date.now() });
+    mockSpawnPiSession.mockClear();
+    const res = await postJson("/api/session/anonymous-resurrect/resurrect", {}, false);
+    expect(res.status).toBe(401);
+    expect(mockSpawnPiSession).not.toHaveBeenCalled();
   });
 
   // ── resume ──────────────────────────────────────────────────────
@@ -325,7 +360,7 @@ describe("Session Control REST API", () => {
   });
 
   it("POST /api/session/:id/resume — 409 if session still active", async () => {
-    registerSession("resume-active", { sessionFile: "/path/session.jsonl" });
+    registerSession("resume-active", { sessionFile: path.join(fixtureDir, "session.jsonl") });
     const res = await postJson("/api/session/resume-active/resume", { mode: "continue" });
     expect(res.status).toBe(409);
   });

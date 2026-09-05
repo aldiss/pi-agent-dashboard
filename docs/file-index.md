@@ -13,7 +13,8 @@ Per-area maps of every architecturally significant file in pi-agent-dashboard. L
 | Shared types & protocols | [`file-index-shared.md`](./file-index-shared.md) | `src/shared/`, `packages/shared/` |
 | Bridge extension | [`file-index-extension.md`](./file-index-extension.md) | `src/extension/`, `packages/extension/` |
 | Dashboard server | [`file-index-server.md`](./file-index-server.md) | `src/server/`, `packages/server/` |
-| Web client | [`file-index-client.md`](./file-index-client.md) | `src/client/`, `packages/client/` |
+| Web client | [`file-index-client.md`](./file-index-client.md) | `src/client/`, `packages/client/`, except hooks |
+| Web client hooks | [`file-index-client-hooks.md`](./file-index-client-hooks.md) | `src/client/hooks/`, `packages/client/src/hooks/`, hook tests |
 | Electron app | [`file-index-electron.md`](./file-index-electron.md) | `packages/electron/` |
 | Dashboard plugins | [`file-index-plugins.md`](./file-index-plugins.md) | `packages/dashboard-plugin-runtime/`, `packages/{flows,demo}-plugin/` |
 | Skills, scripts, CI | [`file-index-skills-misc.md`](./file-index-skills-misc.md) | `.pi/skills/`, `scripts/`, `public/`, `.github/`, misc |

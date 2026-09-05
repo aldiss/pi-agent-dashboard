@@ -2,7 +2,9 @@
  * Pi Gateway - WebSocket server for bridge extension connections.
  */
 import { WebSocketServer, WebSocket } from "ws";
+import type { IncomingMessage } from "node:http";
 import type { ExtensionToServerMessage, ServerToExtensionMessage } from "@blackbelt-technology/pi-dashboard-shared/protocol.js";
+import { verifyBridgeToken } from "@blackbelt-technology/pi-dashboard-shared/bridge-token.js";
 import type { DashboardSession, BridgeDisconnectReason } from "@blackbelt-technology/pi-dashboard-shared/types.js";
 import {
   classifyBridgeDisconnect,
@@ -18,6 +20,36 @@ export const WS_PING_INTERVAL = 60_000;
 export interface PiGatewayOptions {
   heartbeatTimeout?: number;
   pingInterval?: number;
+  host?: string;
+  expectedBridgeToken?: string | null;
+  /** Phase two only. Phase one keeps untokened bridge telemetry connected. */
+  requireBridgeToken?: boolean;
+}
+
+export interface BridgeConnectionContext {
+  readonly remoteAddress: string;
+  readonly origin: string | null;
+  readonly forwarded: boolean;
+  readonly presentedBridgeToken: string | null;
+  /** Token verification only; spawn policy checks locality independently. */
+  readonly trusted: boolean;
+  send(reply: ServerToExtensionMessage): boolean;
+}
+
+function readPresentedBridgeToken(request: IncomingMessage): string | null {
+  const header = request.headers["x-pi-bridge-token"];
+  const protocols = request.headers["sec-websocket-protocol"];
+  if (header !== undefined && typeof header !== "string") return null;
+  if (protocols !== undefined && typeof protocols !== "string") return null;
+  const prefix = "pi-bridge-token.";
+  const tokens = (protocols ?? "").split(",")
+    .map((protocol) => protocol.trim())
+    .filter((protocol) => protocol.startsWith(prefix))
+    .map((protocol) => protocol.slice(prefix.length));
+  if (header !== undefined) tokens.push(header);
+  const token = tokens[0];
+  // Conflicting sources must also fail an independent token recheck downstream.
+  return token && tokens.every((candidate) => candidate === token) ? token : null;
 }
 
 /** Observable gateway lifecycle state — the fail-loud surface the server/
@@ -37,7 +69,7 @@ export interface PiGateway {
   isSessionConnected(sessionId: string): boolean;
   /** Force-close the WebSocket connection for a session */
   closeSession(sessionId: string): boolean;
-  onEvent?: (sessionId: string, msg: ExtensionToServerMessage) => void;
+  onEvent?: (sessionId: string, msg: ExtensionToServerMessage, connection: BridgeConnectionContext) => void;
   onEmpty?: () => void;
   onConnection?: () => void;
   /**
@@ -85,6 +117,8 @@ export function createPiGateway(
 ): PiGateway {
   const hbTimeout = options?.heartbeatTimeout ?? HEARTBEAT_TIMEOUT;
   const pingMs = options?.pingInterval ?? WS_PING_INTERVAL;
+  const expectedBridgeToken = options?.expectedBridgeToken ?? null;
+  const requireBridgeToken = options?.requireBridgeToken === true;
   // WS ping/pong miss threshold before a connection is treated as dead. Hoisted
   // to closure scope so the ping-timeout site, the ws-close origin, and the
   // heartbeat-timeout timer paths all reference one definition (no magic 3).
@@ -109,7 +143,7 @@ export function createPiGateway(
   // Map sessionId → { setAt: timestamp, sleepRetried: boolean } for sleep detection
   const heartbeatMeta = new Map<string, { setAt: number; sleepRetried: boolean }>();
 
-  let onEvent: ((sessionId: string, msg: ExtensionToServerMessage) => void) | undefined;
+  let onEvent: PiGateway["onEvent"];
   let onEmpty: (() => void) | undefined;
   let onConnection: (() => void) | undefined;
   let onDisconnect: ((sessionId: string, reason: BridgeDisconnectReason) => void) | undefined;
@@ -292,7 +326,7 @@ export function createPiGateway(
   }
 
   return {
-    set onEvent(handler: ((sessionId: string, msg: ExtensionToServerMessage) => void) | undefined) {
+    set onEvent(handler: PiGateway["onEvent"]) {
       onEvent = handler;
     },
 
@@ -354,7 +388,14 @@ export function createPiGateway(
       return null;
     },
     start(port: number) {
-      wss = new WebSocketServer({ port });
+      wss = new WebSocketServer({
+        port,
+        host: options?.host ?? "127.0.0.1",
+        ...(requireBridgeToken ? {
+          verifyClient: ({ req }: { req: IncomingMessage }) =>
+            verifyBridgeToken(readPresentedBridgeToken(req), expectedBridgeToken),
+        } : {}),
+      });
       gatewayStatus = "idle";
 
       // FAIL-LOUD on the ASYNC bind seam. `new WebSocketServer({port})` does NOT
@@ -437,7 +478,21 @@ export function createPiGateway(
         }
       }, pingMs);
 
-      wss.on("connection", (ws) => {
+      wss.on("connection", (ws, request) => {
+        const presentedBridgeToken = readPresentedBridgeToken(request);
+        const connection: BridgeConnectionContext = Object.freeze({
+          remoteAddress: request.socket.remoteAddress ?? "",
+          origin: request.headers.origin ?? null,
+          forwarded: Object.keys(request.headers).some((header) =>
+            header === "forwarded" || header === "x-real-ip" || header.startsWith("x-forwarded-")),
+          presentedBridgeToken,
+          trusted: verifyBridgeToken(presentedBridgeToken, expectedBridgeToken),
+          send(reply: ServerToExtensionMessage): boolean {
+            if (ws.readyState !== WebSocket.OPEN) return false;
+            ws.send(JSON.stringify(reply));
+            return true;
+          },
+        });
         let currentSessionId: string | null = null;
         aliveMisses.set(ws, 0);
         ws.on("pong", () => { aliveMisses.set(ws, 0); });
@@ -472,6 +527,16 @@ export function createPiGateway(
           // onRegisterError — replacing the old blanket `catch {}` that left the
           // socket ESTABLISHED with no row and no log (the silent wedge, PS-3).
           try {
+            const claimedId = "sessionId" in msg && typeof msg.sessionId === "string" ? msg.sessionId : undefined;
+            // Runtime ownership comes from server state, never bridge fields.
+            if ((claimedId && sessionManager.get(claimedId)?.runtime === "codex")
+              || (currentSessionId && sessionManager.get(currentSessionId)?.runtime === "codex")) return;
+            // Spawn authorization precedes every session/connection mutation.
+            // A body-supplied sessionId cannot displace a bridge or redirect denial.
+            if (msg.type === "spawn_new_session") {
+              onEvent?.(currentSessionId ?? "", msg, connection);
+              return;
+            }
             // Track session identity from any message with a sessionId
             if (!currentSessionId && "sessionId" in msg && (msg as any).sessionId) {
               const sid: string = (msg as any).sessionId;
@@ -608,7 +673,7 @@ export function createPiGateway(
 
             // Notify listeners
             const eventSessionId = "sessionId" in msg ? (msg as any).sessionId : undefined;
-            onEvent?.(eventSessionId ?? currentSessionId ?? "", msg);
+            onEvent?.(eventSessionId ?? currentSessionId ?? "", msg, connection);
           } catch (err) {
             const e = err instanceof Error ? err : new Error(String(err));
             const sid = ("sessionId" in msg ? (msg as any).sessionId : undefined) ?? currentSessionId ?? null;
@@ -680,7 +745,7 @@ export function createPiGateway(
       heartbeatMeta.clear();
       aliveMisses.clear();
       // Forcibly terminate all extension connections
-      for (const ws of connections.values()) {
+      for (const ws of wss?.clients ?? []) {
         ws.terminate();
       }
       connections.clear();

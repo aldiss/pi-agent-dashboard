@@ -7,6 +7,8 @@ import os from "node:os";
 import {
   loadConfig,
   validateGuestCellGrants,
+  validateSpawnBoundaryConfig,
+  validateCodexRuntimeConfig,
   type DashboardConfig,
   type AuthConfig,
 } from "@blackbelt-technology/pi-dashboard-shared/config.js";
@@ -48,7 +50,7 @@ function redactAuthSecrets(auth: AuthConfig): AuthConfig {
 /**
  * Fields that require a server restart to take effect.
  */
-const RESTART_FIELDS = new Set(["port", "piPort"]);
+const RESTART_FIELDS = new Set(["port", "piPort", "piHost"]);
 
 export interface WriteConfigResult {
   success: boolean;
@@ -182,6 +184,13 @@ export function writeConfigPartial(partial: Record<string, any>): WriteConfigRes
         mergedAuth.operatorUsers = partial.auth.operatorUsers;
       }
 
+      if (partial.auth.localBridgeOperator !== undefined) {
+        if (partial.auth.localBridgeOperator !== existingAuth.localBridgeOperator) {
+          restartRequired = true;
+        }
+        mergedAuth.localBridgeOperator = partial.auth.localBridgeOperator;
+      }
+
       // Build 0 multi-operator gate. Persist requireBrowserAuth explicitly so a
       // Settings/API toggle survives reload. H-M1 (Build 1b): a security flag
       // must be a STRICT boolean — reject a non-boolean write with an error and
@@ -272,6 +281,31 @@ export function writeConfigPartial(partial: Record<string, any>): WriteConfigRes
       partial.tunnel = { ...existing.tunnel, ...partial.tunnel };
     }
 
+    if (partial.bridge && typeof partial.bridge === "object" && !Array.isArray(partial.bridge)) {
+      const prior = existing.bridge?.requireToken === true;
+      partial.bridge = { ...existing.bridge, ...partial.bridge };
+      if ((partial.bridge.requireToken === true) !== prior) restartRequired = true;
+    }
+
+    if (partial.runtimes !== undefined) {
+      if (!partial.runtimes || typeof partial.runtimes !== "object" || Array.isArray(partial.runtimes)) {
+        return { success: false, restartRequired: false, validationError: true, error: "runtimes must be an object" };
+      }
+      const incoming = partial.runtimes;
+      if (incoming.codex !== undefined) {
+        const error = validateCodexRuntimeConfig(incoming.codex);
+        if (error) return { success: false, restartRequired: false, validationError: true, error };
+      }
+      partial.runtimes = {
+        ...existing.runtimes,
+        ...incoming,
+        ...(incoming.codex ? { codex: { ...existing.runtimes?.codex, ...incoming.codex } } : {}),
+      };
+      const error = validateCodexRuntimeConfig(partial.runtimes.codex);
+      if (error) return { success: false, restartRequired: false, validationError: true, error };
+      if (JSON.stringify(partial.runtimes.codex) !== JSON.stringify(existing.runtimes?.codex)) restartRequired = true;
+    }
+
     // Merge memoryLimits sub-object
     if (partial.memoryLimits) {
       partial.memoryLimits = { ...existing.memoryLimits, ...partial.memoryLimits };
@@ -306,6 +340,11 @@ export function writeConfigPartial(partial: Record<string, any>): WriteConfigRes
     }
 
     const merged = { ...existing, ...partial };
+
+    const spawnError = validateSpawnBoundaryConfig(merged);
+    if (spawnError) {
+      return { success: false, restartRequired: false, validationError: true, error: spawnError };
+    }
 
     // Remove computed fields that shouldn't be persisted
     delete merged.resolvedTrustedNetworks;

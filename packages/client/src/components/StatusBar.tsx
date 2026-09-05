@@ -4,7 +4,7 @@ import { mdiLoading, mdiFlash } from "@mdi/js";
 import { ModelSelector } from "./ModelSelector.js";
 import { ThinkingLevelSelector } from "./ThinkingLevelSelector.js";
 import { BellToggle } from "./BellToggle.js";
-import type { ModelInfo, RoleInfo } from "@blackbelt-technology/pi-dashboard-shared/types.js";
+import type { ModelInfo, RoleInfo, SessionRuntime } from "@blackbelt-technology/pi-dashboard-shared/types.js";
 import {
   composeStatusString,
   renderOperatorString,
@@ -12,6 +12,7 @@ import {
 } from "@blackbelt-technology/pi-dashboard-shared/operator-string.js";
 
 interface Props {
+  runtime?: SessionRuntime;
   model?: string;
   models?: ModelInfo[];
   roles?: RoleInfo;
@@ -33,7 +34,7 @@ interface Props {
   pushEnabled?: boolean;
 }
 
-export function StatusBar({ model, models, roles, thinkingLevel, status, currentTool, streamingText, onSelectModel, onSelectThinkingLevel, onRoleSet, onPresetLoad, onPresetSave, onPresetDelete, bellState, onBellClick, pushEnabled }: Props) {
+export function StatusBar({ runtime, model, models, roles, thinkingLevel, status, currentTool, streamingText, onSelectModel, onSelectThinkingLevel, onRoleSet, onPresetLoad, onPresetSave, onPresetDelete, bellState, onBellClick, pushEnabled }: Props) {
   // statusLabel is an OperatorString (Phase-2 / Ruling #3): it is constructible
   // ONLY via composeStatusString(typed StatusKind) — a raw string assigned here
   // fails to typecheck (the nominal brand). This binds the OperatorString
@@ -57,8 +58,12 @@ export function StatusBar({ model, models, roles, thinkingLevel, status, current
   return (
     <div className="flex items-center justify-between px-4 py-1 border-t border-[var(--border-primary)] text-xs" data-testid="status-bar">
       <div className="flex items-center gap-2">
-        <ModelSelector current={model} models={models} roles={roles} onSelect={onSelectModel} onRoleSet={onRoleSet} onPresetLoad={onPresetLoad} onPresetSave={onPresetSave} onPresetDelete={onPresetDelete} />
-        <ThinkingLevelSelector current={thinkingLevel} onSelect={onSelectThinkingLevel} />
+        {runtime === "codex" ? <span className="text-[var(--text-secondary)]">{model}</span> : (
+          <>
+            <ModelSelector current={model} models={models} roles={roles} onSelect={onSelectModel} onRoleSet={onRoleSet} onPresetLoad={onPresetLoad} onPresetSave={onPresetSave} onPresetDelete={onPresetDelete} />
+            <ThinkingLevelSelector current={thinkingLevel} onSelect={onSelectThinkingLevel} />
+          </>
+        )}
         {status !== "ended" && pushEnabled !== false && bellState && onBellClick && (
           <BellToggle state={bellState} onClick={onBellClick} />
         )}

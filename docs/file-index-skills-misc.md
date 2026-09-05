@@ -9,6 +9,8 @@
 | File | Purpose |
 |------|---------|
 | `.pi/skills/openspec-shared/scripts/effective-status.sh` | Bash wrapper around `openspec status --change <name> --json`; applies same R1/R2/R3 promotion as dashboard so OpenSpec workflow skills (`openspec-{continue,ff,apply,verify}-change`) + dashboard session-card buttons cannot disagree about change's next-ready artifact. Inlines rule logic via `find` + `grep -E`; `jq` for JSON mutation; falls back to raw CLI output if `jq` absent. **Repo-lint** `packages/shared/src/__tests__/no-raw-openspec-status-in-skills.test.ts` blocks raw `openspec status ... --json` calls in any of four governed skills (opt-out: `ban:openspec-status-ok`). Parity test: `packages/shared/src/__tests__/openspec-effective-status-script.test.ts`. See change: fix-openspec-design-detection. |
+| `scripts/codex-runtime-browser-acceptance.ts` | Runs isolated Chromium dashboard checks: default `--check-ui` uses zero model turns; `--live` checks launch, streaming, retained context, mid-tool abort, and resume after dashboard process restart. Saves screenshots and `evidence.json` under `/tmp/codex-runtime-browser-*`. |
+| `scripts/codex-runtime-browser-server.ts` | Starts fixture dashboard under isolated `/tmp/codex-runtime-browser-*` HOME with owned IPC parent. Reports bound ports; awaits shutdown on stop, signals, or parent disconnect. |
 | `scripts/fix-pty-permissions.cjs` | Postinstall: fix node-pty spawn-helper execute permissions |
 | `public/manifest.json` | PWA web app manifest for installability |
 | `public/sw.js` | Minimal service worker for PWA installability |

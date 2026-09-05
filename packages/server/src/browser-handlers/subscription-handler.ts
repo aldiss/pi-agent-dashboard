@@ -149,6 +149,16 @@ export function handleSubscribe(
   const { ws, sessionManager, eventStore, directoryService, piGateway, sendTo, broadcast, getSubscribers, replayPendingUiRequests, markReplaying, clearReplaying } = ctx;
   subs.add(msg.sessionId);
 
+  const runtimeSession = sessionManager.get(msg.sessionId);
+  if (runtimeSession?.runtime === "codex") {
+    ctx.runtimeManager?.loadEvents(msg.sessionId);
+    if (!eventStore.hasEvents(msg.sessionId)) {
+      sendTo(ws, { type: "event_replay", sessionId: msg.sessionId, events: [], isLast: true });
+      sendPushPrefs(ws, msg.sessionId, ctx.pushPrefsMap, ctx.getPushDefaults, sendTo);
+      return;
+    }
+  } else {
+
   // Request metadata from the extension so commands/flows/models/roles arrive
   // while the browser is actually subscribed (responses use sendToSubscribers).
   piGateway.sendToSession(msg.sessionId, { type: "request_commands", sessionId: msg.sessionId });
@@ -156,6 +166,7 @@ export function handleSubscribe(
   // See change: replace-hardcoded-provider-lists.
   piGateway.sendToSession(msg.sessionId, { type: "request_providers", sessionId: msg.sessionId });
   piGateway.sendToSession(msg.sessionId, { type: "request_roles", sessionId: msg.sessionId });
+  }
 
   if (eventStore.hasEvents(msg.sessionId)) {
     const lastSeq = msg.lastSeq ?? 0;

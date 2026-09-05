@@ -45,7 +45,7 @@ describe("pi-gateway fail-loud surface", () => {
 
   it("THE FIX — occupied port → onListenError fires + status() === 'listen-failed'", async () => {
     // Occupy an ephemeral port with a plain WS server.
-    const blocker = new WebSocketServer({ port: 0 });
+    const blocker = new WebSocketServer({ port: 0, host: "127.0.0.1" });
     await new Promise((r) => blocker.on("listening", r));
     const busyPort = (blocker.address() as { port: number }).port;
 

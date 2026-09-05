@@ -37,6 +37,7 @@ import {
   type UserSpawnStrategy,
 } from "@blackbelt-technology/pi-dashboard-shared/platform/spawn-mechanism.js";
 import type { SpawnFailureCode } from "@blackbelt-technology/pi-dashboard-shared/browser-protocol.js";
+import { isContained, resolveSpawnCwd } from "./spawn-cwd.js";
 
 // ── Resolver seam (injectable for tests) ────────────────────────────────────
 
@@ -53,6 +54,8 @@ export function resetResolver(): void {
 }
 
 // ── Public API ─────────────────────────────────────────────────────────────
+
+export type SpawnCwdPolicy = { permittedRoots: readonly string[] };
 
 export interface SessionOptions {
   sessionFile?: string;
@@ -404,16 +407,35 @@ export function interactiveResolutionFailed(
 
 export async function spawnPiSession(
   cwd: string,
-  options?: SessionOptions & { electronMode?: boolean },
+  options: (SessionOptions & { electronMode?: boolean }) | undefined,
+  cwdPolicy: SpawnCwdPolicy,
 ): Promise<SpawnResult> {
+  const refused: SpawnResult = { success: false, code: "CWD_NOT_PERMITTED", message: "Spawn cwd is not permitted" };
+  const permittedRoots = cwdPolicy && typeof cwdPolicy === "object"
+    && "permittedRoots" in cwdPolicy && Array.isArray(cwdPolicy.permittedRoots)
+    ? [...cwdPolicy.permittedRoots] : [];
+  if (permittedRoots.length === 0) return refused;
+
+  const checkCwd = (candidate: string): string | SpawnResult => {
+    const resolved = resolveSpawnCwd(candidate);
+    if (!resolved.ok) {
+      return resolved.problem === "missing"
+        ? { success: false, code: "DIR_MISSING", message: `Directory does not exist: ${candidate}`, cwd: candidate }
+        : refused;
+    }
+    if (!isContained(resolved.realPath, permittedRoots)) return refused;
+    return resolved.realPath;
+  };
+  let spawnCwd = checkCwd(cwd);
+  if (typeof spawnCwd !== "string") return spawnCwd;
+
   // ── Pre-spawn hook ────────────────────────────────────────────────
   // Run before any process creation; hook may change the spawn cwd.
   // See change: worktree-session-spawn.
-  let spawnCwd = cwd;
   if (options?.preSpawnHook) {
     try {
       const result = await options.preSpawnHook({
-        cwd,
+        cwd: spawnCwd,
         branch: (options as any).branch,
         label: (options as any).label,
       });
@@ -426,9 +448,9 @@ export async function spawnPiSession(
     }
   }
 
-  if (!existsSync(spawnCwd)) {
-    return { success: false, code: "DIR_MISSING", message: `Directory does not exist: ${spawnCwd}`, cwd: spawnCwd };
-  }
+  const checkedCwd = checkCwd(spawnCwd);
+  if (typeof checkedCwd !== "string") return checkedCwd;
+  spawnCwd = checkedCwd;
 
   // Mint a spawn token if the caller didn't provide one. Token is injected
   // into the spawned process's env (via buildSpawnEnv) and surfaced on

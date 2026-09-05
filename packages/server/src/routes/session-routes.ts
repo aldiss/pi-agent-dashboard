@@ -24,6 +24,7 @@ export function registerSessionRoutes(
   deps: {
     sessionManager: SessionManager;
     eventStore: EventStore;
+    runtimeManager?: import("../runtime/runtime-manager.js").CodexRuntimeManager;
     networkGuard: NetworkGuard;
     /** Injected liveness probes for read-path hygiene + the retire guard. */
     hygieneProbes: HygieneProbes;
@@ -162,6 +163,7 @@ export function registerSessionRoutes(
     "/api/events/:sessionId/:seq",
     async (request) => {
       const { sessionId, seq } = request.params;
+      deps.runtimeManager?.loadEvents(sessionId);
       const event = eventStore.getEvent(sessionId, parseInt(seq, 10));
       if (!event) {
         return { success: false, error: "Event not found" } satisfies ApiResponse;
@@ -183,6 +185,7 @@ export function registerSessionRoutes(
       if (!session) {
         return { success: false, error: "session not found" } satisfies ApiResponse;
       }
+      deps.runtimeManager?.loadEvents(sessionId);
       const events = eventStore.getEvents(sessionId, 0).map((e) => e.event);
       const files = extractFileChanges(events, session.cwd);
       const result = enrichWithGitDiff(session.cwd, files);

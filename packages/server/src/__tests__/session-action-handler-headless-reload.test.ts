@@ -4,6 +4,7 @@
  * See change: headless-reload-via-respawn.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { createSpawnTestContext } from "../test-support/spawn-policy-fixture.js";
 
 // Mock spawnPiSession BEFORE importing the handler.
 vi.mock("../process-manager.js", () => ({
@@ -43,6 +44,7 @@ function makeCtx(
   const sessions: Record<string, any> = { ...(options.sessions ?? {}) };
 
   const ctx = {
+    ...createSpawnTestContext(),
     ws: { readyState: 1 } as any,
     sessionManager: {
       get: (sid: string) => sessions[sid],

@@ -231,6 +231,92 @@ TypeScript type definitions shared across all components:
    - Plain text → `pi.sendUserMessage()` (default)
 5. Pi processes the command, events flow back via event flow
 
+### Owned Codex Runtime (`app-server`)
+
+`SessionRuntime = "pi" | "codex"` selects owned dashboard-session transport.
+Absent `DashboardSession.runtime` retains pi behavior.
+`ExternalRuntime = "codex" | "claude-code"` belongs to separate view-only external-session surface.
+`external-sessions/tmux-read.ts` remains read-only; native Codex adapter does not use it.
+Owned Codex sessions carry `source:"dashboard"`, `runtime:"codex"`, and native `codexThreadId`.
+Optional `codexThreadPath` records native rollout location, not pi `sessionFile`.
+
+`runtime/codex-adapter.ts` launches `codex app-server` through shared executable registry.
+Child uses piped stdin/stdout/stderr with `shell:false` and `detached:false`.
+Transport uses newline-delimited JSON-RPC, not ACP, terminal emulation, or tmux.
+`runtime/ndjson-rpc.ts` correlates request IDs and rejects pending requests on transport failure.
+Default RPC deadline: 30 seconds.
+
+| Operation | Native protocol |
+|---|---|
+| Launch | `initialize` → `initialized` → `thread/start` with `ephemeral:false` |
+| Cold attach | `initialize` → `initialized` → `thread/resume` by stored thread ID |
+| Prompt | `turn/start` on same native thread |
+| Abort | `turn/interrupt`; await matching `turn/completed` |
+
+Adapter permits one active turn per session.
+Abort waits for turn ID when interrupt arrives before `turn/start` response.
+Thread and turn identity filters discard foreign/stale notifications.
+Native identity reaches metadata before launch acknowledgement.
+Model-facing text receives shared `wrapForSend` attribution only at RPC send boundary.
+Dashboard events retain raw text, separate server-derived `author`, and `queueNonce`.
+
+Approval policy stays `never`; sandbox stays `workspace-write`.
+Server requests still require replies; unanswered requests block native turns.
+No Codex approval/input dialog ships in this runtime.
+
+| Server request | Response |
+|---|---|
+| `item/commandExecution/requestApproval`, `item/fileChange/requestApproval` | `{ decision: "decline" }` |
+| `item/permissions/requestApproval` | `{ permissions: {}, scope: "turn" }` |
+| `item/tool/requestUserInput` | `{ answers: {} }` |
+| `mcpServer/elicitation/request` | `{ action: "decline", content: null, _meta: null }` |
+| `item/tool/call` | `{ contentItems: [], success: false }` |
+| Legacy `execCommandApproval`, `applyPatchApproval` | `{ decision: "denied" }` |
+| Unknown method | JSON-RPC error `-32601` |
+
+Declined requests produce paired, finished error cards without ending active turn.
+`codex-event-mapper.ts` accumulates assistant deltas into dashboard text snapshots.
+Final assistant text emits `message_update` before `message_end`.
+Native `agentMessage` completion can replace streamed item ID.
+`completeItem` aliases unknown completion ID only when exactly one explicitly started assistant lifecycle remains open and phases match.
+Identity reconciliation ignores text equality; separate identical replies remain separate.
+Reasoning emits explicit `thinking_end`.
+Command output emits cumulative tool-result snapshots.
+Command/file/MCP/dynamic/unknown items receive paired tool lifecycle events.
+`finishTurn` closes unfinished tools and reasoning before idempotent `agent_end`.
+`turn_end` does not terminate dashboard streaming state.
+Terminal errors use `agent_end.data.messages[].stopReason:"error"` and `errorMessage`.
+Intentional interruption emits `agent_end.data.messages[].stopReason:"aborted"` without provider error.
+Interrupted turns close partial assistant output, reasoning, and unfinished tools.
+Interrupted native payloads do not mark `inProgress` tools successful.
+
+`thread/tokenUsage/updated` cumulative totals become incremental `stats_update` events.
+Dashboard `tokensIn` excludes cached input; `cacheRead` stores cached input separately.
+Resume baselines prevent recounting persisted token totals.
+Runtime does not derive model prices or emit fabricated cost.
+
+`runtime-manager.ts` coordinates adapters, native identities, shared PID ownership, and normalized event ingestion.
+Failed cold attach retains live-process ownership and blocks replacement for same session.
+Disposal releases adapter/PID ownership only after termination proof.
+Failed shutdown rejects new launches while allowing cleanup retry.
+Active adapters pin event-store entries.
+`codex-session-store.ts` keeps dashboard metadata/display journal separate from native thread history.
+Startup awaits Codex orphan termination before metadata restore and bridge listen.
+Restored sessions remain ended until explicit resume or authorized prompt creates an adapter.
+REST history reads and WS subscriptions reload display journals without launching Codex.
+Interrupted journal recovery closes open tools, reasoning, and assistant text before recording restart error.
+Graceful shutdown awaits adapter disposal before shared PID cleanup.
+Codex orphan cleanup uses direct `killProcess` plus liveness verification, not pi process-group reclamation.
+Still-alive Codex orphan rejects startup and retains disk record.
+
+Folder spawn selector defaults to pi; Codex option requires server opt-in.
+Codex badges appear on session cards and headers.
+Codex resume availability follows `codexThreadId`, not `sessionFile`.
+Codex composer rejects follow-up submission while busy.
+Pi slash/shell commands, fork, worktree spawn, model/thinking/role pickers, flow controls, and extension dialogs remain unavailable for Codex.
+Existing pi bridge, `/new`, and pi transport selection retain their paths.
+Bridge session-ID collisions, session-list batches, file deduplication, and ghost cleanup exclude owned Codex rows.
+
 ### Flow Dashboard Data Flow (pi-flows → browser)
 pi-flows runs multi-agent workflows in-process. Subagent sessions use `SessionManager.inMemory()` and don't bootstrap the bridge, so flow data must be explicitly forwarded by the parent session's bridge.
 
@@ -939,6 +1025,44 @@ Safe auth, health, and `/v1` exceptions require exact method+declared path. `onR
 
 **`GET /api/network-interfaces`** returns detected non-internal IPv4 interfaces with computed CIDRs. Used by the Settings UI "Add Local Network" button. This endpoint uses the legacy `localhostGuard` (localhost-only, not network-guard-aware) since it exposes machine network topology.
 
+### Spawn Authorization Boundary
+
+`createSpawnGate` composes `authorizeSessionAction` → `authorizeSpawn`; both gates must allow.
+`authorizeSpawn` enforces spawn denials independently of `auth.requireBrowserAuth`.
+Missing gate injection denies spawn.
+
+| Ingress | Required authority |
+|---|---|
+| REST `POST /api/session/spawn` | Verified principal; configured `auth.operatorUsers` membership |
+| Browser WS `spawn_session` | Connection-bound verified principal; configured `auth.operatorUsers` membership |
+| Bridge WS `spawn_new_session` | Matching bridge token, loopback socket, no forwarding evidence, successful spawn-only delegation |
+
+REST/browser credentials remain mandatory on loopback and trusted networks, including `requireBrowserAuth:false`.
+Absent/empty `operatorUsers` removes roster restriction, not credential requirement.
+Native `/new` retains delegated bridge authority for exactly `spawn`; other actions gain no delegation.
+`auth.localBridgeOperator:null` disables delegation even with valid token.
+Absent delegate selector chooses first configured operator, or synthetic `local-bridge` with empty roster.
+Delegated audit records use provider `local-bridge-delegation`, never human speaker attribution.
+Remote bridges cannot spawn with valid tokens, including trusted-network peers.
+Presented Origin must match server/configured origin allowlist.
+Enabled-runtime allowlist rejects unavailable runtimes.
+
+`computePermittedRoots` canonicalizes pinned directories plus known session cwds with realpath.
+`resolveSpawnCwd` requires existing absolute directory and resolves symlinks.
+`isContained` rejects canonical paths outside permitted roots, including prefix siblings.
+Empty roots deny spawn; pin directory or discover session cwd before launching.
+Authorization precedes spawn-side worktree, attach-queue, and bootstrap-queue effects.
+`spawnPiSession` requires cwd policy and rechecks canonical directory before/after pre-spawn hooks.
+Pi launches, resumes, forks, reloads, and resurrection carry authorized canonical cwd plus permitted roots.
+Async lifecycle gaps cannot re-resolve session aliases outside authorized roots; `preValidated` grants no bypass.
+Identity policy freezes at startup; roots and allowed origins resolve per decision.
+
+Bridge token lives at `~/.pi/dashboard/bridge-token`, mode `0600`, 32 random bytes encoded as hex.
+Token creation publishes complete file atomically; invalid existing files refuse startup.
+Extension rereads token on reconnect and sends it only to loopback URLs.
+Phase one keeps untokened bridge connections available for telemetry/converse; spawn still requires token.
+Phase two enables `bridge.requireToken:true` after bridge rollout; missing/wrong tokens fail handshake.
+
 ### OAuth Authentication Flow
 
 Optional OAuth2 authentication protects the dashboard when accessed remotely.
@@ -1135,13 +1259,16 @@ The per-message ⤘ Fork button needs each chat bubble to carry the entry id of 
 
 | Data | Storage | Details |
 |------|---------|---------|
-| Events | In-memory Map | LRU eviction, max 100 sessions. Pinned if active bridge or browser subscribers. |
+| Events | In-memory Map | Pins active pi bridges, Codex adapters, and browser-subscribed sessions against LRU eviction. |
 | Sessions | In-memory Map + `.meta.json` | In-memory registry. Each session's state cached in per-session `.meta.json` sidecar next to `.jsonl`. On startup, `session-scanner.ts` scans `~/.pi/agent/sessions/*/` to restore all sessions from cached meta. |
 | Session meta | `~/.pi/agent/sessions/…/<id>.meta.json` | Dashboard state + cached stats + server-derived `accessCellId`. Guest auth revalidates cached cell against current registry snapshot. Debounced writes, max 1/sec. |
 | Pinned directories | `~/.pi/dashboard/preferences.json` | Ordered array of cwd paths. Pinned dirs always visible in sidebar. |
 | Session order | `~/.pi/dashboard/preferences.json` | Per-cwd ordering managed by `session-order-manager.ts`. |
 | Server PID | `~/.pi/dashboard/server.pid` | Tracks running server process for daemon management. |
-| Headless PIDs | `~/.pi/dashboard/headless-pids.json` | Maps spawned headless processes to sessions. Unix: `tail -f /dev/null \| pi --mode rpc` (uses tail instead of sleep to avoid stdin pipeline bug). Windows: `pi.cmd --mode rpc` with `shell: true` and quoted paths for spaces in usernames. |
+| Headless PIDs | `~/.pi/dashboard/headless-pids.json` | Persists runtime-tagged PID ownership for pi reclamation and awaited Codex termination. |
+| Codex metadata | `~/.pi/dashboard/codex-sessions/codex-<uuid>.meta.json` | Stores native thread ID/path and dashboard session state. |
+| Codex display journal | `~/.pi/dashboard/codex-sessions/codex-<uuid>.jsonl` | Stores normalized dashboard events separately from native conversation history. |
+| Codex native home | `~/.pi/dashboard/codex-home/` | Holds managed config and Codex-owned native thread state. |
 | Bridge extension | `~/.pi/agent/settings.json` | On bundled installs (Electron DEB/DMG), the server auto-registers the bridge extension path in pi's global settings so all spawned pi sessions discover and load it. No-op in dev mode. |
 | Session files | `~/.pi/agent/sessions/` (pi's own) | Source of truth. Bridge loads on demand. |
 
@@ -1153,15 +1280,34 @@ Precedence: CLI flags → environment variables → config file (`~/.pi/dashboar
 |---------|---------|-------------|
 | `port` | 8000 | HTTP + Browser WebSocket port |
 | `piPort` | 9999 | Pi extension WebSocket port |
+| `piHost` | `"127.0.0.1"` | Bridge listener address; explicit override permits remote connections |
+| `bridge.requireToken` | false | Phase-two token requirement for bridge handshakes |
 | `autoStart` | true | Bridge extension auto-starts server if not running |
 | `autoShutdown` | false | Server shuts down after idle period (disabled by default; enable for TUI auto-start scenarios) |
 | `shutdownIdleSeconds` | 300 | Idle timeout before auto-shutdown |
 | `spawnStrategy` | `"headless"` | How to spawn new sessions: `"headless"` or `"tmux"` |
+| `runtimes.codex.enabled` | false | Enables native Codex launch and cold attach |
+| `runtimes.codex.model` | absent | Selects Codex model when configured |
+| `runtimes.codex.modelProvider` | `"dashboard"` | Names managed model-provider entry |
+| `runtimes.codex.baseUrl` | `"https://api.openai.com/v1"` | Selects HTTP(S) model endpoint without URL credentials, query, or fragment |
+| `runtimes.codex.envKey` | `"OPENAI_API_KEY"` | Names credential environment variable inherited by child |
+| `runtimes.codex.modelCatalogJson` | absent | Passes optional model-catalog path to Codex |
+| `runtimes.codex.reasoningEffort` | absent | Sets model reasoning effort and `turn/start.effort` |
+| `runtimes.codex.wireApi` | `"responses"` | Accepts Responses wire API only |
 | `auth.requireBrowserAuth` | false | Require verified browser principals. Must equal `true` with `auth.guestCellGrants` |
 | `auth.operatorUsers` | absent | Exact operator identities. At least one usable entry required with `auth.guestCellGrants` |
+| `auth.localBridgeOperator` | absent | Spawn delegate selector; explicit `null` disables bridge delegation |
 | `auth.guestCellGrants` | absent | Optional guest selector → registry cell-ID map. Presence activates guest boundary |
 | `tunnel.enabled` | true | Enable zrok tunnel for remote access |
 | `tunnel.reservedToken` | _(auto)_ | Reserved zrok share token for persistent URL (auto-created on first run) |
+
+Codex config changes require dashboard restart.
+Unknown `runtimes.codex` fields reject validation, including credential-value fields.
+Child `CODEX_HOME` points to `~/.pi/dashboard/codex-home`; inherited `CODEX_THREAD_ID` gets removed.
+Managed `config.toml` stores `env_key`, never credential value.
+Runtime does not edit shared `~/.codex/config.toml`.
+Executable resolution order: tool override → npm-global `@openai/codex/bin/codex.js` → `codex` on PATH.
+Adapter rejects `.cmd`/`.bat` shell shims.
 
 ### Tunnel Lifecycle
 

@@ -39,6 +39,24 @@ function freshRegistry(opts: {
   return r;
 }
 
+describe("codex executor definition", () => {
+  it("resolves an override before npm-global and PATH", () => {
+    const registry = freshRegistry({ overrides: { codex: "/custom/codex" }, exists: p => p === "/custom/codex", which: () => "/usr/bin/codex" });
+    expect(registry.resolveExecutor("codex")).toMatchObject({ ok: true, argv: ["/custom/codex"], source: "override" });
+  });
+  it("falls through npm-global to native PATH binary", () => {
+    const registry = freshRegistry({ which: name => name === "codex" ? "/usr/bin/codex" : null });
+    const result = registry.resolveExecutor("codex");
+    expect(result.argv).toEqual(["/usr/bin/codex"]);
+    expect(result.tried.map(entry => entry.strategy)).toEqual(["override", "npm-global", "where"]);
+  });
+  it("wraps the npm JS launcher with node on Windows without cmd.exe", () => {
+    const entry = path.join("/npm/global", "@openai/codex", "bin/codex.js");
+    const registry = freshRegistry({ platform: "win32", exists: p => p === entry, npmRootGlobal: () => "/npm/global", which: name => name === "node" ? "C:/node.exe" : null });
+    expect(registry.resolveExecutor("codex").argv).toEqual(["C:/node.exe", entry]);
+  });
+});
+
 describe("pi binary definition", () => {
   it("chain order: override → managed → where", () => {
     const r = freshRegistry({ which: (n) => (n === "pi" ? "/usr/bin/pi" : null) });

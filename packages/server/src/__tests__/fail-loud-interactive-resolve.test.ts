@@ -10,7 +10,7 @@
  * See change: fail-loud-interactive-resolve.
  */
 import { describe, it, expect, afterEach } from "vitest";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ToolResolver } from "@blackbelt-technology/pi-dashboard-shared/platform/binary-lookup.js";
@@ -67,7 +67,7 @@ describe("Fix-10: spawnPiSession fail-loud gate", () => {
       mode: "continue",
       strategy: "tmux",
       requireInteractive: true,
-    });
+    }, { permittedRoots: [realpathSync(cwd)] });
     expect(result.success).toBe(false);
     expect(result.code).toBe("INTERACTIVE_UNAVAILABLE");
     expect(result.message).toMatch(/interactive session-resume required/i);
@@ -81,7 +81,7 @@ describe("Fix-10: spawnPiSession fail-loud gate", () => {
     // No requireInteractive → the headless fallback is allowed. The spawn may
     // still fail later (no real pi in the isolated PATH) but it must NOT be the
     // fail-loud INTERACTIVE_UNAVAILABLE refusal — that's the falsifiable point.
-    const result = await spawnPiSession(cwd, { strategy: "tmux" });
+    const result = await spawnPiSession(cwd, { strategy: "tmux" }, { permittedRoots: [realpathSync(cwd)] });
     expect(result.code).not.toBe("INTERACTIVE_UNAVAILABLE");
   });
 });

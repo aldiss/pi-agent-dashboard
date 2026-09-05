@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { realpathSync } from "node:fs";
 import { buildTmuxCommand, buildHeadlessArgs, shellEscape, spawnPiSession, buildSpawnEnv, type SessionOptions } from "../process-manager.js";
 import { execSync } from "@blackbelt-technology/pi-dashboard-shared/platform/exec.js";
 import { spawnDetached } from "@blackbelt-technology/pi-dashboard-shared/platform/detached-spawn.js";
@@ -172,7 +173,7 @@ describe("Process Manager", () => {
 
   describe("spawnPiSession", () => {
     it("should return error for non-existent directory", async () => {
-      const result = await spawnPiSession("/tmp/definitely-does-not-exist-" + Date.now());
+      const result = await spawnPiSession("/tmp/definitely-does-not-exist-" + Date.now(), undefined, { permittedRoots: [realpathSync("/tmp")] });
       expect(result.success).toBe(false);
       expect(result.message).toContain("Directory does not exist");
     });
@@ -189,13 +190,13 @@ describe("Process Manager", () => {
 
     it("changes cwd when hook returns a string", async () => {
       // Use a tmp dir as target cwd since it exists
-      const hookCwd = "/tmp";
+      const hookCwd = realpathSync("/tmp");
       const result = await spawnPiSession("/tmp", {
         preSpawnHook: async ({ cwd }) => {
-          expect(cwd).toBe("/tmp");
-          return "/tmp"; // return same dir so we don't actually spawn
+          expect(cwd).toBe(hookCwd);
+          return hookCwd; // return same dir so we don't actually spawn
         },
-      });
+      }, { permittedRoots: [realpathSync("/tmp")] });
       // Should fall through to spawn attempt (which may fail because pi isn't there, but the hook ran)
       // The key assertion is: spawnPiSession used the returned cwd, not the original.
       // Since we can't spawn pi in tests, check that the hook executed without error.
@@ -218,7 +219,7 @@ describe("Process Manager", () => {
         preSpawnHook: async () => {
           throw Object.assign(new Error("dirty working tree"), { code: "dirty_working_tree" });
         },
-      });
+      }, { permittedRoots: [realpathSync("/tmp")] });
       expect(result.success).toBe(false);
       expect(result.message).toContain("dirty working tree");
       expect(result.code).toBe("dirty_working_tree");
@@ -232,7 +233,7 @@ describe("Process Manager", () => {
         preSpawnHook: async () => {
           throw new Error("something went wrong");
         },
-      });
+      }, { permittedRoots: [realpathSync("/tmp")] });
       expect(result.success).toBe(false);
       expect(result.message).toContain("something went wrong");
       expect(result.code).toBe("SPAWN_HOOK_ERR");
@@ -249,8 +250,8 @@ describe("Process Manager", () => {
           return "/tmp";
         },
         ...({ branch: "feature-x", label: "review" } as any),
-      });
-      expect(hookCtx.cwd).toBe("/tmp");
+      }, { permittedRoots: [realpathSync("/tmp")] });
+      expect(hookCtx.cwd).toBe(realpathSync("/tmp"));
       expect((hookCtx as any).branch).toBe("feature-x");
       expect((hookCtx as any).label).toBe("review");
       // Hermetic: success path routed through the MOCKED execSync seam (never real tmux).
@@ -263,7 +264,7 @@ describe("Process Manager", () => {
 
     it("backward compatible: spawn without preSpawnHook unchanged", async () => {
       // Verify that existing callers without preSpawnHook still work
-      const result = await spawnPiSession("/tmp");
+      const result = await spawnPiSession("/tmp", undefined, { permittedRoots: [realpathSync("/tmp")] });
       expect(result.code).not.toBe("SPAWN_HOOK_ERR");
       // Hermetic: success path routed through the MOCKED execSync seam (never real tmux).
       const spawnCmd = vi.mocked(execSync).mock.calls
@@ -328,7 +329,7 @@ describe("Process Manager", () => {
     it("should force headless spawn when electronMode is true", async () => {
       // electronMode should bypass tmux detection and use headless directly
       // We test by calling with a non-existent dir to get a quick error without spawning
-      const result = await spawnPiSession("/nonexistent-path-12345", { electronMode: true });
+      const result = await spawnPiSession("/nonexistent-path-12345", { electronMode: true }, { permittedRoots: [realpathSync("/tmp")] });
       expect(result.success).toBe(false);
       expect(result.message).toContain("does not exist");
     });

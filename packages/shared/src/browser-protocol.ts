@@ -3,6 +3,7 @@
  */
 import type {
   DashboardSession,
+  SessionRuntime,
   DashboardEvent,
   CommandInfo,
   FlowInfo,
@@ -236,6 +237,8 @@ export interface SpawnResultBrowserMessage {
  * See change: spawn-failure-diagnostics.
  */
 export type SpawnFailureCode =
+  | "SPAWN_UNAUTHORIZED"
+  | "CWD_NOT_PERMITTED"
   | "DIR_MISSING"
   | "PI_NOT_FOUND"
   | "WIN_PI_CMD_ONLY"
@@ -901,6 +904,7 @@ export interface UnhideSessionBrowserMessage {
 export interface SpawnSessionBrowserMessage {
   type: "spawn_session";
   cwd: string;
+  runtime?: SessionRuntime;
   /**
    * Optional kebab-case OpenSpec change name to attach to the spawned session
    * once it registers. The server queues the intent in `pendingAttachByCwd`

@@ -9,6 +9,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import WebSocket from "ws";
+import { createSpawnTestContext } from "../test-support/spawn-policy-fixture.js";
 
 // Spy on existsSync so we control the on-disk truth.
 const existsSyncSpy = vi.fn();
@@ -44,6 +45,7 @@ function makeCtx(session: any, sentLog: any[]) {
   const { ws } = makeMockWs();
   const enqueue = vi.fn();
   const ctx = {
+    ...createSpawnTestContext(),
     ws,
     sessionManager: {
       get: () => session,
@@ -104,6 +106,7 @@ describe("handleResumeSession: fork-empty-session silent-degrade", () => {
     const callArgs = (spawnPiSession as any).mock.calls[0];
     expect(callArgs[0]).toBe("/tmp"); // cwd
     expect(callArgs[1]).toEqual({ strategy: "headless" }); // no sessionFile, no mode
+    expect(callArgs[2]).toEqual({ permittedRoots: ["/tmp"] });
 
     // resume_result carries success: true, the degradation code, and echoed requestId.
     expect(sent).toHaveLength(1);

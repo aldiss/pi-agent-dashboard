@@ -550,7 +550,7 @@ export default function App() {
         send({ type: "set_session_translation", sessionId: translationSessionId, enabled: true });
       }
       // Request model list for this session if we don't have it yet (e.g. after page refresh)
-      if (!modelsMap.has(selectedId)) {
+      if (sessions.get(selectedId)?.runtime !== "codex" && !modelsMap.has(selectedId)) {
         send({ type: "request_models", sessionId: selectedId });
       }
     }
@@ -725,6 +725,7 @@ export default function App() {
   const selectedSession = selectedId
     ? sessions.get(selectedId) ?? externalSessionMap.get(selectedId)
     : undefined;
+  const isCodex = selectedSession?.runtime === "codex";
   // Operator-addressed audience context for the selected session (coverage-
   // contract #1 — the shared operator-addressed classifier). B2: derive the
   // PERSISTED-AT-THE-TIME positive evidence (sessionFile / cwd / source) once
@@ -863,11 +864,11 @@ export default function App() {
   // and clear the per-session draft.
   const wrappedHandleSend = useCallback((text: string, images?: ImageContent[]) => {
     const trimmed = text.trim();
-    if (trimmed === "/flows") {
+    if (!isCodex && trimmed === "/flows") {
       setFlowPickerOpen(true);
       return;
     }
-    if (trimmed === "/flows:new") {
+    if (!isCodex && trimmed === "/flows:new") {
       setFlowNewOpen(true);
       return;
     }
@@ -910,7 +911,7 @@ export default function App() {
       handleSend(text, images);
       finishClear();
     }
-  }, [handleSend, selectedId, clearDraftForSession, clearImagesForSession, sessions, BUILTIN_SLASH_COMMANDS]);
+  }, [handleSend, selectedId, clearDraftForSession, clearImagesForSession, sessions, BUILTIN_SLASH_COMMANDS, isCodex]);
 
   const openspecActions = useOpenSpecActions({
     send,
@@ -1265,7 +1266,7 @@ export default function App() {
           // mirrors the desktop TokenStatsBar wiring below (line 952+).
           contextUsage: selectedState.contextUsage,
           cost: selectedState.cost,
-          onOpenModelSheet: () => setModelSheetOpen(true),
+          onOpenModelSheet: isCodex ? undefined : () => setModelSheetOpen(true),
         } : undefined}
         commands={selectedCommands}
         flows={selectedFlows}
@@ -1472,7 +1473,7 @@ export default function App() {
             </div>
           }>
             <SessionAssetsProvider assets={selectedSession?.assets}>
-            <ChatView ref={chatViewRef} sessionId={selectedId} state={selectedState} sessionCtx={sessionCtx} toolContext={toolContext} translationEnabled={translationSessionId === selectedId} onTranslationToggle={handleSessionTranslationToggle} onCancelPending={handleCancelPending} onRespondToUi={handleRespondToUi} onRendered={handleRenderedAck} onAbort={handleAbort} onForceKill={handleForceKill} onForkFromMessage={selectedId ? (entryId) => handleResumeSession(selectedId, "fork", entryId) : undefined} onRetryAfterError={selectedId ? () => {
+            <ChatView ref={chatViewRef} sessionId={selectedId} state={selectedState} sessionCtx={sessionCtx} toolContext={toolContext} translationEnabled={translationSessionId === selectedId} onTranslationToggle={handleSessionTranslationToggle} onCancelPending={handleCancelPending} onRespondToUi={handleRespondToUi} onRendered={handleRenderedAck} onAbort={handleAbort} onForceKill={handleForceKill} onForkFromMessage={selectedId && !isCodex ? (entryId) => handleResumeSession(selectedId, "fork", entryId) : undefined} onRetryAfterError={selectedId ? () => {
               // Retry the last user prompt by re-sending it via send_prompt.
               // The previous behaviour (handleResumeSession with mode="continue")
               // no-ops on alive-but-errored sessions because the server short-
@@ -1505,6 +1506,7 @@ export default function App() {
               Cell: mobile-pwa-chatgpt-style-restructure/v1 (MintOwl). */}
           {!isMobile && (
             <StatusBar
+              runtime={selectedSession?.runtime}
               model={selectedState.model ?? selectedSession?.model}
               models={modelsMap.get(selectedId)}
               roles={rolesMap.get(selectedId)}
@@ -1531,7 +1533,7 @@ export default function App() {
               pushEnabled={true}
             />
           )}
-          {isMobile && modelSheetOpen && (
+          {isMobile && modelSheetOpen && !isCodex && (
             <ModelReasoningSheet
               sessionName={selectedSession ? getSessionDisplayName(selectedSession) : undefined}
               currentModel={selectedState.model ?? selectedSession?.model}
@@ -1546,12 +1548,13 @@ export default function App() {
             />
           )}
           <CommandInput
+            runtime={selectedSession?.runtime}
             commands={selectedCommands}
             onSend={wrappedHandleSend}
-            onListFiles={handleListFiles}
+            onListFiles={isCodex ? undefined : handleListFiles}
             fileResults={fileResults}
             disabled={false}
-            sessionStatus={selectedState.status}
+            sessionStatus={isCodex && selectedSession?.status === "streaming" ? "streaming" : selectedState.status}
             retrying={selectedState.retryState !== undefined}
             onAbort={handleAbort}
             onForceKill={handleForceKill}
@@ -1568,7 +1571,7 @@ export default function App() {
           />
           {/* Plugin slot: content-inline-footer (additive, coexists with FlowSummary until extract-flows-as-plugin) */}
           <ContentInlineFooterSlot session={sessions.get(selectedId)!} />
-          {flowPickerOpen && (() => {
+          {!isCodex && flowPickerOpen && (() => {
             const hasFlowsNew = selectedCommands.some(c => c.name === "flows:new");
             const hasFlowsEdit = selectedCommands.some(c => c.name === "flows:edit");
             const hasFlowsDelete = selectedCommands.some(c => c.name === "flows:delete");
@@ -1611,7 +1614,7 @@ export default function App() {
               />
             );
           })()}
-          {flowNewOpen && (
+          {!isCodex && flowNewOpen && (
             <FlowLaunchDialog
               flowName="flows:new"
               description="Design a new flow with the Flow Architect"
@@ -1622,7 +1625,7 @@ export default function App() {
               onCancel={() => setFlowNewOpen(false)}
             />
           )}
-          {flowEditPickerOpen && (
+          {!isCodex && flowEditPickerOpen && (
             <SearchableSelectDialog
               title="Edit Flow"
               options={selectedFlows.map((f) => ({ value: f.name, label: f.name, description: f.description }))}
@@ -1635,7 +1638,7 @@ export default function App() {
               onCancel={() => setFlowEditPickerOpen(false)}
             />
           )}
-          {flowEditFlowName && (
+          {!isCodex && flowEditFlowName && (
             <FlowLaunchDialog
               flowName={flowEditFlowName}
               description="Describe how this flow should be updated"
@@ -1646,7 +1649,7 @@ export default function App() {
               onCancel={() => setFlowEditFlowName(null)}
             />
           )}
-          {flowDeletePickerOpen && (
+          {!isCodex && flowDeletePickerOpen && (
             <SearchableSelectDialog
               title="Delete Flow"
               options={selectedFlows.map((f) => ({ value: f.name, label: f.name, description: f.description }))}
@@ -1659,7 +1662,7 @@ export default function App() {
               onCancel={() => setFlowDeletePickerOpen(false)}
             />
           )}
-          {flowDeleteFlowName && (
+          {!isCodex && flowDeleteFlowName && (
             <ConfirmDialog
               message={`Delete flow "${flowDeleteFlowName}"? This will remove the flow file and any associated agents.`}
               confirmLabel="Delete"
@@ -1670,7 +1673,7 @@ export default function App() {
               onCancel={() => setFlowDeleteFlowName(null)}
             />
           )}
-          {flowLaunchTarget && (
+          {!isCodex && flowLaunchTarget && (
             <FlowLaunchDialog
               flowName={flowLaunchTarget.name}
               description={flowLaunchTarget.description}

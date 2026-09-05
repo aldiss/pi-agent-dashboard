@@ -30,6 +30,7 @@
  */
 import { describe, it, expect } from "vitest";
 import { handleSendPrompt } from "../browser-handlers/session-action-handler.js";
+import { createSpawnTestContext } from "../test-support/spawn-policy-fixture.js";
 
 const OP1 = { sub: "op1@example.com", name: "Op1", username: "op1", provider: "github", exp: 0 } as any;
 const OP2 = { sub: "op2@example.com", name: "Op2", username: "op2", provider: "github", exp: 0 } as any;
@@ -45,6 +46,7 @@ function makeCtx(principal: any, requireBrowserAuth: boolean, operatorUsers?: st
   const browserSends: any[] = [];
   const session = { id: "sReload", cwd: "/tmp", status: "idle", sessionFile: undefined as string | undefined };
   const ctx: any = {
+    ...createSpawnTestContext({ principal, requireBrowserAuth, operatorUsers }),
     ws: {},
     principal,
     requireBrowserAuth,
@@ -113,14 +115,12 @@ describe("Build 1b PUSHBACK-2 FIX-P2-4 — /reload kill+respawn is operator-only
     ).toBeUndefined();
   });
 
-  it("flag OFF: /reload behaves exactly as today (interception runs, byte-unchanged)", async () => {
-    // Single-op: the gate no-ops, so even a null principal reaches the
-    // interception. Red-arm: if the reload gate refused when the flag is OFF, the
-    // command_feedback would be absent → this fails.
+  it("flag OFF: anonymous /reload is refused before kill+respawn interception", async () => {
     const t = makeCtx(null, false);
     await handleSendPrompt(reloadMsg, t.ctx);
     const feedback = t.broadcasts.find((m) => m.event?.eventType === "command_feedback");
-    expect(feedback, "flag-OFF /reload must run the interception (byte-unchanged)").toBeDefined();
+    expect(feedback, "anonymous /reload must not reach interception").toBeUndefined();
+    expect(t.browserSends).toContainEqual(expect.objectContaining({ type: "send_prompt_failed", reason: "unauthorized" }));
   });
 
   it("op-2 non-/reload send_prompt is still co-drive (the reload gate does not over-trigger)", async () => {

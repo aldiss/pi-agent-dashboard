@@ -5,6 +5,8 @@ import type { DashboardSession, OpenSpecChange, CommandInfo, FlowInfo, ImageCont
 import type { SessionState } from "../lib/event-reducer.js";
 import type { DetectedEditor } from "../lib/editor-api.js";
 import { getSessionDisplayName } from "../lib/session-display-name.js";
+import { hasResumeTarget } from "../lib/session-runtime.js";
+import { RuntimeBadge } from "./RuntimeBadge.js";
 import { InlineRenameInput } from "./InlineRenameInput.js";
 import { PresenceIndicator } from "./PresenceIndicator.js";
 import { MobileActionMenu } from "./MobileActionMenu.js";
@@ -244,6 +246,7 @@ function MobileHeader({ session, state, showBack, onBack, isRenaming, onConfirmR
       ) : (
         <span className="font-medium truncate flex-1">{getSessionDisplayName(session)}</span>
       )}
+      <RuntimeBadge runtime={session.runtime} />
       {presence && presence.length >= 2 && (
         <div className="flex-shrink-0"><PresenceIndicator participants={presence} /></div>
       )}
@@ -302,7 +305,7 @@ function MobileHeader({ session, state, showBack, onBack, isRenaming, onConfirmR
   // Cell: mobile-pwa-chatgpt-style-restructure/v1 (MintOwl).
   const displayModel = state?.model || session.model;
   const displayThinking = state?.thinkingLevel || session.thinkingLevel;
-  const onOpenModelSheet = mobileActions?.onOpenModelSheet;
+  const onOpenModelSheet = session.runtime === "codex" ? undefined : mobileActions?.onOpenModelSheet;
   const modelRowInner = (
     <>
       {displayModel && (
@@ -417,7 +420,7 @@ export function SessionHeader({ session, state, onRename, showBack, onBack, mobi
   const [flowPickerOpen, setFlowPickerOpen] = useState(false);
   const [flowLaunchTarget, setFlowLaunchTarget] = useState<FlowInfo | null>(null);
   const [openspecPickerOpen, setOpenspecPickerOpen] = useState(false);
-  const flowCmds = flows ?? [];
+  const flowCmds = session?.runtime === "codex" ? [] : flows ?? [];
   const flowOptions: SelectOption[] = flowCmds.map(f => ({ value: f.name, label: f.name, description: f.description }));
 
   const attached = session?.attachedProposal;
@@ -492,7 +495,7 @@ export function SessionHeader({ session, state, onRename, showBack, onBack, mobi
   // Resume / Fork affordance gate: only render when the session is dead-but-resumable
   // AND a parent callback was supplied. The render gate replaces the dimmed elapsed-
   // duration span (a tombstone is meaningless) — see change: resume-button-in-session-header.
-  const isEnded = session.status === "ended" && Boolean(session.sessionFile) && Boolean(onResume);
+  const isEnded = session.status === "ended" && hasResumeTarget(session) && Boolean(onResume);
 
   // Desktop: full header
   return (
@@ -534,6 +537,7 @@ export function SessionHeader({ session, state, onRename, showBack, onBack, mobi
         </span>
       )}
       {presence && presence.length >= 2 && <PresenceIndicator participants={presence} />}
+      <RuntimeBadge runtime={session.runtime} />
       {(state.model || session.model) && <span className="text-[var(--text-secondary)]">{state.model || session.model}</span>}
       {(state.thinkingLevel || session.thinkingLevel) && (
         <span className="text-[var(--text-tertiary)] inline-flex items-center gap-0.5"><Icon path={mdiHeadLightbulb} size={0.45} /> {state.thinkingLevel || session.thinkingLevel}</span>
@@ -594,7 +598,7 @@ export function SessionHeader({ session, state, onRename, showBack, onBack, mobi
       {/* Extension UI System (Phase 1): Modules entry point. Shown only when */}
       {/* the bridge has reported at least one module for this session. */}
       {/* See change: add-extension-ui-modal. */}
-      {(session.uiModules?.length ?? 0) > 0 && onOpenExtensionModulePicker && (
+      {session.runtime !== "codex" && (session.uiModules?.length ?? 0) > 0 && onOpenExtensionModulePicker && (
         <button
           onClick={onOpenExtensionModulePicker}
           className="text-[10px] px-1.5 py-0.5 rounded border border-amber-500/30 text-amber-400 hover:bg-amber-500/10 mr-1"
@@ -624,7 +628,7 @@ export function SessionHeader({ session, state, onRename, showBack, onBack, mobi
           >
             <Icon path={mdiPlayCircleOutline} size={0.4} className="inline mr-0.5" />Resume
           </button>
-          <button
+          {session.runtime !== "codex" && <button
             onClick={() => onResume!("fork")}
             disabled={!!session.resuming}
             className="text-[10px] px-1.5 py-0.5 rounded border border-blue-500/30 text-blue-400 hover:bg-blue-500/10 disabled:opacity-50 disabled:cursor-not-allowed"
@@ -632,7 +636,7 @@ export function SessionHeader({ session, state, onRename, showBack, onBack, mobi
             data-testid="header-fork-button"
           >
             <Icon path={mdiSourceFork} size={0.4} className="inline mr-0.5" />Fork
-          </button>
+          </button>}
         </>
       ) : (
         <span className="text-[var(--text-muted)]">{formatDuration(duration)}</span>
@@ -688,7 +692,7 @@ export function SessionHeader({ session, state, onRename, showBack, onBack, mobi
           onCancel={() => setOpenspecPickerOpen(false)}
         />
       )}
-      {flowPickerOpen && onSendPrompt && (
+      {session.runtime !== "codex" && flowPickerOpen && onSendPrompt && (
         <SearchableSelectDialog
           title="Run Flow"
           options={flowOptions}
@@ -702,7 +706,7 @@ export function SessionHeader({ session, state, onRename, showBack, onBack, mobi
           onCancel={() => setFlowPickerOpen(false)}
         />
       )}
-      {flowLaunchTarget && onSendPrompt && (
+      {session.runtime !== "codex" && flowLaunchTarget && onSendPrompt && (
         <FlowLaunchDialog
           flowName={flowLaunchTarget.name}
           description={flowLaunchTarget.description}

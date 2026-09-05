@@ -149,10 +149,10 @@ describe("loadConfig", () => {
     expect(config.auth).toBeUndefined();
   });
 
-  it("should return auth undefined when auth.providers is missing", () => {
+  it("should retain the signing secret when auth.providers is missing", () => {
     fs.writeFileSync(configFile, JSON.stringify({ auth: { secret: "abc" } }));
     const config = loadConfig();
-    expect(config.auth).toBeUndefined();
+    expect(config.auth).toMatchObject({ secret: "abc", providers: {} });
   });
 
   // ── Build 0 multi-operator gate: requireBrowserAuth is auth-relevant ──
@@ -237,7 +237,7 @@ describe("loadConfig", () => {
     expect(config.auth!.providers.google).toBeDefined();
   });
 
-  it("should return auth undefined when all providers are invalid", () => {
+  it("should retain the signing secret when all providers are invalid", () => {
     fs.writeFileSync(configFile, JSON.stringify({
       auth: {
         secret: "sec",
@@ -247,7 +247,7 @@ describe("loadConfig", () => {
       },
     }));
     const config = loadConfig();
-    expect(config.auth).toBeUndefined();
+    expect(config.auth).toMatchObject({ secret: "sec", providers: {} });
   });
 
   it("should default auth.secret to empty string when missing", () => {

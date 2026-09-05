@@ -403,6 +403,10 @@ Set `"devBuildOnReload": true` in `config.json` for a one-command full-stack ref
 
 ### Session spawning
 
+REST and browser spawning require a verified operator identity, even when `auth.requireBrowserAuth` is off. Working directories must resolve inside pinned folders or existing session directories. Pin a folder before the first web spawn.
+
+Local pi `/new` keeps working through a private bridge token and spawn-only operator delegation. Existing bridges can still connect without a token, but must reload before spawning. `auth.localBridgeOperator: null` explicitly disables delegation. The bridge listener now defaults to `127.0.0.1`; remote bridge deployments must explicitly set `piHost`.
+
 **Headless** (default) — runs pi as a background process with no terminal attached. Interaction through the web UI.
 
 **tmux** — runs pi inside a tmux session named `pi-dashboard`, each spawned session as a new window:
@@ -414,6 +418,27 @@ tmux list-windows -t pi-dashboard          # list windows
 ```
 
 Switch with `"spawnStrategy": "tmux"` in `~/.pi/dashboard/config.json`.
+
+### Codex sessions
+
+Codex uses `codex app-server` over structured stdio, with no terminal transport or fallback. Install the Codex CLI separately, provide the configured credential in the dashboard server's environment, and opt in through dashboard config:
+
+```json
+{
+  "runtimes": {
+    "codex": {
+      "enabled": true,
+      "envKey": "OPENAI_API_KEY"
+    }
+  }
+}
+```
+
+Restart the server, then select **Codex** next to a folder's **+Session** button. Browser sign-in is required for spawning. Optional `model` and `baseUrl` select another Responses-compatible endpoint; the default URL is `https://api.openai.com/v1`. Credentials stay in environment variables, not config files.
+
+The dashboard owns `~/.pi/dashboard/codex-home/`; personal `~/.codex/config.toml` is not reused or modified. **Stop** interrupts the current turn. After a dashboard restart, **Resume** reopens the same native thread. In-flight turns do not survive restart.
+
+This mode supports one active turn per session. Pi commands, model/role controls, and fork are unavailable. Approval and user-input requests receive explicit denial responses; no interactive approval UI is provided. See [architecture](docs/architecture.md) for lifecycle and persistence details.
 
 ### Keyboard shortcuts in chat input
 

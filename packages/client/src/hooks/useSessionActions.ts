@@ -5,7 +5,7 @@
 import { useCallback, useRef } from "react";
 import { createInitialState, resolveInteractiveRequest, removeQueueEntry, type SessionState } from "../lib/event-reducer.js";
 import { encodePromptAnswer } from "../lib/prompt-answer-encoder.js";
-import type { DashboardSession } from "@blackbelt-technology/pi-dashboard-shared/types.js";
+import type { DashboardSession, SessionRuntime } from "@blackbelt-technology/pi-dashboard-shared/types.js";
 import type { TerminalSession } from "@blackbelt-technology/pi-dashboard-shared/terminal-types.js";
 import type { ImageContent } from "@blackbelt-technology/pi-dashboard-shared/types.js";
 import { sessionDetailPath } from "../lib/session-route.js";
@@ -303,7 +303,7 @@ export function useSessionActions(deps: SessionActionDeps) {
     send({ type: "resume_session", sessionId, mode: "continue", placement: "keep", requestId });
   }, [send, setSessions, pendingSpawnsRef]);
 
-  const handleSpawnSession = useCallback((cwd: string, attachProposal?: string) => {
+  const handleSpawnSession = useCallback((cwd: string, attachProposal?: string, runtime?: SessionRuntime) => {
     setSpawningCwds((prev) => {
       const next = new Set(prev);
       next.add(cwd);
@@ -326,6 +326,7 @@ export function useSessionActions(deps: SessionActionDeps) {
       cwd,
       requestId,
       ...(attachProposal ? { attachProposal } : {}),
+      ...(runtime ? { runtime } : {}),
     });
   }, [send, clearSpawningCwd, setSpawningCwds, spawnTimeoutsRef, pendingSpawnsRef]);
 

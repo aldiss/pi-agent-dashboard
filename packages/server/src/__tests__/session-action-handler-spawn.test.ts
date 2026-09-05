@@ -4,6 +4,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import WebSocket from "ws";
+import { createSpawnTestContext } from "../test-support/spawn-policy-fixture.js";
 
 // Mock everything the handler depends on.
 vi.mock("../spawn-preflight.js", () => ({
@@ -60,6 +61,7 @@ function makeCtx() {
   const sendTo = vi.fn((_ws: WebSocket, msg: unknown) => messages.push(msg));
 
   return {
+    ...createSpawnTestContext(),
     ws,
     messages,
     sendTo,

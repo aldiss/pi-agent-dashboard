@@ -5,6 +5,9 @@ import { existsSync } from "node:fs";
 import type { BrowserToServerMessage } from "@blackbelt-technology/pi-dashboard-shared/browser-protocol.js";
 import type { BrowserHandlerContext } from "./handler-context.js";
 import { spawnPiSession } from "../process-manager.js";
+import { runSpawnGate } from "../spawn-boundary.js";
+import type { SessionRuntime } from "@blackbelt-technology/pi-dashboard-shared/types.js";
+import { parseSendPrompt } from "@blackbelt-technology/pi-dashboard-shared/prompt-command.js";
 import { buildInteractiveResumeOptions, resolvePinDashboardUrl } from "../resume-spawn-options.js";
 import { ToolResolver } from "@blackbelt-technology/pi-dashboard-shared/platform/binary-lookup.js";
 import { loadConfig } from "@blackbelt-technology/pi-dashboard-shared/config.js";
@@ -106,6 +109,13 @@ function emitCommandFeedback(
  *
  * See change: headless-reload-via-respawn.
  */
+function authorizeBrowserSpawn(ctx: BrowserHandlerContext, cwd: string, runtime: SessionRuntime = "pi") {
+  return runSpawnGate(ctx.spawnGate, {
+    channel: "browser-ws", principal: ctx.principal, remoteAddress: ctx.remoteAddress ?? null,
+    origin: ctx.origin ?? null, forwarded: ctx.forwarded, presentedBridgeToken: null, requestedCwd: cwd, runtime,
+  });
+}
+
 export async function handleHeadlessReload(
   msg: Extract<BrowserToServerMessage, { type: "send_prompt" }>,
   ctx: BrowserHandlerContext,
@@ -114,6 +124,11 @@ export async function handleHeadlessReload(
   const session = sessionManager.get(msg.sessionId);
   if (!session) {
     emitCommandFeedback(ctx, msg.sessionId, "error", "Session not found");
+    return;
+  }
+  const spawnDecision = authorizeBrowserSpawn(ctx, session.cwd);
+  if (!spawnDecision.allowed) {
+    ctx.sendTo(ctx.ws, { type: "send_prompt_failed", sessionId: msg.sessionId, ...(msg.queueNonce ? { queueNonce: msg.queueNonce } : {}), reason: "unauthorized" });
     return;
   }
   if (!session.sessionFile) {
@@ -158,12 +173,12 @@ export async function handleHeadlessReload(
   const reloadPin = resolvePinDashboardUrl(ctx.piGateway);
   let spawnResult: Awaited<ReturnType<typeof spawnPiSession>>;
   try {
-    spawnResult = await spawnPiSession(session.cwd, buildInteractiveResumeOptions({
+    spawnResult = await spawnPiSession(spawnDecision.cwd, buildInteractiveResumeOptions({
       sessionFile: session.sessionFile,
       mode: "continue",
       ...(session.name ? { agentName: session.name } : {}),
       ...(reloadPin ? { pinDashboardUrl: reloadPin } : {}),
-    }));
+    }), { permittedRoots: spawnDecision.permittedRoots });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error(`[dashboard] headless reload spawn failed: ${message}`);
@@ -263,11 +278,48 @@ export async function handleSendPrompt(
     return;
   }
 
+  const runtimeSession = sessionManager.get(msg.sessionId);
+  if (runtimeSession?.runtime === "codex") {
+    const manager = ctx.runtimeManager;
+    try {
+      if (!manager) throw new Error("Codex runtime is unavailable");
+      if (parseSendPrompt(msg.text).type !== "passthrough") throw new Error("Codex does not support pi commands; use the dashboard session controls");
+      if (runtimeSession.status === "ended" || !manager.get(msg.sessionId)) {
+        const resume = authorizeSessionAction({ actor: { kind: "human", principal: ctx.principal }, action: "resume",
+          requireBrowserAuth: ctx.requireBrowserAuth, operatorUsers: ctx.operatorUsers, sessionId: msg.sessionId,
+          operatorSet: ctx.operatorSet, cellAccess: ctx.cellAccess, session: runtimeSession });
+        const spawn = resume.allowed && authorizeBrowserSpawn(ctx, runtimeSession.cwd, "codex");
+        if (!spawn || !spawn.allowed) {
+          sendTo(ws, { type: "send_prompt_failed", sessionId: msg.sessionId, queueNonce: msg.queueNonce, reason: "unauthorized" });
+          return;
+        }
+        pendingResumeIntents?.record(msg.sessionId, "front");
+      }
+      await manager.send(msg.sessionId, { text: msg.text, images: msg.images, queueNonce: msg.queueNonce,
+        author: deriveAuthor(ctx.principal, ctx.operatorUsers) });
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      manager?.feedback(msg.sessionId, msg.text, reason);
+      sendTo(ws, { type: "send_prompt_failed", sessionId: msg.sessionId, queueNonce: msg.queueNonce, reason });
+    }
+    return;
+  }
+
   // Intercept `/reload` on active headless sessions — forward the request to
   // our kill-and-respawn handler instead of routing the prompt to the bridge
   // (the bridge has no programmatic reload path on RPC).
   // See change: headless-reload-via-respawn.
-  if (shouldInterceptReload(msg, headlessPidRegistry)) {
+  const parsedPrompt = parseSendPrompt(msg.text);
+  const interceptReload = shouldInterceptReload(msg, headlessPidRegistry);
+  if (parsedPrompt.type === "new" || (parsedPrompt.type === "reload" && !interceptReload)) {
+    const session = sessionManager.get(msg.sessionId);
+    const spawnDecision = authorizeBrowserSpawn(ctx, session?.cwd ?? "");
+    if (!spawnDecision.allowed) {
+      sendTo(ws, { type: "send_prompt_failed", sessionId: msg.sessionId, ...(msg.queueNonce ? { queueNonce: msg.queueNonce } : {}), reason: "unauthorized" });
+      return;
+    }
+  }
+  if (interceptReload) {
     // PUSHBACK-2 FIX-P2-4: the `/reload` intercept is a process KILL+RESPAWN
     // (an operator-only lifecycle primitive), NOT a co-drive prompt. It must
     // NOT ride the co-drive `send_prompt` verdict above — re-authorize the
@@ -386,6 +438,11 @@ export async function handleSendPrompt(
       });
       return;
     }
+    const spawnDecision = authorizeBrowserSpawn(ctx, promptSession.cwd);
+    if (!spawnDecision.allowed) {
+      sendTo(ws, { type: "send_prompt_failed", sessionId: msg.sessionId, ...(msg.queueNonce ? { queueNonce: msg.queueNonce } : {}), reason: "unauthorized" });
+      return;
+    }
     if (!promptSession.sessionFile) {
       console.error(`[dashboard] auto-resume failed: no session file for session ${msg.sessionId}`);
       return;
@@ -416,12 +473,12 @@ export async function handleSendPrompt(
     // loud, NEVER silently default to the headless `--mode rpc` crash-form.
     // See change: harden-headless-resume-paths.
     const autoResumePin = resolvePinDashboardUrl(piGateway);
-    const spawnResult = await spawnPiSession(promptSession.cwd, buildInteractiveResumeOptions({
+    const spawnResult = await spawnPiSession(spawnDecision.cwd, buildInteractiveResumeOptions({
       sessionFile: promptSession.sessionFile,
       mode: "continue",
       ...(promptSession.name ? { agentName: promptSession.name } : {}),
       ...(autoResumePin ? { pinDashboardUrl: autoResumePin } : {}),
-    }));
+    }), { permittedRoots: spawnDecision.permittedRoots });
     if (!spawnResult.success) {
       console.error(`[dashboard] auto-resume spawn failed: ${spawnResult.message}`);
       pendingResumeRegistry.consume(promptSession.cwd);
@@ -483,6 +540,24 @@ export async function handleResumeSession(
     sendTo(ws, { type: "resume_result", sessionId: msg.sessionId, success: false, message: "Session not found", requestId: msg.requestId });
     return;
   }
+  const spawnDecision = authorizeBrowserSpawn(ctx, session.cwd, session.runtime ?? "pi");
+  if (!spawnDecision.allowed) {
+    sendTo(ws, { type: "resume_result", sessionId: msg.sessionId, success: false, message: `Spawn refused: ${spawnDecision.reason}`, requestId: msg.requestId });
+    return;
+  }
+  if (session.runtime === "codex") {
+    try {
+      if (msg.mode !== "continue") throw new Error("Codex fork is not supported");
+      if (!ctx.runtimeManager) throw new Error("Codex runtime is unavailable");
+      if (session.status !== "ended" && ctx.runtimeManager.get(session.id)) throw new Error("Session is already active");
+      pendingResumeIntents?.record(session.id, msg.placement ?? "front");
+      await ctx.runtimeManager.attach(session.id);
+      sendTo(ws, { type: "resume_result", sessionId: session.id, success: true, message: "Codex session resumed", requestId: msg.requestId });
+    } catch (error) {
+      sendTo(ws, { type: "resume_result", sessionId: session.id, success: false, message: error instanceof Error ? error.message : String(error), requestId: msg.requestId });
+    }
+    return;
+  }
   // Resolve placement intent. Old browsers omit the field; default to
   // "front" so they keep getting today's behavior. Drag-to-resume sends
   // "keep" so the dropped slot is preserved through the resume round-trip.
@@ -522,9 +597,9 @@ export async function handleResumeSession(
     // so tmux-less hosts keep the graceful fallback.
     // See change: harden-headless-resume-paths.
     // Fresh spawn: no sessionFile, no mode — just `pi --mode rpc`.
-    const degradeResult = await spawnPiSession(session.cwd, {
+    const degradeResult = await spawnPiSession(spawnDecision.cwd, {
       strategy: degradeConfig.spawnStrategy,
-    });
+    }, { permittedRoots: spawnDecision.permittedRoots });
     if (degradeResult.process && degradeResult.pid) {
       headlessPidRegistry.register(
         degradeResult.pid,
@@ -578,12 +653,12 @@ export async function handleResumeSession(
   // `--mode rpc` crash-form. Pin the respawn to THIS server's own gateway.
   // See change: harden-headless-resume-paths.
   const resumePin = resolvePinDashboardUrl(ctx.piGateway);
-  const result = await spawnPiSession(session.cwd, buildInteractiveResumeOptions({
+  const result = await spawnPiSession(spawnDecision.cwd, buildInteractiveResumeOptions({
     sessionFile: forkSessionFile,
     mode: msg.mode,
     ...(session.name ? { agentName: session.name } : {}),
     ...(resumePin ? { pinDashboardUrl: resumePin } : {}),
-  }));
+  }), { permittedRoots: spawnDecision.permittedRoots });
   // Record fork parent keyed by spawn token (was: keyed by cwd, racy on
   // multi-fork-in-same-cwd). See change: spawn-correlation-token.
   if (msg.mode === "fork" && pendingForkRegistry && result.spawnToken) {
@@ -609,7 +684,27 @@ export async function handleSpawnSession(
 ): Promise<void> {
   const { ws, headlessPidRegistry, pendingDashboardSpawns, pendingAttachRegistry, pendingClientCorrelations, sendTo } = ctx;
   const config = loadConfig();
-  const strategy = config.spawnStrategy ?? "tmux";
+  const strategy = msg.runtime === "codex" ? "headless" : config.spawnStrategy ?? "tmux";
+
+  const spawnDecision = authorizeBrowserSpawn(ctx, msg.cwd, msg.runtime);
+  if (!spawnDecision.allowed) {
+    const message = `Spawn refused: ${spawnDecision.reason}`;
+    sendTo(ws, { type: "spawn_result", cwd: msg.cwd, success: false, message, requestId: msg.requestId });
+    sendTo(ws, { type: "spawn_error", cwd: msg.cwd, strategy, message, code: "SPAWN_UNAUTHORIZED" });
+    return;
+  }
+  if (msg.runtime === "codex") {
+    try {
+      if (!ctx.runtimeManager) throw new Error("Codex runtime is unavailable");
+      const session = await ctx.runtimeManager.launch({ cwd: spawnDecision.cwd, requestId: msg.requestId, attachProposal: msg.attachProposal });
+      sendTo(ws, { type: "spawn_result", cwd: msg.cwd, success: true, message: "Codex session started", requestId: msg.requestId, pid: session.pid });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      sendTo(ws, { type: "spawn_result", cwd: msg.cwd, success: false, message, requestId: msg.requestId });
+      sendTo(ws, { type: "spawn_error", cwd: msg.cwd, strategy, message, code: "SPAWN_ERRNO" });
+    }
+    return;
+  }
 
   // Queue the optional attach intent BEFORE awaiting the spawn so a fast
   // bridge `session_register` cannot lose the intent. See change:
@@ -644,7 +739,7 @@ export async function handleSpawnSession(
   // silently. Previous behaviour left the user staring at an empty state
   // when pi itself was broken in the target folder.
   try {
-    const spawnResult = await spawnPiSession(msg.cwd, { strategy });
+    const spawnResult = await spawnPiSession(spawnDecision.cwd, { strategy }, { permittedRoots: spawnDecision.permittedRoots });
     if (spawnResult.process && spawnResult.pid) {
       headlessPidRegistry.register(spawnResult.pid, msg.cwd, spawnResult.process, spawnResult.spawnToken);
     }
@@ -712,11 +807,15 @@ export async function handleSpawnSession(
   }
 }
 
-export function handleShutdown(
+export async function handleShutdown(
   msg: Extract<BrowserToServerMessage, { type: "shutdown" }>,
   ctx: BrowserHandlerContext,
-): void {
+): Promise<void> {
   const { sessionManager, piGateway, headlessPidRegistry, broadcast } = ctx;
+  if (sessionManager.get(msg.sessionId)?.runtime === "codex") {
+    await ctx.runtimeManager?.release(msg.sessionId);
+    return;
+  }
   piGateway.sendToSession(msg.sessionId, { type: "shutdown", sessionId: msg.sessionId });
   headlessPidRegistry.killBySessionId(msg.sessionId);
   killHeadlessBySessionId(msg.sessionId);
@@ -724,10 +823,14 @@ export function handleShutdown(
   broadcast({ type: "session_removed", sessionId: msg.sessionId });
 }
 
-export function handleAbort(
+export async function handleAbort(
   msg: Extract<BrowserToServerMessage, { type: "abort" }>,
   ctx: BrowserHandlerContext,
-): void {
+): Promise<void> {
+  if (ctx.sessionManager.get(msg.sessionId)?.runtime === "codex") {
+    await ctx.runtimeManager?.abort(msg.sessionId);
+    return;
+  }
   ctx.piGateway.sendToSession(msg.sessionId, { type: "abort", sessionId: msg.sessionId });
 }
 
@@ -760,6 +863,16 @@ export async function handleForceKill(
   const session = sessionManager.get(msg.sessionId);
   if (!session) {
     sendTo(ws, { type: "force_kill_result", sessionId: msg.sessionId, success: false, message: "Session not found" });
+    return;
+  }
+  if (session.runtime === "codex") {
+    try {
+      if (!ctx.runtimeManager) throw new Error("Codex runtime is unavailable");
+      await ctx.runtimeManager.release(session.id);
+      sendTo(ws, { type: "force_kill_result", sessionId: session.id, success: true, message: "Codex process stopped" });
+    } catch (error) {
+      sendTo(ws, { type: "force_kill_result", sessionId: session.id, success: false, message: error instanceof Error ? error.message : String(error) });
+    }
     return;
   }
 

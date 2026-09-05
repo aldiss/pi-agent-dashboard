@@ -112,8 +112,11 @@ export interface AuthConfig {
    * enforcement is inert when this is unset, Build 1 MUST set `operatorUsers`
    * in the SAME config change that admits op-2 (dl-5761: no window for op-2 to
    * silently hold an operator-only action).
+   * Spawn authorization independently enforces this roster in both browser-auth postures.
    */
   operatorUsers?: string[];
+  /** Operator delegated to token-verified loopback bridges for spawn only; null disables delegation. */
+  localBridgeOperator?: string | null;
   /**
    * Optional guest → orchestration-cell allowlist. Presence activates the
    * direct dashboard cell boundary for every authenticated non-operator;
@@ -293,9 +296,59 @@ export const DEFAULT_PUSH_CONFIG: PushConfig = {
  */
 export type PluginsConfig = Record<string, Record<string, unknown>>;
 
+export interface CodexRuntimeConfig {
+  enabled: boolean;
+  model?: string;
+  modelProvider?: string;
+  baseUrl?: string;
+  envKey?: string;
+  modelCatalogJson?: string;
+  reasoningEffort?: string;
+  wireApi?: "responses";
+}
+
+const CODEX_CONFIG_FIELDS = new Set(["enabled", "model", "modelProvider", "baseUrl", "envKey", "modelCatalogJson", "reasoningEffort", "wireApi"]);
+
+export function validateCodexRuntimeConfig(raw: unknown): string | undefined {
+  if (raw === undefined) return undefined;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return "runtimes.codex must be an object";
+  const config = raw as Record<string, unknown>;
+  for (const [key, value] of Object.entries(config)) {
+    if (!CODEX_CONFIG_FIELDS.has(key)) return `Unsupported runtimes.codex field: ${key}`;
+    if (value === undefined) continue;
+    if (key === "enabled") {
+      if (typeof value !== "boolean") return "runtimes.codex.enabled must be a boolean";
+    } else if (typeof value !== "string" || !value.trim()) return `runtimes.codex.${key} must be a non-empty string`;
+  }
+  if (config.wireApi !== undefined && config.wireApi !== "responses") return "runtimes.codex.wireApi must be responses";
+  if (typeof config.envKey === "string" && !/^[A-Za-z_][A-Za-z0-9_]*$/.test(config.envKey)) return "runtimes.codex.envKey must be an environment variable name";
+  if (typeof config.baseUrl === "string") {
+    try {
+      const url = new URL(config.baseUrl);
+      if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw new Error();
+    } catch { return "runtimes.codex.baseUrl must be an HTTP(S) URL without credentials, query, or fragment"; }
+  }
+  return undefined;
+}
+
+function parseCodexRuntimeConfig(raw: unknown, startup: boolean): CodexRuntimeConfig {
+  const error = validateCodexRuntimeConfig(raw);
+  if (error) {
+    if (startup) throw new SecurityFlagConfigError("malformed-codex-runtime", error);
+    console.error(`[dashboard] ${error}; Codex runtime disabled`);
+    return { enabled: false };
+  }
+  return { enabled: false, ...(raw as Partial<CodexRuntimeConfig> | undefined) };
+}
+
 export interface DashboardConfig {
   port: number;
   piPort: number;
+  /** Bridge listener address. Defaults to loopback. */
+  piHost?: string;
+  /** Phase-two opt-in; legacy bridges remain connected by default. */
+  bridge?: { requireToken: boolean };
+  runtimes?: { codex: CodexRuntimeConfig };
   autoStart: boolean;
   autoShutdown: boolean;
   shutdownIdleSeconds: number;
@@ -391,6 +444,9 @@ const DEFAULTS: DashboardConfig = {
   modelProxy: { ...DEFAULT_MODEL_PROXY },
   port: 8000,
   piPort: 9999,
+  piHost: "127.0.0.1",
+  bridge: { requireToken: false },
+  runtimes: { codex: { enabled: false } },
   autoStart: true,
   autoShutdown: false,
   shutdownIdleSeconds: 300,
@@ -418,8 +474,8 @@ const DEFAULTS: DashboardConfig = {
  * Parse and validate the auth config section.
  *
  * Returns undefined ONLY when nothing auth-relevant is configured — that is,
- * when none of `providers`, `bypassHosts`, `bypassUrls`, or the multi-operator
- * `requireBrowserAuth` flag has any content.
+ * when providers, bypass rules, signing secret, and authorization settings
+ * carry no content or explicit spawn-delegation intent.
  *
  * When providers is empty but bypassHosts or bypassUrls is populated, this
  * function returns a valid AuthConfig with an empty providers map. The auth
@@ -452,6 +508,9 @@ function parseAuthConfig(raw: any): AuthConfig | undefined {
   // Presence (including an empty map) activates the cell boundary and must keep
   // the auth block alive. Integrity/coupling is enforced before parsing.
   const hasGuestCellGrants = raw.guestCellGrants !== undefined;
+  const hasSpawnAuth = (typeof raw.secret === "string" && raw.secret.trim().length > 0)
+    || raw.operatorUsers !== undefined
+    || raw.localBridgeOperator !== undefined;
   const guestCellGrantsValidation = hasGuestCellGrants
     ? validateGuestCellGrants(raw.guestCellGrants)
     : undefined;
@@ -465,7 +524,7 @@ function parseAuthConfig(raw: any): AuthConfig | undefined {
   // ON = lockout): a non-boolean resolves the flag UNSET (fail CLOSED to
   // single-op). No warn here (would double-log with the integrity check).
 
-  if (!hasProviders && !hasHosts && !hasUrls && !hasBrowserAuthGate && !hasGuestCellGrants) return undefined;
+  if (!hasProviders && !hasHosts && !hasUrls && !hasBrowserAuthGate && !hasGuestCellGrants && !hasSpawnAuth) return undefined;
 
   // Validate each provider has at least clientId and clientSecret.
   // validProviders may end up empty when providers is {} or all entries
@@ -489,7 +548,7 @@ function parseAuthConfig(raw: any): AuthConfig | undefined {
   // If providers was declared but all entries are malformed AND there is no
   // bypass content AND the multi-operator gate is not set, fall back to
   // undefined — same "nothing auth-relevant" rule as the top-level gate.
-  if (Object.keys(validProviders).length === 0 && !hasHosts && !hasUrls && !hasBrowserAuthGate && !hasGuestCellGrants) {
+  if (Object.keys(validProviders).length === 0 && !hasHosts && !hasUrls && !hasBrowserAuthGate && !hasGuestCellGrants && !hasSpawnAuth) {
     return undefined;
   }
 
@@ -510,6 +569,11 @@ function parseAuthConfig(raw: any): AuthConfig | undefined {
     ...(Array.isArray(raw.operatorUsers)
       ? { operatorUsers: raw.operatorUsers.filter((u: unknown) => typeof u === "string" && u.trim().length > 0) }
       : {}),
+    ...(validateSpawnBoundaryConfig({ auth: raw })
+      ? { localBridgeOperator: null }
+      : raw.localBridgeOperator !== undefined
+        ? { localBridgeOperator: raw.localBridgeOperator === null ? null : raw.localBridgeOperator.trim() }
+        : {}),
     ...(guestCellGrantsValidation?.ok
       ? { guestCellGrants: guestCellGrantsValidation.value }
       : {}),
@@ -736,6 +800,8 @@ export class SecurityFlagConfigError extends Error {
     | "malformed"
     | "misplaced"
     | "malformed-operator-users"
+    | "malformed-spawn-boundary"
+    | "malformed-codex-runtime"
     | "malformed-cell-grants"
     | "cell-grants-coupling";
   constructor(
@@ -743,6 +809,8 @@ export class SecurityFlagConfigError extends Error {
       | "malformed"
       | "misplaced"
       | "malformed-operator-users"
+      | "malformed-spawn-boundary"
+      | "malformed-codex-runtime"
       | "malformed-cell-grants"
       | "cell-grants-coupling",
     message: string,
@@ -793,6 +861,43 @@ function operatorUsersPresentButUnusable(raw: unknown): boolean {
     ? raw.filter((u) => typeof u === "string" && u.trim().length > 0).length
     : 0; // scalar / object → zero usable identities
   return usable === 0;
+}
+
+/** Validate spawn-sensitive settings independently of the browser-auth posture. */
+export function validateSpawnBoundaryConfig(raw: {
+  piHost?: unknown;
+  bridge?: unknown;
+  auth?: unknown;
+}): string | undefined {
+  if (raw.piHost !== undefined && (typeof raw.piHost !== "string" || !raw.piHost.trim())) {
+    return "piHost must be a non-empty listener address";
+  }
+  if (raw.bridge !== undefined) {
+    if (!raw.bridge || typeof raw.bridge !== "object" || Array.isArray(raw.bridge)) {
+      return "bridge must be an object with an optional requireToken boolean";
+    }
+    const requireToken = (raw.bridge as Record<string, unknown>).requireToken;
+    if (requireToken !== undefined && typeof requireToken !== "boolean") {
+      return "bridge.requireToken must be a boolean";
+    }
+  }
+  const auth = raw.auth as Record<string, unknown> | undefined;
+  if (!auth || typeof auth !== "object") return undefined;
+  if (operatorUsersPresentButUnusable(auth.operatorUsers)) {
+    return "auth.operatorUsers must contain usable operator identities, or be an intentional empty array";
+  }
+  const delegate = auth.localBridgeOperator;
+  if (delegate === undefined || delegate === null) return undefined;
+  if (typeof delegate !== "string" || !delegate.trim()) {
+    return "auth.localBridgeOperator must be a non-empty operator identity or null";
+  }
+  const operators = Array.isArray(auth.operatorUsers)
+    ? auth.operatorUsers.filter((u): u is string => typeof u === "string" && u.trim().length > 0)
+    : [];
+  if (operators.length > 0 && !operators.some((u) => u.trim().toLowerCase() === delegate.trim().toLowerCase())) {
+    return "auth.localBridgeOperator must match an auth.operatorUsers identity";
+  }
+  return undefined;
 }
 
 function enforceSecurityFlagIntegrity(parsed: any, startup: boolean): void {
@@ -862,42 +967,19 @@ function enforceSecurityFlagIntegrity(parsed: any, startup: boolean): void {
     console.error(
       `[dashboard] SECURITY CONFIG COUPLING: auth.operatorUsers is set but ` +
         `auth.requireBrowserAuth is not true — operator-only enforcement is INERT ` +
-        `(the gate is OFF, so no session-write is operator-restricted)` +
+        `(the base session-action gate is OFF; spawn retains its separate operator check)` +
         (multi ? ` while allowedUsers lists more than one user` : ``) +
         `. Set auth.requireBrowserAuth:true to enforce operator-only actions.`,
     );
   }
 
-  // ── malformed operatorUsers with the gate ON (PUSHBACK-4 m-1) ─────────────
-  // operatorUsers PRESENT but yielding ZERO usable operators (a scalar, a non-
-  // string element, or an all-whitespace string) WHILE requireBrowserAuth is ON
-  // → `operatorConfigured` silently collapses to false → operator-only
-  // enforcement goes INERT while the operator believes the gate is up → an
-  // admitted op-2 reaches the ENTIRE operator-only surface (shutdown / kill /
-  // spawn / resume / model / prompt-command host-shell) — the dl-5761 window,
-  // previously with NO throw and NO warn. ASYMMETRIC to the loud
-  // requireBrowserAuth guards above; close it symmetrically. An ABSENT or
-  // EMPTY-`[]` operatorUsers stays INTENTIONAL (op-1 retains full control) → no
-  // diagnostic (see operatorUsersPresentButUnusable). At STARTUP a violation
-  // THROWS (fail-CLOSED-REFUSE); at runtime it warns LOUD and degrades.
-  if (
-    auth &&
-    typeof auth === "object" &&
-    auth.requireBrowserAuth === true &&
-    operatorUsersPresentButUnusable(auth.operatorUsers)
-  ) {
-    fail(
-      new SecurityFlagConfigError(
-        "malformed-operator-users",
-        `SECURITY CONFIG MALFORMED: auth.operatorUsers is set ` +
-          `(${JSON.stringify(auth.operatorUsers)}) but yields ZERO usable operator ` +
-          `identities while auth.requireBrowserAuth is ON — operator-only ` +
-          `enforcement would be INERT (every session-write open to any admitted ` +
-          `user). Provide a non-empty array of non-empty strings, or remove ` +
-          `operatorUsers to intentionally run flag-ON-without-operator (op-1 ` +
-          `retains full control).`,
-      ),
-    );
+  // Spawn authority remains active even when browser auth is off. Malformed
+  // delegation must never degrade into the default local-bridge authority.
+  const spawnError = validateSpawnBoundaryConfig(parsed);
+  if (spawnError) {
+    const error = new SecurityFlagConfigError("malformed-spawn-boundary", `SECURITY CONFIG MALFORMED: ${spawnError}`);
+    if (startup) throw error;
+    console.error(`[dashboard] ${error.message} Applying closed spawn defaults until config is repaired.`);
   }
 
   // Cell-boundary activation is security-sensitive. Presence (even `{}`) must
@@ -962,6 +1044,13 @@ export function loadConfig(opts?: LoadConfigOptions): DashboardConfig {
     const result: DashboardConfig = {
       port: parsed.port ?? defaults.port,
       piPort: parsed.piPort ?? defaults.piPort,
+      piHost: typeof parsed.piHost === "string" && parsed.piHost.trim() ? parsed.piHost.trim() : defaults.piHost,
+      bridge: {
+        requireToken: validateSpawnBoundaryConfig({ bridge: parsed.bridge })
+          ? true
+          : parsed.bridge?.requireToken === true,
+      },
+      runtimes: { codex: parseCodexRuntimeConfig(parsed.runtimes?.codex, startup) },
       autoStart: parsed.autoStart ?? defaults.autoStart,
       autoShutdown: parsed.autoShutdown ?? defaults.autoShutdown,
       shutdownIdleSeconds: parsed.shutdownIdleSeconds ?? defaults.shutdownIdleSeconds,
@@ -1047,7 +1136,7 @@ export function loadConfig(opts?: LoadConfigOptions): DashboardConfig {
     // email — `…requireBrowserAuth.example` has no colon after the token). The
     // `["']?` AFTER the name also handles the double-quoted `"requireBrowserAuth":`
     // form (the closing quote sits between the name and the colon).
-    const securityKey = rawText?.match(/["']?(requireBrowserAuth|guestCellGrants)["']?\s*:/i)?.[1];
+    const securityKey = rawText?.match(/["']?(requireBrowserAuth|guestCellGrants|localBridgeOperator|operatorUsers|requireToken)["']?\s*:/i)?.[1];
     if (rawText !== undefined && securityKey) {
       const msg =
         `[dashboard] SECURITY CONFIG UNPARSEABLE: ${configFile} carries auth.${securityKey} ` +
@@ -1055,6 +1144,8 @@ export function loadConfig(opts?: LoadConfigOptions): DashboardConfig {
         `Refusing to start with silent single-operator defaults — fix the JSON and restart.`;
       if (startup) throw new Error(msg);
       console.error(msg + ` (runtime read — degrading to single-op defaults; a restart would refuse.)`);
+      defaults.auth = { secret: "", providers: {}, localBridgeOperator: null };
+      defaults.bridge = { requireToken: true };
     }
     return defaults;
   }
@@ -1075,6 +1166,8 @@ export function ensureConfig(): void {
   const defaults = {
     port: DEFAULTS.port,
     piPort: DEFAULTS.piPort,
+    piHost: DEFAULTS.piHost,
+    bridge: DEFAULTS.bridge,
     autoStart: DEFAULTS.autoStart,
     autoShutdown: DEFAULTS.autoShutdown,
     shutdownIdleSeconds: DEFAULTS.shutdownIdleSeconds,

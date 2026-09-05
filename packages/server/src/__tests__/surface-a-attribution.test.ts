@@ -20,6 +20,11 @@ import { handleSendPrompt } from "../browser-handlers/session-action-handler.js"
 import type { BrowserHandlerContext } from "../browser-handlers/handler-context.js";
 import { createPendingResumeRegistry } from "../pending-resume-registry.js";
 import { buildPromptResponseForward } from "../prompt-response-forward.js";
+import { createSpawnTestContext } from "../test-support/spawn-policy-fixture.js";
+
+vi.mock("../process-manager.js", () => ({
+  spawnPiSession: vi.fn(async () => ({ success: false, message: "Attribution test does not start processes" })),
+}));
 
 function principalOf(sub: string): TokenPayload {
   return { sub, name: "Op One", username: "op1", provider: "github", exp: 0 } as TokenPayload;
@@ -67,6 +72,7 @@ function makeEndedCtx(principal: TokenPayload | null, requireBrowserAuth: boolea
     update: vi.fn(),
   };
   const ctx = {
+    ...createSpawnTestContext({ principal, requireBrowserAuth, operatorUsers: [] }),
     ws: { readyState: 1, OPEN: 1, bufferedAmount: 0 } as any,
     sessionManager: sessionManager as any,
     eventStore: {} as any,
@@ -101,11 +107,12 @@ describe("Surface A #3 — ended-session replay carries record-time author (locu
     expect(recorded[0].entry.author.sub).not.toBe("forged@evil");
   });
 
-  it("flag OFF → no author recorded (byte-unchanged)", async () => {
+  it("flag OFF without a principal refuses auto-resume before recording an intent", async () => {
     const { ctx, recorded } = makeEndedCtx(/* principal */ null, /* single-op */ false);
     await handleSendPrompt({ type: "send_prompt", sessionId: "s1", text: "resume me" } as any, ctx).catch(() => {});
-    expect(recorded).toHaveLength(1);
-    expect(recorded[0].entry).not.toHaveProperty("author");
+    expect(recorded).toHaveLength(0);
+    expect(ctx.pendingResumeIntents!.record).not.toHaveBeenCalled();
+    expect(ctx.sendTo).toHaveBeenCalledWith(ctx.ws, expect.objectContaining({ type: "send_prompt_failed", reason: "unauthorized" }));
   });
 
   it("registry carries the author through record → consume (server-side-only)", () => {

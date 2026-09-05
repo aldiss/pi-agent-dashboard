@@ -121,7 +121,7 @@ describe("HeadlessPidRegistry", () => {
     expect(registry.size()).toBe(0);
   });
 
-  it("should kill all tracked processes", () => {
+  it("should kill all tracked processes", async () => {
     const registry = createHeadlessPidRegistry({ pidFilePath: join(makeTempDir(), "pids.json") });
     const proc1 = mockProcess();
     const proc2 = mockProcess();
@@ -129,7 +129,7 @@ describe("HeadlessPidRegistry", () => {
     registry.register(200, "/b", proc2);
 
     const killSpy = vi.spyOn(process, "kill").mockImplementation(() => true);
-    registry.killAll();
+    await registry.killAll();
     expect(killSpy).toHaveBeenCalledTimes(2);
     expect(registry.size()).toBe(0);
     killSpy.mockRestore();
@@ -177,7 +177,7 @@ describe("HeadlessPidRegistry persistence", () => {
 });
 
 describe("HeadlessPidRegistry orphan cleanup", () => {
-  it("should reclaim alive processes from disk", () => {
+  it("should reclaim alive processes from disk", async () => {
     const dir = makeTempDir();
     const pidFile = join(dir, "pids.json");
 
@@ -187,13 +187,13 @@ describe("HeadlessPidRegistry orphan cleanup", () => {
     }));
 
     const registry = createHeadlessPidRegistry({ pidFilePath: pidFile });
-    registry.cleanupOrphans();
+    await registry.cleanupOrphans();
 
     expect(registry.size()).toBe(1);
     expect(registry.getPid("any")).toBeUndefined(); // not linked yet
   });
 
-  it("should remove dead processes from disk", () => {
+  it("should remove dead processes from disk", async () => {
     const dir = makeTempDir();
     const pidFile = join(dir, "pids.json");
 
@@ -203,14 +203,14 @@ describe("HeadlessPidRegistry orphan cleanup", () => {
     }));
 
     const registry = createHeadlessPidRegistry({ pidFilePath: pidFile });
-    registry.cleanupOrphans();
+    await registry.cleanupOrphans();
 
     expect(registry.size()).toBe(0);
     const data = JSON.parse(readFileSync(pidFile, "utf-8"));
     expect(data.entries).toHaveLength(0);
   });
 
-  it("should kill very old alive orphans (>7 days)", () => {
+  it("should kill very old alive orphans (>7 days)", async () => {
     const dir = makeTempDir();
     const pidFile = join(dir, "pids.json");
 
@@ -221,7 +221,7 @@ describe("HeadlessPidRegistry orphan cleanup", () => {
 
     const killSpy = vi.spyOn(process, "kill").mockImplementation(() => true);
     const registry = createHeadlessPidRegistry({ pidFilePath: pidFile });
-    registry.cleanupOrphans();
+    await registry.cleanupOrphans();
 
     // Should have tried to kill the process group
     expect(killSpy).toHaveBeenCalledWith(-process.pid, "SIGTERM");

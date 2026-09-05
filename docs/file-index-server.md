@@ -40,19 +40,68 @@
 | `packages/server/src/external-sessions/routes/external-session-routes.ts` | Serves guarded GET-only list, capture, and transcript routes. List returns `{ sessions, owners, drivers }`. Resolves transcript by registry id. Returns capture fallback on reader failure. Exposes no pane write path. |
 | `packages/server/src/external-sessions/scanner.ts` | Tracks `outputChangedAt` from canonical list samples only. Stores drill captures separately. Retains ended sessions 24 hours. Capture polling renews prune-protection lease. |
 | `packages/server/src/external-sessions/transcript-reader.ts` | Locates direct-child Claude Code JSONL and recursive Codex JSONL by PID start time plus file birthtime. Primes live cache for ended lookup. Reads capped tail read-only. Normalizes stable aggregate-capped entries. Omits encrypted or unrenderable blocks. Returns capture fallback. Freezes ended response. |
+| `packages/server/src/__tests__/config-codex-api.test.ts` | Tests partial Codex config writes, credential-field rejection, and restart markers. |
+| `packages/server/src/__tests__/config-spawn-boundary-api.test.ts` | Pins delegation/config partial writes, explicit-null retention, credential redaction, validation, and restart markers. |
+| `packages/server/src/__tests__/fail-loud-interactive-resolve.test.ts` | Pins existing interactive-resolution failures with explicit permitted cwd roots. |
+| `packages/server/src/__tests__/headless-pid-registry-codex.test.ts` | Tests runtime metadata, direct Codex termination, orphan refusal, and preserved pi reclamation. |
+| `packages/server/src/__tests__/headless-pid-registry.test.ts` | Tests shared PID tracking, persistence, linking, and awaited orphan cleanup. |
+| `packages/server/src/__tests__/pi-gateway-fail-loud.test.ts` | Pins gateway bind/register diagnostics against loopback listener. |
+| `packages/server/src/__tests__/pi-gateway-spawn-boundary.test.ts` | Pins socket identity, first-frame spawn isolation, token rollout, and server-owned Codex ID protection. |
+| `packages/server/src/__tests__/process-manager-codes.test.ts` | Pins existing spawn failure codes after mandatory cwd-policy validation. |
+| `packages/server/src/__tests__/process-manager-cwd-policy.test.ts` | Pins mandatory cwd roots, before/after-hook containment, symlink swaps, and refusal of legacy `preValidated` bypass. |
+| `packages/server/src/__tests__/process-manager.test.ts` | Pins spawn construction and hooks with canonical cwd and explicit cwd policy. |
+| `packages/server/src/__tests__/spawn-authz-adversarial.test.ts` | Exercises malformed claims, unknown channels, address variants, delegation evidence, and cwd containment. |
+| `packages/server/src/__tests__/spawn-authz.test.ts` | Pins eight base postures, independent spawn denials, and spawn-only delegation against real action map. |
+| `packages/server/src/__tests__/spawn-boundary-e2e.test.ts` | Exercises assembled REST/browser/bridge spawn boundary, `/new`, legacy telemetry, and pre-effect denials in both browser-auth postures. |
+| `packages/server/src/__tests__/spawn-boundary.test.ts` | Pins base-first composition, delegated `/new`, and missing-policy denial. |
+| `packages/server/src/__tests__/spawn-cwd.test.ts` | Pins realpath resolution, symlink escapes, prefix siblings, and canonical root collection. |
+| `packages/server/src/__tests__/spawn-lifecycle-cwd.test.ts` | Pins canonical cwd/roots through pi WS/REST resume, fork, reload, auto-resume, and resurrection in both auth postures. Tests symlink swaps during awaited takeover with real gate/process manager and mocked OS effects. |
+| `packages/server/src/browser-gateway.ts` | Dispatches principal-filtered WS traffic with plugin-origin boundaries, runtime manager, spawn evidence, and awaited headless shutdown. |
+| `packages/server/src/browser-handlers/handler-context.ts` | Carries cell controller, spawn gate, runtime manager, and connection evidence through browser handlers. |
+| `packages/server/src/browser-handlers/session-action-handler.ts` | Routes authorized pi/Codex actions through runtime-specific lifecycle and capability gates. |
+| `packages/server/src/browser-handlers/subscription-handler.ts` | Loads Codex display journals before WS replay without opening pi session files. |
+| `packages/server/src/cell-access-http.ts` | Runs root `onRequest`. Captures identity before plugin hooks. Requires exact method+path and core ownership for safe exceptions. Preserves SPA deep links. |
+| `packages/server/src/cell-access-ws.ts` | Defines exact guest ingress/egress allowlists. Rebuilds snapshot projection. Preserves deletion via `session_removed`. Rejects plugin origin. |
+| `packages/server/src/cell-access.ts` | Resolves registry-derived cell identity. Computes roles/grants. Rechecks mutable `allowedUsers` admission. |
+| `packages/server/src/cli.ts` | Forwards validated runtime, bridge-listener, and handshake config into server startup. |
+| `packages/server/src/config-api.ts` | Validates partial guest-cell/spawn/Codex config writes with secret preservation and restart markers. |
+| `packages/server/src/driver-registry.ts` | Thin FS wrapper over `~/.pi/orchestration-state/cell-driver-registry.json`. Exports `createDriverRegistry`, `driverRegistry` singleton, pure helpers `driverLookupKeys` + `indexDriverNames`, consts `DRIVER_REGISTRY_PATH` + `DEFAULT_DRIVER_REGISTRY_TTL_MS`. 5s TTL cache plus coarse `watch` invalidation. Sister of `audience-registry.ts`. Indexes row key, `real_name`, `tmux` per driver row. Indexes all rows regardless of `state`. `isRegisteredDriver(name)` matches exact lowercased name, plus leading segment before a `" — "` status suffix. Missing/unparseable registry yields empty index and `false`. Never throws. Stamps `DashboardSession.isRegisteredDriver`, which drives sidebar `drivers` tier in `classifyTier`. See change: classify-drivers-from-registry. |
+| `packages/server/src/event-wiring.ts` | Shares normalized runtime ingestion and bridge spawn gating while protecting Codex rows from batch/dedup/ghost mutation. |
+| `packages/server/src/headless-pid-registry.ts` | Tracks runtime-tagged PID ownership with awaited Codex termination and unchanged pi reclamation rules. |
+| `packages/server/src/pi-gateway.ts` | Enforces socket-derived bridge spawn evidence and server-owned Codex ID isolation. |
+| `packages/server/src/process-manager.ts` | Requires permitted cwd roots on every launch; validates canonical directory containment before/after hooks. |
 | `packages/server/src/push/push-dispatcher.ts` | Applies optional per-token/session `canDeliver` gate before automatic fanout. |
 | `packages/server/src/push/push-token-registry.ts` | Persists server-stamped push-token owner metadata. |
 | `packages/server/src/push/push-types.ts` | Defines `PushPrincipal` and optional verified `PushToken.owner`. |
 | `packages/server/src/rest-session-gate.ts` | Applies cell access before REST action gates; maps outside/missing sessions to identical `404`. |
 | `packages/server/src/routes/push-routes.ts` | Stamps push owners; scopes guest token list/delete/test; keeps manual send operator-only. |
-| `packages/server/src/routes/session-routes.ts` | Filters guest session collections; skips guest-triggered global hygiene mutation; gates session endpoints. |
+| `packages/server/src/routes/session-routes.ts` | Filters guest sessions and reloads Codex journal events for REST history reads. |
 | `packages/server/src/routes/system-routes.ts` | Returns six-field boundary-mode guest health. Applies `allowedUsers` live to `CellAccessController`. Triggers replacement snapshots. |
-| `packages/server/src/server.ts` | Installs root HTTP `onRequest`; records core routes before plugin load; routes plugin broadcasts with origin; composes cell, WS, push, and upgrade gates. Injects `driverRegistry.isRegisteredDriver` into `createMemorySessionManager`. `driverRegistry.startWatch` re-derives `isRegisteredDriver` per known session on registry change, broadcasts via `broadcastSessionUpdated` on diff. See change: classify-drivers-from-registry. |
-| `packages/server/src/session-api.ts` | Threads cell controller and session lookup into REST session gates. |
+| `packages/server/src/runtime/__tests__/codex-adapter.live.test.ts` | Opt-in `PI_CODEX_LIVE_TEST=1` checks real command output, streaming, retained second-turn context, mid-tool abort, closed tools, native cold resume, and child exit. Supports model/base-URL overrides and `PI_CODEX_LIVE_EVIDENCE` output. |
+| `packages/server/src/runtime/__tests__/codex-adapter.test.ts` | Tests piped RPC launch/resume, turn identity, request denial, abort races, and process ownership. |
+| `packages/server/src/runtime/__tests__/codex-config.test.ts` | Tests managed Codex home, quoted provider config, and credential-value exclusion. |
+| `packages/server/src/runtime/__tests__/codex-event-mapper.test.ts` | Checks native notifications against real dashboard reducer and status/stat extraction. Pins completion-only ID reconciliation, separate identical replies, and aborted-turn closure without provider error. |
+| `packages/server/src/runtime/__tests__/codex-session-store.test.ts` | Tests native identity persistence, journal replay, interrupted-tail recovery, and path-safe IDs. |
+| `packages/server/src/runtime/__tests__/ndjson-rpc.test.ts` | Tests chunked UTF-8 framing, request correlation, deadlines, errors, and close cleanup. |
+| `packages/server/src/runtime/__tests__/runtime-ingress.test.ts` | Exercises assembled Codex REST/WS lifecycle, authorization postures, restart replay, and bridge collision denial. |
+| `packages/server/src/runtime/__tests__/runtime-manager.test.ts` | Tests owned Codex lifecycle, failed-start retention, retryable cleanup, cold attach, and durable replay. |
+| `packages/server/src/runtime/codex-adapter.ts` | Owns direct `codex app-server` stdio process, native threads/turns, request denial, and termination. Redacts configured credential from native terminal error messages before event mapping. |
+| `packages/server/src/runtime/codex-config.ts` | Writes dashboard-owned Codex configuration with credential environment names, never credential values. |
+| `packages/server/src/runtime/codex-event-mapper.ts` | Converts native items into dashboard snapshots, paired tools, reasoning closure, `agent_end`, and usage increments. Reconciles completion-only ID changes through sole started open same-phase assistant lifecycle. Preserves separate identical replies; maps intentional interruption to `aborted`. |
+| `packages/server/src/runtime/codex-session-store.ts` | Persists Codex metadata/display journal with interrupted-replay recovery. |
+| `packages/server/src/runtime/ndjson-rpc.ts` | Frames newline-delimited JSON-RPC with correlated requests, server-request replies, deadlines, and close rejection. |
+| `packages/server/src/runtime/runtime-manager.ts` | Coordinates Codex lifecycle with durable native-thread identity and shared PID ownership. `hasOwnedProcesses()` includes attached, pending, and failed-start processes; excludes metadata-only history. |
+| `packages/server/src/runtime/types.ts` | Defines `CodexAdapter`, `RuntimeSendInput`, and `RuntimeEvent` contracts. |
+| `packages/server/src/server.ts` | Installs root HTTP `onRequest`; records core routes before plugin load; routes plugin broadcasts with origin; composes cell, WS, push, and upgrade gates. Injects `driverRegistry.isRegisteredDriver` into `createMemorySessionManager`. `driverRegistry.startWatch` re-derives `isRegisteredDriver` per known session on registry change, broadcasts via `broadcastSessionUpdated` on diff. Shares startup-frozen spawn gate, private bridge token, and live canonical roots across three spawn ingresses. Keeps idle timer alive while `runtimeManager.hasOwnedProcesses()` holds Codex ownership. See change: classify-drivers-from-registry. |
+| `packages/server/src/session-api.ts` | Dispatches authorized REST pi/Codex lifecycle requests before subprocess, worktree, and queue effects. |
 | `packages/server/src/session-authz.ts` | Enforces guest cell visibility before D admission and action classification. |
 | `packages/server/src/session-scanner.ts` | Restores server-derived `accessCellId` from session metadata. Stamps `isRegisteredDriver` in `sessionFromMeta` via injected `isDriver`, default `driverRegistry.isRegisteredDriver`. See change: classify-drivers-from-registry. |
 | `packages/server/src/translator-selection.ts` | Scores depth rungs. Lets claim-reviewed revoice bypass lexical coverage. Excludes revoice with deterministic hard issues. Sanitizes warnings to allowlisted category counts. |
 | `packages/server/src/translator-service.ts` | Runs deeper plain-English rewrite and meaning checks. Emits no claim warning after exact match. Emits `meaning-judge-rejected` after ordinary mismatch, `UNKNOWN`, or invalid or unavailable verifier. Sends deterministic hard issues, protected or quoted evidence corruption, independent injection, and evaluator instruction to original. Preserves thresholds, prompts, and security controls. |
+| `packages/server/src/spawn-authz.ts` | Independently authorizes spawn in both browser-auth postures; derives token-verified loopback authority for `spawn` only. |
+| `packages/server/src/spawn-boundary.ts` | Composes base gate before independent spawn gate; freezes identity policy; denies missing policy injection. |
+| `packages/server/src/spawn-cwd.ts` | Resolves cwd and pinned/session roots with realpath; rejects uncontained paths and empty roots. |
+| `packages/server/src/test-support/spawn-policy-fixture.ts` | Supplies explicit operator/loopback spawn policy for handler tests with stubbed directory/process work. |
 | `packages/server/src/ws-session-gate.ts` | Threads cell controller and server-resolved target into central WS action authorization. |
 | `src/server/git-operations.ts` | Server-side git commands: branch listing, checkout, init, stash pop |
 | `src/server/routes/plugin-config-routes.ts` | `POST /api/config/plugins/:id` — validates `:id`, validates body against `configSchema`, merges into `plugins.<id>.*`, atomic-writes, broadcasts `plugin_config_update`. Auth-gated. |

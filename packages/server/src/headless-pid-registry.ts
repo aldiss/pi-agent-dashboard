@@ -4,9 +4,10 @@
  * Persists entries to disk so a restarted server can clean up orphans.
  */
 import type { ChildProcess } from "@blackbelt-technology/pi-dashboard-shared/platform/exec.js";
+import type { SessionRuntime } from "@blackbelt-technology/pi-dashboard-shared/types.js";
 import { EventEmitter } from "node:events";
 import { readJsonFile, writeJsonFile } from "./json-store.js";
-import { killPidWithGroup, isProcessAlive } from "@blackbelt-technology/pi-dashboard-shared/platform/process.js";
+import { killPidWithGroup, isProcessAlive, killProcess } from "@blackbelt-technology/pi-dashboard-shared/platform/process.js";
 import path from "node:path";
 import os from "node:os";
 import { isUnsafeTestHomeScan } from "./test-env-guard.js";
@@ -23,6 +24,7 @@ export interface HeadlessEntry {
   process: ChildProcess;
   sessionId?: string;
   spawnedAt: number;
+  runtime?: SessionRuntime;
   /**
    * Server-minted spawn correlation token. Stored at `register` time.
    * Used by `linkByToken` (tier 1) to resolve sessionId↔pid mapping
@@ -37,6 +39,7 @@ interface PersistedEntry {
   pid: number;
   cwd: string;
   spawnedAt: string;
+  runtime?: SessionRuntime;
 }
 
 interface PidFileData {
@@ -50,7 +53,7 @@ export interface HeadlessPidRegistry {
    * storing it lets `linkByToken` resolve identity precisely later.
    * See change: spawn-correlation-token.
    */
-  register(pid: number, cwd: string, proc: ChildProcess, spawnToken?: string): void;
+  register(pid: number, cwd: string, proc: ChildProcess, spawnToken?: string, metadata?: { runtime?: SessionRuntime }): void;
   /**
    * Tier 1 link: find entry by `spawnToken`, set its `sessionId`. Returns
    * `true` on match. The strongest identity — used when the bridge sent
@@ -73,15 +76,15 @@ export interface HeadlessPidRegistry {
   /** Get the PID linked to a session ID. */
   getPid(sessionId: string): number | undefined;
   /** Send SIGTERM to the process linked to a session ID. Returns true if killed. */
-  killBySessionId(sessionId: string): boolean;
+  killBySessionId(sessionId: string): boolean | Promise<boolean>;
   /** Remove a tracked process by PID. */
   remove(pid: number): void;
   /** Kill all tracked processes (for server shutdown). */
-  killAll(): void;
+  killAll(): Promise<void>;
   /** Number of tracked entries (for testing). */
   size(): number;
   /** Clean up orphan processes from a previous server instance. */
-  cleanupOrphans(): void;
+  cleanupOrphans(): Promise<void>;
 }
 
 export interface HeadlessPidRegistryOptions {
@@ -92,13 +95,14 @@ export function createHeadlessPidRegistry(options?: HeadlessPidRegistryOptions):
   const entries = new Map<number, HeadlessEntry>();
   const pidFilePath = options?.pidFilePath ?? DEFAULT_PID_FILE;
 
-  function persist() {
+  function persist(unreclaimed: PersistedEntry[] = []) {
     const data: PidFileData = {
       entries: [...entries.values()].map((e) => ({
         pid: e.pid,
         cwd: e.cwd,
         spawnedAt: new Date(e.spawnedAt).toISOString(),
-      })),
+        ...(e.runtime ? { runtime: e.runtime } : {}),
+      })).concat(unreclaimed),
     };
     try {
       writeJsonFile(pidFilePath, data);
@@ -112,9 +116,15 @@ export function createHeadlessPidRegistry(options?: HeadlessPidRegistryOptions):
     return data.entries ?? [];
   }
 
+  async function terminateCodex(pid: number): Promise<boolean> {
+    // app-server owns stdio but is not a detached process-group leader.
+    try { await killProcess(pid, { timeoutMs: 2000 }); } catch { /* verify below */ }
+    return !isProcessAlive(pid);
+  }
+
   return {
-    register(pid: number, cwd: string, proc: ChildProcess, spawnToken?: string) {
-      entries.set(pid, { pid, cwd, process: proc, spawnedAt: Date.now(), spawnToken });
+    register(pid: number, cwd: string, proc: ChildProcess, spawnToken?: string, metadata?: { runtime?: SessionRuntime }) {
+      entries.set(pid, { pid, cwd, process: proc, spawnedAt: Date.now(), spawnToken, runtime: metadata?.runtime });
       proc.on("exit", () => {
         entries.delete(pid);
         persist();
@@ -161,9 +171,16 @@ export function createHeadlessPidRegistry(options?: HeadlessPidRegistryOptions):
       return undefined;
     },
 
-    killBySessionId(sessionId: string): boolean {
+    killBySessionId(sessionId: string): boolean | Promise<boolean> {
       for (const entry of entries.values()) {
         if (entry.sessionId === sessionId) {
+          if (entry.runtime === "codex") {
+            return terminateCodex(entry.pid).then(dead => {
+              if (dead && entries.get(entry.pid) === entry) entries.delete(entry.pid);
+              persist();
+              return dead;
+            });
+          }
           try {
             // Delegate platform-specific pid-vs-group-pid handling to the
             // shared primitive. See change: consolidate-platform-handlers.
@@ -186,34 +203,44 @@ export function createHeadlessPidRegistry(options?: HeadlessPidRegistryOptions):
       persist();
     },
 
-    killAll() {
+    async killAll() {
       if (isUnsafeTestHomeScan()) {
         console.warn("[headless-pid-registry] killAll() blocked: running under vitest with real HOME");
         return;
       }
-      for (const [pid] of entries) {
+      const codex: HeadlessEntry[] = [];
+      for (const [pid, entry] of entries) {
+        if (entry.runtime === "codex") { codex.push(entry); continue; }
         try {
           killPidWithGroup(pid, "SIGTERM");
         } catch {
           // Process may have already exited
         }
+        entries.delete(pid);
       }
-      entries.clear();
+      const failures: number[] = [];
+      await Promise.all(codex.map(async entry => {
+        if (await terminateCodex(entry.pid)) {
+          if (entries.get(entry.pid) === entry) entries.delete(entry.pid);
+        } else failures.push(entry.pid);
+      }));
       // Don't persist here — keep disk entries so cleanupOrphans() can
       // reclaim surviving processes after a server restart.
+      if (failures.length) throw new Error(`Codex processes remain alive: ${failures.join(", ")}`);
     },
 
     size() {
       return entries.size;
     },
 
-    cleanupOrphans() {
+    async cleanupOrphans() {
       if (isUnsafeTestHomeScan()) {
         console.warn("[headless-pid-registry] cleanupOrphans() blocked: running under vitest with real HOME");
         return;
       }
       const persisted = loadFromDisk();
       const now = Date.now();
+      const unreclaimed: PersistedEntry[] = [];
 
       for (const entry of persisted) {
         const spawnedAt = new Date(entry.spawnedAt).getTime();
@@ -221,6 +248,12 @@ export function createHeadlessPidRegistry(options?: HeadlessPidRegistryOptions):
 
         if (!isProcessAlive(entry.pid)) {
           // Dead process — skip (will be removed from file on persist)
+          continue;
+        }
+
+        if (entry.runtime === "codex") {
+          // Lost stdio cannot be reclaimed as an interactive adapter.
+          if (!await terminateCodex(entry.pid)) unreclaimed.push(entry);
           continue;
         }
 
@@ -243,10 +276,12 @@ export function createHeadlessPidRegistry(options?: HeadlessPidRegistryOptions):
           cwd: entry.cwd,
           process: dummyProc,
           spawnedAt,
+          runtime: entry.runtime,
         });
       }
 
-      persist();
+      persist(unreclaimed);
+      if (unreclaimed.length) throw new Error(`Codex orphan processes remain alive: ${unreclaimed.map(entry => entry.pid).join(", ")}`);
     },
   };
 }

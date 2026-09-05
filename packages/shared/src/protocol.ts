@@ -682,7 +682,15 @@ export interface ServerRestartingExtensionMessage {
   quiesceMs: number;
 }
 
+export interface SpawnResultToExtensionMessage {
+  type: "spawn_result";
+  cwd: string;
+  success: boolean;
+  message: string;
+}
+
 export type ServerToExtensionMessage =
+  | SpawnResultToExtensionMessage
   | SendPromptToExtensionMessage
   | AbortToExtensionMessage
   | ExtensionUiResponseMessage

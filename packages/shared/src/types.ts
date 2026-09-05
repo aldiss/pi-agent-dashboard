@@ -1,6 +1,9 @@
 /** Source environment where a pi session is running */
 export type SessionSource = "tui" | "zed" | "tmux" | "dashboard" | "terminal" | "codex" | "claude-code" | "unknown";
 
+/** Execution protocol, independent of source environment and external readers. */
+export type SessionRuntime = "pi" | "codex";
+
 /** Current status of a session */
 export type SessionStatus = "active" | "idle" | "streaming" | "ended";
 
@@ -51,6 +54,10 @@ export interface DriverNextEngagement {
 /** A dashboard session representing a connected pi instance */
 export interface DashboardSession {
   id: string;
+  /** Server-owned execution protocol; absent preserves legacy pi sessions. */
+  runtime?: SessionRuntime;
+  codexThreadId?: string;
+  codexThreadPath?: string;
   cwd: string;
   name?: string;
   /**

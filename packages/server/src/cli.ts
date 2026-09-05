@@ -175,6 +175,9 @@ export function buildConfig(
   return {
     port: flags.port ?? (parseInt(process.env.PI_DASHBOARD_PORT ?? "") || null) ?? fileConfig.port,
     piPort: flags.piPort ?? (parseInt(process.env.PI_DASHBOARD_PI_PORT ?? "") || null) ?? fileConfig.piPort,
+    piHost: flags.piHost ?? fileConfig.piHost,
+    bridge: fileConfig.bridge,
+    runtimes: fileConfig.runtimes,
     dev: flags.dev ?? false,
     autoShutdown: fileConfig.autoShutdown,
     shutdownIdleSeconds: fileConfig.shutdownIdleSeconds,

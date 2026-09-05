@@ -4,14 +4,20 @@
  * for use by skills, scripts, and external tooling.
  */
 import { existsSync } from "node:fs";
-import type { FastifyInstance } from "fastify";
-import { isAbsolute } from "node:path";
+import type { FastifyInstance, FastifyRequest, FastifyReply, preHandlerHookHandler } from "fastify";
+import { isAbsolute, join } from "node:path";
 import { execSync } from "@blackbelt-technology/pi-dashboard-shared/platform/exec.js";
 import type { SessionManager } from "./memory-session-manager.js";
 import type { PiGateway } from "./pi-gateway.js";
 import type { BrowserGateway } from "./browser-gateway.js";
-import type { ApiResponse } from "@blackbelt-technology/pi-dashboard-shared/types.js";
+import type { ApiResponse, SessionRuntime } from "@blackbelt-technology/pi-dashboard-shared/types.js";
 import { spawnPiSession } from "./process-manager.js";
+import { runSpawnGate } from "./spawn-boundary.js";
+import type { SpawnGate } from "./spawn-authz.js";
+import type { CodexRuntimeManager } from "./runtime/runtime-manager.js";
+import { isContained, resolveSpawnCwd } from "./spawn-cwd.js";
+import { createNetworkGuard } from "./localhost-guard.js";
+import { parseSendPrompt } from "@blackbelt-technology/pi-dashboard-shared/prompt-command.js";
 import { buildInteractiveResumeOptions, resolvePinDashboardUrl } from "./resume-spawn-options.js";
 import { writeOperatorPin, readOperatorPin, checkNamePinConsistency } from "./name-sync-write-pin.js";
 import { loadConfig } from "@blackbelt-technology/pi-dashboard-shared/config.js";
@@ -37,6 +43,9 @@ import {
 } from "./resurrection-verify.js";
 
 export interface SessionApiDeps {
+  spawnGate?: SpawnGate;
+  runtimeManager?: CodexRuntimeManager;
+  networkGuard?: preHandlerHookHandler;
   sessionManager: SessionManager;
   piGateway: PiGateway;
   browserGateway: BrowserGateway;
@@ -218,6 +227,18 @@ export function registerSessionApi(fastify: FastifyInstance, deps: SessionApiDep
     getSession: (id) => sessionManager.get(id),
   });
 
+  function authorizeRestSpawn(request: FastifyRequest, reply: FastifyReply, cwd: string, runtime: SessionRuntime = "pi") {
+    const decision = runSpawnGate(deps.spawnGate, {
+      channel: "rest", principal: (request as any).restPrincipal ?? null,
+      remoteAddress: request.raw.socket.remoteAddress ?? null,
+      origin: typeof request.headers.origin === "string" ? request.headers.origin : null,
+      forwarded: request.headers["x-forwarded-for"] !== undefined || request.headers.forwarded !== undefined,
+      presentedBridgeToken: null, requestedCwd: cwd, runtime,
+    });
+    if (!decision.allowed) reply.code(decision.httpStatus).send({ success: false, error: `Spawn refused: ${decision.reason}` });
+    return decision;
+  }
+
   // Post-respawn VERIFY gate (build-gate item 2). Production default wires the
   // real oracles (createProductionProbes: kill-0 + :9999 isSessionConnected +
   // sendToSession-boolean + observed session.model change). Tests inject
@@ -302,6 +323,31 @@ export function registerSessionApi(fastify: FastifyInstance, deps: SessionApiDep
       // Conditional-spread keeps flag-off byte-unchanged. REUSES the Build-1b
       // REST-identity stash — no second REST-identity path.
       const restAuthor = deriveAuthor((request as any).restPrincipal ?? null, deps.operatorUsers);
+      if (result.session.runtime === "codex") {
+        const manager = deps.runtimeManager;
+        try {
+          if (!manager) throw new Error("Codex runtime is unavailable");
+          if (parseSendPrompt(text).type !== "passthrough") {
+            reply.code(400);
+            return { success: false, error: "Codex does not support pi commands; use the dashboard session controls" } satisfies ApiResponse;
+          }
+          if (result.session.status === "ended" || !manager.get(id)) {
+            await gate("resume")(request, reply);
+            if (reply.sent) return;
+            if (!authorizeRestSpawn(request, reply, result.session.cwd, "codex").allowed) return;
+            pendingResumeIntents?.record(id, "front");
+          }
+          await manager.send(id, { text, images, author: restAuthor });
+          return { success: true } satisfies ApiResponse;
+        } catch (err) {
+          reply.code(409);
+          return { success: false, error: err instanceof Error ? err.message : String(err) } satisfies ApiResponse;
+        }
+      }
+      const parsed = parseSendPrompt(text);
+      if (parsed.type === "new" || parsed.type === "reload") {
+        if (!authorizeRestSpawn(request, reply, result.session.cwd).allowed) return;
+      }
       const sent = piGateway.sendToSession(id, {
         type: "send_prompt",
         sessionId: id,
@@ -338,7 +384,8 @@ export function registerSessionApi(fastify: FastifyInstance, deps: SessionApiDep
         reply.code(404);
         return result.error;
       }
-      piGateway.sendToSession(id, { type: "abort", sessionId: id });
+      if (result.session.runtime === "codex") await deps.runtimeManager?.abort(id);
+      else piGateway.sendToSession(id, { type: "abort", sessionId: id });
       return { success: true } satisfies ApiResponse;
     },
   );
@@ -353,6 +400,10 @@ export function registerSessionApi(fastify: FastifyInstance, deps: SessionApiDep
       if ("error" in result) {
         reply.code(404);
         return result.error;
+      }
+      if (result.session.runtime === "codex") {
+        await deps.runtimeManager?.release(id);
+        return { success: true } satisfies ApiResponse;
       }
       piGateway.sendToSession(id, { type: "shutdown", sessionId: id });
       browserGateway.headlessPidRegistry.killBySessionId(id);
@@ -441,6 +492,10 @@ export function registerSessionApi(fastify: FastifyInstance, deps: SessionApiDep
       const session = result.session;
 
       // CC sessions are correctly-ended read-only views — never resurrected.
+      if (session.runtime === "codex") {
+        reply.code(400);
+        return { success: false, error: "Use resume for Codex sessions" } satisfies ApiResponse;
+      }
       if (session.source === "claude-code") {
         reply.code(400);
         return { success: false, error: "claude-code sessions are read-only and cannot be resurrected" } satisfies ApiResponse;
@@ -459,6 +514,8 @@ export function registerSessionApi(fastify: FastifyInstance, deps: SessionApiDep
       }
 
       // Resolve live-process state via the registry UUID-join + kill-0.
+      const spawnDecision = authorizeRestSpawn(request, reply, session.cwd);
+      if (!spawnDecision.allowed) return;
       const liveness = resolveDriverLiveness(id);
 
       // Shared respawn-continue path (cases 2 + 3). Returns the raw
@@ -497,7 +554,7 @@ export function registerSessionApi(fastify: FastifyInstance, deps: SessionApiDep
         typeof runtimePiPort === "number" ? `ws://localhost:${runtimePiPort}` : undefined;
       const doRespawnContinue = async (): Promise<import("./process-manager.js").SpawnResult> => {
         pendingResumeIntents?.record(id, "front");
-        const spawnResult = await spawnPiSession(session.cwd, {
+        const spawnResult = await spawnPiSession(spawnDecision.cwd, {
           sessionFile: session.sessionFile!,
           mode: "continue",
           strategy: "tmux",
@@ -508,7 +565,7 @@ export function registerSessionApi(fastify: FastifyInstance, deps: SessionApiDep
           requireInteractive: true,
           ...(respawnAgentName ? { agentName: respawnAgentName } : {}),
           ...(pinDashboardUrl ? { pinDashboardUrl } : {}),
-        });
+        }, { permittedRoots: spawnDecision.permittedRoots });
         if (spawnResult.process && spawnResult.pid) {
           browserGateway.headlessPidRegistry.register(
             spawnResult.pid,
@@ -620,11 +677,30 @@ export function registerSessionApi(fastify: FastifyInstance, deps: SessionApiDep
   );
 
   // POST /api/session/spawn
-  fastify.post<{ Body: { cwd?: string; spawnMode?: string; branch?: string; baseBranch?: string; label?: string } }>(
+  fastify.post<{ Body: { cwd?: string; runtime?: SessionRuntime; spawnMode?: string; branch?: string; baseBranch?: string; label?: string } }>(
     "/api/session/spawn",
-    { preHandler: gate("spawn") },
+    { preHandler: [gate("spawn"), deps.networkGuard ?? createNetworkGuard([])] },
     async (request, reply) => {
-      const { cwd, spawnMode, branch, baseBranch, label } = request.body ?? {};
+      const { cwd, runtime = "pi", spawnMode, branch, baseBranch, label } = request.body ?? {};
+      const spawnDecision = authorizeRestSpawn(request, reply, cwd ?? "", runtime);
+      if (!spawnDecision.allowed) return;
+      if (runtime === "codex") {
+        if (spawnMode === "worktree") {
+          reply.code(400);
+          return { success: false, error: "Codex worktree spawn is not supported" } satisfies ApiResponse;
+        }
+        if (!deps.runtimeManager) {
+          reply.code(503);
+          return { success: false, error: "Codex runtime is unavailable" } satisfies ApiResponse;
+        }
+        try {
+          const session = await deps.runtimeManager.launch({ cwd: spawnDecision.cwd });
+          return { success: true, data: { sessionId: session.id, runtime: "codex", message: "Codex session started" } } satisfies ApiResponse;
+        } catch (err) {
+          reply.code(500);
+          return { success: false, error: err instanceof Error ? err.message : String(err) } satisfies ApiResponse;
+        }
+      }
       if (!cwd) {
         reply.code(400);
         return { success: false, error: "cwd is required" } satisfies ApiResponse;
@@ -672,23 +748,31 @@ export function registerSessionApi(fastify: FastifyInstance, deps: SessionApiDep
         if (spawnMode === "worktree" && branch) {
           preSpawnHook = async (ctx) => {
             const repoRoot = resolveRepoRoot(ctx.cwd);
+            // Existing worktree parents can be symlinks. Refuse escapes before git/npm side effects.
+            for (const parent of [repoRoot, join(repoRoot, ".pi"), join(repoRoot, ".pi", "worktrees")]) {
+              if (!existsSync(parent)) continue;
+              const resolved = resolveSpawnCwd(parent);
+              if (!resolved.ok || !isContained(resolved.realPath, spawnDecision.permittedRoots)) throw new Error("Worktree cwd not permitted");
+            }
             const result = addWorktree(repoRoot, branch, {
               label: label ?? undefined,
               baseBranch: baseBranch ?? undefined,
             });
+            const resolved = resolveSpawnCwd(result.path);
+            if (!resolved.ok || !isContained(resolved.realPath, spawnDecision.permittedRoots)) throw new Error("Worktree cwd not permitted");
             try {
-              execSync("npm install", { cwd: result.path, stdio: "pipe", timeout: 120_000 });
+              execSync("npm install", { cwd: resolved.realPath, stdio: "pipe", timeout: 120_000 });
             } catch { /* non-fatal */ }
-            return result.path;
+            return resolved.realPath;
           };
         }
 
-        const spawnResult = await spawnPiSession(cwd, {
+        const spawnResult = await spawnPiSession(spawnDecision.cwd, {
           strategy: config.spawnStrategy,
           preSpawnHook,
           ...(branch ? { branch } as any : {}),
           ...(label ? { label } as any : {}),
-        });
+        }, { permittedRoots: spawnDecision.permittedRoots });
 
         if (spawnResult.process && spawnResult.pid) {
           browserGateway.headlessPidRegistry.register(
@@ -773,10 +857,30 @@ export function registerSessionApi(fastify: FastifyInstance, deps: SessionApiDep
         return result.error;
       }
       const session = result.session;
+      if (session.runtime === "codex") {
+        if (mode !== "continue") {
+          reply.code(400);
+          return { success: false, error: "Codex fork is not supported" } satisfies ApiResponse;
+        }
+        if (!authorizeRestSpawn(request, reply, session.cwd, "codex").allowed) return;
+        if (!deps.runtimeManager) {
+          reply.code(503);
+          return { success: false, error: "Codex runtime is unavailable" } satisfies ApiResponse;
+        }
+        if (session.status !== "ended" && deps.runtimeManager.get(id)) {
+          reply.code(409);
+          return { success: false, error: "session is already active" } satisfies ApiResponse;
+        }
+        pendingResumeIntents?.record(id, "front");
+        await deps.runtimeManager.attach(id);
+        return { success: true, data: { message: "Codex session resumed" } } satisfies ApiResponse;
+      }
       if (!session.sessionFile) {
         reply.code(400);
         return { success: false, error: "session file is unknown" } satisfies ApiResponse;
       }
+      const spawnDecision = authorizeRestSpawn(request, reply, session.cwd);
+      if (!spawnDecision.allowed) return;
       if (mode === "continue" && session.status !== "ended") {
         reply.code(409);
         return { success: false, error: "session is already active" } satisfies ApiResponse;
@@ -798,9 +902,9 @@ export function registerSessionApi(fastify: FastifyInstance, deps: SessionApiDep
         // the source had no on-disk history) → replays no large log, cannot hit
         // the headless crash-form. Left on config strategy so tmux-less hosts
         // keep the graceful fallback. See change: harden-headless-resume-paths.
-        const degradeResult = await spawnPiSession(session.cwd, {
+        const degradeResult = await spawnPiSession(spawnDecision.cwd, {
           strategy: degradeConfig.spawnStrategy,
-        });
+        }, { permittedRoots: spawnDecision.permittedRoots });
         if (degradeResult.process && degradeResult.pid) {
           browserGateway.headlessPidRegistry.register(
             degradeResult.pid,
@@ -840,12 +944,12 @@ export function registerSessionApi(fastify: FastifyInstance, deps: SessionApiDep
       // respawn's bridge to THIS server's own gateway (anti-cross-wire).
       // See change: harden-headless-resume-paths.
       const resumePin = resolvePinDashboardUrl(piGateway, deps.serverPiPort);
-      const spawnResult = await spawnPiSession(session.cwd, buildInteractiveResumeOptions({
+      const spawnResult = await spawnPiSession(spawnDecision.cwd, buildInteractiveResumeOptions({
         sessionFile: session.sessionFile,
         mode,
         ...(session.name ? { agentName: session.name } : {}),
         ...(resumePin ? { pinDashboardUrl: resumePin } : {}),
-      }));
+      }), { permittedRoots: spawnDecision.permittedRoots });
       // Fork bookkeeping uses the spawn token (not cwd) so two concurrent
       // forks in the same cwd correlate correctly. See change:
       // spawn-correlation-token.

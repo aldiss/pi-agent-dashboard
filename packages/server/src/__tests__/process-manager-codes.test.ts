@@ -6,6 +6,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import path from "node:path";
 import os from "node:os";
+import { realpathSync } from "node:fs";
 
 // Stub ToolResolver so we don't touch the real binary resolver.
 vi.mock("@blackbelt-technology/pi-dashboard-shared/platform/binary-lookup.js", () => ({
@@ -55,7 +56,7 @@ describe("spawnPiSession failure codes", () => {
   });
 
   it("returns DIR_MISSING for non-existent cwd", async () => {
-    const result = await spawnPiSession("/nonexistent/path/does/not/exist");
+    const result = await spawnPiSession("/nonexistent/path/does/not/exist", undefined, { permittedRoots: [realpathSync(os.tmpdir())] });
     expect(result.success).toBe(false);
     expect(result.code).toBe("DIR_MISSING");
   });
@@ -66,14 +67,14 @@ describe("spawnPiSession failure codes", () => {
     setResolver(resolver as unknown as InstanceType<typeof ToolResolver>);
 
     // Force headless strategy so we reach the pi resolution check.
-    const result = await spawnPiSession(os.tmpdir(), { strategy: "headless" });
+    const result = await spawnPiSession(os.tmpdir(), { strategy: "headless" }, { permittedRoots: [realpathSync(os.tmpdir())] });
     expect(result.success).toBe(false);
     expect(result.code).toBe("PI_NOT_FOUND");
   });
 
   it("returns TMUX_MISSING when tmux throws", async () => {
     // Force tmux mechanism via strategy option.
-    const result = await spawnPiSession(os.tmpdir(), { strategy: "tmux" });
+    const result = await spawnPiSession(os.tmpdir(), { strategy: "tmux" }, { permittedRoots: [realpathSync(os.tmpdir())] });
     expect(result.success).toBe(false);
     expect(result.code).toBe("TMUX_MISSING");
   });

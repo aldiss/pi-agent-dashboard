@@ -3,7 +3,7 @@
  * Desktop: +Session | +Worktree | Tools dropdown (Terminals, Editor, native editors, Pi Resources)
  * Mobile: +Session | +Worktree (compact, text always visible)
  */
-import React from "react";
+import React, { useState } from "react";
 import { Icon } from "@mdi/react";
 import {
   mdiPlus,
@@ -17,6 +17,7 @@ import {
 } from "@mdi/js";
 import type { DetectedEditor } from "../lib/editor-api.js";
 import type { EditorInstanceStatus } from "@blackbelt-technology/pi-dashboard-shared/editor-types.js";
+import type { SessionRuntime } from "@blackbelt-technology/pi-dashboard-shared/types.js";
 
 interface Props {
   cwd: string;
@@ -25,7 +26,7 @@ interface Props {
   editorAvailable?: boolean;
   nativeEditors: DetectedEditor[];
   spawningDisabled?: boolean;
-  onSpawnSession: () => void;
+  onSpawnSession: (runtime?: SessionRuntime) => void;
   onSpawnWorktree?: () => void;
   onOpenTerminals: () => void;
   onOpenEditor: () => void;
@@ -51,19 +52,32 @@ export function FolderActionBar({
   onOpenNativeEditor,
   onOpenPiResources,
 }: Props) {
+  const [runtime, setRuntime] = useState<SessionRuntime>("pi");
   const filteredNativeEditors = nativeEditors.filter((e) => e.id !== "vscode" && e.id !== "code");
 
   return (
     <div className="flex items-center gap-2">
+      <select
+        aria-label="Session runtime"
+        title="Codex requires runtimes.codex.enabled in server configuration"
+        value={runtime}
+        disabled={spawningDisabled}
+        onClick={(e) => e.stopPropagation()}
+        onChange={(e) => setRuntime(e.target.value === "codex" ? "codex" : "pi")}
+        className="min-w-0 max-w-36 rounded border border-[var(--border-subtle)] bg-[var(--bg-surface)] px-1 py-1.5 text-xs text-[var(--text-secondary)]"
+      >
+        <option value="pi">pi</option>
+        <option value="codex">Codex (server opt-in)</option>
+      </select>
       {/* +Session */}
       <button
-        onClick={(e) => { e.stopPropagation(); onSpawnSession(); }}
+        onClick={(e) => { e.stopPropagation(); runtime === "pi" ? onSpawnSession() : onSpawnSession(runtime); }}
         disabled={spawningDisabled}
         data-testid="spawn-session-btn"
         className={`flex items-center gap-1 px-2 md:px-2.5 py-2 md:py-1.5 text-sm md:text-xs font-medium rounded border border-green-500/30 text-green-500 bg-green-500/10 ${
           spawningDisabled ? "opacity-50 cursor-not-allowed" : "hover:bg-green-500/20 active:bg-green-500/20"
         } transition-colors`}
-        title="New pi session"
+        title={runtime === "codex" ? "New Codex session" : "New pi session"}
       >
         <Icon path={mdiPlus} size={0.5} /> Session
       </button>

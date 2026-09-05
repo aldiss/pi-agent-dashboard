@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { createSpawnTestContext } from "../test-support/spawn-policy-fixture.js";
 
 // Mock spawnPiSession BEFORE importing the handler.
 vi.mock("../process-manager.js", () => ({
@@ -35,6 +36,7 @@ function makeCtx() {
   const sent: SentMessage[] = [];
   const ws = { readyState: 1 } as unknown as WebSocket;
   const ctx = {
+    ...createSpawnTestContext(),
     ws,
     headlessPidRegistry: { register: vi.fn() },
     pendingDashboardSpawns: new Map<string, number>(),

@@ -4,7 +4,8 @@
  */
 import type { SessionManager } from "./memory-session-manager.js";
 import type { EventStore } from "./memory-event-store.js";
-import type { PiGateway } from "./pi-gateway.js";
+import type { PiGateway, BridgeConnectionContext } from "./pi-gateway.js";
+import type { ExtensionToServerMessage } from "@blackbelt-technology/pi-dashboard-shared/protocol.js";
 import type { BrowserGateway } from "./browser-gateway.js";
 import type { SessionOrderManager } from "./session-order-manager.js";
 import type { PendingForkRegistry } from "./pending-fork-registry.js";
@@ -16,9 +17,11 @@ import { setModelsForSession } from "./session-models-cache.js";
 import type { PushDispatcher } from "./push/push-dispatcher.js";
 import type { PushPrefs } from "./push/push-types.js";
 import { spawnPiSession } from "./process-manager.js";
+import { runSpawnGate } from "./spawn-boundary.js";
+import type { SpawnGate } from "./spawn-authz.js";
 import { loadConfig, type PushDefaults } from "@blackbelt-technology/pi-dashboard-shared/config.js";
 import { writeSessionMeta } from "@blackbelt-technology/pi-dashboard-shared/session-meta.js";
-import type { DashboardSession } from "@blackbelt-technology/pi-dashboard-shared/types.js";
+import type { DashboardSession, DashboardEvent } from "@blackbelt-technology/pi-dashboard-shared/types.js";
 import { detectOpenSpecActivity, isValidOpenSpecChangeSlug } from "@blackbelt-technology/pi-dashboard-shared/openspec-activity-detector.js";
 import { extractTurnStats } from "@blackbelt-technology/pi-dashboard-shared/stats-extractor.js";
 import { attachRenameTarget, isNameAutoSetFromAttachment } from "./proposal-attach-naming.js";
@@ -26,6 +29,7 @@ import { audienceRegistry } from "./audience-registry.js";
 import { detectWorktree, resolveMainRepoRoot } from "./worktree-manager.js";
 
 export interface EventWiringDeps {
+  spawnGate?: SpawnGate;
   sessionManager: SessionManager;
   eventStore: EventStore;
   piGateway: PiGateway;
@@ -73,7 +77,7 @@ export interface EventWiringDeps {
  * Wire up all event forwarding from pi gateway to browser gateway.
  * Sets piGateway.onEvent and sessionManager.onUnregister.
  */
-export function wireEvents(deps: EventWiringDeps): void {
+export function wireEvents(deps: EventWiringDeps): (sessionId: string, event: DashboardEvent) => void {
   const {
     sessionManager,
     eventStore,
@@ -187,7 +191,7 @@ export function wireEvents(deps: EventWiringDeps): void {
   const lastActivityBroadcastAt = new Map<string, number>();
   const LAST_ACTIVITY_BROADCAST_INTERVAL_MS = 30_000;
 
-  piGateway.onEvent = (sessionId, msg) => {
+  const onEvent = (sessionId: string, msg: ExtensionToServerMessage, connection?: BridgeConnectionContext) => {
     if (msg.type === "event_forward") {
       // When canSkipWipe was true, the event store already has all events —
       // don't insert replayed events again (would cause exponential duplication)
@@ -566,7 +570,7 @@ export function wireEvents(deps: EventWiringDeps): void {
 
       if (msg.sessionFile) {
         for (const other of sessionManager.listAll()) {
-          if (other.id !== sessionId && other.sessionFile === msg.sessionFile) {
+          if (other.runtime !== "codex" && other.id !== sessionId && other.sessionFile === msg.sessionFile) {
             sessionManager.update(other.id, { sessionFile: undefined });
             browserGateway.broadcastSessionUpdated(other.id, { sessionFile: null });
           }
@@ -581,6 +585,7 @@ export function wireEvents(deps: EventWiringDeps): void {
       for (const other of sessionManager.listAll()) {
         if (
           other.id !== sessionId &&
+          other.runtime !== "codex" &&
           other.cwd === msg.cwd &&
           other.status !== "ended" &&
           !other.sessionFile &&
@@ -987,27 +992,44 @@ export function wireEvents(deps: EventWiringDeps): void {
     }
 
     if (msg.type === "spawn_new_session") {
+      const decision = runSpawnGate(deps.spawnGate, {
+        channel: "bridge-ws", principal: null, remoteAddress: connection?.remoteAddress ?? null,
+        origin: connection?.origin ?? null, forwarded: connection?.forwarded,
+        presentedBridgeToken: connection?.presentedBridgeToken ?? null, requestedCwd: msg.cwd, runtime: "pi",
+      });
+      if (!decision.allowed) {
+        const message = `Spawn refused: ${decision.reason}`;
+        console.warn(`[dashboard] bridge ${message} (session ${sessionId || "unregistered"})`);
+        connection?.send({ type: "spawn_result", cwd: msg.cwd, success: false, message });
+        return;
+      }
       // Fix-11 scope note: this is a FRESH spawn (no sessionFile) — it replays
       // no large log, so it CANNOT hit the headless `--mode rpc` crash-form the
       // resume-path hardening targets. Left on `config.spawnStrategy` so the
       // graceful headless fallback still stands on tmux-less hosts; forcing the
       // §19 interactive form here would regress fresh-spawn on those hosts.
       // See change: harden-headless-resume-paths.
-      spawnPiSession(msg.cwd, { strategy: loadConfig().spawnStrategy }).then((result) => {
+      spawnPiSession(decision.cwd, { strategy: loadConfig().spawnStrategy }, { permittedRoots: decision.permittedRoots }).then((result) => {
         if (result.process && result.pid) {
           browserGateway.headlessPidRegistry.register(result.pid, msg.cwd, result.process);
         }
+        connection?.send({ type: "spawn_result", cwd: msg.cwd, success: result.success, message: result.message });
         browserGateway.broadcastToAll({
           type: "spawn_result",
           cwd: msg.cwd,
           success: result.success,
           message: result.message,
         } as any);
-      }).catch(() => { /* ignore spawn errors */ });
+      }).catch((err) => {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`[dashboard] bridge spawn failed: ${message}`);
+        connection?.send({ type: "spawn_result", cwd: msg.cwd, success: false, message });
+      });
     }
 
     if (msg.type === "sessions_list") {
-      for (const piSession of msg.sessions) {
+      const piSessions = msg.sessions.filter(s => sessionManager.get(s.id)?.runtime !== "codex");
+      for (const piSession of piSessions) {
         const existing = sessionManager.get(piSession.id);
         if (!existing) {
           sessionManager.register({
@@ -1031,7 +1053,7 @@ export function wireEvents(deps: EventWiringDeps): void {
         type: "sessions_list",
         sessionId,
         cwd: msg.cwd,
-        sessions: msg.sessions,
+        sessions: piSessions,
       });
     }
 
@@ -1047,4 +1069,6 @@ export function wireEvents(deps: EventWiringDeps): void {
     }
 
   };
+  piGateway.onEvent = onEvent;
+  return (sessionId, event) => onEvent(sessionId, { type: "event_forward", sessionId, event });
 }

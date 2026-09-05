@@ -16,6 +16,10 @@ import { createMemorySessionManager, type SessionManager } from "./memory-sessio
 import { audienceRegistry } from "./audience-registry.js";
 import { driverRegistry } from "./driver-registry.js";
 import { createPiGateway, type PiGateway } from "./pi-gateway.js";
+import { ensureBridgeToken } from "@blackbelt-technology/pi-dashboard-shared/bridge-token.js";
+import { createSpawnGate } from "./spawn-boundary.js";
+import { computePermittedRoots } from "./spawn-cwd.js";
+import { createCodexRuntimeManager, type CodexRuntimeManager } from "./runtime/runtime-manager.js";
 import { failLoudCrash } from "./fail-loud.js";
 import { createBrowserGateway, type BrowserGateway } from "./browser-gateway.js";
 import { createPreferencesStore, type PreferencesStore } from "./preferences-store.js";
@@ -51,7 +55,7 @@ import type { TokenPayload } from "./auth.js";
 import { findBundledExtension, registerBridgeExtension } from "@blackbelt-technology/pi-dashboard-shared/bridge-register.js";
 import { createNetworkGuard, isLoopback, isBypassedHost } from "./localhost-guard.js";
 import type { AuthConfig } from "@blackbelt-technology/pi-dashboard-shared/config.js";
-import { loadConfig, CONFIG_FILE, DEFAULT_RESURRECTION_SWEEP_MS, type PushConfig } from "@blackbelt-technology/pi-dashboard-shared/config.js";
+import { loadConfig, validateSpawnBoundaryConfig, CONFIG_FILE, DEFAULT_RESURRECTION_SWEEP_MS, type PushConfig } from "@blackbelt-technology/pi-dashboard-shared/config.js";
 import { createPushTokenRegistry, type PushTokenRegistry } from "./push/push-token-registry.js";
 import { createPushDispatcher, type PushDispatcher } from "./push/push-dispatcher.js";
 import { createWebPushTransport } from "./push/push-transports/web-push.js";
@@ -127,6 +131,9 @@ type WsUpgradeRequest = import("node:http").IncomingMessage & {
 export interface ServerConfig {
   port: number;
   piPort: number;
+  piHost?: string;
+  bridge?: { requireToken: boolean };
+  runtimes?: import("@blackbelt-technology/pi-dashboard-shared/config.js").DashboardConfig["runtimes"];
   dev: boolean;
   autoShutdown: boolean;
   shutdownIdleSeconds: number;
@@ -326,6 +333,8 @@ export function isBuildAssetRequest(rawUrl: string): boolean {
 }
 
 export async function createServer(config: ServerConfig): Promise<DashboardServer> {
+  const spawnConfigError = validateSpawnBoundaryConfig({ piHost: config.piHost, bridge: config.bridge, auth: config.authConfig });
+  if (spawnConfigError) throw new Error(spawnConfigError);
   // Fixture mode: skip side effects that would pollute visual baselines.
   // All gating is done here in createServer so no fixture code leaks into
   // individual modules.
@@ -341,6 +350,9 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
   // via `/api/config` writes to disk + returns `restartRequired:true`, and
   // only the next server start observes it. See gate-pushback-1 MAJOR (desync).
   const requireBrowserAuthAtStartup = config.authConfig?.requireBrowserAuth === true;
+  const operatorUsersAtStartup = [...(config.authConfig?.operatorUsers ?? [])];
+  const codexConfig = { ...(config.runtimes?.codex ?? { enabled: false }) };
+  let runtimeManager: CodexRuntimeManager | undefined;
 
   // Stream-2 D: the ONE bounded-cell (N=2) admission tracker. A SINGLE instance
   // shared by BOTH the WS gate (via the browser gateway) and the REST gate
@@ -453,8 +465,10 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
     if (!session) return;
     const resolvedCell = sessionCellAccess?.resolveSessionCell(session);
     if (resolvedCell !== undefined) session.accessCellId = resolvedCell;
-    if (!session.sessionFile) return;
-    metaPersistence.save(session.sessionFile, {
+    if (!session.sessionFile && session.runtime !== "codex") return;
+    if (session.runtime === "codex") {
+      runtimeManager?.persist(session);
+    } else if (session.sessionFile) metaPersistence.save(session.sessionFile, {
       source: session.source,
       name: session.name,
       attachedProposal: session.attachedProposal,
@@ -671,13 +685,48 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
   let secondFastify: Awaited<ReturnType<typeof import("fastify").default>> | null = null;
   const peerServers = new Map<string, DiscoveredServer>();
 
+  const expectedBridgeToken = ensureBridgeToken();
+  const spawnHosts = new Set(["localhost", "127.0.0.1", "[::1]", os.hostname()]);
+  for (const addresses of Object.values(os.networkInterfaces())) {
+    for (const entry of addresses ?? []) spawnHosts.add(entry.family === "IPv6" ? `[${entry.address}]` : entry.address);
+  }
+  const spawnGate = createSpawnGate({
+    requireBrowserAuth: requireBrowserAuthAtStartup, operatorUsers: operatorUsersAtStartup,
+    localBridgeOperator: config.authConfig?.localBridgeOperator,
+    expectedBridgeToken, requireBridgeToken: config.bridge?.requireToken === true,
+    trustedNetworks: config.resolvedTrustedNetworks ?? [], enabledRuntimes: codexConfig.enabled === true ? ["pi", "codex"] : ["pi"],
+    getPermittedRoots: () => computePermittedRoots({
+      pinnedDirectories: preferencesStore.getPinnedDirectories(), knownSessionCwds: sessionManager.listAll().map(s => s.cwd),
+    }),
+    getAllowedOrigins: () => {
+      const address = fastify.server.address();
+      const port = address && typeof address !== "string" ? address.port : config.port;
+      const origins = [
+        ...[...spawnHosts].map(host => `http://${host}:${port}`),
+        ...(config.dev ? ["http://localhost:5173", "http://127.0.0.1:5173"] : []),
+        ...(config.corsAllowedOrigins ?? []), config.authConfig?.publicUrl, getTunnelUrl(),
+      ];
+      return origins.flatMap(origin => {
+        try {
+          const parsed = new URL(origin ?? "");
+          return parsed.protocol === "http:" || parsed.protocol === "https:" ? [parsed.origin] : [];
+        } catch { return []; }
+      });
+    },
+    audit: (actor, claims) => console.info(`[dashboard] spawn authorized by ${actor.sub} via ${actor.provider} (${claims.channel})`),
+  });
+  if (operatorUsersAtStartup.length > 1 && config.authConfig?.localBridgeOperator === undefined) {
+    console.info(`[dashboard] local bridge spawn delegation selects ${operatorUsersAtStartup[0]} (first configured operator)`);
+  }
   const piGateway = createPiGateway(sessionManager, {
     ...(config.pingInterval !== undefined ? { pingInterval: config.pingInterval } : {}),
+    host: config.piHost ?? "127.0.0.1", expectedBridgeToken, requireBridgeToken: config.bridge?.requireToken === true,
   });
 
   // Create event store with pinning callback and configurable limits
   const eventStore = createMemoryEventStore(
     (sessionId) =>
+      runtimeManager?.get(sessionId) !== undefined ||
       piGateway.isSessionConnected(sessionId) ||
       browserGateway.getSubscriberCount(sessionId) > 0,
     undefined, // maxCachedSessions (use default)
@@ -740,7 +789,7 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
   }
 
   const translator = createTranslatorService({ enableDepthRungSelection: true, enableRevoiceClaimGate: true });
-  const browserGateway = createBrowserGateway(sessionManager, eventStore, piGateway, undefined, pendingForkRegistry, sessionOrderManager, preferencesStore, directoryService, terminalManager, pendingDashboardSpawns, config.maxWsBufferBytes, pendingAttachRegistry, pendingResumeIntents, pendingClientCorrelations, pushPrefsMap, () => config.push?.defaults, requireBrowserAuthAtStartup, config.authConfig?.operatorUsers, operatorSetTracker, cellAccess, translator);
+  const browserGateway = createBrowserGateway(sessionManager, eventStore, piGateway, undefined, pendingForkRegistry, sessionOrderManager, preferencesStore, directoryService, terminalManager, pendingDashboardSpawns, config.maxWsBufferBytes, pendingAttachRegistry, pendingResumeIntents, pendingClientCorrelations, pushPrefsMap, () => config.push?.defaults, requireBrowserAuthAtStartup, operatorUsersAtStartup, operatorSetTracker, cellAccess, translator, spawnGate, () => runtimeManager);
 
   let stopCellAccessRefresh = () => {};
   if (cellAccess.enabled) {
@@ -924,7 +973,8 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
   };
 
   // Wire up event forwarding from pi gateway to browser gateway
-  wireEvents({
+  const ingestRuntimeEvent = wireEvents({
+    spawnGate,
     sessionManager,
     eventStore,
     piGateway,
@@ -941,11 +991,22 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
     pushPrefsMap,
     getPushDefaults: () => config.push?.defaults,
   });
+  runtimeManager = createCodexRuntimeManager({
+    config: codexConfig, sessionManager, eventStore, pidRegistry: browserGateway.headlessPidRegistry,
+    ingestEvent: ingestRuntimeEvent,
+    onSessionAdded(session, requestId) {
+      knownSessionIds.add(session.id);
+      sessionOrderManager.insert(session.cwd, session.id);
+      browserGateway.broadcastSessionAdded(session, { spawnRequestId: requestId });
+      browserGateway.broadcastToAll({ type: "sessions_reordered", cwd: session.cwd, sessionIds: sessionOrderManager.getOrder(session.cwd) });
+    },
+    onSessionUpdated: (id, updates) => browserGateway.broadcastSessionUpdated(id, updates),
+  });
 
   // Auto-shutdown idle timer
   // Active terminals keep the server alive even when no pi sessions are
   // attached. See change: fix-terminal-half-height-dual-mount.
-  const idleTimer = createIdleTimer(config, piGateway, () => terminalManager.list().length > 0);
+  const idleTimer = createIdleTimer(config, piGateway, () => terminalManager.list().length > 0 || runtimeManager?.hasOwnedProcesses() === true);
 
   // Component A — ongoing display-resurrection sweep (session-resurrection
   // design-pass §3-A). Periodically re-resolves liveness for ended pi/tmux
@@ -1106,8 +1167,16 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
     });
   });
 
+  // Network reachability may relax in a sandbox; spawn authorization never does.
+  const networkGuard = process.env.PI_SANDBOX
+    ? async () => {}
+    : createNetworkGuard(config.resolvedTrustedNetworks ?? []);
+
   // Session control REST API (wraps WebSocket-only operations)
   registerSessionApi(fastify, {
+    spawnGate,
+    runtimeManager,
+    networkGuard,
     sessionManager,
     piGateway,
     browserGateway,
@@ -1128,7 +1197,7 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
     // gate + send-seam gate read (never mutable config.authConfig → no desync)
     // + the frozen operator identities. Flag OFF → the gate no-ops.
     requireBrowserAuth: requireBrowserAuthAtStartup,
-    ...(config.authConfig?.operatorUsers ? { operatorUsers: config.authConfig.operatorUsers } : {}),
+    operatorUsers: operatorUsersAtStartup,
     ...(config.resurrectVerify ? { resurrectVerify: config.resurrectVerify } : {}),
     // Stream-2 D: the ONE bounded-cell tracker shared with the WS gate.
     operatorSet: operatorSetTracker,
@@ -1136,13 +1205,6 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
   });
 
   // Register route modules
-  // Create network guard from merged trusted networks.
-  // In sandbox mode, skip the guard entirely — the container network
-  // is isolated by Docker itself.
-  const networkGuard = process.env.PI_SANDBOX
-    ? async () => {}
-    : createNetworkGuard(config.resolvedTrustedNetworks ?? []);
-
   // Hygiene probes (dashboard-session-row-hygiene): the explicit liveness I/O
   // injected into the /api/sessions read-path reconciler + the retire endpoint.
   // CC tmux-pane probe is TTL-cached so a reconnect storm collapses to one spawn.
@@ -1165,6 +1227,7 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
   };
 
   registerSessionRoutes(fastify, {
+    runtimeManager,
     sessionManager,
     eventStore,
     networkGuard,
@@ -1701,7 +1764,11 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
 
     async start() {
       // Clean up orphan headless processes from a previous server instance
-      browserGateway.headlessPidRegistry.cleanupOrphans();
+      await browserGateway.headlessPidRegistry.cleanupOrphans();
+      for (const session of runtimeManager!.restore()) {
+        knownSessionIds.add(session.id);
+        endedSessionIds.add(session.id);
+      }
 
       // Clean up orphan code-server processes from a previous server instance.
       // Runs before fastify.listen, so no editor start request can race with the sweep.
@@ -1999,7 +2066,8 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
       stopDriverSelfReportPolling();
       stopSessionHygieneSweep();
       stopCellAccessRefresh();
-      browserGateway.shutdownHeadlessProcesses();
+      await runtimeManager?.releaseAll();
+      await browserGateway.shutdownHeadlessProcesses();
       metaPersistence.flushAll();
       metaPersistence.dispose();
       pendingForkRegistry.dispose();

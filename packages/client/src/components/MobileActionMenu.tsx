@@ -26,6 +26,7 @@ import { ExploreDialog } from "./ExploreDialog.js";
 import { NewChangeDialog } from "./NewChangeDialog.js";
 import { DialogPortal } from "./DialogPortal.js";
 import { ContextUsageBar } from "./ContextUsageBar.js";
+import { hasResumeTarget } from "../lib/session-runtime.js";
 
 interface Props {
   session: DashboardSession;
@@ -206,12 +207,12 @@ export function MobileActionMenu({ session, editors, openspecChanges, onRename, 
           )}
 
           {/* Resume / Fork */}
-          {onResume && session.sessionFile && (
+          {onResume && hasResumeTarget(session) && (
             <>
               {(!isAlive || isHidden) && (
                 <MenuRow icon={mdiPlay} label="Resume" onClick={() => act(() => onResume("continue"))} />
               )}
-              <MenuRow icon={mdiSourceFork} label="Fork" onClick={() => act(() => onResume("fork"))} />
+              {session.runtime !== "codex" && <MenuRow icon={mdiSourceFork} label="Fork" onClick={() => act(() => onResume("fork"))} />}
             </>
           )}
 
@@ -226,7 +227,7 @@ export function MobileActionMenu({ session, editors, openspecChanges, onRename, 
           ))}
 
           {/* OpenSpec commands (unattached: Explore + New Change) */}
-          {!session.attachedProposal && isAlive && onSendPrompt && (
+          {session.runtime !== "codex" && !session.attachedProposal && isAlive && onSendPrompt && (
             <>
               <div className="px-4 py-1.5 text-[10px] text-[var(--text-muted)] uppercase tracking-wider border-t border-[var(--border-primary)]">
                 OpenSpec
@@ -237,7 +238,7 @@ export function MobileActionMenu({ session, editors, openspecChanges, onRename, 
           )}
 
           {/* OpenSpec commands (when a change is attached) */}
-          {session.attachedProposal && openspecChanges && (() => {
+          {session.runtime !== "codex" && session.attachedProposal && openspecChanges && (() => {
             const attached = session.attachedProposal;
             const change = openspecChanges.find((c) => c.name === attached);
             if (!change) return null;

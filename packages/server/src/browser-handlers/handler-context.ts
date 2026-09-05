@@ -21,6 +21,8 @@ import type { PendingClientCorrelations } from "../pending-client-correlations.j
 import type { TokenPayload } from "../auth.js";
 import type { OperatorSetTracker } from "../operator-set-tracker.js";
 import type { CellAccessController } from "../cell-access.js";
+import type { SpawnGate } from "../spawn-authz.js";
+import type { CodexRuntimeManager } from "../runtime/runtime-manager.js";
 
 export interface BrowserHandlerContext {
   ws: WebSocket;
@@ -43,6 +45,12 @@ export interface BrowserHandlerContext {
    * byte-unchanged).
    */
   requireBrowserAuth: boolean;
+  /** Spawn evidence captured from the upgrade socket, never message fields. */
+  remoteAddress?: string | null;
+  origin?: string | null;
+  forwarded?: boolean;
+  spawnGate?: SpawnGate;
+  runtimeManager?: CodexRuntimeManager;
   /**
    * Build 1b WS-closure: the startup-frozen operator identities
    * (`auth.operatorUsers`), threaded onto the socket context so the central WS

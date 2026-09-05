@@ -3,6 +3,8 @@ import { Icon } from "@mdi/react";
 import { mdiFlash, mdiOpenInNew, mdiPencil, mdiPencilOutline, mdiSourceBranch, mdiHeartPulse, mdiEyeOffOutline, mdiEyeOutline, mdiConsoleLine, mdiRobotOutline, mdiCodeTags, mdiApplicationOutline, mdiCommentQuestion, mdiPlayCircleOutline, mdiSourceFork, mdiPaperclip, mdiFileTree, mdiAsterisk, mdiHexagonOutline } from "@mdi/js";
 import type { DashboardSession, ImageContent } from "@blackbelt-technology/pi-dashboard-shared/types.js";
 import { getSessionDisplayName } from "../lib/session-display-name.js";
+import { hasResumeTarget } from "../lib/session-runtime.js";
+import { RuntimeBadge } from "./RuntimeBadge.js";
 import { formatRelativeTime } from "../lib/format.js";
 import { selectBadgeTimestamp } from "../lib/session-card-time.js";
 import { deriveCardState } from "../lib/card-state.js";
@@ -433,6 +435,7 @@ export const SessionCard = React.memo(function SessionCard({
         <span className="editorial-name text-sm md:text-sm font-medium text-[var(--text-primary)] truncate flex-1">
           {getSessionDisplayName(session)}
         </span>
+        <RuntimeBadge runtime={session.runtime} />
         {/* Action buttons — desktop only, visible on hover */}
         <span className="hidden md:flex items-center gap-1.5 text-[var(--text-tertiary)] opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
           {isExternal ? (
@@ -539,7 +542,7 @@ export const SessionCard = React.memo(function SessionCard({
         )}
         <span className="flex-1" />
         {/* Resume/Fork — desktop only, ended sessions only */}
-        {!isExternal && onResume && session.sessionFile && !isAlive && (
+        {!isExternal && onResume && hasResumeTarget(session) && !isAlive && (
           <span className="hidden md:flex items-center gap-1.5 shrink-0 pl-3">
             {(!isAlive || isHidden) && (
               <button
@@ -551,14 +554,14 @@ export const SessionCard = React.memo(function SessionCard({
                 <Icon path={mdiPlayCircleOutline} size={0.4} className="inline mr-0.5" />Resume
               </button>
             )}
-            <button
+            {session.runtime !== "codex" && <button
               onClick={(e) => { e.stopPropagation(); onResume(session.id, "fork"); }}
               disabled={session.resuming}
               className="text-[10px] px-1.5 py-0.5 rounded bg-[var(--bg-surface)] border border-[var(--border-subtle)] hover:bg-[var(--bg-hover)] text-[var(--text-primary)] disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
               title="Fork session"
             >
               <Icon path={mdiSourceFork} size={0.4} className="inline mr-0.5" />Fork
-            </button>
+            </button>}
           </span>
         )}
       </div>
