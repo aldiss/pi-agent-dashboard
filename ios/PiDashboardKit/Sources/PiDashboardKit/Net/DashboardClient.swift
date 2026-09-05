@@ -71,6 +71,10 @@ public actor DashboardClient {
     /// `receive()` never surfaces as an error. Reset on each `connect`.
     private var keepalive: KeepaliveMonitor?
 
+    /// How the most recent socket ended, as far as the endpoint could tell (B10).
+    /// Read for diagnosis; nothing branches on it, so it cannot change behaviour.
+    public private(set) var lastClose: SocketCloseKind?
+
     /// Monotonic-ish clock for keepalive timing — reference-date seconds. Only
     /// differences matter; wall-clock jumps are tolerable for a ~22s heartbeat.
     private func nowSeconds() -> TimeInterval { Date().timeIntervalSinceReferenceDate }
@@ -238,9 +242,19 @@ public actor DashboardClient {
                 let response = socket.response as? HTTPURLResponse
                     ?? nsError.userInfo["NSErrorFailingURLResponseKey"] as? HTTPURLResponse
                     ?? nsError.userInfo["NSURLErrorFailingURLResponseErrorKey"] as? HTTPURLResponse
+                // B10: `error.localizedDescription` reads the same whether a peer closed
+                // deliberately or the transport vanished, so on its own it cannot tell an
+                // orderly close from an abrupt drop. The task still holds the RFC 6455
+                // close code and reason at this point and nothing was reading them; fold
+                // them in so a flap leaves evidence instead of a generic string. Bound:
+                // this splits orderly from abrupt, NOT server from tunnel from network.
+                let close = SocketCloseClassifier.classify(
+                    closeCodeRawValue: socket.closeCode.rawValue,
+                    reason: socket.closeReason)
+                lastClose = close
                 state = response?.statusCode == 401
                     ? .unauthorized
-                    : .failed(error.localizedDescription)
+                    : .failed("\(error.localizedDescription) — \(close.summary)")
                 task = nil
                 keepalive = nil
                 continuation?.finish()
