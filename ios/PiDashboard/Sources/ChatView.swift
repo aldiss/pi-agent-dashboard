@@ -356,11 +356,19 @@ struct ChatView: View {
     private func restoreOnOpen(_ proxy: ScrollViewProxy) {
         guard !didRestore else { return }
         didRestore = true
-        let target = store.lastReadId(sessionId) ?? unreadSummary.firstUnreadId
+        // A session opened for the FIRST time has no read position, and
+        // `UnreadCounter` calls such a session entirely unread — so its "first unread"
+        // is the OLDEST message. Anchoring there dropped the operator at the very
+        // beginning of the history. `ChatOpenPolicy` makes the rule explicit: resume
+        // only when there is somewhere to resume TO, else go to the newest message.
+        let anchorTarget = ChatOpenPolicy.anchor(
+            lastReadId: store.lastReadId(sessionId),
+            firstUnreadId: unreadSummary.firstUnreadId)
         // Wait a beat for the LazyVStack to realize rows, then anchor without animation.
         DispatchQueue.main.async {
-            if let target, windowed.rows.contains(where: { $0.id == target }) {
-                proxy.scrollTo(target, anchor: .top)
+            if case .message(let id) = anchorTarget,
+               windowed.rows.contains(where: { $0.id == id }) {
+                proxy.scrollTo(id, anchor: .top)
             } else {
                 proxy.scrollTo("chat-bottom", anchor: .bottom)
             }
