@@ -33,6 +33,7 @@
 		833237427A7160FBAA62EFF5 /* TypeScaleModifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA61A3790200478F413B6965 /* TypeScaleModifier.swift */; };
 		865857C3A0688F3EE2F4B4C8 /* SessionCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = A93A4B604656E8A542B7B73E /* SessionCard.swift */; };
 		86F2C88D9BF91D349B574E5B /* Motion.swift in Sources */ = {isa = PBXBuildFile; fileRef = 19F1945BC33F24A9A0BC27DB /* Motion.swift */; };
+		89C4D478113428D345C42748 /* SocketTraceView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E8B9C8D752F76C580934ECE /* SocketTraceView.swift */; };
 		89F8E6A9031C6083872C3F83 /* ModelPickerSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = E445C6A12C6404BD5773EEC0 /* ModelPickerSheet.swift */; };
 		8B20AF7CC9577F5FF471E0D3 /* PromptCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = AE6DDD3FC28159EB53712006 /* PromptCard.swift */; };
 		8E3B1822942067B1FEE37BF8 /* StatusRowUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B73F0A8807085D688E51FCF3 /* StatusRowUITests.swift */; };
@@ -84,6 +85,7 @@
 		3CD41E2E0336CC98A06B9C13 /* SettingsThemeUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsThemeUITests.swift; sourceTree = "<group>"; };
 		3F66518915E1D86E76C501D6 /* ModelPickerUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelPickerUITests.swift; sourceTree = "<group>"; };
 		461262C721BBDBA0B371C35B /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
+		4E8B9C8D752F76C580934ECE /* SocketTraceView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SocketTraceView.swift; sourceTree = "<group>"; };
 		50868AECCD7BF08CE94C3000 /* VoiceRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceRecorder.swift; sourceTree = "<group>"; };
 		5D34078011FF147506E6F581 /* FoldingUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FoldingUITests.swift; sourceTree = "<group>"; };
 		6323A4CD1D5D5E96C36D013E /* PiDashboardApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PiDashboardApp.swift; sourceTree = "<group>"; };
@@ -210,6 +212,7 @@
 				A93A4B604656E8A542B7B73E /* SessionCard.swift */,
 				E5F5803D5828966CE9A74F48 /* SessionListView.swift */,
 				EC56E67F8F238CBAEF8EA661 /* SettingsView.swift */,
+				4E8B9C8D752F76C580934ECE /* SocketTraceView.swift */,
 				461262C721BBDBA0B371C35B /* Theme.swift */,
 				DA61A3790200478F413B6965 /* TypeScaleModifier.swift */,
 				50868AECCD7BF08CE94C3000 /* VoiceRecorder.swift */,
@@ -388,6 +391,7 @@
 				865857C3A0688F3EE2F4B4C8 /* SessionCard.swift in Sources */,
 				E4148970E220A0E61D482587 /* SessionListView.swift in Sources */,
 				80A17EE86CA67FFB48751A91 /* SettingsView.swift in Sources */,
+				89C4D478113428D345C42748 /* SocketTraceView.swift in Sources */,
 				15A8C3CFB633D7B2D3F2788B /* Theme.swift in Sources */,
 				833237427A7160FBAA62EFF5 /* TypeScaleModifier.swift in Sources */,
 				3140FFD9CE863F260E727C65 /* VoiceRecorder.swift in Sources */,
@@ -530,7 +534,7 @@
 				CODE_SIGNING_REQUIRED = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 4;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				DEVELOPMENT_TEAM = ZPD66G9CB6;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
@@ -599,7 +603,7 @@
 				CODE_SIGNING_REQUIRED = YES;
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 2;
+				CURRENT_PROJECT_VERSION = 4;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				DEVELOPMENT_TEAM = ZPD66G9CB6;
 				ENABLE_NS_ASSERTIONS = NO;

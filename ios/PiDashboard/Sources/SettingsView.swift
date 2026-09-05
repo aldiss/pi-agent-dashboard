@@ -174,6 +174,28 @@ struct SettingsView: View {
                 labeledRow(icon: "app.badge", label: "Version", value: appVersion)
                 labeledRow(icon: "hammer", label: "Build", value: appBuild)
                 labeledRow(icon: "iphone", label: "pi dashboard", value: "native iOS client")
+                // B10 diagnostics: lets one real flap be copied off the device instead
+                // of described from memory.
+                NavigationLink {
+                    SocketTraceView()
+                } label: {
+                    HStack(spacing: 10) {
+                        Image(systemName: "waveform.path.ecg")
+                            .font(.caption)
+                            .foregroundStyle(theme.textTertiary)
+                            .frame(width: 18)
+                        Text("Connection trace")
+                            .font(.callout)
+                            .foregroundStyle(theme.textPrimary)
+                        Spacer(minLength: 0)
+                        Image(systemName: "chevron.right")
+                            .font(.caption2)
+                            .foregroundStyle(theme.textTertiary)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("settings-connection-trace")
             }
         }
     }

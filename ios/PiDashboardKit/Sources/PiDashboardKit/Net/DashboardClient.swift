@@ -85,7 +85,21 @@ public actor DashboardClient {
 
     /// How the most recent socket ended, as far as the endpoint could tell (B10).
     /// Read for diagnosis; nothing branches on it, so it cannot change behaviour.
+    /// NOTE its known limits: it is not reset on connect, a local teardown does not
+    /// populate it, and URLSession reports an injected 1012 as 1005 — so it is a hint,
+    /// not evidence. `SocketTrace` is the instrument that actually decides.
     public private(set) var lastClose: SocketCloseKind?
+
+    /// Identity of the socket currently being opened/served, so every trace event is
+    /// attributable to one connection even while sockets overlap.
+    private var currentSocketID: String?
+
+    /// Stamp at the call site: cross-actor writes can arrive out of order, and the
+    /// trace restores ordering from this rather than from arrival.
+    private func trace(_ kind: SocketTraceEvent.Kind, socketID: String) {
+        let event = SocketTraceEvent(at: nowSeconds(), socketID: socketID, kind: kind)
+        Task { await SocketTraceLog.shared.record(event) }
+    }
 
     /// Monotonic-ish clock for keepalive timing — reference-date seconds. Only
     /// differences matter; wall-clock jumps are tolerable for a ~22s heartbeat.
@@ -129,8 +143,12 @@ public actor DashboardClient {
     /// without checking it still owned the live socket — so an old loop tearing down
     /// after a reconnect could finish the *new* stream. Reworked to bind the socket
     /// into the loop and identity-gate every shared-state write on `socket === task`.
-    public func connect(base: URL, cookie: String? = nil) -> AsyncStream<ServerMessage> {
-        disconnect()
+    public func connect(base: URL, cookie: String? = nil,
+                        origin: ConnectOrigin = .unknown) -> AsyncStream<ServerMessage> {
+        disconnect(caller: "connect(reconnect)")
+        let socketID = UUID().uuidString.prefix(8).lowercased()
+        self.currentSocketID = String(socketID)
+        trace(.connectRequested(origin: origin), socketID: String(socketID))
         guard let wsURL = Self.websocketURL(base: base) else {
             state = .failed("invalid server URL")
             return AsyncStream { $0.finish() }
@@ -164,6 +182,8 @@ public actor DashboardClient {
         // reproduced deliberately. This removes that failure mode; it does not claim to
         // remove B10.
         socket.maximumMessageSize = Self.maximumIncomingMessageBytes
+        trace(.socketOpened(maxMessageBytes: socket.maximumMessageSize),
+              socketID: String(socketID))
         self.task = socket
         self.keepalive = KeepaliveMonitor(startedAt: nowSeconds())
         let stream = AsyncStream<ServerMessage> { cont in self.continuation = cont }
@@ -173,7 +193,15 @@ public actor DashboardClient {
         return stream
     }
 
-    public func disconnect() {
+    public func disconnect() { disconnect(caller: "disconnect") }
+
+    /// B10: a LOCAL teardown must be distinguishable from a peer-side loss. Without the
+    /// caller recorded here, a self-inflicted close is indistinguishable from the
+    /// transport dying, which is the fork the whole investigation turns on.
+    public func disconnect(caller: String) {
+        if let id = currentSocketID, task != nil {
+            trace(.localDisconnect(caller: caller), socketID: id)
+        }
         task?.cancel(with: .goingAway, reason: nil)
         task = nil
         keepalive = nil
@@ -260,20 +288,54 @@ public actor DashboardClient {
     /// actor state is gated on `socket === task`; a superseded loop (post-reconnect)
     /// exits silently without touching the live socket's `state`/`continuation`.
     private func receiveLoop(socket: URLSessionWebSocketTask) async {
+        let mySocketID = currentSocketID ?? "unknown"
+        var negotiationRecorded = false
         while true {
             do {
                 let message = try await socket.receive()
-                guard socket === task else { return }  // superseded by a reconnect
+                if !negotiationRecorded {
+                    negotiationRecorded = true
+                    // Settles on THIS device whether permessage-deflate was actually
+                    // agreed, instead of assuming it either way as both prior passes did.
+                    let http = socket.response as? HTTPURLResponse
+                    trace(.upgradeNegotiated(
+                        extensions: http?.value(forHTTPHeaderField: "Sec-WebSocket-Extensions")),
+                          socketID: mySocketID)
+                }
+                guard socket === task else {
+                    // RECORDED BEFORE RETURNING. This is the case the previous
+                    // instrumentation could not see: a superseded loop exited here in
+                    // silence, so a self-inflicted replacement looked identical to no
+                    // local cause at all.
+                    trace(.superseded(caller: "receiveLoop.receive"), socketID: mySocketID)
+                    return
+                }
                 keepalive?.recordActivity(at: nowSeconds())  // any frame = liveness
                 if state != .connected { state = .connected }
                 switch message {
-                case .string(let text): emit(Data(text.utf8))
-                case .data(let data): emit(data)
+                case .string(let text):
+                    trace(.received(bytes: text.utf8.count, kind: "text"), socketID: mySocketID)
+                    emit(Data(text.utf8))
+                case .data(let data):
+                    trace(.received(bytes: data.count, kind: "binary"), socketID: mySocketID)
+                    emit(data)
                 @unknown default: break
                 }
             } catch {
-                guard socket === task else { return }  // superseded loop: stay silent
                 let nsError = error as NSError
+                let stillCurrent = (socket === task)
+                // Recorded for BOTH the current and the superseded case, and before any
+                // state is cleared. `wasCurrent` is what separates "the live socket
+                // died" from "an already-replaced socket finally noticed".
+                trace(.receiveFailed(
+                    domain: nsError.domain, code: nsError.code,
+                    closeCode: socket.closeCode.rawValue,
+                    closeReason: socket.closeReason.flatMap { String(data: $0, encoding: .utf8) },
+                    wasCurrent: stillCurrent), socketID: mySocketID)
+                guard stillCurrent else {
+                    trace(.superseded(caller: "receiveLoop.catch"), socketID: mySocketID)
+                    return
+                }
                 let response = socket.response as? HTTPURLResponse
                     ?? nsError.userInfo["NSErrorFailingURLResponseKey"] as? HTTPURLResponse
                     ?? nsError.userInfo["NSURLErrorFailingURLResponseErrorKey"] as? HTTPURLResponse

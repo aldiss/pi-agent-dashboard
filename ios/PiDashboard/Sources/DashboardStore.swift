@@ -262,7 +262,7 @@ final class DashboardStore {
         // Reached only on a good probe: remember this server so the next launch
         // auto-connects to it (skips the connect form).
         ConnectionPreferences.save(serverURL: serverURLString, token: nil)
-        startStream(base: url)
+        startStream(base: url, origin: .initial)
         startExternalSessionRefresh(base: url, cookie: cookie)
     }
 
@@ -334,12 +334,12 @@ final class DashboardStore {
         disconnect()
     }
 
-    private func startStream(base: URL) {
+    private func startStream(base: URL, origin: ConnectOrigin = .unknown) {
         consumeTask?.cancel()
         let cookie = credential(for: base)
         consumeTask = Task { [weak self] in
             guard let self else { return }
-            let stream = await self.client.connect(base: base, cookie: cookie)
+            let stream = await self.client.connect(base: base, cookie: cookie, origin: origin)
             // The socket EXISTS from here on (the actor installs it before returning),
             // so this is the earliest point a subscribe can actually land.
             await self.resubscribeIfPending()
@@ -409,7 +409,7 @@ final class DashboardStore {
         // line later) landed — leaving the server believing someone was watching a
         // session it was no longer streaming to, and the chat frozen forever.
         pendingResubscribe = viewedSessionId != nil
-        startStream(base: base)
+        startStream(base: base, origin: .scheduledReconnect)
     }
 
     /// Re-issue the on-screen chat's subscription once a socket is established.
@@ -453,7 +453,7 @@ final class DashboardStore {
             }
             self.phase = .reconnecting
             self.pendingResubscribe = self.viewedSessionId != nil
-            self.startStream(base: base)
+            self.startStream(base: base, origin: .foregroundRecovery)
         }
     }
 
@@ -522,6 +522,10 @@ final class DashboardStore {
 
         switch message {
         case .sessionsSnapshot(let snap, let ord):
+            // B10: the apply that resets reconnect backoff. Its presence explains a
+            // flat retry cadence; its absence disproves one. Correlated by time with
+            // the socket that carried it.
+            SocketTraceLog.recordSnapshotApplied(sessionCount: snap.count)
             // REPLACE (not merge) — drops stale ids, faithful to the contract.
             var registry: [String: DashboardSession] = [:]
             for s in snap { registry[s.id] = s }
