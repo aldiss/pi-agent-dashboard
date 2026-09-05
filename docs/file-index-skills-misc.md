@@ -63,6 +63,6 @@
 | `ios/qa-e2e/PiDashboardUITests/FoldingUITests.swift` | Covers hermetic tier and directory folding, persistence, and directory-header pin context menu. |
 | `ios/qa-e2e/PiDashboardUITests/ModelPickerUITests.swift` | Queries model rows through stable `model-row-*` accessibility identifiers. Avoids indexed snapshots. |
 | `ios/qa-e2e/PiDashboardUITests/SessionDeclutterUITests.swift` | Verifies Hide ended with no search. Verifies matching search reveal, clearing-search re-hide, and OFF-to-ON hide transition. Scans folded lazy list without fixture skip. |
-| `ios/Tools/ws-fault-harness/probe/Driver.swift` | Drives two-chat `DashboardStore` session lifecycle plus concurrent-store negative control. |
-| `ios/Tools/ws-fault-harness/run-reconnect-check.sh` | Validates `session-lifecycle` server trace (`ACCEPTED == 1`, `max-live == 1`) and rejects `2/2` negative control. |
-| `ios/Tools/ws-fault-harness/ws-fault-server.mjs` | Serves two-session snapshot and timed live frames, then stays application-silent while answering WebSocket pings. |
+| `ios/Tools/ws-fault-harness/probe/Driver.swift` | Drives `DashboardStore` lifecycle probes. Repeats real-socket flap cycles. Prints `DashboardClient.lastClose` classification per cycle. |
+| `ios/Tools/ws-fault-harness/run-reconnect-check.sh` | Runs `flap` and `flap-orderly`. Asserts repeated ~250ms faults, one live socket, ~2.3s reconnect cadence, subscriptions, close classification, must-fail controls. |
+| `ios/Tools/ws-fault-harness/ws-fault-server.mjs` | Serves snapshots and timed live frames. Injects configurable RFC 6455 close code or abrupt destroy. Traces connection number per fault. |

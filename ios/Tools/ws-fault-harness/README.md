@@ -1,11 +1,13 @@
 # ws-fault-harness
 
-Drives the real `DashboardStore` against a WebSocket server that breaks on purpose,
-and checks what the **server actually received** — not what the client believes it
-sent. Command line only: no simulator, no signing, no network, no npm install.
+Drives the real `DashboardStore` or `DashboardClient` against a WebSocket server
+that breaks on purpose. Checks server traces plus client close state. Command line
+only: no simulator, no signing, no external network, no npm install.
 
 ```bash
 ./run-reconnect-check.sh                       # drop + reconnect (~35s)
+./run-reconnect-check.sh flap                  # repeated ~250ms abrupt drops
+./run-reconnect-check.sh flap-orderly          # same cadence, close code 1012
 ./run-reconnect-check.sh stall                 # silent half-open (~2min)
 ./run-reconnect-check.sh send-loss             # unacknowledged send becomes failed
 ./run-reconnect-check.sh send-recover          # late echo recovers row + banner
@@ -48,6 +50,8 @@ must remain visible until its answer receives an authoritative dismiss.
 - **The server's frame log is the evidence.** A client-side assertion would have
   passed on the broken build: the store did call `subscribe`, and `safeSend` reported
   nothing when it was dropped.
+- **Close classification uses both ends.** Flap modes pair server fault traces with
+  `DashboardClient.lastClose`, proving abrupt/orderly instrumentation on real sockets.
 - **The store is symlinked, never copied.** A copy drifts, and the check silently
   stops measuring shipping code.
 - **`close` and `stall` are different failures.** `close` sends a close frame — the
@@ -62,7 +66,7 @@ must remain visible until its answer receives an authoritative dismiss.
 | file | purpose |
 |---|---|
 | `ws-fault-server.mjs` | Dependency-free WS server; modes `alive` / `close` / `destroy` / `stall`; logs every client frame to JSONL |
-| `probe/Driver.swift` | Connects, opens chat, sends fault-window probes, reports phase/delivery/content state |
+| `probe/Driver.swift` | Drives store scenarios and direct-client close-state flap cycles |
 | `probe/AuthCookieStoreStub.swift` | Keychain stand-in — real store would prompt from CLI |
 | `run-reconnect-check.sh` | Builds throwaway package, runs selected fault, asserts server + store invariants |
 
@@ -71,3 +75,7 @@ must remain visible until its answer receives an authoritative dismiss.
 It has been shown to fail: reverting `DashboardStore.swift` to `da6cd5f~1` makes it
 report `4 connections / 1 subscribe` and exit 1. Do that again after changing it —
 a check that has never failed is not evidence.
+
+Flap modes also run must-fail controls before their positive assertions: impossible
+cycle/socket counts, opposite fault and close kinds, missing evidence, and wrong
+timing windows must all be rejected from the same untouched run.

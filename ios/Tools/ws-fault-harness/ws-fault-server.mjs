@@ -25,6 +25,7 @@ const args = Object.fromEntries(
 const MODE = args.mode ?? "alive";
 const AFTER_MS = Number(args.after ?? 3) * 1000;
 const PORT = Number(args.port ?? 8791);
+const CLOSE_CODE = Number(args.closeCode ?? 1000);
 const TRACE = args.trace ?? "/tmp/portico5/trace.jsonl";
 const APP_PONG = args.pong !== "off";
 const LATE_ECHO = args.lateEcho === "on";
@@ -357,11 +358,13 @@ server.on("upgrade", (req, socket) => {
       if (MODE === "stall") {
         trace({ ev: "FAULT_stall", note: "socket held open, all traffic ignored" });
       } else if (MODE === "close") {
-        trace({ ev: "FAULT_close" });
-        socket.write(encodeFrame(Buffer.from([0x03, 0xe8]), 0x8));
+        const closePayload = Buffer.alloc(2);
+        closePayload.writeUInt16BE(CLOSE_CODE);
+        trace({ ev: "FAULT_close", code: CLOSE_CODE, connectionNumber });
+        socket.write(encodeFrame(closePayload, 0x8));
         setTimeout(() => socket.destroy(), 200);
       } else if (MODE === "destroy") {
-        trace({ ev: "FAULT_destroy" });
+        trace({ ev: "FAULT_destroy", connectionNumber });
         socket.destroy();
       }
     }, AFTER_MS);
