@@ -331,7 +331,11 @@ public struct RestClient: Sendable {
     }
 
     private func makeRequest(_ path: String) -> URLRequest {
-        var req = URLRequest(url: base.appendingPathComponent(path))
+        makeRequest(url: base.appendingPathComponent(path))
+    }
+
+    private func makeRequest(url: URL) -> URLRequest {
+        var req = URLRequest(url: url)
         if let cookie, let header = AuthToken.cookieHeaderValue(cookie) {
             req.setValue(header, forHTTPHeaderField: "Cookie")
         }
@@ -379,6 +383,46 @@ public struct RestClient: Sendable {
             throw DashboardClientError.httpStatus(http.statusCode)
         }
         return try JSONDecoder().decode(ExternalSessionsResponse.self, from: data)
+    }
+
+    /// `GET /api/external-sessions/:id/transcript` — normalized read-only history.
+    /// The session id is one URL path segment; encode reserved characters such as `:`.
+    public func externalTranscript(sessionId: String) async throws -> ExternalTranscriptResponse {
+        let url = try externalTranscriptURL(sessionId: sessionId)
+        let (data, response) = try await session.data(for: makeRequest(url: url))
+        try Self.throwIfUnauthorized(response)
+        if let http = response as? HTTPURLResponse,
+           !(200..<300).contains(http.statusCode) {
+            throw DashboardClientError.httpStatus(http.statusCode)
+        }
+        return try JSONDecoder().decode(ExternalTranscriptResponse.self, from: data)
+    }
+
+    private func externalTranscriptURL(sessionId: String) throws -> URL {
+        guard var components = URLComponents(url: base, resolvingAgainstBaseURL: false) else {
+            throw DashboardClientError.badURL
+        }
+        var basePath = components.percentEncodedPath
+        while basePath.hasSuffix("/") { basePath.removeLast() }
+        let encodedID = Self.percentEncodedPathSegment(sessionId)
+        components.percentEncodedPath =
+            "\(basePath)/api/external-sessions/\(encodedID)/transcript"
+        components.query = nil
+        components.fragment = nil
+        guard let url = components.url else { throw DashboardClientError.badURL }
+        return url
+    }
+
+    /// RFC 3986 unreserved bytes may remain literal inside one path segment.
+    private static func percentEncodedPathSegment(_ value: String) -> String {
+        value.utf8.reduce(into: "") { result, byte in
+            switch byte {
+            case 0x41...0x5A, 0x61...0x7A, 0x30...0x39, 0x2D, 0x2E, 0x5F, 0x7E:
+                result.append(String(decoding: [byte], as: UTF8.self))
+            default:
+                result.append(String(format: "%%%02X", Int(byte)))
+            }
+        }
     }
 
     /// Map a 401 to `.unauthorized`; other statuses pass through (decode decides).

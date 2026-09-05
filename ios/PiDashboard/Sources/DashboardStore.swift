@@ -193,6 +193,15 @@ final class DashboardStore {
         return credential(for: connectedBase)
     }
 
+    /// Fetch one external pane transcript without subscribing it to mutable chat state.
+    func externalTranscript(_ sessionId: String) async throws -> ExternalTranscriptResponse {
+        guard let connectedBase else { throw DashboardClientError.badURL }
+        return try await RestClient(
+            base: connectedBase,
+            cookie: connectionCookie
+        ).externalTranscript(sessionId: sessionId)
+    }
+
     init(idleAckDeadline: Duration = .seconds(30),
          queueAckDeadline: Duration = .seconds(90)) {
         self.idleAckDeadline = idleAckDeadline

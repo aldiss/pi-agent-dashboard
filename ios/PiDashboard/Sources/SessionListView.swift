@@ -182,9 +182,8 @@ struct SessionListView: View {
         }
     }
 
-    /// External panes have no native transcript data source in this increment. Render
-    /// their cards without a chat destination so composer, model, stop, and subscription
-    /// paths stay unreachable; ordinary pi sessions retain the existing NavigationLink.
+    /// External panes open a dedicated read-only transcript. Ordinary pi sessions keep
+    /// the mutable live chat destination.
     @ViewBuilder private func sessionRow(
         _ session: DashboardSession,
         showsDirectoryLabel: Bool
@@ -201,16 +200,16 @@ struct SessionListView: View {
             }
         }
 
-        if session.isExternal {
-            card
-        } else {
-            NavigationLink {
+        NavigationLink {
+            if session.isExternal {
+                ExternalTranscriptView(sessionId: session.id, title: session.displayName)
+            } else {
                 ChatView(sessionId: session.id, title: session.displayName)
-            } label: {
-                card
             }
-            .buttonStyle(.pressableCard)
+        } label: {
+            card
         }
+        .buttonStyle(.pressableCard)
     }
 
     private func foldToggle(_ collapsed: SessionGrouping.CollapsedSession) -> some View {
