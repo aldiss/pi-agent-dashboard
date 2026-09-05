@@ -73,12 +73,14 @@ public actor DashboardClient {
 
     /// Ceiling for a single incoming WebSocket message.
     ///
-    /// URLSession defaults this to 1 MB and CLOSES the socket when a message exceeds
-    /// it. The server's `sessions_snapshot` is only compressed for clients that
-    /// negotiate permessage-deflate, which `URLSessionWebSocketTask` cannot do, so
-    /// this client sees the uncompressed frame — 1.34 MB when B10 was diagnosed, and
-    /// it grows with the operator's session count. Raising the ceiling is what stops
-    /// the connect/snapshot/close flap.
+    /// URLSession defaults this to 1 MB and FAILS the receive when a message exceeds
+    /// it. The server's `sessions_snapshot` was ~1.43 MB on 2026-09-05 and re-ships on
+    /// every (re)connect, so an uncompressed delivery would sever the connection.
+    ///
+    /// NOT a proven fix for B10. URLSession does negotiate `permessage-deflate`
+    /// (verified: the server saw the offer, and a 1.43 MB snapshot arrived intact at
+    /// the 1 MB default), so this cap is not normally reached. This guards the
+    /// compression-absent path, which was reproduced deliberately.
     public static let maximumIncomingMessageBytes = 16 * 1024 * 1024
 
     /// How the most recent socket ended, as far as the endpoint could tell (B10).
@@ -139,27 +141,28 @@ public actor DashboardClient {
             req.setValue(header, forHTTPHeaderField: "Cookie")
         }
         let socket = session.webSocketTask(with: req)
-        // ROOT CAUSE OF B10, measured 2026-09-05. URLSession's default
-        // `maximumMessageSize` is 1 MB, and URLSession CLOSES the connection when a
-        // single message exceeds it. The server compresses `sessions_snapshot` with
-        // permessage-deflate (browser-gateway.ts: ~345 KB uncompressed at ~380
-        // sessions, ~46 KB gzipped) and re-ships it on EVERY (re)connect — but
-        // `URLSessionWebSocketTask` cannot negotiate permessage-deflate at all, so
-        // this client receives the frame UNCOMPRESSED. Measured live that day: 1.34 MB,
-        // i.e. 34% over the default. Result was accept → snapshot → immediate close,
-        // repeating every ~2.4s forever, while a browser on the same phone and tunnel
-        // held for hours because it got the compressed copy.
+        // HARDENING against a REAL but CONDITIONAL defect. Not a proven root cause for
+        // B10 — see the correction below, which is load-bearing.
         //
-        // Why it hid for so long: the loopback fault-harness ships tiny fixture
-        // snapshots that never approach the cap, so the client looked exonerated; and
-        // an earlier pass compared the snapshot against the SERVER's 4 MB maxPayload
-        // rather than this client-side ceiling. Two different caps, and only this one
-        // was binding.
+        // URLSession's default `maximumMessageSize` is 1 MB and a receive FAILS when a
+        // message exceeds it. The server's `sessions_snapshot` re-ships on every
+        // (re)connect and was measured at ~1.43 MB on 2026-09-05, so an UNCOMPRESSED
+        // delivery would exceed the default and tear the connection down.
         //
-        // 16 MB leaves ~12x headroom over the measured frame. This does not make the
-        // snapshot small — shrinking or paginating it is the real durability fix and
-        // is server-side; this stops the app from severing a connection it can
-        // otherwise serve.
+        // CORRECTION, measured 2026-09-05 by an independent cross-model audit, after an
+        // earlier version of this comment asserted the opposite: URLSession DOES offer
+        // and negotiate `permessage-deflate` — the server observed
+        // `Sec-WebSocket-Extensions: permessage-deflate` on the native request, and a
+        // 1.43 MB logical snapshot arrived intact with the limit still at its 1 MB
+        // default. So the cap is NOT normally reached, and raising it does NOT explain
+        // the operator's flap. Cloudflare was also cleared: it delivered a 1,453,441-byte
+        // UNCOMPRESSED snapshot through the production tunnel without dropping.
+        //
+        // What this line is still worth: if compression is ever not negotiated (server
+        // config change, proxy stripping the extension header, a future client), the
+        // 1 MB default silently severs every connection at snapshot time. That path was
+        // reproduced deliberately. This removes that failure mode; it does not claim to
+        // remove B10.
         socket.maximumMessageSize = Self.maximumIncomingMessageBytes
         self.task = socket
         self.keepalive = KeepaliveMonitor(startedAt: nowSeconds())

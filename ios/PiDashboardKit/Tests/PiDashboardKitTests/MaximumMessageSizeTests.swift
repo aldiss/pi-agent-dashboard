@@ -1,15 +1,23 @@
 import XCTest
 @testable import PiDashboardKit
 
-/// B10 root cause, pinned.
+/// Guards a REAL but CONDITIONAL failure mode. NOT a proven B10 root cause.
+///
+/// CORRECTION (2026-09-05, independent cross-model audit): an earlier version of this
+/// file asserted URLSession cannot negotiate permessage-deflate. That is FALSE. The
+/// server observed `Sec-WebSocket-Extensions: permessage-deflate` on the native
+/// request, and a 1.43 MB logical snapshot arrived intact with the limit still at its
+/// 1 MB default. Cloudflare was cleared too: it carried a 1,453,441-byte UNCOMPRESSED
+/// snapshot through the production tunnel without dropping. So the operator's flap is
+/// NOT explained by this ceiling, and the root cause is still open.
 ///
 /// URLSession defaults `maximumMessageSize` to 1 MB and CLOSES the socket when a
 /// single message exceeds it. The dashboard server compresses `sessions_snapshot`
-/// with permessage-deflate and re-ships it on EVERY (re)connect, but
-/// `URLSessionWebSocketTask` cannot negotiate permessage-deflate, so this client
-/// receives it uncompressed. Measured live on 2026-09-05: 1,409,526 bytes — 34%
-/// over the default. The socket was accepted, carried the snapshot, and was then
-/// torn down by URLSession itself, every ~2.4s, indefinitely.
+/// and re-ships it on EVERY (re)connect. When compression is NOT negotiated — a
+/// server config change, a proxy stripping the extension header, a future client —
+/// the uncompressed frame (1,409,526 bytes measured live) exceeds the default and
+/// every connection is severed at snapshot time. That path was reproduced
+/// deliberately on loopback: uncompressed at a 1 MB cap fails, compressed passes.
 ///
 /// These assertions fail if anyone restores the default or trims the ceiling back
 /// under the real payload, which would silently reintroduce the flap.
