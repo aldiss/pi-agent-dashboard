@@ -167,6 +167,46 @@ struct RealStoreProbe {
         try? await Task.sleep(for: .milliseconds(500))
     }
 
+    /// Repeats the measured B10 cadence against the real DashboardClient. The caller
+    /// waits two seconds after each ~250ms death, matching the store's reset backoff.
+    /// Reading lastClose after stream completion is ordered: receiveLoop records it
+    /// before finishing the continuation that ends this loop.
+    private static func runSocketFlap(url: String, budget: TimeInterval, start: Date) async {
+        guard let base = URL(string: url) else {
+            print("[client] invalid flap URL")
+            exit(2)
+        }
+        func el() -> String { String(format: "%.2f", Date().timeIntervalSince(start)) }
+        let client = DashboardClient()
+        let deadline = Date().addingTimeInterval(budget)
+        var cycle = 0
+
+        while Date() < deadline {
+            let stream = await client.connect(base: base)
+            do {
+                try await client.send(.subscribe(sessionId: "sess-probe-1", lastSeq: nil))
+            } catch {
+                print("[client \(el())s] flap subscribe failed: \(error.localizedDescription)")
+            }
+
+            var frames = 0
+            for await _ in stream { frames += 1 }
+            cycle += 1
+            switch await client.lastClose {
+            case .abrupt:
+                print("[client \(el())s] flap cycle=\(cycle) frames=\(frames) lastClose=abrupt")
+            case .orderly(let code, let reason):
+                print("[client \(el())s] flap cycle=\(cycle) frames=\(frames) lastClose=orderly code=\(code) reason=\(reason ?? "none")")
+            case nil:
+                print("[client \(el())s] flap cycle=\(cycle) frames=\(frames) lastClose=none")
+            }
+
+            guard Date().addingTimeInterval(2) < deadline else { break }
+            try? await Task.sleep(for: .seconds(2))
+        }
+        await client.disconnect()
+    }
+
     static func main() async {
         let url = CommandLine.arguments.count > 1 ? CommandLine.arguments[1] : "http://127.0.0.1:8850"
         let budget = CommandLine.arguments.count > 2 ? Double(CommandLine.arguments[2])! : 40
@@ -189,6 +229,11 @@ struct RealStoreProbe {
 
         if scenario == "session-lifecycle" {
             await runSessionLifecycle(url: url, start: start)
+            return
+        }
+
+        if scenario == "socket-flap" {
+            await runSocketFlap(url: url, budget: budget, start: start)
             return
         }
 

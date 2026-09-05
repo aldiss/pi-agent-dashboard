@@ -12,6 +12,8 @@
 # Runs on the command line: no simulator, no signing, no network. ~45s.
 #
 # Usage: ./run-reconnect-check.sh          # drop+reconnect (the regression)
+#        ./run-reconnect-check.sh flap    # repeated ~250ms abrupt drops
+#        ./run-reconnect-check.sh flap-orderly # same cadence, RFC 6455 close code 1012
 #        ./run-reconnect-check.sh session-lifecycle # healthy full chat/foreground/idle lifecycle
 #        ./run-reconnect-check.sh revalidate-idle # idle healthy socket answers active probes
 #        ./run-reconnect-check.sh revalidate-halfopen # half-open socket recovers after probe timeout
@@ -42,6 +44,9 @@ REVALIDATE_AT=-1
 REVALIDATE_COUNT=1
 REVALIDATE_INTERVAL=0
 LIFECYCLE_CYCLE=off
+CLOSE_CODE=1000
+OPEN_DELAY=2
+FLAP_EXPECTED=off
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP="$HERE/../../PiDashboard/Sources"
 KIT="$HERE/../../PiDashboardKit"
@@ -56,6 +61,8 @@ PROBE_SCENARIO=default
 trap 'if [ -n "${SRV_PID:-}" ]; then kill "$SRV_PID" 2>/dev/null || true; fi; rm -rf "$WORK"' EXIT
 
 case "$MODE" in
+  flap)               SERVER_MODE=destroy; FAULT_AT=0.25; BUDGET=10; OPEN_DELAY=0; CLOSE_CODE=1012; FLAP_EXPECTED=abrupt; SEND_AT=-1; LATE_ECHO=off; RESET_CYCLE=off; PROMPT_CYCLE=off; PROMPT_DUPLICATE=off; QUEUE_CYCLE=off; PROMPT_ANSWER=none; COMPETING=single; PROBE_SCENARIO=socket-flap; LABEL="socket dies abruptly ~250ms after every accept" ;;
+  flap-orderly)       SERVER_MODE=close;   FAULT_AT=0.25; BUDGET=10; OPEN_DELAY=0; CLOSE_CODE=1012; FLAP_EXPECTED=orderly; SEND_AT=-1; LATE_ECHO=off; RESET_CYCLE=off; PROMPT_CYCLE=off; PROMPT_DUPLICATE=off; QUEUE_CYCLE=off; PROMPT_ANSWER=none; COMPETING=single; PROBE_SCENARIO=socket-flap; LABEL="socket closes orderly ~250ms after every accept" ;;
   session-lifecycle)  SERVER_MODE=alive-idle; FAULT_AT=8; BUDGET=36; SEND_AT=-1; LATE_ECHO=off; RESET_CYCLE=off; PROMPT_CYCLE=off; PROMPT_DUPLICATE=off; QUEUE_CYCLE=off; PROMPT_ANSWER=none; COMPETING=single; PROBE_SCENARIO=session-lifecycle; LIFECYCLE_CYCLE=on; LABEL="healthy full session lifecycle with silent idle" ;;
   revalidate-idle)     SERVER_MODE=alive-idle; FAULT_AT=8; BUDGET=18; SEND_AT=-1; LATE_ECHO=off; RESET_CYCLE=off; PROMPT_CYCLE=off; PROMPT_DUPLICATE=off; QUEUE_CYCLE=off; PROMPT_ANSWER=none; COMPETING=single; REVALIDATE_AT=4; REVALIDATE_COUNT=5; REVALIDATE_INTERVAL=3; PROBE_SCENARIO=revalidate-idle; LABEL="five foreground returns on a healthy idle socket" ;;
   revalidate-halfopen) SERVER_MODE=stall; FAULT_AT=3; BUDGET=12; SEND_AT=-1; LATE_ECHO=off; RESET_CYCLE=off; PROMPT_CYCLE=off; PROMPT_DUPLICATE=off; QUEUE_CYCLE=off; PROMPT_ANSWER=none; COMPETING=single; REVALIDATE_AT=2; REVALIDATE_COUNT=5; REVALIDATE_INTERVAL=0.25; PROBE_SCENARIO=revalidate-halfopen; LABEL="repeated foreground returns during a half-open probe" ;;
@@ -76,7 +83,7 @@ case "$MODE" in
   model-empty)          SERVER_MODE=alive; FAULT_AT=8; BUDGET=6; SEND_AT=-1; LATE_ECHO=off; RESET_CYCLE=off; PROMPT_CYCLE=off; PROMPT_DUPLICATE=off; QUEUE_CYCLE=off; PROMPT_ANSWER=none; MODEL_CYCLE=empty; MODEL_PROBE=empty; COMPETING=single; LABEL="empty model catalogue reaches loaded state" ;;
   send-same-recover)    SERVER_MODE=alive; FAULT_AT=8; BUDGET=16; SEND_AT=3; LATE_ECHO=off; RESET_CYCLE=off; PROMPT_CYCLE=off; PROMPT_DUPLICATE=off; QUEUE_CYCLE=off; PROMPT_ANSWER=none; MODEL_PROBE=off; COMPETING=same; IDLE_FIRST_ACK=on; LABEL="ack A must not clear same-value restored draft B" ;;
   send-edit-recover)    SERVER_MODE=alive; FAULT_AT=8; BUDGET=16; SEND_AT=3; LATE_ECHO=off; RESET_CYCLE=off; PROMPT_CYCLE=off; PROMPT_DUPLICATE=off; QUEUE_CYCLE=off; PROMPT_ANSWER=none; MODEL_PROBE=off; COMPETING=single; IDLE_FIRST_ACK=on; EDIT_AT=10; LABEL="late ack must preserve operator whitespace edit" ;;
-  *) echo "unknown mode '$MODE' (want: session-lifecycle | revalidate-idle | revalidate-halfopen | cross-origin | auth-reject | close | stall | send-loss | send-recover | send-partial-recover | reset-replay | prompt-cycle | prompt-duplicate)" >&2; exit 2 ;;
+  *) echo "unknown mode '$MODE' (want: flap | flap-orderly | session-lifecycle | revalidate-idle | revalidate-halfopen | cross-origin | auth-reject | close | stall | send-loss | send-recover | send-partial-recover | reset-replay | prompt-cycle | prompt-duplicate)" >&2; exit 2 ;;
 esac
 
 # Build a throwaway package around the REAL store sources (symlinked, never copied —
@@ -128,6 +135,71 @@ assert_single_socket_trace() {
   stats="$(socket_trace_stats "$1")"
   read -r accepted max_live <<<"$stats"
   [ "$accepted" -eq 1 ] && [ "$max_live" -eq 1 ]
+}
+
+assert_flap_cycle_evidence() {
+  local connections="$1" max_live="$2" faults="$3" subscribes="$4" records="$5" minimum="$6"
+  [ "$connections" -ge "$minimum" ] \
+    && [ "$max_live" -eq 1 ] \
+    && [ "$faults" -eq "$connections" ] \
+    && [ "$subscribes" -eq "$connections" ] \
+    && [ "$records" -eq "$connections" ]
+}
+
+assert_metric_window() {
+  local minimum="$1" maximum="$2" lower="$3" upper="$4"
+  awk -v minimum="$minimum" -v maximum="$maximum" -v lower="$lower" -v upper="$upper" \
+    'BEGIN { exit !(minimum >= lower && maximum <= upper) }'
+}
+
+assert_flap_close_kind() {
+  local probe_file="$1" expected="$2" pattern
+  case "$expected" in
+    abrupt) pattern='lastClose=abrupt$' ;;
+    orderly) pattern='lastClose=orderly code=1012 reason=none$' ;;
+    *) return 2 ;;
+  esac
+  awk -v pattern="$pattern" '
+    /flap cycle=/ {
+      total += 1
+      if ($0 ~ pattern) matches += 1
+    }
+    END { exit !(total > 0 && matches == total) }
+  ' "$probe_file"
+}
+
+flap_timing_stats() {
+  local trace_file="$1" fault_event="$2"
+  awk -v fault_event="\"ev\":\"$fault_event\"" '
+    function trace_time(line, value) {
+      value = line
+      sub(/^\{"t":/, "", value)
+      sub(/,.*/, "", value)
+      return value + 0
+    }
+    /"ev":"upgraded"/ {
+      now = trace_time($0)
+      if (accepted > 0) {
+        retry = now - previous_accept
+        if (retry_count == 0 || retry < retry_min) retry_min = retry
+        if (retry_count == 0 || retry > retry_max) retry_max = retry
+        retry_count += 1
+      }
+      accepted_at = now
+      previous_accept = now
+      accepted += 1
+      next
+    }
+    index($0, fault_event) {
+      latency = trace_time($0) - accepted_at
+      if (faults == 0 || latency < fault_min) fault_min = latency
+      if (faults == 0 || latency > fault_max) fault_max = latency
+      faults += 1
+    }
+    END {
+      printf "%d %.2f %.2f %.2f %.2f\n", faults + 0, fault_min + 0, fault_max + 0, retry_min + 0, retry_max + 0
+    }
+  ' "$trace_file"
 }
 
 print_lifecycle_failure_timeline() {
@@ -227,7 +299,7 @@ print_lifecycle_failure_timeline() {
 
 if [ "$MODE" = "session-lifecycle" ]; then
   CONTROL_TRACE="$WORK/control-trace.jsonl"
-  node "$HERE/ws-fault-server.mjs" --mode="$SERVER_MODE" --after="$FAULT_AT" --port="$PORT" --lateEcho="$LATE_ECHO" --resetCycle="$RESET_CYCLE" --promptCycle="$PROMPT_CYCLE" --promptDuplicate="$PROMPT_DUPLICATE" --queueCycle="$QUEUE_CYCLE" --queueLateAck="$QUEUE_LATE_ACK" --modelCycle="$MODEL_CYCLE" --idleFirstAck="$IDLE_FIRST_ACK" --lifecycleCycle="$LIFECYCLE_CYCLE" --trace="$CONTROL_TRACE" >"$WORK/control-srv.log" 2>&1 &
+  node "$HERE/ws-fault-server.mjs" --mode="$SERVER_MODE" --after="$FAULT_AT" --port="$PORT" --closeCode="$CLOSE_CODE" --lateEcho="$LATE_ECHO" --resetCycle="$RESET_CYCLE" --promptCycle="$PROMPT_CYCLE" --promptDuplicate="$PROMPT_DUPLICATE" --queueCycle="$QUEUE_CYCLE" --queueLateAck="$QUEUE_LATE_ACK" --modelCycle="$MODEL_CYCLE" --idleFirstAck="$IDLE_FIRST_ACK" --lifecycleCycle="$LIFECYCLE_CYCLE" --trace="$CONTROL_TRACE" >"$WORK/control-srv.log" 2>&1 &
   SRV_PID=$!
   sleep 1
   if ! kill -0 "$SRV_PID" 2>/dev/null; then
@@ -256,7 +328,7 @@ if [ "$MODE" = "session-lifecycle" ]; then
   echo "must-fail control: forced real second socket rejected (ACCEPTED=$CONTROL_CONNECTIONS max-live=$CONTROL_MAX_LIVE)."
 fi
 
-node "$HERE/ws-fault-server.mjs" --mode="$SERVER_MODE" --after="$FAULT_AT" --port="$PORT" --lateEcho="$LATE_ECHO" --resetCycle="$RESET_CYCLE" --promptCycle="$PROMPT_CYCLE" --promptDuplicate="$PROMPT_DUPLICATE" --queueCycle="$QUEUE_CYCLE" --queueLateAck="$QUEUE_LATE_ACK" --modelCycle="$MODEL_CYCLE" --idleFirstAck="$IDLE_FIRST_ACK" --lifecycleCycle="$LIFECYCLE_CYCLE" --trace="$TRACE" >"$WORK/srv.log" 2>&1 &
+node "$HERE/ws-fault-server.mjs" --mode="$SERVER_MODE" --after="$FAULT_AT" --port="$PORT" --closeCode="$CLOSE_CODE" --lateEcho="$LATE_ECHO" --resetCycle="$RESET_CYCLE" --promptCycle="$PROMPT_CYCLE" --promptDuplicate="$PROMPT_DUPLICATE" --queueCycle="$QUEUE_CYCLE" --queueLateAck="$QUEUE_LATE_ACK" --modelCycle="$MODEL_CYCLE" --idleFirstAck="$IDLE_FIRST_ACK" --lifecycleCycle="$LIFECYCLE_CYCLE" --trace="$TRACE" >"$WORK/srv.log" 2>&1 &
 SRV_PID=$!
 sleep 1
 if ! kill -0 "$SRV_PID" 2>/dev/null; then
@@ -268,7 +340,7 @@ fi
 echo "running: $LABEL (${BUDGET}s)"
 PROBE_OUT="$WORK/probe.log"
 PROBE_RESULT=0
-"$WORK/.build/debug/StoreProbe" "$TARGET_URL" "$BUDGET" 2 "$REVALIDATE_AT" "$SEND_AT" "$COMPETING" "$PROMPT_ANSWER" "$MODEL_PROBE" "$EDIT_AT" "$PROBE_SCENARIO" "$ORIGIN_A_URL" "$ORIGIN_B_URL" "$REVALIDATE_COUNT" "$REVALIDATE_INTERVAL" | tee "$PROBE_OUT" | grep -E "phase ->|simulating foreground|sending into|competing failure|operator added|responding to prompt|migration |auth attempts|auth credentials|cross-origin|final" || PROBE_RESULT=${PIPESTATUS[0]}
+"$WORK/.build/debug/StoreProbe" "$TARGET_URL" "$BUDGET" "$OPEN_DELAY" "$REVALIDATE_AT" "$SEND_AT" "$COMPETING" "$PROMPT_ANSWER" "$MODEL_PROBE" "$EDIT_AT" "$PROBE_SCENARIO" "$ORIGIN_A_URL" "$ORIGIN_B_URL" "$REVALIDATE_COUNT" "$REVALIDATE_INTERVAL" | tee "$PROBE_OUT" | grep -E "phase ->|flap cycle=|simulating foreground|sending into|competing failure|operator added|responding to prompt|migration |auth attempts|auth credentials|cross-origin|final" || PROBE_RESULT=${PIPESTATUS[0]}
 kill $SRV_PID 2>/dev/null || true
 sleep 0.3
 
@@ -295,7 +367,86 @@ if [ "$MODE" != "session-lifecycle" ] && [ "$CONNECTIONS" != "$SUBSCRIBES" ]; th
   echo "      The app would look connected while the open chat received nothing." >&2
   exit 1
 fi
-if [ "$MODE" = "session-lifecycle" ]; then
+if [[ "$MODE" == flap* ]]; then
+  if [ "$MODE" = "flap" ]; then
+    EXPECTED_FAULT=FAULT_destroy
+    OPPOSITE_FAULT=FAULT_close
+    OPPOSITE_CLOSE=orderly
+  else
+    EXPECTED_FAULT=FAULT_close
+    OPPOSITE_FAULT=FAULT_destroy
+    OPPOSITE_CLOSE=abrupt
+  fi
+  CLIENT_CLOSE_RECORDS=$(grep -c 'flap cycle=' "$PROBE_OUT" || true)
+  OPPOSITE_FAULTS=$(grep -c '"ev":"'"$OPPOSITE_FAULT"'"' "$TRACE" || true)
+  read -r FLAP_FAULTS FAULT_MIN FAULT_MAX RETRY_MIN RETRY_MAX \
+    <<<"$(flap_timing_stats "$TRACE" "$EXPECTED_FAULT")"
+  echo "flap trace: ACCEPTED=$CONNECTIONS max-live=$MAX_LIVE faults=$FLAP_FAULTS subscribes=$SUBSCRIBES client-records=$CLIENT_CLOSE_RECORDS fault-s=${FAULT_MIN}-${FAULT_MAX} retry-s=${RETRY_MIN}-${RETRY_MAX}"
+
+  if [ "$PROBE_RESULT" -ne 0 ]; then
+    echo "FAIL: flap StoreProbe exited $PROBE_RESULT." >&2
+    exit 1
+  fi
+  if [ "$CLIENT_CLOSE_RECORDS" -eq 0 ]; then
+    echo "FAIL: flap client produced no real-socket lastClose records." >&2
+    exit 1
+  fi
+
+  # Every new assertion is first given known-bad evidence or bounds. The restored
+  # calls below use untouched measurements, proving the controls leave no residue.
+  if assert_flap_cycle_evidence "$CONNECTIONS" "$MAX_LIVE" "$FLAP_FAULTS" "$SUBSCRIBES" "$CLIENT_CLOSE_RECORDS" "$((CONNECTIONS + 1))"; then
+    echo "FAIL: flap cycle assertion accepted an impossible extra cycle." >&2
+    exit 1
+  fi
+  if assert_flap_cycle_evidence "$CONNECTIONS" 2 "$FLAP_FAULTS" "$SUBSCRIBES" "$CLIENT_CLOSE_RECORDS" 4; then
+    echo "FAIL: flap max-live assertion accepted two simultaneous sockets." >&2
+    exit 1
+  fi
+  if assert_flap_cycle_evidence "$CONNECTIONS" "$MAX_LIVE" "$OPPOSITE_FAULTS" "$SUBSCRIBES" "$CLIENT_CLOSE_RECORDS" 4; then
+    echo "FAIL: flap fault assertion accepted the opposite injected fault." >&2
+    exit 1
+  fi
+  if assert_flap_cycle_evidence "$CONNECTIONS" "$MAX_LIVE" "$FLAP_FAULTS" "$((SUBSCRIBES - 1))" "$CLIENT_CLOSE_RECORDS" 4; then
+    echo "FAIL: flap subscribe assertion accepted a missing subscription." >&2
+    exit 1
+  fi
+  if assert_flap_cycle_evidence "$CONNECTIONS" "$MAX_LIVE" "$FLAP_FAULTS" "$SUBSCRIBES" "$((CLIENT_CLOSE_RECORDS - 1))" 4; then
+    echo "FAIL: flap client-record assertion accepted a missing close record." >&2
+    exit 1
+  fi
+  if assert_metric_window "$FAULT_MIN" "$FAULT_MAX" 0 0.10; then
+    echo "FAIL: flap latency assertion accepted a <=100ms control window." >&2
+    exit 1
+  fi
+  if assert_metric_window "$RETRY_MIN" "$RETRY_MAX" 0 1.00; then
+    echo "FAIL: flap cadence assertion accepted a <=1s control window." >&2
+    exit 1
+  fi
+  if assert_flap_close_kind "$PROBE_OUT" "$OPPOSITE_CLOSE"; then
+    echo "FAIL: close-kind assertion accepted $OPPOSITE_CLOSE for the $FLAP_EXPECTED run." >&2
+    exit 1
+  fi
+  echo "must-fail controls: rejected extra cycle, max-live=2, opposite fault, missing subscribe/record, wrong timing windows, and $OPPOSITE_CLOSE client classification."
+
+  if ! assert_flap_cycle_evidence "$CONNECTIONS" "$MAX_LIVE" "$FLAP_FAULTS" "$SUBSCRIBES" "$CLIENT_CLOSE_RECORDS" 4; then
+    echo "FAIL: flap needs >=4 one-at-a-time accepted/faulted/subscribed/recorded cycles; got $CONNECTIONS/$MAX_LIVE/$FLAP_FAULTS/$SUBSCRIBES/$CLIENT_CLOSE_RECORDS." >&2
+    exit 1
+  fi
+  if ! assert_metric_window "$FAULT_MIN" "$FAULT_MAX" 0.15 0.80; then
+    echo "FAIL: accepted-to-fault timing escaped the 0.15-0.80s signature window: ${FAULT_MIN}-${FAULT_MAX}s." >&2
+    exit 1
+  fi
+  if ! assert_metric_window "$RETRY_MIN" "$RETRY_MAX" 1.80 3.50; then
+    echo "FAIL: accept-to-accept timing escaped the 1.80-3.50s signature window: ${RETRY_MIN}-${RETRY_MAX}s." >&2
+    exit 1
+  fi
+  if ! assert_flap_close_kind "$PROBE_OUT" "$FLAP_EXPECTED"; then
+    echo "FAIL: client lastClose records did not all classify as $FLAP_EXPECTED (orderly requires code 1012)." >&2
+    grep 'flap cycle=' "$PROBE_OUT" >&2 || true
+    exit 1
+  fi
+  echo "PASS: repeated ~250ms $FLAP_EXPECTED closes survived the real socket as distinct client lastClose records."
+elif [ "$MODE" = "session-lifecycle" ]; then
   FOREGROUND_RETURNS=$(grep -c 'lifecycle foreground return' "$PROBE_OUT" || true)
   SNAPSHOTS=$(grep -c '"ev":"sent","type":"sessions_snapshot"' "$TRACE" || true)
   LIVE_EVENTS=$(grep -c '"ev":"sent","type":"event"' "$TRACE" || true)

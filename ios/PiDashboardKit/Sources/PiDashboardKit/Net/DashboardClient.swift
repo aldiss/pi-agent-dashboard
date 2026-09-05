@@ -71,6 +71,16 @@ public actor DashboardClient {
     /// `receive()` never surfaces as an error. Reset on each `connect`.
     private var keepalive: KeepaliveMonitor?
 
+    /// Ceiling for a single incoming WebSocket message.
+    ///
+    /// URLSession defaults this to 1 MB and CLOSES the socket when a message exceeds
+    /// it. The server's `sessions_snapshot` is only compressed for clients that
+    /// negotiate permessage-deflate, which `URLSessionWebSocketTask` cannot do, so
+    /// this client sees the uncompressed frame — 1.34 MB when B10 was diagnosed, and
+    /// it grows with the operator's session count. Raising the ceiling is what stops
+    /// the connect/snapshot/close flap.
+    public static let maximumIncomingMessageBytes = 16 * 1024 * 1024
+
     /// How the most recent socket ended, as far as the endpoint could tell (B10).
     /// Read for diagnosis; nothing branches on it, so it cannot change behaviour.
     public private(set) var lastClose: SocketCloseKind?
@@ -129,6 +139,28 @@ public actor DashboardClient {
             req.setValue(header, forHTTPHeaderField: "Cookie")
         }
         let socket = session.webSocketTask(with: req)
+        // ROOT CAUSE OF B10, measured 2026-09-05. URLSession's default
+        // `maximumMessageSize` is 1 MB, and URLSession CLOSES the connection when a
+        // single message exceeds it. The server compresses `sessions_snapshot` with
+        // permessage-deflate (browser-gateway.ts: ~345 KB uncompressed at ~380
+        // sessions, ~46 KB gzipped) and re-ships it on EVERY (re)connect — but
+        // `URLSessionWebSocketTask` cannot negotiate permessage-deflate at all, so
+        // this client receives the frame UNCOMPRESSED. Measured live that day: 1.34 MB,
+        // i.e. 34% over the default. Result was accept → snapshot → immediate close,
+        // repeating every ~2.4s forever, while a browser on the same phone and tunnel
+        // held for hours because it got the compressed copy.
+        //
+        // Why it hid for so long: the loopback fault-harness ships tiny fixture
+        // snapshots that never approach the cap, so the client looked exonerated; and
+        // an earlier pass compared the snapshot against the SERVER's 4 MB maxPayload
+        // rather than this client-side ceiling. Two different caps, and only this one
+        // was binding.
+        //
+        // 16 MB leaves ~12x headroom over the measured frame. This does not make the
+        // snapshot small — shrinking or paginating it is the real durability fix and
+        // is server-side; this stops the app from severing a connection it can
+        // otherwise serve.
+        socket.maximumMessageSize = Self.maximumIncomingMessageBytes
         self.task = socket
         self.keepalive = KeepaliveMonitor(startedAt: nowSeconds())
         let stream = AsyncStream<ServerMessage> { cont in self.continuation = cont }
