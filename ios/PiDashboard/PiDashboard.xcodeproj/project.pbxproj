@@ -11,6 +11,7 @@
 		09E7137D08FA0699B075BC40 /* AuthManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = 68BFB3E2370551067C6783F9 /* AuthManager.swift */; };
 		0EF5D1CA16E1F06A20E63AA4 /* SessionDeclutterUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD503A3E3C134442D658FFC7 /* SessionDeclutterUITests.swift */; };
 		13F1273F3BB9A73FE9BD6D30 /* ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E87F5BE73AB0CA95D6BC1773 /* ChatView.swift */; };
+		145962AF50A9D2151E93BE8E /* AdaptiveNavigationUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5DD172D588AA9D03E1344212 /* AdaptiveNavigationUITests.swift */; };
 		15A8C3CFB633D7B2D3F2788B /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = 461262C721BBDBA0B371C35B /* Theme.swift */; };
 		2B11EDB8F21E50EE6BA245C6 /* MarkdownText.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7E7471F187C45CD9A1B4E46D /* MarkdownText.swift */; };
 		3140FFD9CE863F260E727C65 /* VoiceRecorder.swift in Sources */ = {isa = PBXBuildFile; fileRef = 50868AECCD7BF08CE94C3000 /* VoiceRecorder.swift */; };
@@ -88,6 +89,7 @@
 		4E8B9C8D752F76C580934ECE /* SocketTraceView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SocketTraceView.swift; sourceTree = "<group>"; };
 		50868AECCD7BF08CE94C3000 /* VoiceRecorder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VoiceRecorder.swift; sourceTree = "<group>"; };
 		5D34078011FF147506E6F581 /* FoldingUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FoldingUITests.swift; sourceTree = "<group>"; };
+		5DD172D588AA9D03E1344212 /* AdaptiveNavigationUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AdaptiveNavigationUITests.swift; sourceTree = "<group>"; };
 		6323A4CD1D5D5E96C36D013E /* PiDashboardApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PiDashboardApp.swift; sourceTree = "<group>"; };
 		68BFB3E2370551067C6783F9 /* AuthManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AuthManager.swift; sourceTree = "<group>"; };
 		7177FCC4801DD0887402DC37 /* ChatMessageRow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatMessageRow.swift; sourceTree = "<group>"; };
@@ -162,6 +164,7 @@
 			children = (
 				A581231B4E4299CFB161D0CB /* AccessibilityUITests.swift */,
 				FB7517F7636482DC5CB66A48 /* ActionFailureUITests.swift */,
+				5DD172D588AA9D03E1344212 /* AdaptiveNavigationUITests.swift */,
 				EC6B4BD44A394328246E5DEA /* BannerAndFiltersUITests.swift */,
 				77C4ACCC4D13DE9A947D61B3 /* CardRichnessUITests.swift */,
 				D6444414844AAD8BE9863024 /* ColorCodingUITests.swift */,
@@ -404,6 +407,7 @@
 			files = (
 				46394F6F376F1CAB8C70F00B /* AccessibilityUITests.swift in Sources */,
 				46CCF11B6CE2FA0D6F5EC766 /* ActionFailureUITests.swift in Sources */,
+				145962AF50A9D2151E93BE8E /* AdaptiveNavigationUITests.swift in Sources */,
 				E8CB65632E6E2DF2426BCC84 /* BannerAndFiltersUITests.swift in Sources */,
 				B7C107FBE9854298595C7D09 /* CardRichnessUITests.swift in Sources */,
 				C50382A9C9B34769E9BB8692 /* ColorCodingUITests.swift in Sources */,
@@ -466,7 +470,7 @@
 				INFOPLIST_KEY_CFBundleDisplayName = "pi dashboard";
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UIStatusBarStyle = UIStatusBarStyleLightContent;
-				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -475,7 +479,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = technology.blackbelt.pidashboard;
 				PRODUCT_NAME = PiDashboard;
 				SDKROOT = iphoneos;
-				TARGETED_DEVICE_FAMILY = 1;
+				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Debug;
 		};
@@ -639,7 +643,7 @@
 				INFOPLIST_KEY_CFBundleDisplayName = "pi dashboard";
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
 				INFOPLIST_KEY_UIStatusBarStyle = UIStatusBarStyleLightContent;
-				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -648,7 +652,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = technology.blackbelt.pidashboard;
 				PRODUCT_NAME = PiDashboard;
 				SDKROOT = iphoneos;
-				TARGETED_DEVICE_FAMILY = 1;
+				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Release;
 		};

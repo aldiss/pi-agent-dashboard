@@ -4,6 +4,9 @@ import PiDashboardKit
 /// Session list — search + toggles + tier sections, each with directory subgroups,
 /// each card a NavigationLink into the chat. Identifiers per TEST-CONTRACT §A.
 struct SessionListView: View {
+    var selectedSessionId: String? = nil
+    var onSelectSession: ((String) -> Void)? = nil
+
     @Environment(DashboardStore.self) private var store
     @Environment(\.theme) private var theme
 
@@ -200,16 +203,31 @@ struct SessionListView: View {
             }
         }
 
-        NavigationLink {
-            if session.isExternal {
-                ExternalTranscriptView(sessionId: session.id, title: session.displayName)
-            } else {
-                ChatView(sessionId: session.id, title: session.displayName)
+        if let onSelectSession {
+            Button {
+                onSelectSession(session.id)
+            } label: {
+                card
             }
-        } label: {
-            card
+            .buttonStyle(.pressableCard)
+            .overlay {
+                RoundedRectangle(cornerRadius: 12)
+                    .stroke(selectedSessionId == session.id ? theme.accentBlue : .clear, lineWidth: 2)
+                    .allowsHitTesting(false)
+            }
+            .accessibilityAddTraits(selectedSessionId == session.id ? .isSelected : [])
+        } else {
+            NavigationLink {
+                if session.isExternal {
+                    ExternalTranscriptView(sessionId: session.id, title: session.displayName)
+                } else {
+                    ChatView(sessionId: session.id, title: session.displayName)
+                }
+            } label: {
+                card
+            }
+            .buttonStyle(.pressableCard)
         }
-        .buttonStyle(.pressableCard)
     }
 
     private func foldToggle(_ collapsed: SessionGrouping.CollapsedSession) -> some View {

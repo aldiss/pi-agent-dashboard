@@ -1,67 +1,50 @@
 import SwiftUI
 import PiDashboardKit
 
-/// Main shell once connected: a NavigationStack hosting the session list, with the
+/// Main shell once connected: adaptive navigation hosting the session list, with the
 /// ConnectionBanner pinned at the top for disconnect/reconnect states.
 struct MainView: View {
     @Environment(DashboardStore.self) private var store
     @Environment(ThemeController.self) private var themeController
     @Environment(\.theme) private var theme
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var showNewSession = false
     @State private var showSettings = false
+    @State private var selectedSessionId: String?
+    @State private var columnVisibility: NavigationSplitViewVisibility = .all
     /// Navigation path — normally empty (SessionListView's cards push via their own
     /// closure links). The `-uitest-composer-overflow` probe seeds it on appear to
     /// auto-open the first fixture chat for the screenshot check. Value-keyed by id.
     @State private var navPath: [String] = []
 
+    private var navigationLayout: DashboardNavigationPolicy.Layout {
+        let width: DashboardNavigationPolicy.Width?
+        switch horizontalSizeClass {
+        case .regular: width = .regular
+        case .compact: width = .compact
+        default: width = nil
+        }
+        return DashboardNavigationPolicy.layout(for: width)
+    }
+
     var body: some View {
-        NavigationStack(path: $navPath) {
-            ZStack(alignment: .top) {
-                theme.bgPrimary.ignoresSafeArea()
-                SessionListView()
-                ConnectionBanner()
-                ActionErrorBanner()
-            }
-            .navigationTitle("pi dashboard")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(theme.bgSecondary, for: .navigationBar)
-            .toolbarBackground(.visible, for: .navigationBar)
-            .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button {
-                        showSettings = true
-                    } label: {
-                        Image(systemName: "gearshape")
-                            .foregroundStyle(theme.textSecondary)
-                    }
-                    .accessibilityIdentifier("settings-button")
-                    .accessibilityLabel("Settings")
+        Group {
+            switch navigationLayout {
+            case .splitView:
+                NavigationSplitView(columnVisibility: $columnVisibility) {
+                    sessionList(onSelectSession: { selectedSessionId = $0 })
+                        .navigationSplitViewColumnWidth(min: 320, ideal: 360, max: 440)
+                } detail: {
+                    sessionDetail
                 }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        showNewSession = true
-                    } label: {
-                        Image(systemName: "plus.circle.fill")
-                            .foregroundStyle(theme.accentBlue)
-                    }
-                    .accessibilityIdentifier("new-session-button")
-                    .accessibilityLabel("New session")
+                .navigationSplitViewStyle(.balanced)
+            case .stack:
+                NavigationStack(path: $navPath) {
+                    sessionList()
+                        .navigationDestination(for: String.self) { sid in
+                            ChatView(sessionId: sid, title: store.sessions[sid]?.displayName ?? "Session")
+                        }
                 }
-            }
-            .sheet(isPresented: $showNewSession) {
-                NewSessionSheet()
-                    .environment(store)
-                    .environment(\.theme, theme)
-                    .presentationDetents([.medium, .large])
-            }
-            .sheet(isPresented: $showSettings) {
-                SettingsView()
-                    .environment(store)
-                    .environment(themeController)
-                    .environment(\.theme, theme)
-            }
-            .navigationDestination(for: String.self) { sid in
-                ChatView(sessionId: sid, title: store.sessions[sid]?.displayName ?? "Session")
             }
         }
         .tint(theme.accentBlue)
@@ -69,8 +52,83 @@ struct MainView: View {
             // Composer-overflow probe: auto-open the first fixture chat so the pre-filled
             // long line is screenshot-visible. No-op in normal use (nil id). One-shot.
             if navPath.isEmpty, let sid = store.composerOverflowSessionId {
-                navPath = [sid]
+                if navigationLayout == .splitView {
+                    selectedSessionId = sid
+                } else {
+                    navPath = [sid]
+                }
             }
+        }
+    }
+
+    @ViewBuilder private var sessionDetail: some View {
+        if let selectedSessionId,
+           let session = store.externalSessions[selectedSessionId] ?? store.sessions[selectedSessionId] {
+            Group {
+                if session.isExternal {
+                    ExternalTranscriptView(sessionId: session.id, title: session.displayName)
+                } else {
+                    ChatView(sessionId: session.id, title: session.displayName)
+                }
+            }
+            .id(selectedSessionId)
+        } else {
+            ContentUnavailableView {
+                Label("Select a session", systemImage: "bubble.left.and.bubble.right")
+                    .foregroundStyle(theme.textPrimary)
+            } description: {
+                Text("Choose a session from the sidebar to view its conversation.")
+                    .foregroundStyle(theme.textSecondary)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(theme.bgPrimary)
+        }
+    }
+
+    private func sessionList(onSelectSession: ((String) -> Void)? = nil) -> some View {
+        ZStack(alignment: .top) {
+            theme.bgPrimary.ignoresSafeArea()
+            SessionListView(selectedSessionId: selectedSessionId, onSelectSession: onSelectSession)
+            ConnectionBanner()
+            ActionErrorBanner()
+        }
+        .navigationTitle("pi dashboard")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbarBackground(theme.bgSecondary, for: .navigationBar)
+        .toolbarBackground(.visible, for: .navigationBar)
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button {
+                    showSettings = true
+                } label: {
+                    Image(systemName: "gearshape")
+                        .foregroundStyle(theme.textSecondary)
+                }
+                .accessibilityIdentifier("settings-button")
+                .accessibilityLabel("Settings")
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                Button {
+                    showNewSession = true
+                } label: {
+                    Image(systemName: "plus.circle.fill")
+                        .foregroundStyle(theme.accentBlue)
+                }
+                .accessibilityIdentifier("new-session-button")
+                .accessibilityLabel("New session")
+            }
+        }
+        .sheet(isPresented: $showNewSession) {
+            NewSessionSheet()
+                .environment(store)
+                .environment(\.theme, theme)
+                .presentationDetents([.medium, .large])
+        }
+        .sheet(isPresented: $showSettings) {
+            SettingsView()
+                .environment(store)
+                .environment(themeController)
+                .environment(\.theme, theme)
         }
     }
 }
