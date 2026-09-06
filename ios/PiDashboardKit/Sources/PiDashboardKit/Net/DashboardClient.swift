@@ -225,22 +225,27 @@ public actor DashboardClient {
         return true
     }
 
-    /// Injectable callback bridge for deterministic unit tests. Production supplies
-    /// `URLSessionWebSocketTask.sendPing`; tests supply an immediate pong or no callback.
+    /// Injectable pong and cancellation-cooperative sleep callbacks let tests control ordering.
     static func awaitForegroundPong(
         timeout: TimeInterval,
+        sleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
         sendPing: (@escaping @Sendable (Error?) -> Void) -> Void
     ) async -> Bool {
-        await withCheckedContinuation { continuation in
+        var timeoutTask: Task<Void, Never>?
+        let answered = await withCheckedContinuation { continuation in
             let resolution = ForegroundProbeResolution(continuation)
             sendPing { error in
                 resolution.resolve(error == nil)
             }
-            Task {
-                try? await Task.sleep(for: .seconds(timeout))
+            timeoutTask = Task {
+                try? await sleep(.seconds(timeout))
                 resolution.resolve(false)
             }
         }
+        // The winner is already fixed. Cancel and join so no timeout task outlives the probe.
+        timeoutTask?.cancel()
+        await timeoutTask?.value
+        return answered
     }
 
     /// Send a client message as a JSON text frame.
