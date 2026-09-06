@@ -9,8 +9,13 @@
 | File | Purpose |
 |------|---------|
 | `.pi/skills/openspec-shared/scripts/effective-status.sh` | Bash wrapper around `openspec status --change <name> --json`; applies same R1/R2/R3 promotion as dashboard so OpenSpec workflow skills (`openspec-{continue,ff,apply,verify}-change`) + dashboard session-card buttons cannot disagree about change's next-ready artifact. Inlines rule logic via `find` + `grep -E`; `jq` for JSON mutation; falls back to raw CLI output if `jq` absent. **Repo-lint** `packages/shared/src/__tests__/no-raw-openspec-status-in-skills.test.ts` blocks raw `openspec status ... --json` calls in any of four governed skills (opt-out: `ban:openspec-status-ok`). Parity test: `packages/shared/src/__tests__/openspec-effective-status-script.test.ts`. See change: fix-openspec-design-detection. |
+| `docs/deploy-test-gate.md` | Documents baseline provenance, explicit archive skips, must-fail proof, cutover limits. |
 | `scripts/codex-runtime-browser-acceptance.ts` | Runs isolated Chromium dashboard checks: default `--check-ui` uses zero model turns; `--live` checks launch, streaming, retained context, mid-tool abort, and resume after dashboard process restart. Saves screenshots and `evidence.json` under `/tmp/codex-runtime-browser-*`. |
 | `scripts/codex-runtime-browser-server.ts` | Starts fixture dashboard under isolated `/tmp/codex-runtime-browser-*` HOME with owned IPC parent. Reports bound ports; awaits shutdown on stop, signals, or parent disconnect. |
+| `scripts/deploy-bridge-isolation.test.mjs` | Tests bridge registration under throwaway HOME. Checks settings preservation, isolation skips, invalid JSON refusal, release plugin pinning. |
+| `scripts/deploy-test-gate.mjs` | Captures deployed-ref baseline. Rejects new file + full-test-name failures before swap. Logs archive exclusions. See [deploy-test-gate.md](./deploy-test-gate.md). |
+| `scripts/deploy-test-gate.test.mjs` | Tests exact failure comparison, archive exclusion policy, fail-closed report validation. Runs before Vitest via root `npm test`. |
+| `scripts/deploy.mjs` | Archives committed ref, installs dependencies, builds client, gates tests, stamps release, swaps `current`. Registers release bridges. See [deploy-test-gate.md](./deploy-test-gate.md). |
 | `scripts/fix-pty-permissions.cjs` | Postinstall: fix node-pty spawn-helper execute permissions |
 | `public/manifest.json` | PWA web app manifest for installability |
 | `public/sw.js` | Minimal service worker for PWA installability |

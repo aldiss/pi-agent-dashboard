@@ -28,6 +28,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, rmSync, symlinkSync, readlinkSync, readFileSync, readdirSync, writeFileSync, renameSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+import { runDeployTestGate } from "./deploy-test-gate.mjs";
 
 const REPO = resolve(process.argv[1], "..", "..");
 
@@ -101,8 +102,8 @@ function buildRelease(a) {
     sh("npm", ["run", "build"], { cwd: releaseDir });
   }
   if (!a.skipTests) {
-    log("test-gate (HOME-jailed npm test — the pre-swap gate == the nightly nos-regress invocation)");
-    sh("npm", ["test"], { cwd: releaseDir });
+    log("test-gate (HOME-jailed npm test; reject new failures relative to the deployed ref)");
+    runDeployTestGate({ repo: REPO, prodRoot: a.prodRoot, candidateDir: releaseDir, commit: sha });
   }
   // Stamp deploy provenance the server surfaces at /api/health.
   const stamp = { commit: sha, ref: a.ref, builtAt: new Date().toISOString(), node: process.version };
