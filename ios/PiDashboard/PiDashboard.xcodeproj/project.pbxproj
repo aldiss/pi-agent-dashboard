@@ -59,6 +59,7 @@
 		E9F2E59F5980D2FA0B8BC3A2 /* ComposerThemeUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 17B745C1892709626B23740B /* ComposerThemeUITests.swift */; };
 		EC911BE24ADBD088FC8EBFBE /* ControlActionsUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 25A6A19E5757CEE339C75882 /* ControlActionsUITests.swift */; };
 		F0DEB507968713D012608D9B /* ConnectAndListUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2B35B5BF44400A1704A7E853 /* ConnectAndListUITests.swift */; };
+		F1E0598FC28FFAE89ED91F8B /* ComposerDismissKeyboardUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 84B5EA15D7A5D5E19A31FC62 /* ComposerDismissKeyboardUITests.swift */; };
 		F901C1177F8BE0D5BC28EAC0 /* AuthCookieStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC57C9E2540DF731122C968A /* AuthCookieStore.swift */; };
 /* End PBXBuildFile section */
 
@@ -98,6 +99,7 @@
 		7BF37895069D6D935F09C73C /* PiDashboardSmokeUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PiDashboardSmokeUITests.swift; sourceTree = "<group>"; };
 		7E7471F187C45CD9A1B4E46D /* MarkdownText.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownText.swift; sourceTree = "<group>"; };
 		80A2BA4C5390FD8E0166BBDB /* PiDashboardUITestCase.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PiDashboardUITestCase.swift; sourceTree = "<group>"; };
+		84B5EA15D7A5D5E19A31FC62 /* ComposerDismissKeyboardUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ComposerDismissKeyboardUITests.swift; sourceTree = "<group>"; };
 		8A9897C98343E68E356EDB75 /* MainView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainView.swift; sourceTree = "<group>"; };
 		A581231B4E4299CFB161D0CB /* AccessibilityUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AccessibilityUITests.swift; sourceTree = "<group>"; };
 		A93A4B604656E8A542B7B73E /* SessionCard.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SessionCard.swift; sourceTree = "<group>"; };
@@ -168,6 +170,7 @@
 				EC6B4BD44A394328246E5DEA /* BannerAndFiltersUITests.swift */,
 				77C4ACCC4D13DE9A947D61B3 /* CardRichnessUITests.swift */,
 				D6444414844AAD8BE9863024 /* ColorCodingUITests.swift */,
+				84B5EA15D7A5D5E19A31FC62 /* ComposerDismissKeyboardUITests.swift */,
 				ACDA7C90B73D0A62B058CEF2 /* ComposerFocusUITests.swift */,
 				17B745C1892709626B23740B /* ComposerThemeUITests.swift */,
 				FDBF8A7AB9CA53105B4D5C87 /* ComposerUITests.swift */,
@@ -411,6 +414,7 @@
 				E8CB65632E6E2DF2426BCC84 /* BannerAndFiltersUITests.swift in Sources */,
 				B7C107FBE9854298595C7D09 /* CardRichnessUITests.swift in Sources */,
 				C50382A9C9B34769E9BB8692 /* ColorCodingUITests.swift in Sources */,
+				F1E0598FC28FFAE89ED91F8B /* ComposerDismissKeyboardUITests.swift in Sources */,
 				058B291736FECB236C33DC18 /* ComposerFocusUITests.swift in Sources */,
 				E9F2E59F5980D2FA0B8BC3A2 /* ComposerThemeUITests.swift in Sources */,
 				66CE1C885A9330100F533D30 /* ComposerUITests.swift in Sources */,

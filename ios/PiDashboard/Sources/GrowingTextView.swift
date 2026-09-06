@@ -47,6 +47,40 @@ final class ComposerTextView: UITextView {
         let consumed = onHardwareReturn?(false) ?? false
         if !consumed { insertText("\n") }
     }
+
+    /// Keyboard accessory carrying ONE control: Done, which ends editing and does
+    /// nothing else. There is deliberately no second keyboard-state model — dismissal
+    /// IS `resignFirstResponder`, so the draft text and any attached images are
+    /// untouched by construction and survive dismiss/refocus with no save-restore path
+    /// to get wrong. It sends nothing and queues nothing.
+    ///
+    /// Standard `UIToolbar` height is 44pt, which is the minimum tap target, and the
+    /// item is right-aligned where iOS users expect Done to sit.
+    func installDismissAccessory(keyboardAppearance: UIKeyboardAppearance) {
+        let bar = UIToolbar()
+        bar.barStyle = (keyboardAppearance == .dark) ? .black : .default
+        let done = UIBarButtonItem(title: "Done", style: .done,
+                                   target: self, action: #selector(dismissKeyboardTapped))
+        done.accessibilityLabel = "Dismiss keyboard"
+        done.accessibilityIdentifier = "mobile-composer-dismiss-keyboard"
+        bar.items = [UIBarButtonItem(barButtonSystemItem: .flexibleSpace,
+                                     target: nil, action: nil), done]
+        bar.sizeToFit()
+        inputAccessoryView = bar
+    }
+
+    /// Re-style an already-installed accessory when the app's theme flips, without
+    /// rebuilding it (a rebuild mid-edit would reload input views unnecessarily).
+    func restyleDismissAccessory(keyboardAppearance: UIKeyboardAppearance) {
+        (inputAccessoryView as? UIToolbar)?.barStyle =
+            (keyboardAppearance == .dark) ? .black : .default
+    }
+
+    @objc private func dismissKeyboardTapped() {
+        // Dismiss ONLY. No send, no draft mutation, no focus bookkeeping beyond
+        // ending first responder.
+        resignFirstResponder()
+    }
 }
 
 /// A `UITextView` bridged to SwiftUI that auto-sizes and reports its intrinsic
@@ -109,6 +143,7 @@ struct GrowingTextView: UIViewRepresentable {
         tv.returnKeyType = .default // Enter = newline (soft keyboard; see ComposerTextView)
         tv.autocorrectionType = .yes
         tv.accessibilityIdentifier = "mobile-composer-textarea"
+        tv.installDismissAccessory(keyboardAppearance: keyboardAppearance)
         // Placeholder
         let ph = UILabel()
         ph.text = "Message"
@@ -169,6 +204,7 @@ struct GrowingTextView: UIViewRepresentable {
         tv.font = Self.inputFont
         if tv.keyboardAppearance != keyboardAppearance {
             tv.keyboardAppearance = keyboardAppearance
+            tv.restyleDismissAccessory(keyboardAppearance: keyboardAppearance)
             // The keyboard only picks up a new appearance on the next edit session;
             // reload it in place if the field is currently first responder.
             if tv.isFirstResponder { tv.reloadInputViews() }
