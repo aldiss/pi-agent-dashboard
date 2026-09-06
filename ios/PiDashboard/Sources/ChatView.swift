@@ -312,6 +312,7 @@ struct ChatView: View {
                 // DF#3: NO auto-scroll-to-end. On open, restore to the last-read row
                 // (or the first unread / bottom) exactly once — never jump to the end.
                 .accessibilityIdentifier("chat-scroll")
+                .scrollDismissesKeyboard(.interactively)
                 .onAppear { restoreOnOpen(proxy) }
                 .onPreferenceChange(BottomDistanceKey.self) { sentinelMinY in
                     // distance the sentinel sits BELOW the viewport bottom: ~0 (or
