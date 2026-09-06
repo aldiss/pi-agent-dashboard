@@ -27,11 +27,12 @@ final class MessageFilterTests: XCTestCase {
         XCTAssertEqual(MessageClassifier.classify(msg(.toolResult, toolName: "ask_user")), .tierA)
     }
 
-    /// thinking / turnSeparator / rawEvent → systemNotifications (hidden by default).
-    /// NOTE: thinking→systemNotifications follows the OPERATOR BRIEF (the PWA source
-    /// currently uses tierB). See MessageClassifier doc-comment.
+    func testThinkingClassifiesAsTierB() {
+        XCTAssertEqual(MessageClassifier.classify(msg(.thinking)), .tierB)
+    }
+
+    /// turnSeparator / rawEvent → systemNotifications (hidden by default).
     func testSystemNotificationRoles() {
-        XCTAssertEqual(MessageClassifier.classify(msg(.thinking)), .systemNotifications)
         XCTAssertEqual(MessageClassifier.classify(msg(.turnSeparator)), .systemNotifications)
         XCTAssertEqual(MessageClassifier.classify(msg(.rawEvent, toolName: "turn_start")), .systemNotifications)
     }
@@ -67,20 +68,43 @@ final class MessageFilterTests: XCTestCase {
 
     // MARK: filter pass
 
-    /// With the DEFAULT filter a mixed transcript keeps user/assistant/ask_user and
-    /// drops tool rows + thinking + raw lifecycle — the clean-by-default chat.
+    /// With the DEFAULT filter a mixed transcript keeps user/assistant/ask_user/thinking
+    /// and drops tool rows + raw lifecycle — the clean-by-default chat.
     func testDefaultFilterProducesCleanChat() {
         let messages = [
             msg(.user), msg(.assistant),
             msg(.toolResult, toolName: "bash"),   // toolCalls — hidden
-            msg(.thinking),                        // systemNotifications — hidden
+            msg(.thinking),
             msg(.rawEvent, toolName: "turn_start"),// systemNotifications — hidden
             msg(.toolResult, toolName: "ask_user"),// tierA — KEPT
         ]
         let shown = MessageClassifier.filter(messages, .default)
-        XCTAssertEqual(shown.count, 3, "user + assistant + ask_user survive")
+        XCTAssertEqual(shown.count, 4, "user + assistant + ask_user + thinking survive")
         XCTAssertTrue(shown.allSatisfy { $0.role == .user || $0.role == .assistant
+            || $0.role == .thinking
             || ($0.role == .toolResult && $0.toolName == "ask_user") })
+    }
+
+    func testDefaultFilterKeepsCompletedThinkingButHidesLifecycleNoise() {
+        let thinking = msg(.thinking)
+        let separator = msg(.turnSeparator)
+        let rawEvent = msg(.rawEvent, toolName: "turn_start")
+        let shown = MessageClassifier.filter([thinking, separator, rawEvent], .default)
+
+        XCTAssertTrue(shown.contains { $0.id == thinking.id },
+                      "completed thinking must survive the default transcript filter")
+        XCTAssertFalse(shown.contains { $0.id == separator.id },
+                       "turn separators must remain hidden by default")
+        XCTAssertFalse(shown.contains { $0.id == rawEvent.id },
+                       "raw lifecycle events must remain hidden by default")
+    }
+
+    func testCountsSeparateThinkingFromSystemNotifications() {
+        let messages = [msg(.thinking), msg(.turnSeparator), msg(.rawEvent)]
+        let counts = MessageClassifier.counts(messages)
+
+        XCTAssertEqual(counts[.tierB], 1)
+        XCTAssertEqual(counts[.systemNotifications], 2)
     }
 
     /// All-on filter is a pass-through (no rows dropped).

@@ -11,7 +11,7 @@ public enum MessageCategory: String, Sendable, Equatable, CaseIterable {
     case tierC               // ledger-only (rare in the dashboard)
     case meshChatter         // plain user / assistant chat
     case toolCalls           // tool results / bash output / command feedback
-    case systemNotifications // thinking / turn separators / raw debug events
+    case systemNotifications // turn separators / raw debug events
 }
 
 /// The 6-category on/off filter — native mirror of the PWA `MessageFilter`. `Codable`
@@ -33,7 +33,7 @@ public struct MessageFilter: Codable, Sendable, Equatable {
 
     /// Canonical defaults (PWA `DEFAULT_MESSAGE_FILTER`, W3 Q2 recommended): Tier-A /
     /// Tier-B / mesh-chatter ON; Tier-C / tool-calls / system-notifications OFF. With
-    /// these the chat shows asks + narrative + chat — tool spam + thinking + raw
+    /// these the chat shows asks + narrative + thinking + chat — tool spam + raw
     /// lifecycle rows (the operator's "empty tool calls") are hidden.
     public static let `default` = MessageFilter(
         tierA: true, tierB: true, tierC: false,
@@ -81,14 +81,11 @@ public struct MessageFilter: Codable, Sendable, Equatable {
 ///   - an `ask_user` surfaces as a `.toolResult` whose `toolName == "ask_user"` →
 ///     that's the operator-direct ask → `tierA` (the rest of `.toolResult` → toolCalls);
 ///   - `.bashOutput` / `.commandFeedback` → `toolCalls`;
-///   - `.thinking` / `.turnSeparator` / `.rawEvent` → `systemNotifications`;
+///   - `.thinking` → `tierB`; `.turnSeparator` / `.rawEvent` → `systemNotifications`;
 ///   - `.user` / `.assistant` → `meshChatter`.
 ///
-/// NOTE (thinking): the OPERATOR BRIEF lists `thinking → systemNotifications` (hidden
-/// by default — the operator's clutter complaint). The current PWA source instead
-/// reclassifies `thinking → tierB` (visible). This implements the BRIEF. To match the
-/// PWA exactly, move `.thinking` out of `systemRoles` into the `tierB` return. It is
-/// a one-line flip.
+/// NOTE (thinking): thinking is tierB for PWA parity, per the operator's 2026-09-06
+/// report: completed reasoning stays visible by default; raw lifecycle noise stays hidden.
 public enum MessageClassifier {
 
     /// Classify one rendered chat row into its category.
@@ -99,7 +96,8 @@ public enum MessageClassifier {
             return message.toolName == "ask_user" ? .tierA : .toolCalls
         case .bashOutput, .commandFeedback:
             return .toolCalls
-        case .thinking, .turnSeparator, .rawEvent:
+        case .thinking: return .tierB
+        case .turnSeparator, .rawEvent:
             return .systemNotifications
         case .user, .assistant:
             return .meshChatter
