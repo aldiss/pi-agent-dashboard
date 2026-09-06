@@ -64,14 +64,24 @@ struct MainView: View {
     @ViewBuilder private var sessionDetail: some View {
         if let selectedSessionId,
            let session = store.externalSessions[selectedSessionId] ?? store.sessions[selectedSessionId] {
-            Group {
-                if session.isExternal {
-                    ExternalTranscriptView(sessionId: session.id, title: session.displayName)
-                } else {
-                    ChatView(sessionId: session.id, title: session.displayName)
+            ZStack {
+                // The detail column supplies its OWN backdrop. Both of its siblings already
+                // do — `sessionList` below uses this same ZStack + ignoresSafeArea, and the
+                // empty-state branch carries .background(theme.bgPrimary) — and this branch
+                // was the only one without. ChatView's own .background sits on its VStack and
+                // has no ignoresSafeArea, so nothing paints the safe-area strip: the white gap
+                // the operator sees at the bottom-right in split view. NavigationStack used to
+                // supply this on iPhone; the split-view detail column has no NavigationStack.
+                theme.bgPrimary.ignoresSafeArea()
+                Group {
+                    if session.isExternal {
+                        ExternalTranscriptView(sessionId: session.id, title: session.displayName)
+                    } else {
+                        ChatView(sessionId: session.id, title: session.displayName)
+                    }
                 }
+                .id(selectedSessionId)
             }
-            .id(selectedSessionId)
         } else {
             ContentUnavailableView {
                 Label("Select a session", systemImage: "bubble.left.and.bubble.right")
