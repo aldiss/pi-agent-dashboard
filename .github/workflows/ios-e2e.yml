@@ -50,7 +50,7 @@ jobs:
     name: E2E smoke gate (critical rendering)
     runs-on: macos-latest
     if: github.event_name == 'push' || github.event_name == 'pull_request'
-    # Eight exact rendering tests. Expected ~10-15min on a cold hosted runner;
+    # Nine exact rendering/composer tests. Expected ~10-15min on a cold hosted runner;
     # 20min keeps infrastructure stalls bounded without masking a red test.
     # 20 was too tight: a cold GitHub runner is ~3x slower than local, and the
     # first gate run was CANCELLED mid-suite rather than reporting a verdict.
@@ -90,6 +90,7 @@ jobs:
             -only-testing:PiDashboardUITests/TierRowCorrespondenceUITests/testCardsRenderUnderTheirOwnTierHeaderWithFoldersOff \
             -only-testing:PiDashboardUITests/ComposerUITests/testF4_ComposerHysteresisSingleRowMultilineRevert \
             -only-testing:PiDashboardUITests/ComposerFocusUITests/testProgrammaticLongLineSeedFlipsToMultiline \
+            -only-testing:PiDashboardUITests/ComposerScrollDismissUITests/testScrollDismissPutsKeyboardAwayAndKeepsTheDraftWithoutSendingOrQueueing \
             -only-testing:PiDashboardUITests/ModelPickerUITests/testSelectingModelRowUpdatesSession \
             -only-testing:PiDashboardUITests/AccessibilityUITests/testStatusHasNonColorSpokenLabel \
             CODE_SIGNING_ALLOWED=NO
