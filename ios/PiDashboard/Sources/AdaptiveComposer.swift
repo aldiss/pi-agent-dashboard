@@ -178,7 +178,22 @@ struct AdaptiveComposer: View {
             signal: textSignal,
             textColor: theme.textPrimary,
             placeholderColor: theme.textTertiary,
-            keyboardAppearance: keyboardAppearance)
+            keyboardAppearance: keyboardAppearance,
+            // HARDWARE Return only (a soft-keyboard Return never reaches a UIKeyCommand).
+            // The decision lives in the Kit so it is proven on every push and can never
+            // drift from the send BUTTON, which reads the same `canSend`. Returning false
+            // tells the text view to insert the newline itself.
+            onHardwareReturn: { hasShift in
+                switch ComposerLayout.returnKeyAction(
+                    text: text, imageCount: images.count,
+                    hasShift: hasShift, sendInFlight: sendInFlight) {
+                case .send:
+                    send()
+                    return true
+                case .insertNewline:
+                    return false
+                }
+            })
         .frame(height: ComposerLayout.clampedHeight(text: text, measured: measuredHeight))
         .frame(maxWidth: .infinity)
     }

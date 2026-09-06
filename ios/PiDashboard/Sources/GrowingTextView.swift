@@ -13,8 +13,47 @@ final class ComposerTextSignal {
     func markProgrammatic() { programmatic = true }
 }
 
+/// A `UITextView` subclass that gives an EXTERNAL keyboard's Return key a send action
+/// while leaving the on-screen keyboard's Return exactly as it was.
+///
+/// `keyCommands` fire for HARDWARE keyboards only, so a soft-keyboard Return never
+/// reaches this path and keeps inserting a newline. Shift+Return is deliberately NOT
+/// registered, so UIKit handles it natively as a newline — the operator's contract is
+/// "Enter sends, Shift+Enter newlines", and the cheapest way to honour the second half
+/// is to not intercept it.
+///
+/// `wantsPriorityOverSystemBehavior` is required: the text view is first responder and
+/// would otherwise consume Return as text input before the command is offered.
+///
+/// UNVERIFIED AT AUTHORING: that the soft keyboard is untouched rests on documented
+/// `UIKeyCommand` behaviour, not on a run — the machine was under a memory hold barring
+/// builds and simulators. Device-gated.
+final class ComposerTextView: UITextView {
+    /// Called with `hasShift`; returns true when the composer CONSUMED the key (sent).
+    /// Returning false means "insert a newline", which this view must then do itself —
+    /// a consumed key command suppresses UIKit's default insertion, so doing nothing
+    /// would silently swallow the keystroke.
+    var onHardwareReturn: ((Bool) -> Bool)?
+
+    override var keyCommands: [UIKeyCommand]? {
+        let cmd = UIKeyCommand(input: "\r", modifierFlags: [],
+                               action: #selector(handleHardwareReturn))
+        cmd.wantsPriorityOverSystemBehavior = true
+        return [cmd]
+    }
+
+    @objc private func handleHardwareReturn() {
+        // Shift+Return is not registered above, so it never arrives here; pass false.
+        let consumed = onHardwareReturn?(false) ?? false
+        if !consumed { insertText("\n") }
+    }
+}
+
 /// A `UITextView` bridged to SwiftUI that auto-sizes and reports its intrinsic
-/// content height. Enter inserts a newline (NEVER sends) — mobile-composer contract.
+/// content height. The ON-SCREEN keyboard's Enter inserts a newline (never sends) —
+/// mobile-composer contract. An EXTERNAL keyboard's unmodified Enter sends, and
+/// Shift+Enter still inserts a newline; that decision is `ComposerLayout.returnKeyAction`
+/// and the wiring is `ComposerTextView` above.
 /// The reported height feeds `ComposerLayout.isMultiline` / `clampedHeight` so the
 /// single-row⇄column flip uses the SAME core rule the unit tests pin.
 struct GrowingTextView: UIViewRepresentable {
@@ -36,14 +75,19 @@ struct GrowingTextView: UIViewRepresentable {
     var placeholderColor: Color = .secondary
     var keyboardAppearance: UIKeyboardAppearance = .default
 
+    /// Hardware-Return handler, supplied by the composer (which owns the text, image and
+    /// in-flight state the decision needs). Returns true when it sent. Re-assigned on
+    /// every `updateUIView` so it can never capture a stale composer snapshot.
+    var onHardwareReturn: ((Bool) -> Bool)? = nil
+
     /// Composer input font — size 17 to match the rest of the app's composer UI
     /// (`AdaptiveComposer`), so the typed text reads as the same font.
     private static let inputFont = UIFont.systemFont(ofSize: 17)
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
-    func makeUIView(context: Context) -> UITextView {
-        let tv = UITextView()
+    func makeUIView(context: Context) -> ComposerTextView {
+        let tv = ComposerTextView()
         tv.delegate = context.coordinator
         tv.backgroundColor = .clear
         tv.font = Self.inputFont
@@ -62,7 +106,7 @@ struct GrowingTextView: UIViewRepresentable {
         tv.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         tv.isScrollEnabled = true
         tv.keyboardAppearance = keyboardAppearance
-        tv.returnKeyType = .default // Enter = newline
+        tv.returnKeyType = .default // Enter = newline (soft keyboard; see ComposerTextView)
         tv.autocorrectionType = .yes
         tv.accessibilityIdentifier = "mobile-composer-textarea"
         // Placeholder
@@ -89,7 +133,7 @@ struct GrowingTextView: UIViewRepresentable {
     /// screen edges. Width is resolved via the pure `ComposerLayout.resolvedWrapWidth`
     /// (finite-positive proposal wins; else current bounds), height clamped to the band.
     /// Returns nil when no usable width is available yet (SwiftUI keeps the prior size).
-    func sizeThatFits(_ proposal: ProposedViewSize, uiView: UITextView, context: Context) -> CGSize? {
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: ComposerTextView, context: Context) -> CGSize? {
         guard let width = ComposerLayout.resolvedWrapWidth(
             proposed: proposal.width.map(Double.init), current: Double(uiView.bounds.width))
         else { return nil }
@@ -98,7 +142,10 @@ struct GrowingTextView: UIViewRepresentable {
         return CGSize(width: width, height: clamped)
     }
 
-    func updateUIView(_ tv: UITextView, context: Context) {
+    func updateUIView(_ tv: ComposerTextView, context: Context) {
+        // Re-bind every render: a closure captured once in makeUIView would hold a stale
+        // composer snapshot (old text / image count / in-flight flag) and decide on it.
+        tv.onHardwareReturn = onHardwareReturn
         // Push the bound value into the field ONLY for programmatic edits (send-clear,
         // voice-append) or an idle field — NEVER echo the user's own in-flight typing
         // back on a lagging streaming re-render (that dropped the character + caret).

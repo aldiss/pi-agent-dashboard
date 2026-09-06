@@ -52,6 +52,33 @@ public enum ComposerLayout {
         return !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || imageCount > 0
     }
 
+    /// What an unmodified HARDWARE Return should do in the composer.
+    public enum ReturnKeyAction: Sendable, Equatable {
+        case send
+        case insertNewline
+    }
+
+    /// Decide what a HARDWARE Return keypress does: Enter sends, Shift+Enter newlines.
+    ///
+    /// Delegates the "is there anything to send" question to `canSend` rather than
+    /// restating it, so the key path and the send BUTTON can never drift apart. A
+    /// Return that sent an empty composer, or sent while the button was disabled,
+    /// would be two behaviours where the operator sees one control.
+    ///
+    /// When the answer is not `.send` the caller must insert the newline itself: a
+    /// consumed `UIKeyCommand` suppresses UIKit's default insertion, so "do nothing"
+    /// would silently swallow the keystroke.
+    ///
+    /// SCOPE — this decides only. It does NOT establish that the on-screen keyboard is
+    /// unaffected; that rests on `UIKeyCommand` firing for physical keyboards only,
+    /// which is a UIKit behaviour no unit test here can exercise. Device-gated.
+    public static func returnKeyAction(text: String, imageCount: Int,
+                                       hasShift: Bool, sendInFlight: Bool) -> ReturnKeyAction {
+        if hasShift { return .insertNewline }        // Shift+Enter is always a newline.
+        if sendInFlight { return .insertNewline }    // Mirrors the button's !sendInFlight gate.
+        return canSend(text: text, imageCount: imageCount, disabled: false) ? .send : .insertNewline
+    }
+
     /// Should a SwiftUI binding value be pushed into the live `UITextView`?
     ///
     /// The composer's `@State text` can LAG the text view during a streaming
