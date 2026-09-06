@@ -22,3 +22,4 @@
 | `ios/PiDashboardKit/Tests/PiDashboardKitTests/ExternalTranscriptTests.swift` | Locks defensive decode, chat-row mapping, timestamp handling, truncation, fallback shape, 404 distinction, transport failure, session ID encoding. |
 | `ios/PiDashboardKit/Tests/PiDashboardKitTests/PatchAndModelContractTests.swift` | Locks patch and model contracts, including paired context updates. |
 | `ios/qa-e2e/PiDashboardUITests/AdaptiveNavigationUITests.swift` | Adds 4 unexecuted UI guards: phone push/pop; tablet sidebar/empty selection; detail replacement/session drafts; settings trace/new-session sheets. |
+| `ios/qa-e2e/PiDashboardUITests/ComposerScrollDismissUITests.swift` | Defines gesture-only keyboard dismissal checks; exact draft/no-send and queue checks. Requires software keyboard harness precondition. UNRUN: host swapouts rose before simulator boot. |
