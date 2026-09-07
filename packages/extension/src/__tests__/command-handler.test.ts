@@ -748,8 +748,8 @@ describe("parseSendPrompt", () => {
     expect(parseSendPrompt("/reload")).toEqual({ type: "reload" });
   });
 
-  it("should detect /new as new", () => {
-    expect(parseSendPrompt("/new")).toEqual({ type: "new" });
+  it("should detect /new as new, defaulting to the pi runtime", () => {
+    expect(parseSendPrompt("/new")).toEqual({ type: "new", runtime: "pi" });
   });
 
   it("should detect /model provider/id as model command", () => {

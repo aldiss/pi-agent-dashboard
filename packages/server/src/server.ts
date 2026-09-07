@@ -975,6 +975,9 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
   // Wire up event forwarding from pi gateway to browser gateway
   const ingestRuntimeEvent = wireEvents({
     spawnGate,
+    // Lazy: `runtimeManager` is created below, from the ingest callback this
+    // call returns. Same deferral the browser gateway uses.
+    getRuntimeManager: () => runtimeManager,
     sessionManager,
     eventStore,
     piGateway,

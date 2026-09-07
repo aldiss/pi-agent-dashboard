@@ -346,7 +346,10 @@ export function registerSessionApi(fastify: FastifyInstance, deps: SessionApiDep
       }
       const parsed = parseSendPrompt(text);
       if (parsed.type === "new" || parsed.type === "reload") {
-        if (!authorizeRestSpawn(request, reply, result.session.cwd).allowed) return;
+        // `/new <runtime>` pre-authorizes against the runtime it will actually
+        // request; `/reload` is always a pi respawn.
+        const requestedRuntime = parsed.type === "new" ? parsed.runtime : "pi";
+        if (!authorizeRestSpawn(request, reply, result.session.cwd, requestedRuntime).allowed) return;
       }
       const sent = piGateway.sendToSession(id, {
         type: "send_prompt",

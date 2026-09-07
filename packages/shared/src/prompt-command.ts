@@ -25,14 +25,16 @@
  * operator-only. `passthrough` is the ONLY co-drive disposition.
  */
 
+import type { SessionRuntime } from "./types.js";
+
 /** Parsed result from {@link parseSendPrompt}. */
-export type ParsedPrompt =
-  | { type: "bash"; command: string; excludeFromContext: boolean }
+export type ParsedPrompt =  | { type: "bash"; command: string; excludeFromContext: boolean }
   | { type: "compact"; customInstructions: string | undefined }
   | { type: "model"; provider: string; modelId: string }
   | { type: "shutdown" }
   | { type: "reload" }
-  | { type: "new" }
+  | { type: "new"; runtime: SessionRuntime }
+  | { type: "new-invalid"; requested: string }
   | { type: "mgmt"; event: string; data: Record<string, unknown> }
   | { type: "slash"; text: string }
   | { type: "passthrough"; text: string };
@@ -79,9 +81,21 @@ export function parseSendPrompt(text: string): ParsedPrompt {
     return { type: "reload" };
   }
 
-  // 4c. Check /new
-  if (text === "/new") {
-    return { type: "new" };
+  // 4c. Check /new [runtime]
+  //
+  // Bare `/new` stays pi — the default an agent gets today must not move.
+  // An explicit argument selects the runtime; the server re-authorizes it
+  // against `enabledRuntimes` and owns the actual runtime assignment, so this
+  // token is a REQUEST, never a grant. An unrecognized token becomes a
+  // distinct `new-invalid` so the bridge refuses it visibly instead of
+  // silently degrading to pi or leaking `/new <token>` to the model as a
+  // generic slash command.
+  if (text === "/new" || text.startsWith("/new ")) {
+    const requested = text.slice(4).trim();
+    if (!requested) return { type: "new", runtime: "pi" };
+    const runtime = requested.toLowerCase();
+    if (runtime === "pi" || runtime === "codex") return { type: "new", runtime };
+    return { type: "new-invalid", requested };
   }
 
   // 4d. Check /model <provider/id>

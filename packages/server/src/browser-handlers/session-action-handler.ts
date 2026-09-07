@@ -313,7 +313,11 @@ export async function handleSendPrompt(
   const interceptReload = shouldInterceptReload(msg, headlessPidRegistry);
   if (parsedPrompt.type === "new" || (parsedPrompt.type === "reload" && !interceptReload)) {
     const session = sessionManager.get(msg.sessionId);
-    const spawnDecision = authorizeBrowserSpawn(ctx, session?.cwd ?? "");
+    // `/new <runtime>` pre-authorizes against the runtime it will actually
+    // request, so a disabled runtime is refused at this seam too rather than
+    // being authorized as pi and refused later at the bridge seam.
+    const requestedRuntime = parsedPrompt.type === "new" ? parsedPrompt.runtime : "pi";
+    const spawnDecision = authorizeBrowserSpawn(ctx, session?.cwd ?? "", requestedRuntime);
     if (!spawnDecision.allowed) {
       sendTo(ws, { type: "send_prompt_failed", sessionId: msg.sessionId, ...(msg.queueNonce ? { queueNonce: msg.queueNonce } : {}), reason: "unauthorized" });
       return;

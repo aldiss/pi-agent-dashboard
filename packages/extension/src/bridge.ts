@@ -843,8 +843,13 @@ function initBridge(pi: ExtensionAPI) {
         console.error("[dashboard] reload not available — type /__dashboard_reload in pi TUI once to bootstrap");
       }
     },
-    spawnNew: () => {
-      connection.send({ type: "spawn_new_session", sessionId, cwd: process.cwd() });
+    spawnNew: (runtime) => {
+      connection.send({
+        type: "spawn_new_session",
+        sessionId,
+        cwd: process.cwd(),
+        ...(runtime && runtime !== "pi" ? { runtime } : {}),
+      });
     },
     sessionPrompt: async (text, author) => {
       // Route slash commands: management events, flow:run, extension dispatch, then fallback.

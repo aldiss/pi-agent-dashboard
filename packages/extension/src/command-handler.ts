@@ -9,7 +9,7 @@ import type {
   ExtensionToServerMessage,
 } from "@blackbelt-technology/pi-dashboard-shared/protocol.js";
 import { killProcessByPgid } from "./process-scanner.js";
-import type { FileEntry, PiSessionInfo, MessageAuthor } from "@blackbelt-technology/pi-dashboard-shared/types.js";
+import type { FileEntry, PiSessionInfo, MessageAuthor, SessionRuntime } from "@blackbelt-technology/pi-dashboard-shared/types.js";
 import { filterHiddenCommands } from "./bridge-context.js";
 import { expandPromptTemplateFromDisk } from "./prompt-expander.js";
 import { tryDispatchExtensionCommand } from "./slash-dispatch.js";
@@ -79,8 +79,8 @@ export function createCommandHandler(
     compact?: (options: { customInstructions?: string }) => void;
     /** Trigger session reload (extensions, settings, skills, etc.) */
     reload?: () => void;
-    /** Spawn a new session in the same cwd */
-    spawnNew?: () => void;
+    /** Spawn a new session in the same cwd, on the requested runtime (default pi) */
+    spawnNew?: (runtime?: SessionRuntime) => void;
     /** Switch model via pi.setModel() */
     setModel?: (provider: string, modelId: string) => Promise<void>;
     /**
@@ -171,7 +171,7 @@ export function createCommandHandler(
 
           if (parsed.type === "new") {
             if (options?.spawnNew) {
-              options.spawnNew();
+              options.spawnNew(parsed.runtime);
             }
             options?.eventSink?.({
               type: "event_forward",
@@ -179,7 +179,27 @@ export function createCommandHandler(
               event: {
                 eventType: "command_feedback",
                 timestamp: Date.now(),
-                data: { command: "/new", status: "completed" },
+                data: { command: parsed.runtime === "pi" ? "/new" : `/new ${parsed.runtime}`, status: "completed" },
+              },
+            });
+            return undefined;
+          }
+
+          // An unknown runtime never reaches the spawn seam. Refuse it here so
+          // the operator sees WHY, instead of silently getting a pi session or
+          // leaking `/new <token>` to the model as a generic slash command.
+          if (parsed.type === "new-invalid") {
+            options?.eventSink?.({
+              type: "event_forward",
+              sessionId,
+              event: {
+                eventType: "command_feedback",
+                timestamp: Date.now(),
+                data: {
+                  command: `/new ${parsed.requested}`,
+                  status: "error",
+                  message: `Unknown runtime "${parsed.requested}". Use /new, /new pi, or /new codex.`,
+                },
               },
             });
             return undefined;

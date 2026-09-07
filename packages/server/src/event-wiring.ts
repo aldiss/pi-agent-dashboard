@@ -30,6 +30,14 @@ import { detectWorktree, resolveMainRepoRoot } from "./worktree-manager.js";
 
 export interface EventWiringDeps {
   spawnGate?: SpawnGate;
+  /**
+   * Lazy accessor for the owned-Codex runtime manager. Lazy because the
+   * manager is constructed AFTER `wireEvents` in `server.ts` (it needs the
+   * ingest callback this returns) — the same reason `browser-gateway` takes
+   * `() => runtimeManager`. Absent/undefined ⇒ codex spawn is refused, never
+   * silently downgraded to pi.
+   */
+  getRuntimeManager?: () => import("./runtime/runtime-manager.js").CodexRuntimeManager | undefined;
   sessionManager: SessionManager;
   eventStore: EventStore;
   piGateway: PiGateway;
@@ -992,15 +1000,43 @@ export function wireEvents(deps: EventWiringDeps): (sessionId: string, event: Da
     }
 
     if (msg.type === "spawn_new_session") {
+      // The bridge REQUESTS a runtime; the server authorizes it. Absent ⇒ pi,
+      // so a bare `/new` is byte-identical to its pre-existing behaviour.
+      // `authorizeSpawn` refuses anything outside `enabledRuntimes`
+      // (`runtime-not-enabled`), so a disabled or unknown runtime dies at the
+      // gate rather than reaching an executor.
+      const requestedRuntime = msg.runtime === "codex" ? "codex" : "pi";
       const decision = runSpawnGate(deps.spawnGate, {
         channel: "bridge-ws", principal: null, remoteAddress: connection?.remoteAddress ?? null,
         origin: connection?.origin ?? null, forwarded: connection?.forwarded,
-        presentedBridgeToken: connection?.presentedBridgeToken ?? null, requestedCwd: msg.cwd, runtime: "pi",
+        presentedBridgeToken: connection?.presentedBridgeToken ?? null, requestedCwd: msg.cwd, runtime: requestedRuntime,
       });
       if (!decision.allowed) {
         const message = `Spawn refused: ${decision.reason}`;
         console.warn(`[dashboard] bridge ${message} (session ${sessionId || "unregistered"})`);
         connection?.send({ type: "spawn_result", cwd: msg.cwd, success: false, message });
+        return;
+      }
+      // Codex routes to the SAME executor the browser `spawn_session` path
+      // uses (`runtimeManager.launch`) — the bridge and browser ingresses must
+      // not diverge below the gate. `spawnPiSession` is a pi-only executor and
+      // cannot start a codex thread.
+      if (requestedRuntime === "codex") {
+        const manager = deps.getRuntimeManager?.();
+        void (async () => {
+          try {
+            if (!manager) throw new Error("Codex runtime is unavailable");
+            const session = await manager.launch({ cwd: decision.cwd });
+            connection?.send({ type: "spawn_result", cwd: msg.cwd, success: true, message: "Codex session started" });
+            browserGateway.broadcastToAll({
+              type: "spawn_result", cwd: msg.cwd, success: true, message: "Codex session started", pid: session.pid,
+            } as any);
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            console.error(`[dashboard] bridge codex spawn failed: ${message}`);
+            connection?.send({ type: "spawn_result", cwd: msg.cwd, success: false, message });
+          }
+        })();
         return;
       }
       // Fix-11 scope note: this is a FRESH spawn (no sessionFile) — it replays

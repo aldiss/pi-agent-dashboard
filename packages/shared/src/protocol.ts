@@ -1,7 +1,7 @@
 /**
  * Extension ↔ Server WebSocket protocol messages.
  */
-import type { DashboardEvent, CommandInfo, FlowInfo, SessionSource, ImageContent, FileEntry, TurnUsage, ContextUsage, ModelInfo, ProviderInfo, PiSessionInfo, OpenSpecPhase, RoleInfo, ExtensionUiModule, DecoratorDescriptor, MessageAuthor } from "./types.js";
+import type { DashboardEvent, CommandInfo, FlowInfo, SessionSource, ImageContent, FileEntry, TurnUsage, ContextUsage, ModelInfo, ProviderInfo, PiSessionInfo, OpenSpecPhase, RoleInfo, ExtensionUiModule, DecoratorDescriptor, MessageAuthor, SessionRuntime } from "./types.js";
 
 // ── Extension → Server ──────────────────────────────────────────────
 
@@ -300,6 +300,18 @@ export interface SpawnNewSessionMessage {
   type: "spawn_new_session";
   sessionId: string;
   cwd: string;
+  /**
+   * Runtime REQUESTED for the new session. Absent = pi (the default an agent
+   * gets from a bare `/new`, byte-unchanged on the wire).
+   *
+   * This is a REQUEST, not a grant, and it is scoped to a session that does
+   * not exist yet. The server re-authorizes it against `enabledRuntimes` in
+   * `authorizeSpawn` and assigns the created session's real runtime itself
+   * (`runtime-manager.ts` writes `runtime: "codex"` as a server-side literal).
+   * It therefore never CLAIMS a runtime for an EXISTING session — the case
+   * `pi-gateway.ts` guards by reading ownership from server state only.
+   */
+  runtime?: SessionRuntime;
 }
 
 // ── PromptBus protocol messages ─────────────────────────────────────
