@@ -11,6 +11,7 @@
  * See change: platform-command-executor.
  */
 import { describe, it, expect } from "vitest";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import url from "node:url";
 import {
@@ -136,15 +137,11 @@ describe("GIT_RECIPES registry", () => {
 
 // ── Integration tests against the actual repository ────────────────────────
 
-describe("git.* integration (runs against this repo)", () => {
+describe.skipIf(!existsSync(path.join(REPO_ROOT, ".git")))("git.* integration (runs against this repo)", () => {
   it("isGitRepo returns true for the repo root", () => {
     const result = isGitRepo({ cwd: REPO_ROOT });
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.value).toBe(true);
-  });
-
-  it("isGitRepoOr returns false for a non-repo directory", () => {
-    expect(isGitRepoOr({ cwd: require("node:os").tmpdir() })).toBe(false);
   });
 
   it("currentBranch returns a string for the repo", () => {
@@ -186,6 +183,13 @@ describe("git.* integration (runs against this repo)", () => {
     const result = diff({ cwd: REPO_ROOT, path: "package.json" });
     // tolerate: [1] means no diff is still ok
     expect(result.ok).toBe(true);
+  });
+
+});
+
+describe("git.* fallback (non-repository)", () => {
+  it("isGitRepoOr returns false for a non-repo directory", () => {
+    expect(isGitRepoOr({ cwd: require("node:os").tmpdir() })).toBe(false);
   });
 
   it("currentBranchOr returns a fallback when cwd is not a repo", () => {

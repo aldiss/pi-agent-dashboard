@@ -35,6 +35,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { isProcessAlive } from "@blackbelt-technology/pi-dashboard-shared/platform/process.js";
 
 export interface DriverLiveness {
   /** True iff a messenger-registry entry binds by sessionId AND its pid is kill-0 alive. */
@@ -61,13 +62,7 @@ export function messengerRegistryDir(): string {
 /** kill(pid, 0): true iff the process exists and is signalable (alive). Reuse-scoped by the caller's sessionId match. */
 export function pidAlive(pid: number): boolean {
   if (!Number.isInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (err: any) {
-    // ESRCH = no such process (dead). EPERM = exists but not ours (alive).
-    return err?.code === "EPERM";
-  }
+  return isProcessAlive(pid);
 }
 
 /**

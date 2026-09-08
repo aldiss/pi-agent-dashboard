@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeAll, beforeEach, vi } from "vitest";
-import { render, fireEvent, act } from "@testing-library/react";
+import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from "vitest";
+import { render, fireEvent, act, cleanup } from "@testing-library/react";
 import React from "react";
 import { ChatView } from "../ChatView.js";
 import { ThemeProvider } from "../ThemeProvider.js";
@@ -7,6 +7,8 @@ import { createInitialState, type ChatMessage, type PendingPrompt } from "../../
 import type { ToolContext } from "../tool-renderers/index.js";
 
 const defaultToolContext: ToolContext = { editors: [] };
+
+afterEach(cleanup);
 
 beforeAll(() => {
   // jsdom doesn't implement scrollTo
@@ -46,6 +48,15 @@ function stateWithToolMessage(overrides: Partial<ChatMessage> = {}) {
     ...overrides,
   });
   return state;
+}
+
+function renderVisibleToolMessage(overrides: Partial<ChatMessage> = {}) {
+  const state = stateWithToolMessage(overrides);
+  const view = render(<ThemeProvider><ChatView state={state} toolContext={defaultToolContext} /></ThemeProvider>);
+  expect(view.queryByRole("button", { name: /\$ ls -la/ })).toBeNull();
+  fireEvent.click(view.getByRole("button", { name: "Show all activity" }));
+  expect(view.queryByTestId("message-filter-banner")).toBeNull();
+  return view;
 }
 
 describe("ChatView", () => {
@@ -335,8 +346,7 @@ describe("ChatView", () => {
   });
 
   it("renders toolResult messages using ToolCallStep", () => {
-    const state = stateWithToolMessage();
-    const { container } = render(<ThemeProvider><ChatView state={state} toolContext={defaultToolContext} /></ThemeProvider>);
+    const { container } = renderVisibleToolMessage();
 
     // Should show the tool summary (ToolCallStep renders a button with summary text)
     const button = container.querySelector("button");
@@ -348,8 +358,7 @@ describe("ChatView", () => {
   });
 
   it("renders expandable tool call with args and result", () => {
-    const state = stateWithToolMessage();
-    const { container } = render(<ThemeProvider><ChatView state={state} toolContext={defaultToolContext} /></ThemeProvider>);
+    const { container } = renderVisibleToolMessage();
 
     // Click to expand
     const button = container.querySelector("button")!;
@@ -364,16 +373,14 @@ describe("ChatView", () => {
   });
 
   it("renders running tool call with spinner icon", () => {
-    const state = stateWithToolMessage({ toolStatus: "running" });
-    const { container } = render(<ThemeProvider><ChatView state={state} toolContext={defaultToolContext} /></ThemeProvider>);
+    const { container } = renderVisibleToolMessage({ toolStatus: "running" });
 
     const button = container.querySelector("button");
     expect(button!.querySelector("svg")).not.toBeNull();
   });
 
   it("renders error tool call with error icon", () => {
-    const state = stateWithToolMessage({ toolStatus: "error" });
-    const { container } = render(<ThemeProvider><ChatView state={state} toolContext={defaultToolContext} /></ThemeProvider>);
+    const { container } = renderVisibleToolMessage({ toolStatus: "error" });
 
     const button = container.querySelector("button");
     expect(button!.querySelector("svg")).not.toBeNull();
@@ -413,8 +420,7 @@ describe("ChatView", () => {
   });
 
   it("renders tool call step with left accent border", () => {
-    const state = stateWithToolMessage();
-    const { container } = render(<ThemeProvider><ChatView state={state} toolContext={defaultToolContext} /></ThemeProvider>);
+    const { container } = renderVisibleToolMessage();
     const toolStep = container.querySelector(".border-l-2.border-\\[var\\(--border-secondary\\)\\]");
     expect(toolStep).not.toBeNull();
   });

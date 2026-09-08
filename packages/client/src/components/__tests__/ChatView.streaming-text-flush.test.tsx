@@ -11,8 +11,8 @@
  * (non-blocking [text, toolCall] no regression).
  */
 
-import { describe, it, expect, beforeAll, vi } from "vitest";
-import { render } from "@testing-library/react";
+import { describe, it, expect, beforeAll, afterEach, vi } from "vitest";
+import { render, fireEvent, cleanup } from "@testing-library/react";
 import React from "react";
 import { ChatView } from "../ChatView.js";
 import { ThemeProvider } from "../ThemeProvider.js";
@@ -26,6 +26,8 @@ import type { ToolContext } from "../tool-renderers/index.js";
 import type { DashboardEvent } from "@blackbelt-technology/pi-dashboard-shared/types.js";
 
 const defaultToolContext: ToolContext = { editors: [] };
+
+afterEach(cleanup);
 
 beforeAll(() => {
   Element.prototype.scrollTo = () => {};
@@ -110,26 +112,14 @@ describe("Task 6.1: ask_user blocking flow — text bubble appears above questio
     );
     // Note: NO message_end. Question dialog is open while user thinks.
 
-    const { container } = render(
+    const { container, getByText } = render(
       <ThemeProvider>
         <ChatView state={state} toolContext={defaultToolContext} />
       </ThemeProvider>,
     );
 
-    // Find the assistant text bubble by its content.
-    const allElements = Array.from(container.querySelectorAll("*"));
-    const textBubble = allElements.find((el) =>
-      el.textContent?.includes("I'll ask you which path:"),
-    );
-
-    // Find the InteractiveUiCard — it has a `data-testid` or a recognisable
-    // element. Fall back to looking for the title text "pick".
-    const dialogNode = allElements.find(
-      (el) =>
-        el.textContent?.includes("pick") &&
-        // Skip ancestors that contain the assistant text too.
-        !el.textContent?.includes("I'll ask you which path:"),
-    );
+    const textBubble = getByText("I'll ask you which path:");
+    const dialogNode = getByText("pick");
 
     expect(textBubble).toBeDefined();
     expect(dialogNode).toBeDefined();
@@ -151,23 +141,17 @@ describe("Task 6.1a: long-running bash — text bubble appears above running too
       state = reduceEvent(state, toolUpdate(102 + i, "t1", `chunk #${i}`));
     }
 
-    const { container } = render(
+    const { container, getByRole, getByText, queryByRole } = render(
       <ThemeProvider>
         <ChatView state={state} toolContext={defaultToolContext} />
       </ThemeProvider>,
     );
 
-    const allElements = Array.from(container.querySelectorAll("*"));
-    const textBubble = allElements.find((el) =>
-      el.textContent?.includes("All 63 tests pass."),
-    );
-
-    // The running tool card — ToolCallStep renders a <button> with the
-    // command summary "$ npm test".
-    const toolButton = container.querySelector('button[title], button');
-    const runningButton = Array.from(container.querySelectorAll("button")).find(
-      (b) => b.textContent?.includes("npm test"),
-    );
+    expect(queryByRole("button", { name: /\$ npm test/ })).toBeNull();
+    fireEvent.click(getByRole("button", { name: "Show all activity" }));
+    const textBubble = getByText("All 63 tests pass. Run full test suite as final guard:");
+    const runningButton = getByRole("button", { name: /\$ npm test/ });
+    expect(state.streamingText).toBe("");
 
     expect(textBubble).toBeDefined();
     expect(runningButton).toBeDefined();
@@ -207,19 +191,16 @@ describe("Task 6.2: non-blocking [text, toolCall] — order unchanged", () => {
 
     expect(state.messages.filter((m) => m.role === "assistant")).toHaveLength(1);
 
-    const { container } = render(
+    const { container, getByRole, getByText, queryByRole } = render(
       <ThemeProvider>
         <ChatView state={state} toolContext={defaultToolContext} />
       </ThemeProvider>,
     );
 
-    const allElements = Array.from(container.querySelectorAll("*"));
-    const textBubble = allElements.find((el) =>
-      el.textContent?.includes("Editing file:"),
-    );
-    const toolButton = Array.from(container.querySelectorAll("button")).find(
-      (b) => b.textContent?.toLowerCase().includes("edit"),
-    );
+    expect(queryByRole("button", { name: /Edit file/ })).toBeNull();
+    fireEvent.click(getByRole("button", { name: "Show all activity" }));
+    const textBubble = getByText("Editing file:");
+    const toolButton = getByRole("button", { name: /Edit file/ });
 
     expect(textBubble).toBeDefined();
     expect(toolButton).toBeDefined();

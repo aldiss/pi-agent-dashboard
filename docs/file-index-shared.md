@@ -18,6 +18,8 @@
 | `packages/shared/src/__tests__/config-codex.test.ts` | Tests disabled Codex default, Responses-only config, environment names, and malformed-input refusal. |
 | `packages/shared/src/__tests__/config-spawn-boundary.test.ts` | Pins spawn config defaults, explicit delegation disable, auth-off secret retention, and malformed-setting refusal. |
 | `packages/shared/src/__tests__/config.test.ts` | Tests config loading and defaults; retains signing secret without valid OAuth providers. |
+| `packages/shared/src/__tests__/platform-git.test.ts` | Skips 7 repo-dependent assertions iff root `.git` absent. Keeps pure recipe and non-repo fallback tests enabled. Normal checkout runs all 24 tests. |
+| `packages/shared/src/__tests__/platform-process.test.ts` | Tests shared process primitives. Pins `isProcessAlive` permission-denied `EPERM` result to alive. |
 | `packages/shared/src/__tests__/platform/fs-permissions.test.ts` | Tests POSIX private-mode checks and Windows mode-bit bypass. |
 | `packages/shared/src/__tests__/tool-registry-definitions.test.ts` | Tests registered tool strategies including optional Codex executable resolution. |
 | `packages/shared/src/bridge-token.ts` | Creates `0600` bridge tokens atomically; reads without mutation; verifies with `timingSafeEqual`. |
@@ -25,6 +27,7 @@
 | `packages/shared/src/config.ts` | Validates guest-cell/spawn/Codex settings with auth-off credential retention, explicit delegation disable, and loopback bridge defaults. |
 | `packages/shared/src/external-session.ts` | Defines view-only `ExternalRuntime`, separate from owned-session `SessionRuntime`. |
 | `packages/shared/src/platform/fs-permissions.ts` | Checks POSIX owner-only mode bits without treating Windows mode bits as ACL evidence. |
+| `packages/shared/src/platform/process.ts` | Centralizes process termination and liveness. `isProcessAlive` preserves `EPERM` = alive. Serves `driver-liveness.ts:pidAlive`; direct-kill lint remains unchanged. |
 | `packages/shared/src/protocol.ts` | Includes `SpawnResultToExtensionMessage` in server→extension union for socket-directed spawn outcomes. |
 | `packages/shared/src/session-meta.ts` | Persists optional runtime/native-thread metadata alongside server-derived cell ownership. |
 | `packages/shared/src/speaker-wrap.ts` | Wraps server-derived authors only at model-facing send boundaries. |

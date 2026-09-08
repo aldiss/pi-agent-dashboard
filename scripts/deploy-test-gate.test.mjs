@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import test from "node:test";
-import DeployTestReporter, { ARCHIVE_SKIPS, compareReports, validateReport } from "./deploy-test-gate.mjs";
+import DeployTestReporter, { compareReports, validateReport } from "./deploy-test-gate.mjs";
 
 const ordinary = "packages/shared/src/__tests__/gate-fixture.test.ts";
 const other = "packages/server/src/__tests__/gate-fixture.test.ts";
@@ -31,9 +31,9 @@ function failing() {
   return report([file(ordinary, [{ ...healthy }, { ...broken }])]);
 }
 
-test("archive exclusion names only checkout-dependent platform-git, with a reason", () => {
-  assert.deepEqual(ARCHIVE_SKIPS.map((entry) => entry.file), [archiveOnly]);
-  assert.ok(ARCHIVE_SKIPS.every((entry) => typeof entry.reason === "string" && entry.reason.trim()));
+test("Git assertion failures participate in the same regression comparison as every other file", () => {
+  const candidate = report([file(), file(archiveOnly, [{ ...broken }])]);
+  assert.deepEqual(compareReports(report(), candidate).newFailures, [{ file: archiveOnly, test: broken.name }]);
 });
 
 test("validates passing assertions and records meaningful totals", () => {
@@ -57,12 +57,15 @@ test("git-operations remains runnable because its git repositories are temporary
   assert.equal(validateReport(input, 0).totals.passed, 1);
 });
 
-test("explicitly skipped archive-only suite may appear, but must never execute", () => {
+test("Git file can execute pure tests while conditionally skipping checkout integration", () => {
   const skipped = file(archiveOnly, [{ name: "requires checkout", state: "skipped" }]);
   skipped.state = "skipped";
   assert.equal(validateReport(report([file(), skipped]), 0).totals.skipped, 1);
-  assert.throws(() => validateReport(report([file(), file(archiveOnly)]), 0));
-  assert.throws(() => validateReport(report([file(), file(archiveOnly, [{ ...broken }])]), 1));
+  assert.equal(validateReport(report([file(archiveOnly)]), 0).totals.passed, 1);
+  const mixed = file(archiveOnly, [{ ...healthy }, { name: "requires checkout", state: "skipped" }]);
+  assert.deepEqual(validateReport(report([mixed]), 0).totals, {
+    files: 1, tests: 2, passed: 1, failed: 0, skipped: 1,
+  });
 });
 
 test("identical baseline failures are known, not regressions", () => {

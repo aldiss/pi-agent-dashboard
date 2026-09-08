@@ -90,8 +90,8 @@ export function isProcessAlive(pid: number, opts: { kill?: KillFn } = {}): boole
   try {
     kill(pid, 0);
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException)?.code === "EPERM";
   }
 }
 

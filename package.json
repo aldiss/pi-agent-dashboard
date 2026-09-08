@@ -50,7 +50,7 @@
     "postinstall": "node packages/server/scripts/fix-pty-permissions.cjs",
     "dev": "npm run dev --workspace=@blackbelt-technology/pi-dashboard-web",
     "build": "npm run build --workspace=@blackbelt-technology/pi-dashboard-web",
-    "test": "node --test scripts/deploy-test-gate.test.mjs && HOME=$(mktemp -d -t pi-test-XXXXXX) NODE_OPTIONS=\"--localstorage-file=$(mktemp -t pi-test-ls-XXXXXX)\" vitest run",
+    "test": "node --test scripts/deploy-test-gate.test.mjs scripts/deploy-build-only.test.mjs && HOME=$(mktemp -d -t pi-test-XXXXXX) NODE_OPTIONS=\"--localstorage-file=$(mktemp -t pi-test-ls-XXXXXX)\" vitest run",
     "test:watch": "HOME=$(mktemp -d -t pi-test-XXXXXX) NODE_OPTIONS=\"--localstorage-file=$(mktemp -t pi-test-ls-XXXXXX)\" vitest",
     "test:bootstrap": "HOME=$(mktemp -d -t pi-test-XXXXXX) NODE_OPTIONS=\"--localstorage-file=$(mktemp -t pi-test-ls-XXXXXX)\" vitest run packages/shared/src/__tests__/bootstrap",
     "test:bootstrap:watch": "HOME=$(mktemp -d -t pi-test-XXXXXX) vitest packages/shared/src/__tests__/bootstrap",

@@ -8,10 +8,7 @@ import { parseArgs } from "node:util";
 
 const SCRIPT = fileURLToPath(import.meta.url);
 const REPO = resolve(dirname(SCRIPT), "..");
-export const ARCHIVE_SKIPS = [{
-  file: "packages/shared/src/__tests__/platform-git.test.ts",
-  reason: "integration assertions require the checkout's .git; git archive omits it",
-}];
+const BASELINE_DIRECTORY = "full-suite-v2";
 const log = (message) => console.log(`[deploy:test-gate] ${message}`);
 const key = ({ file, test }) => JSON.stringify([file, test]);
 const check = (condition, message) => { if (!condition) throw new Error(message); };
@@ -74,9 +71,6 @@ export function validateReport(report, exitCode) {
     }
     check((file.state === "failed") === (failed > 0), `suite failure does not match assertions in ${file.file}`);
     check(file.state !== "skipped" || file.tests.every((test) => test.state === "skipped"), `skipped file contains executed assertions: ${file.file}`);
-    if (ARCHIVE_SKIPS.some((skip) => skip.file === file.file)) {
-      check(file.state === "skipped" && file.tests.every((test) => test.state === "skipped"), `archive exclusion did not apply: ${file.file}`);
-    }
   }
   check(totals.passed > 0, "test run has no passing assertions; refusing an empty or wholly skipped gate");
   const expectedExit = totals.failed > 0 ? 1 : 0;
@@ -103,10 +97,7 @@ function runTests(cwd) {
   const evidence = mkdtempSync(join(tmpdir(), "pi-deploy-tests-"));
   const reportPath = join(evidence, "results.json");
   const args = ["test", "--", "--reporter=default", `--reporter=${SCRIPT}`, "--allowOnly=false"];
-  for (const skip of ARCHIVE_SKIPS) {
-    log(`SKIP ${skip.file} — ${skip.reason}`);
-    args.push(`--exclude=${join(root, skip.file)}`);
-  }
+  log("full suite; environment-dependent skips belong to individual tests, never file exclusions");
   log(`HOME-jailed npm test in ${root}; report: ${reportPath}`);
   const result = spawnSync("npm", args, {
     cwd: root,
@@ -129,18 +120,18 @@ function deployedCommit(prodRoot) {
 
 function readBaseline(path, commit) {
   const baseline = JSON.parse(readFileSync(path, "utf8"));
-  check(baseline.version === 1 && baseline.commit === commit, `baseline provenance mismatch: ${path}`);
-  check(JSON.stringify(baseline.excludedFiles) === JSON.stringify(ARCHIVE_SKIPS.map((skip) => skip.file)), `baseline archive policy mismatch: ${path}`);
+  check(baseline.version === 2 && baseline.commit === commit, `baseline provenance mismatch: ${path}`);
+  check(JSON.stringify(baseline.excludedFiles) === "[]", `baseline archive policy mismatch: ${path}`);
   validateReport(baseline.report, baseline.report?.reason === "failed" ? 1 : 0);
   return baseline;
 }
 
 function saveBaseline(prodRoot, commit, report) {
-  const directory = join(prodRoot, "test-baselines");
+  const directory = join(prodRoot, "test-baselines", BASELINE_DIRECTORY);
   const path = join(directory, `${commit}.json`);
   mkdirSync(directory, { recursive: true });
   if (existsSync(path)) return readBaseline(path, commit); // Never widen an existing baseline.
-  const baseline = { version: 1, commit, capturedAt: new Date().toISOString(), excludedFiles: ARCHIVE_SKIPS.map((skip) => skip.file), report };
+  const baseline = { version: 2, commit, capturedAt: new Date().toISOString(), excludedFiles: [], report };
   writeFileSync(path, JSON.stringify(baseline, null, 2) + "\n", { flag: "wx" });
   log(`recorded baseline ${commit}: ${path}`);
   return baseline;
@@ -148,7 +139,7 @@ function saveBaseline(prodRoot, commit, report) {
 
 export function ensureBaseline({ repo = REPO, prodRoot }) {
   const commit = deployedCommit(prodRoot);
-  const path = join(prodRoot, "test-baselines", `${commit}.json`);
+  const path = join(prodRoot, "test-baselines", BASELINE_DIRECTORY, `${commit}.json`);
   if (existsSync(path)) {
     log(`baseline = deployed ref ${commit}: ${path}`);
     return readBaseline(path, commit);

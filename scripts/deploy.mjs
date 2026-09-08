@@ -7,14 +7,14 @@
  * A `git archive` of a committed ref is materialised into <prod-root>/releases/<sha>/,
  * deps are installed in-place (npm ci — recreates the workspace symlinks so the
  * release runs its OWN packages/, not the dev tree's), the client is built, the
- * test-gate runs, RELEASE.json is stamped, and <prod-root>/current is atomically
- * repointed. Rollback = repoint `current` at the retained `previous`.
+ * test-gate runs, and RELEASE.json is stamped. Only --restart repoints
+ * <prod-root>/current. Rollback = repoint `current` at the retained `previous`.
  *
  * jiti is KEPT (no compile) — the release still runs `node --import jiti cli.ts`,
  * only from an immutable checkout. Compile-to-JS is a separate later gate (Stage-1b).
  *
  * BUILD and CUTOVER are separate: this script BUILDS + validates by default and
- * does NOT restart prod. The live cutover restart is a deliberate, watched step
+ * does NOT repoint current, register bridges, or restart prod. Cutover is a watched step
  * (`--restart`, or done by hand) because Stage-1a does NOT fix the EADDRINUSE
  * restart-race (that needs Stage-2's single-identity supervisor).
  *
@@ -25,7 +25,7 @@
  *   flags: --prod-root <dir> --skip-tests --skip-client-build --no-archive-guard
  */
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, rmSync, symlinkSync, readlinkSync, readFileSync, readdirSync, writeFileSync, renameSync, realpathSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, readlinkSync, readFileSync, readdirSync, writeFileSync, renameSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { runDeployTestGate } from "./deploy-test-gate.mjs";
@@ -66,21 +66,19 @@ function resolveRef(ref) {
 function buildRelease(a) {
   const sha = resolveRef(a.ref);
   const releasesDir = join(a.prodRoot, "releases");
-  const releaseDir = join(releasesDir, sha);
   mkdirSync(releasesDir, { recursive: true });
-  if (existsSync(releaseDir)) { log(`release ${sha} already materialised, rebuilding deps/client in place`); }
-  else {
-    mkdirSync(releaseDir, { recursive: true });
-    // git archive = ONLY committed tree content (no untracked, no node_modules).
-    // The archive-guard proves no untracked file smuggles in (acceptance gate).
-    log(`git archive ${sha} -> ${releaseDir}`);
-    // Streamed archive to a temp tar (binary-safe), then extract. git archive
-    // includes ONLY committed tree content (no untracked, no node_modules).
-    const tmpTar = join(releasesDir, `.${sha}.tar`);
-    sh("git", ["archive", "--format=tar", "-o", tmpTar, sha]);
-    sh("tar", ["-xf", tmpTar, "-C", releaseDir]);
-    rmSync(tmpTar, { force: true });
-  }
+  const canonicalDir = join(releasesDir, sha);
+  const releaseDir = existsSync(canonicalDir) ? mkdtempSync(join(releasesDir, `${sha}-`)) : canonicalDir;
+  mkdirSync(releaseDir, { recursive: true });
+  // git archive = ONLY committed tree content (no untracked, no node_modules).
+  // The archive-guard proves no untracked file smuggles in (acceptance gate).
+  log(`git archive ${sha} -> ${releaseDir}`);
+  // Streamed archive to a temp tar (binary-safe), then extract. git archive
+  // includes ONLY committed tree content (no untracked, no node_modules).
+  const tmpTar = join(releasesDir, `.${sha}.tar`);
+  sh("git", ["archive", "--format=tar", "-o", tmpTar, sha]);
+  sh("tar", ["-xf", tmpTar, "-C", releaseDir]);
+  rmSync(tmpTar, { force: true });
   if (a.archiveGuard) {
     // Acceptance gate: the release tree contains ZERO untracked working-tree files.
     // (git archive can't include them; this asserts the invariant explicitly.)
@@ -266,14 +264,14 @@ function main() {
   }
   if (!a.ref) die("--ref <git-ref> is required (deploy a committed ref, never the working tree).");
   const { sha, releaseDir } = buildRelease(a);
-  swapCurrent(a, releaseDir);
-  registerBridge(a);
-  log(`BUILD COMPLETE. <prod-root>/current -> release ${sha}.`);
+  log(`BUILD COMPLETE. Validated release ${sha} at ${releaseDir}.`);
   if (a.restart) {
+    swapCurrent(a, releaseDir);
+    registerBridge(a);
     log("--restart: cutover restart is a DELIBERATE, watched step and is intentionally NOT automated here.");
     log("Cut over by repointing the launchd wrapper at <prod-root>/current + supervised restart, with rollback armed.");
   } else {
-    log("No restart (default). Validate the release on a test port, then cut over deliberately.");
+    log("Build only (default): current, previous, bridge settings, and running production unchanged.");
     log(`Validate: PI_DASHBOARD_URL unset, run  node --import <jiti> ${join(releaseDir, "packages/server/src/cli.ts")} start --port <TESTPORT> --pi-port <TESTPIPORT>  and curl /api/health (expect commit=${sha}, version!=unknown, gatewayListening=true).`);
   }
 }

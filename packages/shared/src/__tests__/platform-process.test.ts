@@ -89,6 +89,14 @@ describe("isProcessAlive", () => {
     });
     expect(isProcessAlive(12345, { kill })).toBe(false);
   });
+
+  it("returns true for EPERM because the process exists but cannot be signalled", () => {
+    const kill = vi.fn().mockImplementation(() => {
+      throw Object.assign(new Error("not permitted"), { code: "EPERM" });
+    });
+    expect(isProcessAlive(12345, { kill })).toBe(true);
+    expect(kill).toHaveBeenCalledWith(12345, 0);
+  });
 });
 
 describe("killProcess", () => {
