@@ -21,6 +21,7 @@
 | `packages/server/src/__tests__/driver-liveness.test.ts` | Tests PID liveness, UUID registry joins, PID-reuse guard, display-only heartbeat, absent registry, and malformed-entry fallback. |
 | `packages/server/src/__tests__/git-operations.test.ts` | Tests Git operations using temporary repositories. Remote-branch case uses local clone/fetch fixtures. |
 | `packages/server/src/__tests__/headless-shutdown-fallback.test.ts` | Tests shutdown fallback terminating real dummy child after bridge disconnects. |
+| `packages/server/src/__tests__/oauth-callback-server.test.ts` | Tests callback lifecycle on fixed high ports `19876`/`19877`. Requests target `127.0.0.1` to match owned callback listener and avoid separate `::1` listener. |
 | `packages/server/src/__tests__/translator-claim-gate-equivalence.test.ts` | Pins mismatch, `UNKNOWN`, invalid output, timeout, and unavailable verifier to warned revoice output. Pins exact status, reason, and selected text. |
 | `packages/server/src/__tests__/translator-claim-gate-service.test.ts` | Pins exact claim match to warning-free revoice. Pins ordinary verifier rejection to `meaning-judge-rejected`. Pins evaluator instruction to original. |
 | `packages/server/src/__tests__/translator-claim-transport.test.ts` | Pins verifier transport failure to warned revoice output. Pins zero-residual transport acceptance. Pins transport diagnostics. |
@@ -74,6 +75,7 @@
 | `packages/server/src/driver-registry.ts` | Thin FS wrapper over `~/.pi/orchestration-state/cell-driver-registry.json`. Exports `createDriverRegistry`, `driverRegistry` singleton, pure helpers `driverLookupKeys` + `indexDriverNames`, consts `DRIVER_REGISTRY_PATH` + `DEFAULT_DRIVER_REGISTRY_TTL_MS`. 5s TTL cache plus coarse `watch` invalidation. Sister of `audience-registry.ts`. Indexes row key, `real_name`, `tmux` per driver row. Indexes all rows regardless of `state`. `isRegisteredDriver(name)` matches exact lowercased name, plus leading segment before a `" — "` status suffix. Missing/unparseable registry yields empty index and `false`. Never throws. Stamps `DashboardSession.isRegisteredDriver`, which drives sidebar `drivers` tier in `classifyTier`. See change: classify-drivers-from-registry. |
 | `packages/server/src/event-wiring.ts` | Shares normalized runtime ingestion and bridge spawn gating while protecting Codex rows from batch/dedup/ghost mutation. |
 | `packages/server/src/headless-pid-registry.ts` | Tracks runtime-tagged PID ownership with awaited Codex termination and unchanged pi reclamation rules. |
+| `packages/server/src/oauth-callback-server.ts` | Receives OAuth callbacks on `127.0.0.1`. Closes after callback or timeout. |
 | `packages/server/src/pi-gateway.ts` | Enforces socket-derived bridge spawn evidence and server-owned Codex ID isolation. |
 | `packages/server/src/process-manager.ts` | Requires permitted cwd roots on every launch; validates canonical directory containment before/after hooks. |
 | `packages/server/src/push/push-dispatcher.ts` | Applies optional per-token/session `canDeliver` gate before automatic fanout. |

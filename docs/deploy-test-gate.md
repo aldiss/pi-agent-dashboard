@@ -60,6 +60,8 @@ Shared helper preserves `EPERM` = alive; `platform-process.test.ts` adds regress
 Include globs, output filters, zero-reference assertions, and timeout remain unchanged.
 `MarkdownContent.test.tsx` highlighting test awaits real lazy imports via `vi.dynamicImportSettled` inside `act`.
 Test retains actual highlighted markup assertion and original timeouts; adds no mocks.
+`oauth-callback-server.test.ts` requests target `127.0.0.1` to match owned callback listener and avoid separate `::1` listener.
+Test ports `19876`/`19877` remain fixed high ports; product code, assertions, and timeouts remain unchanged.
 `GATE-REPORT.md` records measured acceptance commands, results, failure control, and production-state checks.
 
 ## Commands and proof

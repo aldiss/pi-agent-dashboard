@@ -4,7 +4,8 @@ import { startCallbackServer, closeAllCallbackServers } from "../oauth-callback-
 
 function httpGet(port: number, path: string): Promise<{ status: number; body: string }> {
   return new Promise((resolve, reject) => {
-    const req = http.get(`http://localhost:${port}${path}`, (res) => {
+    // Match startCallbackServer's IPv4 bind; localhost may select another IPv6 listener.
+    const req = http.get(`http://127.0.0.1:${port}${path}`, (res) => {
       let body = "";
       res.on("data", (c) => (body += c));
       res.on("end", () => resolve({ status: res.statusCode!, body }));
