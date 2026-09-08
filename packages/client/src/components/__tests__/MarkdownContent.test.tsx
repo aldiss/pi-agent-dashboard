@@ -48,6 +48,7 @@ describe("MarkdownContent", () => {
   it("renders fenced code block with syntax highlighter", async () => {
     const content = "```javascript\nconst x = 42;\n```";
     const { container } = render(<ThemeProvider><MarkdownContent content={content} /></ThemeProvider>);
+    await act(() => vi.dynamicImportSettled());
     // SyntaxHighlighter is now lazy (HighlightedCode Suspense): the highlighted
     // markup with the language- class appears once the dynamic import resolves.
     await waitFor(() => {

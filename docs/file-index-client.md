@@ -13,6 +13,7 @@ Hooks and hook tests → [file-index-client-hooks.md](./file-index-client-hooks.
 | `packages/client/src/components/ChatView.tsx` | Renders warned translation candidate. Shows bounded warning labels. Keeps original one gesture away. |
 | `packages/client/src/components/__tests__/ChatView.streaming-text-flush.test.tsx` | Reveals bash/edit activity through real `Show all activity` control. Locates actual text elements instead of ancestors for DOM order assertions. |
 | `packages/client/src/components/__tests__/ChatView.test.tsx` | Pins warned candidate display, readable uncertainty, original toggle, and disabled-state warning suppression. Five tool-rendering tests assert default hidden state, click real `Show all activity`, and preserve assertions. Cleans up DOM after each test. Product component unchanged. |
+| `packages/client/src/components/__tests__/MarkdownContent.test.tsx` | Tests Markdown rendering, lazy syntax highlighting, image resolution, and click-to-open lightbox. Awaits actual lazy imports without mocks or timeout changes. |
 | `packages/client/src/lib/__tests__/event-reducer.test.ts` | Pins warning storage beside translation. Preserves original content, session-log bytes, and model context. |
 | `packages/client/src/lib/event-reducer.ts` | Stores `TranslationWarningCode[]` beside rendered translation. Leaves `content` unchanged. |
 | `packages/client/src/App.tsx` | Threads runtime-aware spawn, resume, and composer controls through dashboard views. |

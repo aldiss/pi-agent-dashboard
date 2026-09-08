@@ -8,6 +8,7 @@
 
 | File | Purpose |
 |------|---------|
+| `packages/server/src/__tests__/build1b-ws-closure.test.ts` | Tests operator-only shutdown and other session-action enforcement through real WebSocket connections. |
 | `packages/server/src/__tests__/cell-access-authz.test.ts` | Tests cell check before D N=2 admission; pins operator/service access and existing guest action limits. |
 | `packages/server/src/__tests__/cell-access-config.test.ts` | Tests `guestCellGrants` parsing, fail-closed coupling, partial-write preservation, and restart flag. |
 | `packages/server/src/__tests__/cell-access-e2e.test.ts` | Tests assembled REST + WS boundary. Pins same-CWD isolation, plugin-origin denial, SPA deep links, service continuity, and live `allowedUsers` revocation snapshots. |
@@ -18,6 +19,8 @@
 | `packages/server/src/__tests__/cell-access-ws.test.ts` | Tests exact guest WS allowlists, replacement snapshots, `session_removed`, safe `pong`, unknown-type denial, and plugin origin. |
 | `packages/server/src/__tests__/cell-access.test.ts` | Tests registry-derived cell identity, exact log/session joins, no CWD/PID authority, selector union, and absent-map legacy mode. |
 | `packages/server/src/__tests__/driver-liveness.test.ts` | Tests PID liveness, UUID registry joins, PID-reuse guard, display-only heartbeat, absent registry, and malformed-entry fallback. |
+| `packages/server/src/__tests__/git-operations.test.ts` | Tests Git operations using temporary repositories. Remote-branch case uses local clone/fetch fixtures. |
+| `packages/server/src/__tests__/headless-shutdown-fallback.test.ts` | Tests shutdown fallback terminating real dummy child after bridge disconnects. |
 | `packages/server/src/__tests__/translator-claim-gate-equivalence.test.ts` | Pins mismatch, `UNKNOWN`, invalid output, timeout, and unavailable verifier to warned revoice output. Pins exact status, reason, and selected text. |
 | `packages/server/src/__tests__/translator-claim-gate-service.test.ts` | Pins exact claim match to warning-free revoice. Pins ordinary verifier rejection to `meaning-judge-rejected`. Pins evaluator instruction to original. |
 | `packages/server/src/__tests__/translator-claim-transport.test.ts` | Pins verifier transport failure to warned revoice output. Pins zero-residual transport acceptance. Pins transport diagnostics. |
@@ -26,6 +29,7 @@
 | `packages/server/src/__tests__/translator-revoice-selection.test.ts` | Pins exactly matched revoice winning below lexical coverage floor. Pins deterministic hard issue to original after successful claim review. |
 | `packages/server/src/__tests__/translator-selection-evidence-privacy.test.ts` | Pins sanitized v2 planted-token control. Pins numeric-only warning counts. Pins byte/hash-preserving quarantine, 10 MiB one-archive rotation, and 0700/0600 modes. |
 | `packages/server/src/__tests__/translator-service.test.ts` | Pins deterministic detector kind and version. Pins four injection hard-fail arms outside all-five-true judge. Pins clean acceptance control. Pins exact warning codes and remaining hard floors. |
+| `packages/server/src/__tests__/worktree-manager.test.ts` | Tests worktree operations using temporary Git repositories and worktrees. |
 | `packages/server/src/browser-gateway.ts` | Applies final WS filtering. Tracks plugin origin. Sends principal-filtered replacement snapshots after registry or `allowedUsers` changes. |
 | `packages/server/src/browser-handlers/handler-context.ts` | Carries `CellAccessController` through browser handlers. |
 | `packages/server/src/browser-handlers/session-action-handler.ts` | Passes server-resolved target into `send_prompt`, `/reload`, command-form, and auto-resume authorization. Abort gate stays in `browser-gateway.ts`. |
