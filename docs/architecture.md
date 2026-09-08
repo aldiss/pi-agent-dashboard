@@ -240,6 +240,17 @@ Absent `DashboardSession.runtime` retains pi behavior.
 Owned Codex sessions carry `source:"dashboard"`, `runtime:"codex"`, and native `codexThreadId`.
 Optional `codexThreadPath` records native rollout location, not pi `sessionFile`.
 
+`packages/extension/src/bridge.ts` registers native `input` handler before event forwarding.
+Native TUI/RPC/extension `/new [pi|codex]` or invalid-runtime input routes through existing `createCommandHandler`; returns `handled` before model inference.
+Invalid runtime emits `command_feedback` plus native notification.
+Thrown errors trigger native notification; input remains consumed.
+Dashboard `send_prompt` behavior remains unchanged.
+Native TUI bare `/new` remains pi built-in.
+`initBridge` rejects different `ExtensionAPI` while parent owns bridge.
+Active `session_shutdown` clears `state.pi` after disconnect; replacement registers with increasing generation.
+Stale native handlers and shutdown cannot affect replacement.
+`session_start` sets replacement `cachedCtx`/`cachedHasUI` before `handleSessionChange` to avoid stale `ctx.model` reads; assigns `sessionId` afterward.
+
 `runtime/codex-adapter.ts` launches `codex app-server` through shared executable registry.
 Child uses piped stdin/stdout/stderr with `shell:false` and `detached:false`.
 Transport uses newline-delimited JSON-RPC, not ACP, terminal emulation, or tmux.

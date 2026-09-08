@@ -941,6 +941,22 @@ function initBridge(pi: ExtensionAPI) {
   function sendSessionNameIfChanged() { const bc = syncBc(); _sendSessionNameIfChanged(bc); applyBc(bc); }
   function sendGitInfoIfChanged(cwd: string) { const bc = syncBc(); _sendGitInfoIfChanged(bc, cwd); applyBc(bc); }
 
+  pi.on("input", async (event, ctx) => {
+    if (!isActive()) return;
+    const parsed = parseSendPrompt(event.text);
+    if (parsed.type !== "new" && parsed.type !== "new-invalid") return;
+    cachedCtx = ctx;
+    try {
+      await commandHandler.handle({ type: "send_prompt", sessionId, text: event.text });
+      if (parsed.type === "new-invalid") {
+        ctx.ui.notify(`Unsupported session runtime: ${parsed.requested}`, "error");
+      }
+    } catch (error) {
+      ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+    }
+    return { action: "handled" };
+  });
+
   // Forward all pi core events to the dashboard.
   // Events with special enrichment logic:
   const enrichedEventTypes = [
@@ -1163,7 +1179,6 @@ function initBridge(pi: ExtensionAPI) {
   }
 
   // ── Message-queue: TUI-typed enqueue / steer detection ──
-  // A SECOND listener on `input` (the first forwards it as a passthrough). The
   // `input` event is the only extension-reachable signal for a message typed
   // in pi's OWN TUI while the agent is streaming. We act on it ONLY when
   // `source !== "extension"/"rpc"` (dashboard sends arrive via sendUserMessage
@@ -1240,6 +1255,9 @@ function initBridge(pi: ExtensionAPI) {
     // decide when to use it based on context. Server fanout handles Off/On modes.
     registerPushNotifyUserTool(pi);
 
+    cachedHasUI = ctx.hasUI;
+    cachedCtx = ctx;
+
     // On session switch/fork (0.65.0+: event.reason replaces session_switch/session_fork events),
     // unregister the old session before re-registering the new one.
     const reason = _event?.reason;
@@ -1247,8 +1265,6 @@ function initBridge(pi: ExtensionAPI) {
       handleSessionChange(ctx);
     }
 
-    cachedHasUI = ctx.hasUI;
-    cachedCtx = ctx;
     sessionId = newSessionId;
 
     // Wrap sessionManager.appendMessage so that future message_end events can
@@ -1827,6 +1843,7 @@ function initBridge(pi: ExtensionAPI) {
     // Give time for the unregister to send
     await new Promise((resolve) => setTimeout(resolve, 100));
     connection.disconnect();
+    if (isActive()) getBridgeState().pi = undefined;
   }));
 
   // Re-send models list when custom providers finish async discovery
