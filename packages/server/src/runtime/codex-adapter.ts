@@ -3,6 +3,8 @@ import { isProcessAlive, killProcess } from "@blackbelt-technology/pi-dashboard-
 import { getDefaultRegistry } from "@blackbelt-technology/pi-dashboard-shared/tool-registry/index.js";
 import { wrapForSend } from "@blackbelt-technology/pi-dashboard-shared/speaker-wrap.js";
 import type { CodexRuntimeConfig } from "@blackbelt-technology/pi-dashboard-shared/config.js";
+import type { MessageEnqueuedEventData, QueueStateEventData } from "@blackbelt-technology/pi-dashboard-shared/protocol.js";
+import { randomUUID } from "node:crypto";
 import { createNdjsonRpc, type RpcId } from "./ndjson-rpc.js";
 import { prepareCodexConfig } from "./codex-config.js";
 import { createCodexEventMapper } from "./codex-event-mapper.js";
@@ -17,6 +19,7 @@ export interface CodexAdapterOptions {
   onProcess(process: ChildProcess): void;
   onThread(info: { threadId: string; threadPath?: string; model?: string }): void;
   onEvent(event: RuntimeEvent): void;
+  onSendFailed?(input: RuntimeSendInput, reason: string): void;
   onExit(error?: Error): void;
 }
 
@@ -35,6 +38,8 @@ function bounded<T>(promise: Promise<T>, timeoutMs: number, operation: string): 
 }
 
 interface ActiveTurn {
+  input: RuntimeSendInput;
+  queued: boolean;
   id?: string;
   idReady: ReturnType<typeof deferred<string | undefined>>;
   done: ReturnType<typeof deferred<{ status: string; error?: Error }>>;
@@ -56,6 +61,7 @@ export async function createCodexAdapter(options: CodexAdapterOptions): Promise<
   let threadPath: string | undefined;
   let model: string | undefined;
   let active: ActiveTurn | undefined;
+  const queue: RuntimeSendInput[] = [];
   let lastCompletedId: string | undefined;
   let closed = false;
   let exited = false;
@@ -69,6 +75,31 @@ export async function createCodexAdapter(options: CodexAdapterOptions): Promise<
     return new Error(secret ? text.split(secret).join("[redacted]") : text);
   };
 
+  function queueState(source: QueueStateEventData["source"] = "lifecycle") {
+    const data: QueueStateEventData = { followUp: queue.map(input => ({ queueNonce: input.queueNonce, text: input.text,
+      source: "dashboard", ...(input.author ? { author: input.author } : {}) })),
+      steeringCount: 0, pendingMessageCount: queue.length, source };
+    options.onEvent({ eventType: "queue_state", timestamp: Date.now(), data });
+  }
+
+  function clearQueue(reason: string) {
+    if (!queue.length) return;
+    for (const input of queue.splice(0)) {
+      options.onSendFailed?.(input, reason);
+      options.onEvent({ eventType: "command_feedback", timestamp: Date.now(), data: {
+        command: input.text, status: "error", message: reason, queueNonce: input.queueNonce,
+      } });
+    }
+    queueState();
+  }
+
+  function drain() {
+    if (closed || active || !queue.length) return;
+    const input = queue.shift()!;
+    void sendTurn(input, true).catch(() => {});
+    queueState();
+  }
+
   function finish(error?: Error, status = error ? "failed" : "completed") {
     const turn = active;
     active = undefined;
@@ -79,6 +110,8 @@ export async function createCodexAdapter(options: CodexAdapterOptions): Promise<
       turn.done.resolve({ status, error });
     }
     mapper.finishTurn(error?.message);
+    if (turn?.queued && error) options.onSendFailed?.(turn.input, error.message);
+    queueMicrotask(drain);
   }
 
   function notifyExit() {
@@ -92,6 +125,7 @@ export async function createCodexAdapter(options: CodexAdapterOptions): Promise<
     if (termination) return termination;
     closed = true;
     stopReason ??= reason;
+    clearQueue(stopReason?.message ?? "Queued message cancelled: session closed");
     try { finish(stopReason); } catch (mappingError) { stopReason ??= asError(mappingError); }
     rpc?.close(stopReason);
     termination = (async () => {
@@ -196,32 +230,46 @@ export async function createCodexAdapter(options: CodexAdapterOptions): Promise<
     throw failure;
   }
 
+  async function sendTurn(input: RuntimeSendInput, queued = false) {
+    if (closed) throw new Error("Codex session ended");
+    const turn: ActiveTurn = { input, queued, idReady: deferred(), done: deferred(), completed: false };
+    active = turn;
+    try {
+      mapper.beginTurn(input);
+      const result = await rpc!.request("turn/start", {
+        threadId,
+        input: [
+          { type: "text", text: wrapForSend(input.text, input.author), text_elements: [] },
+          ...(input.images ?? []).map(image => ({ type: "image", url: `data:${image.mimeType};base64,${image.data}` })),
+        ],
+        ...(options.config.reasoningEffort ? { effort: options.config.reasoningEffort } : {}),
+      });
+      setTurnId(turn, result?.turn?.id);
+    } catch (error) {
+      const failure = asError(error);
+      await stop(failure);
+      throw failure;
+    }
+  }
+
   return {
     runtime: "codex", threadId, threadPath, model, process, pid: process.pid,
     isStreaming: () => !!active && !closed,
     async send(input: RuntimeSendInput) {
       if (closed) throw new Error("Codex session ended");
-      if (active) throw new Error("Codex turn already active");
-      const turn: ActiveTurn = { idReady: deferred(), done: deferred(), completed: false };
-      active = turn;
-      try {
-        mapper.beginTurn(input);
-        const result = await rpc!.request("turn/start", {
-          threadId,
-          input: [
-            { type: "text", text: wrapForSend(input.text, input.author), text_elements: [] },
-            ...(input.images ?? []).map(image => ({ type: "image", url: `data:${image.mimeType};base64,${image.data}` })),
-          ],
-          ...(options.config.reasoningEffort ? { effort: options.config.reasoningEffort } : {}),
-        });
-        setTurnId(turn, result?.turn?.id);
-      } catch (error) {
-        const failure = asError(error);
-        await stop(failure);
-        throw failure;
+      if (active || queue.length) {
+        const queued = { ...input, queueNonce: input.queueNonce ?? randomUUID() };
+        queue.push(queued);
+        const data: MessageEnqueuedEventData = { ...queued, queueNonce: queued.queueNonce, source: "dashboard" };
+        options.onEvent({ eventType: "message_enqueued", timestamp: Date.now(), data });
+        queueState("dashboard");
+        queueMicrotask(drain);
+        return;
       }
+      await sendTurn(input);
     },
     abort() {
+      clearQueue("Queued message cancelled by Stop");
       const turn = active;
       if (!turn || closed) return Promise.resolve();
       if (turn.abort) return turn.abort;

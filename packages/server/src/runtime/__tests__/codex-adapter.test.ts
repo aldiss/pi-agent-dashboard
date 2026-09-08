@@ -112,17 +112,77 @@ describe("Codex app-server adapter", () => {
     await f.adapter.dispose();
   });
 
-  it("locks turns synchronously and keeps the same thread across two turns", async () => {
+  it("queues overlapping sends FIFO with pi events and nonce correlation", async () => {
     const f = await launch();
     const first = f.adapter.send({ text: "remember this" });
-    await expect(f.adapter.send({ text: "race" })).rejects.toThrow(/active|streaming|busy/i);
+    await f.adapter.send({ text: "race", queueNonce: "queued-2" });
+    expect(child.frames.filter(frame => frame.method === "turn/start")).toHaveLength(1);
+    expect(f.onEvent).toHaveBeenCalledWith(expect.objectContaining({ eventType: "message_enqueued", data: expect.objectContaining({ text: "race", queueNonce: "queued-2", source: "dashboard" }) }));
+    expect(f.onEvent).toHaveBeenCalledWith(expect.objectContaining({ eventType: "queue_state", data: expect.objectContaining({ pendingMessageCount: 1 }) }));
     await first;
     expect(f.adapter.isStreaming()).toBe(true);
     child.notify("turn/completed", { threadId: "thread-1", turn: { id: "turn-1", status: "completed" } });
-    expect(f.adapter.isStreaming()).toBe(false);
-    await f.adapter.send({ text: "what did I say?" });
+    await vi.waitFor(() => expect(child.frames.filter(frame => frame.method === "turn/start")).toHaveLength(2));
     expect(child.frames.filter(frame => frame.method === "turn/start").map(frame => frame.params.threadId)).toEqual(["thread-1", "thread-1"]);
     await f.adapter.dispose();
+  });
+
+  it("Stop clears queued inputs and reports each nonce without starting them", async () => {
+    const onSendFailed = vi.fn();
+    const f = await launch({ onSendFailed });
+    await f.adapter.send({ text: "active" });
+    await f.adapter.send({ text: "pending", queueNonce: "cancel-me" });
+    await f.adapter.abort();
+    expect(onSendFailed).toHaveBeenCalledWith(expect.objectContaining({ text: "pending", queueNonce: "cancel-me" }), expect.stringMatching(/cancel/i));
+    expect(child.frames.filter(frame => frame.method === "turn/start")).toHaveLength(1);
+    expect(f.onEvent).toHaveBeenLastCalledWith(expect.objectContaining({ eventType: "queue_state", data: expect.objectContaining({ followUp: [], pendingMessageCount: 0 }) }));
+    await f.adapter.dispose();
+  });
+
+  it("reports a queued turn start failure using its original nonce", async () => {
+    const onSendFailed = vi.fn();
+    const f = await launch({ onSendFailed });
+    await f.adapter.send({ text: "active" });
+    await f.adapter.send({ text: "will fail", queueNonce: "failed-2" });
+    child.custom = frame => {
+      if (frame.method !== "turn/start") return false;
+      child.stdout.write(JSON.stringify({ id: frame.id, error: { code: -1, message: "rejected queued turn" } }) + "\n");
+      return true;
+    };
+    child.notify("turn/completed", { threadId: "thread-1", turn: { id: "turn-1", status: "completed" } });
+    await vi.waitFor(() => expect(onSendFailed).toHaveBeenCalledWith(expect.objectContaining({ queueNonce: "failed-2" }), expect.stringContaining("rejected queued turn")));
+    await f.adapter.dispose();
+  });
+
+  it.each(["transport", "disposal"])("cancels pending inputs before empty queue_state on %s without dispatch or duplicate failure", async (cause) => {
+    await useRealMapper();
+    const signals: string[] = [];
+    const onSendFailed = vi.fn(input => signals.push(`failed:${input.queueNonce}`));
+    const onEvent = vi.fn(event => {
+      if (event.eventType === "command_feedback") signals.push(`feedback:${event.data.queueNonce}`);
+      if (event.eventType === "queue_state") signals.push(`queue:${event.data.pendingMessageCount}`);
+    });
+    const fixture = await launch({ onSendFailed, onEvent });
+    await fixture.adapter.send({ text: "already committed", queueNonce: "active" });
+    await fixture.adapter.send({ text: "pending explicit nonce", queueNonce: "pending" });
+    await fixture.adapter.send({ text: "pending generated nonce" });
+    const generatedNonce = onEvent.mock.calls.find(([event]) => event.eventType === "message_enqueued"
+      && event.data.text === "pending generated nonce")![0].data.queueNonce;
+    expect(generatedNonce).toEqual(expect.any(String));
+    signals.length = 0;
+    if (cause === "transport") {
+      child.stdout.end();
+      await vi.waitFor(() => expect(fixture.onExit).toHaveBeenCalledOnce());
+    } else {
+      await fixture.adapter.dispose();
+    }
+    expect(signals).toEqual(["failed:pending", "feedback:pending", `failed:${generatedNonce}`, `feedback:${generatedNonce}`, "queue:0"]);
+    expect(onSendFailed).toHaveBeenNthCalledWith(1, expect.objectContaining({ text: "pending explicit nonce", queueNonce: "pending" }), expect.any(String));
+    expect(onSendFailed).toHaveBeenNthCalledWith(2, expect.objectContaining({ text: "pending generated nonce", queueNonce: generatedNonce }), expect.any(String));
+    expect(onEvent.mock.calls.filter(([event]) => event.eventType === "message_start" && event.data.message?.role === "user")).toHaveLength(1);
+    expect(child.frames.filter(frame => frame.method === "turn/start")).toHaveLength(1);
+    await fixture.adapter.dispose();
+    expect(onSendFailed).toHaveBeenCalledTimes(2);
   });
 
   it("preserves raw UI input while wrapping only model-facing authenticated text", async () => {

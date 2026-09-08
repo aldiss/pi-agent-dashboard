@@ -82,6 +82,7 @@ async function restVerdict(
   let code: number | undefined;
   const request = {
     params: { id: sessionId },
+    headers: {}, // Real Fastify requests always provide headers; no bridge credential here.
     // The REST arm derives the actor from restActorKind/restPrincipal (never the body).
     restActorKind: principal ? "human" : null,
     restPrincipal: principal,

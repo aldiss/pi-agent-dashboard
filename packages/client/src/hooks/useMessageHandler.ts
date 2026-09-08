@@ -299,20 +299,13 @@ export function useMessageHandler(
         });
         break;
 
-      // AMEND #5 (f) delivery-aware-fail (2b): the server could not deliver the
-      // send_prompt to the bridge (sent === false → bridge absent). This is the
-      // REAL bridge-absent failure signal — flip the matching optimistic queue
-      // card to "failed" immediately (retry-safe: it genuinely never reached
-      // pi), instead of waiting out the long-grace backstop. markQueueEntryFailed
-      // only acts on an "optimistic" entry; a confirmed/dispatched one no-ops.
-      // See change: dashboard-message-queue.
       case "send_prompt_failed":
         if (msg.queueNonce) {
           const failNonce = msg.queueNonce;
           setSessionStates((prev) => {
             const current = prev.get(msg.sessionId);
             if (!current) return prev;
-            const updated = markQueueEntryFailed(current, failNonce);
+            const updated = markQueueEntryFailed(current, failNonce, "server");
             if (updated === current) return prev;
             const next = new Map(prev);
             next.set(msg.sessionId, updated);

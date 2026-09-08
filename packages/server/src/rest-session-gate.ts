@@ -24,11 +24,14 @@ import { classifySendPromptAction } from "./send-prompt-authz.js";
 import type { OperatorSetTracker } from "./operator-set-tracker.js";
 import type { CellAccessController } from "./cell-access.js";
 import type { DashboardSession } from "@blackbelt-technology/pi-dashboard-shared/types.js";
+import { verifyBridgeToken } from "@blackbelt-technology/pi-dashboard-shared/bridge-token.js";
+import { deriveDelegatedBridgeOperator } from "./spawn-authz.js";
 
 /** Frozen-at-startup gate policy, threaded from `requireBrowserAuthAtStartup`. */
 export interface RestGatePolicy {
   requireBrowserAuth: boolean;
   operatorUsers?: string[];
+  bridgeDelegation?: { expectedToken: string | null; localBridgeOperator?: string | null };
   /**
    * Stream-2 D: the shared bounded-cell (N=2) admission tracker — the SAME
    * instance the WS arm reads, so a session is bounded to 2 distinct humans from
@@ -58,12 +61,31 @@ function restSessionId(request: FastifyRequest): string | undefined {
  * `human` carrying the verified cookie principal (or null). Never the body.
  */
 export function buildActorFromRequest(request: FastifyRequest): SessionActor {
+  if ((request as any).restBridgeDelegation) return { kind: "service", id: "local-bridge-delegation" };
   const kind = (request as any).restActorKind as "human" | "service" | null;
   if (kind === "service") {
     return { kind: "service", id: "rest-shared-secret" };
   }
   const principal = ((request as any).restPrincipal ?? null) as TokenPayload | null;
   return { kind: "human", principal };
+}
+
+function captureBridgeSend(request: FastifyRequest, reply: FastifyReply, policy: RestGatePolicy, action: SessionWriteAction): boolean {
+  const token = request.headers["x-pi-bridge-token"];
+  if (token === undefined) return true;
+  const delegation = deriveDelegatedBridgeOperator({
+    tokenVerified: verifyBridgeToken(typeof token === "string" ? token : null, policy.bridgeDelegation?.expectedToken ?? null),
+    remoteAddress: request.raw.socket.remoteAddress ?? null,
+    forwarded: Object.keys(request.headers).some(header => header === "forwarded" || header === "x-real-ip" || header.startsWith("x-forwarded-")),
+    action, operatorUsers: policy.operatorUsers ?? [],
+    localBridgeOperator: policy.bridgeDelegation?.localBridgeOperator, now: Date.now(),
+  });
+  if (action !== "send_prompt" || delegation.status !== "delegated") {
+    reply.code(403).send({ success: false, error: "unauthorized", reason: "bridge-delegation-refused" });
+    return false;
+  }
+  (request as any).restBridgeDelegation = delegation.principal;
+  return true;
 }
 
 /**
@@ -101,6 +123,7 @@ export function makeRestSessionGate(policy: RestGatePolicy) {
       request: FastifyRequest,
       reply: FastifyReply,
     ): Promise<void> {
+      if (!captureBridgeSend(request, reply, policy, action)) return;
       const sessionId = restSessionId(request);
       const decision = authorizeSessionAction({
         actor: buildActorFromRequest(request),
@@ -165,6 +188,7 @@ export function makeRestPromptGate(policy: RestGatePolicy): SessionWriteGatePreH
   ): Promise<void> {
     const text = (request.body as { text?: unknown } | undefined)?.text;
     const action = classifySendPromptAction(text);
+    if (!captureBridgeSend(request, reply, policy, action)) return;
     const sessionId = restSessionId(request);
     const decision = authorizeSessionAction({
       actor: buildActorFromRequest(request),

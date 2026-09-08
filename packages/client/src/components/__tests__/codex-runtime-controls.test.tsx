@@ -60,16 +60,15 @@ describe("Codex composer", () => {
     expect(screen.getByText("/new")).toBeTruthy();
   });
 
-  it("blocks a second active turn without hiding Stop or clearing the draft", async () => {
+  it("allows a queued follow-up without hiding Stop", async () => {
     const onSend = vi.fn();
     const onAbort = vi.fn();
     const { container } = render(<CommandInput runtime="codex" commands={[]} sessionStatus="streaming" draft="next turn" onSend={onSend} onAbort={onAbort} />);
     const textarea = container.querySelector("textarea")!;
-    expect(textarea.disabled).toBe(true);
-    expect((screen.getByTestId("send-button") as HTMLButtonElement).disabled).toBe(true);
+    expect(textarea.disabled).toBe(false);
+    expect((screen.getByTestId("send-button") as HTMLButtonElement).disabled).toBe(false);
     await act(async () => { fireEvent.keyDown(textarea, { key: "Enter" }); });
-    expect(onSend).not.toHaveBeenCalled();
-    expect(textarea.value).toBe("next turn");
+    expect(onSend).toHaveBeenCalledWith("next turn", undefined);
     fireEvent.click(screen.getByTestId("stop-button"));
     expect(onAbort).toHaveBeenCalledOnce();
   });
@@ -90,11 +89,11 @@ describe("Codex composer", () => {
     expect(onSend).toHaveBeenCalledWith("describe", images);
   });
 
-  it("keeps Stop usable while disabling the real mobile composer during a Codex turn", () => {
+  it("keeps Stop and queue submission usable in the mobile composer during a Codex turn", () => {
     mobile.value = true;
     const abort = vi.fn();
     render(<CommandInput runtime="codex" commands={[]} sessionStatus="streaming" draft="next" onSend={vi.fn()} onAbort={abort} />);
-    expect((screen.getByTestId("mobile-composer-send") as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByTestId("mobile-composer-send") as HTMLButtonElement).disabled).toBe(false);
     fireEvent.click(screen.getByTestId("mobile-composer-stop"));
     expect(abort).toHaveBeenCalledOnce();
   });

@@ -997,6 +997,9 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
   runtimeManager = createCodexRuntimeManager({
     config: codexConfig, sessionManager, eventStore, pidRegistry: browserGateway.headlessPidRegistry,
     ingestEvent: ingestRuntimeEvent,
+    onSendFailed: (sessionId, input, reason) => browserGateway.sendToSubscribers(sessionId, {
+      type: "send_prompt_failed", sessionId, queueNonce: input.queueNonce, reason,
+    }),
     onSessionAdded(session, requestId) {
       knownSessionIds.add(session.id);
       sessionOrderManager.insert(session.cwd, session.id);
@@ -1177,6 +1180,7 @@ export async function createServer(config: ServerConfig): Promise<DashboardServe
 
   // Session control REST API (wraps WebSocket-only operations)
   registerSessionApi(fastify, {
+    bridgeDelegation: { expectedToken: expectedBridgeToken, localBridgeOperator: config.authConfig?.localBridgeOperator },
     spawnGate,
     runtimeManager,
     networkGuard,

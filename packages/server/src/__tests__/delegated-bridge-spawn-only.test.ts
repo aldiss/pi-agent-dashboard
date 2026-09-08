@@ -2,19 +2,6 @@ import { describe, expect, it } from "vitest";
 import { SESSION_WRITE_ACTION_CLASS } from "../session-authz.js";
 import { deriveDelegatedBridgeOperator } from "../spawn-authz.js";
 
-/**
- * Delegation stays SPAWN-ONLY after the codex-runtime change.
- *
- * The bridge gained the ability to REQUEST a runtime; it gained no new
- * authority. `deriveDelegatedBridgeOperator` refuses every action except
- * `spawn`, so a delegated loopback bridge can create a session but can never
- * drive, stop, or reconfigure one.
- *
- * The sweep is driven off `SESSION_WRITE_ACTION_CLASS` rather than a
- * hand-written list so a future action is covered the day it is added — the
- * same close-by-construction discipline the shared prompt parser uses.
- */
-
 const LOOPBACK = {
   tokenVerified: true,
   remoteAddress: "127.0.0.1",
@@ -24,16 +11,26 @@ const LOOPBACK = {
   now: 1_700_000_000_000,
 };
 
-describe("ACCEPTANCE 3 — delegated bridge authority is spawn-only", () => {
-  it("grants exactly one action across the whole canonical action set", () => {
+describe("delegated bridge authority is spawn and send_prompt only", () => {
+  it("grants exactly two actions across the whole canonical action set", () => {
     const granted = Object.keys(SESSION_WRITE_ACTION_CLASS)
       .filter((action) => deriveDelegatedBridgeOperator({ ...LOOPBACK, action }).status === "delegated");
 
-    expect(granted).toEqual(["spawn"]);
+    expect(granted.sort()).toEqual(["send_prompt", "spawn"]);
   });
 
-  it("refuses the five actions named in the build brief with `not-spawn`", () => {
-    for (const action of ["resume", "abort", "shutdown", "model", "flow-control"]) {
+  it.each(["spawn", "send_prompt"])("keeps every precondition for %s", action => {
+    for (const change of [
+      { tokenVerified: false }, { remoteAddress: "10.1.2.3" }, { remoteAddress: "127.attacker.test" },
+      { forwarded: true }, { localBridgeOperator: null }, { localBridgeOperator: "outsider" },
+    ]) expect(deriveDelegatedBridgeOperator({ ...LOOPBACK, action, ...change }).status).not.toBe("delegated");
+    expect(deriveDelegatedBridgeOperator({ ...LOOPBACK, action })).toMatchObject({
+      status: "delegated", principal: { provider: "local-bridge-delegation", exp: 1_700_000_060 },
+    });
+  });
+
+  it("refuses every explicitly denied verb and its protocol spelling", () => {
+    for (const action of ["resume", "abort", "shutdown", "force_kill", "hide", "unhide", "model", "flow-control", "flow_control", "resurrect"]) {
       expect(deriveDelegatedBridgeOperator({ ...LOOPBACK, action }))
         .toEqual({ status: "refused", why: "not-spawn" });
     }

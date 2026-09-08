@@ -43,6 +43,7 @@ import {
 } from "./resurrection-verify.js";
 
 export interface SessionApiDeps {
+  bridgeDelegation?: { expectedToken: string | null; localBridgeOperator?: string | null };
   spawnGate?: SpawnGate;
   runtimeManager?: CodexRuntimeManager;
   networkGuard?: preHandlerHookHandler;
@@ -207,6 +208,7 @@ export function registerSessionApi(fastify: FastifyInstance, deps: SessionApiDep
   // without a gate — or wired to the wrong token — is caught RED, not by a
   // hand-copied `EXPECTED_ACTIONS` literal. See mandate 2d / Joan refinement-(b).
   const gate = makeRestSessionGate({
+    bridgeDelegation: deps.bridgeDelegation,
     requireBrowserAuth: deps.requireBrowserAuth === true,
     ...(deps.operatorUsers ? { operatorUsers: deps.operatorUsers } : {}),
     ...(deps.operatorSet ? { operatorSet: deps.operatorSet } : {}),
@@ -220,6 +222,7 @@ export function registerSessionApi(fastify: FastifyInstance, deps: SessionApiDep
   // command-form authorizes operator-only (`prompt-command` → op-2 403); a raw
   // prompt stays co-drive. Tagged `send_prompt` for the route-table coverage.
   const promptGate = makeRestPromptGate({
+    bridgeDelegation: deps.bridgeDelegation,
     requireBrowserAuth: deps.requireBrowserAuth === true,
     ...(deps.operatorUsers ? { operatorUsers: deps.operatorUsers } : {}),
     ...(deps.operatorSet ? { operatorSet: deps.operatorSet } : {}),
@@ -299,13 +302,13 @@ export function registerSessionApi(fastify: FastifyInstance, deps: SessionApiDep
   }
 
   // POST /api/session/:id/prompt
-  fastify.post<IdParams & { Body: { text?: string; images?: any[] } }>(
+  fastify.post<IdParams & { Body: { text?: string; images?: any[]; queueNonce?: string } }>(
     "/api/session/:id/prompt",
     { preHandler: promptGate },
     async (request, reply) => {
       const { id } = request.params;
-      const { text, images } = request.body ?? {};
-      if (!text) {
+      const { text, images, queueNonce } = request.body ?? {};
+      if (typeof text !== "string" || !text || (queueNonce !== undefined && typeof queueNonce !== "string")) {
         reply.code(400);
         return { success: false, error: "text is required" } satisfies ApiResponse;
       }
@@ -322,7 +325,14 @@ export function registerSessionApi(fastify: FastifyInstance, deps: SessionApiDep
       // `promptGate` preHandler (attribution ⊥ authorization, Contract-3).
       // Conditional-spread keeps flag-off byte-unchanged. REUSES the Build-1b
       // REST-identity stash — no second REST-identity path.
-      const restAuthor = deriveAuthor((request as any).restPrincipal ?? null, deps.operatorUsers);
+      const delegation = (request as any).restBridgeDelegation;
+      const restAuthor = delegation
+        ? { sub: "local-bridge", display: "pi bridge (delegated)", isOperator: false }
+        : deriveAuthor((request as any).restPrincipal ?? null, deps.operatorUsers);
+      const auditSend = () => console.info(JSON.stringify({ event: "send_prompt_authorized", sessionId: id,
+        actor: delegation ? { kind: "delegated", sub: "local-bridge", provider: delegation.provider, delegatedBy: delegation.sub }
+          : { kind: (request as any).restActorKind ?? "human", sub: restAuthor?.sub ?? null, provider: (request as any).restPrincipal?.provider ?? null },
+        ...(queueNonce ? { queueNonce } : {}) }));
       if (result.session.runtime === "codex") {
         const manager = deps.runtimeManager;
         try {
@@ -337,11 +347,12 @@ export function registerSessionApi(fastify: FastifyInstance, deps: SessionApiDep
             if (!authorizeRestSpawn(request, reply, result.session.cwd, "codex").allowed) return;
             pendingResumeIntents?.record(id, "front");
           }
-          await manager.send(id, { text, images, author: restAuthor });
-          return { success: true } satisfies ApiResponse;
+          auditSend();
+          await manager.send(id, { text, images, author: restAuthor, queueNonce });
+          return { success: true, ...(queueNonce ? { queueNonce } : {}) };
         } catch (err) {
           reply.code(409);
-          return { success: false, error: err instanceof Error ? err.message : String(err) } satisfies ApiResponse;
+          return { success: false, error: err instanceof Error ? err.message : String(err), ...(queueNonce ? { queueNonce } : {}) };
         }
       }
       const parsed = parseSendPrompt(text);
@@ -351,11 +362,13 @@ export function registerSessionApi(fastify: FastifyInstance, deps: SessionApiDep
         const requestedRuntime = parsed.type === "new" ? parsed.runtime : "pi";
         if (!authorizeRestSpawn(request, reply, result.session.cwd, requestedRuntime).allowed) return;
       }
+      auditSend();
       const sent = piGateway.sendToSession(id, {
         type: "send_prompt",
         sessionId: id,
         text,
         images,
+        ...(queueNonce ? { queueNonce } : {}),
         ...(restAuthor ? { author: restAuthor } : {}),
       });
       if (!sent) {

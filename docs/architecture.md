@@ -265,7 +265,29 @@ Default RPC deadline: 30 seconds.
 | Abort | `turn/interrupt`; await matching `turn/completed` |
 
 Adapter permits one active turn per session.
+Adapter queues busy follow-ups in server-side, per-session FIFO.
+Residual: in-memory FIFO remains unbounded; no queue limits implemented.
+Queued inputs retain raw text, images, author, and supplied `queueNonce`.
+Absent queued nonce receives UUID.
+Enqueue emits existing `message_enqueued` and `queue_state` events.
+`queue_state.followUp` carries pending text, author, and `queueNonce`.
+`queue_state.pendingMessageCount` tracks FIFO length.
+`queue_state.steeringCount` stays `0`.
+Completed turn schedules FIFO drain on same native thread.
+Dequeued turn emits existing `message_start` with original `queueNonce` before `turn/start`.
 Abort waits for turn ID when interrupt arrives before `turn/start` response.
+Stop clears pending FIFO before interrupting active turn.
+Dispose and transport failure clear pending FIFO before process termination.
+Cancelled pending inputs emit nonce-correlated `send_prompt_failed` plus durable `command_feedback` with original text in `data.command`, `status:"error"`, reason, and `queueNonce`.
+Failed queued turns report original `queueNonce` through `send_prompt_failed`.
+`markQueueEntryFailed(state, nonce, source='local')` keeps local timeout failures optimistic-only.
+`useMessageHandler` handles `send_prompt_failed` with explicit `source='server'`; fails matching optimistic or confirmed still-pending nonce.
+Empty `queue_state` preserves failed card for existing Retry/Dismiss controls.
+Missing/unmatched nonce or already committed message never creates card or retry.
+`runtime-manager.ts` persists queue/feedback events.
+`server.ts` sends failure notifications to session subscribers.
+Stop leaves no pending input to auto-restart.
+Cancelled prompts require explicit resubmission.
 Thread and turn identity filters discard foreign/stale notifications.
 Native identity reaches metadata before launch acknowledgement.
 Model-facing text receives shared `wrapForSend` attribution only at RPC send boundary.
@@ -323,7 +345,8 @@ Still-alive Codex orphan rejects startup and retains disk record.
 Folder spawn selector defaults to pi; Codex option requires server opt-in.
 Codex badges appear on session cards and headers.
 Codex resume availability follows `codexThreadId`, not `sessionFile`.
-Codex composer rejects follow-up submission while busy.
+Codex composer accepts busy follow-ups for server-side FIFO.
+Explicit input-disabled state still blocks submission.
 Pi slash/shell commands, fork, worktree spawn, model/thinking/role pickers, flow controls, and extension dialogs remain unavailable for Codex.
 Existing pi bridge, `/new`, and pi transport selection retain their paths.
 Bridge session-ID collisions, session-list batches, file deduplication, and ghost cleanup exclude owned Codex rows.
@@ -1046,14 +1069,20 @@ Missing gate injection denies spawn.
 |---|---|
 | REST `POST /api/session/spawn` | Verified principal; configured `auth.operatorUsers` membership |
 | Browser WS `spawn_session` | Connection-bound verified principal; configured `auth.operatorUsers` membership |
-| Bridge WS `spawn_new_session` | Matching bridge token, loopback socket, no forwarding evidence, successful spawn-only delegation |
+| Bridge WS `spawn_new_session` | Matching bridge token, strict loopback socket, no forwarding evidence, delegated `spawn` authority |
 
 REST/browser credentials remain mandatory on loopback and trusted networks, including `requireBrowserAuth:false`.
 Absent/empty `operatorUsers` removes roster restriction, not credential requirement.
-Native `/new` retains delegated bridge authority for exactly `spawn`; other actions gain no delegation.
+Bridge delegation permits exactly `spawn` and `send_prompt`.
+Native `/new` uses delegated `spawn`.
+REST prompt ingress uses delegated `send_prompt`.
 `auth.localBridgeOperator:null` disables delegation even with valid token.
 Absent delegate selector chooses first configured operator, or synthetic `local-bridge` with empty roster.
-Delegated audit records use provider `local-bridge-delegation`, never human speaker attribution.
+Configured selector requires case-insensitive `auth.operatorUsers` membership when roster contains entries.
+Empty roster retains synthetic `local-bridge` regardless of selector.
+Delegated principal stays in memory with 60-second expiry.
+Delegated principal never receives signature or human speaker attribution.
+Delegated audit records use provider `local-bridge-delegation`.
 Remote bridges cannot spawn with valid tokens, including trusted-network peers.
 Presented Origin must match server/configured origin allowlist.
 Enabled-runtime allowlist rejects unavailable runtimes.
@@ -1073,6 +1102,30 @@ Token creation publishes complete file atomically; invalid existing files refuse
 Extension rereads token on reconnect and sends it only to loopback URLs.
 Phase one keeps untokened bridge connections available for telemetry/converse; spawn still requires token.
 Phase two enables `bridge.requireToken:true` after bridge rollout; missing/wrong tokens fail handshake.
+
+### Delegated Prompt Send
+
+`POST /api/session/:id/prompt` accepts private bridge token through `x-pi-bridge-token`.
+Body accepts `text`, optional `images`, and optional string `queueNonce`.
+`makeRestPromptGate` classifies text before deriving delegation.
+`verifyBridgeToken` checks header against startup-loaded bridge token.
+Delegation requires strict loopback `request.raw.socket.remoteAddress`: IPv4 `127.0.0.0/8`, IPv6 `::1`, or IPv4-mapped loopback.
+Any `forwarded`, `x-real-ip`, or `x-forwarded-*` header refuses delegation, including empty values.
+Remote/trusted-network callers gain no delegation from valid token.
+Invalid token, disabled delegation, selector mismatch, command-form text, or lifecycle action returns `403` with `reason:"bridge-delegation-refused"`.
+`buildActorFromRequest` assigns send actor `{ kind:"service", id:"local-bridge-delegation" }`.
+Delegated send reuses operator selector, membership checks, and short-lived principal from spawn delegation.
+`send_prompt_authorized` audit records actor `kind:"delegated"`, `sub:"local-bridge"`, `provider:"local-bridge-delegation"`, and `delegatedBy` from selected principal `sub`.
+Audit retains supplied `queueNonce` for send correlation.
+Server stamps author `{ sub:"local-bridge", display:"pi bridge (delegated)", isOperator:false }`.
+Body author grants no identity.
+REST bridge-token authority permits plain `send_prompt` only.
+Slash/shell commands and lifecycle operations remain forbidden in both browser-auth postures.
+Codex ended/unattached prompt requires separate `resume` gate.
+Delegated send cannot trigger implicit resume.
+Pi send forwards through bridge.
+Codex send enters native adapter FIFO.
+Header absence retains existing REST authentication path.
 
 ### OAuth Authentication Flow
 
@@ -1307,7 +1360,7 @@ Precedence: CLI flags → environment variables → config file (`~/.pi/dashboar
 | `runtimes.codex.wireApi` | `"responses"` | Accepts Responses wire API only |
 | `auth.requireBrowserAuth` | false | Require verified browser principals. Must equal `true` with `auth.guestCellGrants` |
 | `auth.operatorUsers` | absent | Exact operator identities. At least one usable entry required with `auth.guestCellGrants` |
-| `auth.localBridgeOperator` | absent | Spawn delegate selector; explicit `null` disables bridge delegation |
+| `auth.localBridgeOperator` | absent | Selects `spawn` + `send_prompt` delegate; explicit `null` disables bridge delegation |
 | `auth.guestCellGrants` | absent | Optional guest selector → registry cell-ID map. Presence activates guest boundary |
 | `tunnel.enabled` | true | Enable zrok tunnel for remote access |
 | `tunnel.reservedToken` | _(auto)_ | Reserved zrok share token for persistent URL (auto-created on first run) |

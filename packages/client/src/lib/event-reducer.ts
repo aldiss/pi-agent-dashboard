@@ -150,8 +150,8 @@ export interface PendingPrompt {
  *   - "confirmed"   — the bridge acked the enqueue (`message_enqueued`) or the
  *                     authoritative `queue_state` snapshot includes it. This is
  *                     the message genuinely sitting in pi's follow-up queue.
- *   - "failed"      — an "optimistic" entry whose confirmation never arrived
- *                     within the stuck-timeout window (disconnect failure mode).
+ *   - "failed"      — an unconfirmed entry that timed out, or a pending entry
+ *                     rejected/cancelled by an authoritative server failure.
  *                     Rendered as "failed — tap to retry". Makes loss VISIBLE.
  *
  * (There is no distinct "dispatching" state: the dispatch edge IS the
@@ -1231,17 +1231,18 @@ function extractMessageAuthor(author: unknown): MessageAuthor | undefined {
 }
 
 /**
- * Flip the matching `optimistic` queue entry to `failed` (stuck-timeout fired
- * before the bridge confirmed it — disconnect failure mode). No-op if the
- * entry is absent or already confirmed/failed. Pure: returns a new state only
- * when something changed.
+ * Local timeouts fail only optimistic entries. Authoritative server failures
+ * also fail confirmed pending entries. Absent (including dispatched) and
+ * already failed entries no-op. Pure: returns a new state only on change.
  */
 export function markQueueEntryFailed(
   state: SessionState,
   queueNonce: string,
+  source: "local" | "server" = "local",
 ): SessionState {
   const idx = state.queue.findIndex((q) => q.queueNonce === queueNonce);
-  if (idx === -1 || state.queue[idx].state !== "optimistic") return state;
+  if (idx === -1 || state.queue[idx].state === "failed") return state;
+  if (state.queue[idx].state === "confirmed" && source !== "server") return state;
   const nextQueue = state.queue.slice();
   nextQueue[idx] = { ...nextQueue[idx], state: "failed" };
   return { ...state, queue: nextQueue };

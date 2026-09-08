@@ -18,7 +18,7 @@ Hooks and hook tests → [file-index-client-hooks.md](./file-index-client-hooks.
 | `packages/client/src/lib/event-reducer.ts` | Stores `TranslationWarningCode[]` beside rendered translation. Leaves `content` unchanged. |
 | `packages/client/src/App.tsx` | Threads runtime-aware spawn, resume, and composer controls through dashboard views. |
 | `packages/client/src/__tests__/codex-flow-command-routing.test.tsx` | Pins App flow-command forwarding for Codex and pi dialog isolation across session switches. |
-| `packages/client/src/components/CommandInput.tsx` | Gates Codex composer submission and pi command suggestions by runtime capability. |
+| `packages/client/src/components/CommandInput.tsx` | Accepts busy Codex follow-ups for server-side FIFO while retaining explicit input-disabled gate and hiding pi command suggestions. |
 | `packages/client/src/components/FolderActionBar.tsx` | Selects pi/Codex runtime for folder-level spawn requests. |
 | `packages/client/src/components/MobileActionMenu.tsx` | Uses native-thread resume targets and hides unsupported Codex fork/flow actions. |
 | `packages/client/src/components/RuntimeBadge.tsx` | Labels owned Codex sessions without changing legacy pi badges. |
@@ -27,7 +27,8 @@ Hooks and hook tests → [file-index-client-hooks.md](./file-index-client-hooks.
 | `packages/client/src/components/SessionList.tsx` | Threads selected runtime through folder spawn callbacks. |
 | `packages/client/src/components/StatusBar.tsx` | Displays Codex model without pi model/thinking/role pickers. |
 | `packages/client/src/components/__tests__/SessionList.test.tsx` | Pins runtime-aware folder spawn wiring and legacy callback shape. |
-| `packages/client/src/components/__tests__/codex-runtime-controls.test.tsx` | Tests Codex labels, capability gates, composer state, native-thread resume, and pi→Codex flow-modal rerenders. |
+| `packages/client/src/components/__tests__/codex-runtime-controls.test.tsx` | Tests Codex labels, capability gates, busy composer follow-ups, native-thread resume, and pi→Codex flow-modal rerenders. |
+| `packages/client/src/components/__tests__/queue-roundtrip-integration.test.tsx` | Exercises actual `useMessageHandler` + `ChatView`, not direct reducer mimic. Covers cancellation recovery, local timeout, committed failure, missing/unmatched nonce, empty queue snapshots, Retry/Dismiss. Optional `PI_SEND_QUEUE_FRAMES` feeds captured native frames through real client handler and cards. |
 | `packages/client/src/lib/session-runtime.ts` | Resolves resume availability from Codex thread ID or pi session file. |
 | `src/client/components/ProcessList.tsx` | Session card process list with elapsed time + red ✕ kill button |
 | `src/client/components/BranchPicker.tsx` | Typeahead branch picker with keyboard navigation |

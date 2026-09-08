@@ -168,7 +168,7 @@ async function spoolDawnDictation(
 export function CommandInput({ runtime, commands: externalCommands, onSend, onListFiles, fileResults, disabled: inputDisabled, sessionStatus, retrying, onAbort, onForceKill, pendingPrompt, onCancelPending, sessionId, sessionName, draft, onDraftChange, history, images, onImagesChange, queuedCount }: Props) {
   // Treat retry-sleep as "still working" for Stop/Force-Stop visibility.
   const isWorking = sessionStatus === "streaming" || retrying === true;
-  const disabled = inputDisabled || (runtime === "codex" && isWorking);
+  const disabled = inputDisabled;
   // Merge server commands with built-in commands, avoiding duplicates
   const commands = useMemo(() => {
     if (runtime === "codex") return [];

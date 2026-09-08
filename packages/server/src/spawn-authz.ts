@@ -63,7 +63,7 @@ function isSpawnLoopback(address: string | null): boolean {
   }
 }
 
-/** In-memory identity for one spawn decision. Never signed or used as a speaker. */
+/** In-memory identity for one delegation decision. Never signed or used as a speaker. */
 export function deriveDelegatedBridgeOperator(input: {
   tokenVerified: boolean;
   remoteAddress: string | null;
@@ -73,7 +73,7 @@ export function deriveDelegatedBridgeOperator(input: {
   localBridgeOperator?: string | null;
   now: number;
 }): DelegationOutcome {
-  if (input.action !== "spawn") return { status: "refused", why: "not-spawn" };
+  if (input.action !== "spawn" && input.action !== "send_prompt") return { status: "refused", why: "not-spawn" };
   if (input.localBridgeOperator === null) return { status: "disabled" };
   if (input.tokenVerified !== true) return { status: "refused", why: "no-token" };
   if (!isSpawnLoopback(input.remoteAddress) || input.forwarded) {

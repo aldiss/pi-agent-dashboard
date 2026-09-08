@@ -20,18 +20,20 @@
  * See change: dashboard-message-queue (AMEND #2).
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { render, act, cleanup } from "@testing-library/react";
+import fs from "node:fs";
+import { render, act, cleanup, fireEvent } from "@testing-library/react";
 import React, { useState, useRef, useCallback, useMemo } from "react";
 import { ChatView } from "../../components/ChatView.js";
 import { useSessionActions } from "../../hooks/useSessionActions.js";
 import { useQueueStuckTimeout } from "../../hooks/useQueueStuckTimeout.js";
+import { useMessageHandler, type MessageHandlerSetters } from "../../hooks/useMessageHandler.js";
 import {
   createInitialState,
-  reduceEvent,
   markQueueEntryFailed,
   type SessionState,
 } from "../../lib/event-reducer.js";
 import type { DashboardEvent } from "@blackbelt-technology/pi-dashboard-shared/types.js";
+import type { ServerToBrowserMessage } from "@blackbelt-technology/pi-dashboard-shared/browser-protocol.js";
 
 const SID = "session-rt";
 
@@ -45,8 +47,10 @@ interface Harness {
   retry: (queueNonce: string) => void;
   /** Toggle the browser↔server WS connected state (gap (i) WS-drop). */
   setConnected: (v: boolean) => void;
-  /** Apply the send_prompt_failed client path (markQueueEntryFailed) — gap (ii). */
-  failByNonce: (queueNonce: string) => void;
+  failByNonce: (queueNonce?: string, reason?: string) => void;
+  dispatch: (message: ServerToBrowserMessage) => void;
+  getState: () => SessionState;
+  localTimeout: (queueNonce: string) => void;
   /** Current queue snapshot for assertions. */
   getQueue: () => SessionState["queue"];
   container: HTMLElement;
@@ -57,15 +61,16 @@ interface Harness {
  * stuck-timeout, mirroring App.tsx's wiring. Starts the session in a STREAMING
  * state so handleSend takes the queue path.
  */
-function renderHarness(): Harness {
+function renderHarness(initialQueue: SessionState["queue"] = []): Harness {
   const send = vi.fn();
-  let api: Pick<Harness, "sendText" | "inject" | "getQueue" | "retry" | "setConnected" | "failByNonce"> | null = null;
+  let api: Omit<Harness, "send" | "container"> | null = null;
 
   function App() {
     const [sessionStates, setSessionStates] = useState<Map<string, SessionState>>(() => {
       const s = createInitialState();
       s.isStreaming = true;
       s.status = "streaming";
+      s.queue = initialQueue;
       return new Map([[SID, s]]);
     });
     // Controllable browser↔server WS state (gap (i)).
@@ -96,6 +101,21 @@ function renderHarness(): Harness {
     });
 
     const selectedState = sessionStates.get(SID) ?? createInitialState();
+    const handleMessage = useMessageHandler({ setSessionStates } as MessageHandlerSetters, {
+      send, navigate: () => {}, clearSpawningCwd: () => {},
+      spawningCwdsRef: useRef(new Set()), subscribedRef: useRef(new Set()),
+      pendingTerminalCwdRef, lastCreatedTerminalIdRef: useRef(null),
+      maxSeqMapRef: useRef(new Map()), selectedSessionIdRef: useRef(SID), pendingSpawnsRef,
+    });
+    const localTimeout = useCallback((queueNonce: string) => {
+      setSessionStates((prev) => {
+        const current = prev.get(SID);
+        if (!current) return prev;
+        const next = new Map(prev);
+        next.set(SID, markQueueEntryFailed(current, queueNonce));
+        return next;
+      });
+    }, []);
 
     // Real stuck-timeout wiring (as App.tsx does it).
     const optimisticQueueEntries = useMemo(
@@ -108,43 +128,25 @@ function renderHarness(): Harness {
     useQueueStuckTimeout(
       optimisticQueueEntries,
       connected,
-      useCallback((queueNonce: string) => {
-        setSessionStates((prev) => {
-          const current = prev.get(SID);
-          if (!current) return prev;
-          const next = new Map(prev);
-          next.set(SID, markQueueEntryFailed(current, queueNonce));
-          return next;
-        });
-      }, []),
+      localTimeout,
     );
 
     api = {
       sendText: (text: string) => actions.handleSend(text),
       retry: (queueNonce: string) => actions.handleRetryQueued(queueNonce),
       setConnected: (v: boolean) => setConnected(v),
-      // Gap (ii): the useMessageHandler `send_prompt_failed` case calls exactly
-      // markQueueEntryFailed(nonce). Drive that same path.
-      failByNonce: (queueNonce: string) =>
-        setSessionStates((prev) => {
-          const current = prev.get(SID);
-          if (!current) return prev;
-          const next = new Map(prev);
-          next.set(SID, markQueueEntryFailed(current, queueNonce));
-          return next;
-        }),
-      inject: (event: DashboardEvent) =>
-        setSessionStates((prev) => {
-          const current = prev.get(SID) ?? createInitialState();
-          const next = new Map(prev);
-          next.set(SID, reduceEvent(current, event));
-          return next;
-        }),
+      failByNonce: (queueNonce, reason = "Queued message cancelled by Stop") =>
+        handleMessage({ type: "send_prompt_failed", sessionId: SID, queueNonce, reason }),
+      inject: (event: DashboardEvent) => handleMessage({ type: "event", sessionId: SID, seq: 1, event }),
+      dispatch: handleMessage,
+      localTimeout,
+      getState: () => selectedState,
       getQueue: () => (sessionStates.get(SID) ?? createInitialState()).queue,
     };
 
     const toolContext = { cwd: undefined, editors: [] } as any;
-    return <ChatView sessionId={SID} state={selectedState} toolContext={toolContext} />;
+    return <ChatView sessionId={SID} state={selectedState} toolContext={toolContext}
+      onRetryQueued={actions.handleRetryQueued} onDismissQueued={actions.handleDismissQueued} />;
   }
 
   const { container } = render(<App />);
@@ -154,7 +156,10 @@ function renderHarness(): Harness {
     inject: (e) => act(() => api!.inject(e)),
     retry: (n) => act(() => api!.retry(n)),
     setConnected: (v) => act(() => api!.setConnected(v)),
-    failByNonce: (n) => act(() => api!.failByNonce(n)),
+    failByNonce: (nonce, reason) => act(() => api!.failByNonce(nonce, reason)),
+    dispatch: (message) => act(() => api!.dispatch(message)),
+    localTimeout: (nonce) => act(() => api!.localTimeout(nonce)),
+    getState: () => api!.getState(),
     getQueue: () => api!.getQueue(),
     container,
   };
@@ -219,6 +224,149 @@ describe("queue round-trip integration — AMEND #2", () => {
     const queue = h.getQueue();
     expect(queue).toHaveLength(1);
     expect(queue[0].state).toBe("confirmed");
+  });
+
+  it.each([
+    "Queued message cancelled by Stop",
+    "Queued message cancelled: session closed",
+    "Codex transport closed",
+    "bridge-disconnected",
+  ])("AUTHORITATIVE RECOVERY: confirmed card survives %s and empty snapshot", (reason) => {
+    const harness = renderHarness();
+    const text = "retain this accepted follow-up";
+    harness.sendText(text);
+    const original = harness.getQueue()[0];
+    harness.inject(enqueuedEvent(original.queueNonce, text));
+    expect(harness.getQueue()[0].state).toBe("confirmed");
+    harness.failByNonce(original.queueNonce, reason);
+    harness.inject({ eventType: "command_feedback", timestamp: Date.now(), data: {
+      command: text, status: "error", message: reason, queueNonce: original.queueNonce,
+    } });
+    harness.inject({ eventType: "queue_state", timestamp: Date.now(), data: { followUp: [], pendingMessageCount: 0, steeringCount: 0 } });
+    expect(harness.getQueue()).toEqual([{ ...original, state: "failed" }]);
+    expect(harness.container.querySelectorAll('[data-testid="queued-message-card"]')).toHaveLength(1);
+    expect(harness.container.querySelector('[data-testid="queued-message-card"]')?.textContent).toContain(text);
+    expect(harness.container.querySelector('[data-testid="queued-dismiss"]')).not.toBeNull();
+    expect(harness.send).toHaveBeenCalledTimes(1);
+    fireEvent.click(harness.container.querySelector('[data-testid="queued-retry"]')!);
+    const retried = harness.getQueue()[0];
+    expect(retried).toMatchObject({ text, state: "optimistic" });
+    expect(retried.queueNonce).not.toBe(original.queueNonce);
+    expect(harness.send).toHaveBeenCalledTimes(2);
+    expect(harness.send).toHaveBeenLastCalledWith(expect.objectContaining({ type: "send_prompt", text, queueNonce: retried.queueNonce }));
+    harness.failByNonce(original.queueNonce, reason);
+    harness.inject(enqueuedEvent(original.queueNonce, text));
+    expect(harness.getQueue()).toEqual([retried]);
+    harness.inject(enqueuedEvent(retried.queueNonce, text));
+    harness.failByNonce(retried.queueNonce, reason);
+    fireEvent.click(harness.container.querySelector('[data-testid="queued-dismiss"]')!);
+    expect(harness.getQueue()).toEqual([]);
+    expect(harness.send).toHaveBeenCalledTimes(2);
+  });
+
+  it("LOCAL TIMEOUT: stale callback and disconnect never fail a confirmed pending message", () => {
+    const harness = renderHarness();
+    harness.sendText("still pending in pi or Codex");
+    const nonce = harness.getQueue()[0].queueNonce;
+    harness.inject(enqueuedEvent(nonce, "still pending in pi or Codex"));
+    harness.localTimeout(nonce);
+    harness.setConnected(false);
+    act(() => vi.advanceTimersByTime(120_000));
+    expect(harness.getQueue()).toHaveLength(1);
+    expect(harness.getQueue()[0].state).toBe("confirmed");
+    expect(harness.container.querySelector('[data-testid="queued-retry"]')).toBeNull();
+    expect(harness.send).toHaveBeenCalledTimes(1);
+  });
+
+  it("AUTHORITATIVE RECOVERY: missing/unmatched nonce or session cannot fail another pending card", () => {
+    const harness = renderHarness();
+    harness.sendText("keep pending");
+    const nonce = harness.getQueue()[0].queueNonce;
+    harness.inject(enqueuedEvent(nonce, "keep pending"));
+    harness.failByNonce();
+    harness.failByNonce("unmatched");
+    harness.dispatch({ type: "send_prompt_failed", sessionId: "other-session", queueNonce: nonce, reason: "closed" });
+    expect(harness.getQueue()[0]).toMatchObject({ queueNonce: nonce, state: "confirmed" });
+    expect(harness.send).toHaveBeenCalledTimes(1);
+  });
+
+  it("COMMITTED FAILURE: queued provider failure cannot resurrect an already committed user message", () => {
+    const harness = renderHarness();
+    const text = "provider failed after committing this input";
+    harness.sendText(text);
+    const nonce = harness.getQueue()[0].queueNonce;
+    harness.inject(enqueuedEvent(nonce, text));
+    harness.inject(userCommitEvent(text, nonce));
+    expect(harness.getQueue()).toEqual([]);
+    harness.failByNonce(nonce, "Injected queued provider failure");
+    harness.inject({ eventType: "queue_state", timestamp: Date.now(), data: { followUp: [] } });
+    harness.failByNonce(nonce, "late transport cancellation");
+    expect(harness.getQueue()).toEqual([]);
+    expect(harness.getState().messages.filter(message => message.role === "user")).toHaveLength(1);
+    expect(JSON.stringify(harness.getState().messages)).toContain(text);
+    expect(harness.container.querySelector('[data-testid="queued-retry"]')).toBeNull();
+    harness.retry(nonce);
+    expect(harness.send).toHaveBeenCalledTimes(1);
+  });
+
+  it.skipIf(!process.env.PI_SEND_QUEUE_FRAMES)("REAL FRAMES: Stop recovery and committed provider failure through client handler and cards", () => {
+    const frames: ServerToBrowserMessage[] = fs.readFileSync(process.env.PI_SEND_QUEUE_FRAMES!, "utf8")
+      .trim().split("\n").map(line => JSON.parse(line));
+    for (const queueNonce of ["fifo-2", "stop-cancelled", "provider-failed-nonce"]) {
+      const enqueueIndex = frames.findIndex(frame => frame.type === "event"
+        && frame.event.eventType === "message_enqueued" && frame.event.data.queueNonce === queueNonce);
+      expect(enqueueIndex).toBeGreaterThanOrEqual(0);
+      const enqueue = frames[enqueueIndex] as Extract<ServerToBrowserMessage, { type: "event" }>;
+      const text = enqueue.event.data.text as string;
+      const harness = renderHarness([{ queueNonce, text, createdAt: enqueue.event.timestamp, state: "optimistic", source: "dashboard" }]);
+      expect(harness.getQueue()[0].state).toBe("optimistic");
+      let sawConfirmed = false;
+      let sawFailure = false;
+      let sawEmptyAfterFailure = false;
+      let sawCommitted = false;
+      for (const frame of frames.slice(enqueueIndex)) {
+        if ((frame.type !== "event" && frame.type !== "send_prompt_failed") || frame.sessionId !== enqueue.sessionId) continue;
+        harness.dispatch({ ...frame, sessionId: SID });
+        if (frame.type === "send_prompt_failed" && frame.queueNonce === queueNonce) sawFailure = true;
+        if (frame.type === "event") {
+          if (frame.event.eventType === "message_enqueued" && frame.event.data.queueNonce === queueNonce) {
+            expect(harness.getQueue().find(entry => entry.queueNonce === queueNonce)?.state).toBe("confirmed");
+            sawConfirmed = true;
+          }
+          if (frame.event.eventType === "message_start" && frame.event.data.queueNonce === queueNonce) sawCommitted = true;
+          if (frame.event.eventType === "queue_state" && Array.isArray(frame.event.data.followUp) && frame.event.data.followUp.length === 0 && sawFailure) {
+            sawEmptyAfterFailure = true;
+            if (queueNonce === "stop-cancelled") {
+              expect(harness.getQueue().find(entry => entry.queueNonce === queueNonce)).toMatchObject({ text, state: "failed" });
+            }
+          }
+        }
+      }
+      expect(sawConfirmed).toBe(true);
+      expect(harness.send).not.toHaveBeenCalled();
+      if (queueNonce === "stop-cancelled") {
+        expect(sawFailure && sawEmptyAfterFailure).toBe(true);
+        expect(sawCommitted).toBe(false);
+        expect(harness.getQueue()).toEqual([expect.objectContaining({ queueNonce, text, state: "failed" })]);
+        expect(harness.container.querySelector('[data-testid="queued-message-card"]')?.textContent).toContain(text);
+        fireEvent.click(harness.container.querySelector('[data-testid="queued-retry"]')!);
+        const retried = harness.getQueue()[0];
+        expect(retried.queueNonce).not.toBe(queueNonce);
+        expect(harness.send).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ type: "send_prompt", text, queueNonce: retried.queueNonce }));
+        harness.failByNonce(retried.queueNonce);
+        fireEvent.click(harness.container.querySelector('[data-testid="queued-dismiss"]')!);
+        expect(harness.getQueue()).toEqual([]);
+        expect(harness.send).toHaveBeenCalledTimes(1);
+      } else {
+        expect(sawCommitted).toBe(true);
+        expect(sawFailure).toBe(queueNonce === "provider-failed-nonce");
+        expect(harness.getQueue().some(entry => entry.queueNonce === queueNonce)).toBe(false);
+        expect(harness.getState().messages.filter(message => message.role === "user" && JSON.stringify(message).includes(text))).toHaveLength(1);
+        harness.retry(queueNonce);
+        expect(harness.send).not.toHaveBeenCalled();
+      }
+      cleanup();
+    }
   });
 
   it("FALSE-FAILED: optimistic entry reconciled by the committing message_start (text), never failed", () => {

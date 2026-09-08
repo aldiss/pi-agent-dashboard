@@ -20,6 +20,7 @@ export interface CodexRuntimeManagerOptions {
   ingestEvent(sessionId: string, event: DashboardEvent): void;
   onSessionAdded(session: DashboardSession, requestId?: string): void;
   onSessionUpdated(sessionId: string, updates: Partial<DashboardSession>): void;
+  onSendFailed?(sessionId: string, input: RuntimeSendInput, reason: string): void;
   createAdapter?: typeof createCodexAdapter;
 }
 
@@ -122,6 +123,7 @@ export function createCodexRuntimeManager(options: CodexRuntimeManagerOptions) {
       onEvent(event) {
         recordEvent(session.id, event);
       },
+      onSendFailed: (input, reason) => options.onSendFailed?.(session.id, input, reason),
       onExit() {
         processExited = true;
         const ownsSession = pending.get(session.id) === operation

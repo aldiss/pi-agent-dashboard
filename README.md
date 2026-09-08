@@ -405,7 +405,9 @@ Set `"devBuildOnReload": true` in `config.json` for a one-command full-stack ref
 
 REST and browser spawning require a verified operator identity, even when `auth.requireBrowserAuth` is off. Working directories must resolve inside pinned folders or existing session directories. Pin a folder before the first web spawn.
 
-Local pi `/new` keeps working through a private bridge token and spawn-only operator delegation. Existing bridges can still connect without a token, but must reload before spawning. `auth.localBridgeOperator: null` explicitly disables delegation. The bridge listener now defaults to `127.0.0.1`; remote bridge deployments must explicitly set `piHost`.
+Local pi `/new` keeps working through a private bridge token and narrowly scoped operator delegation for `spawn` and `send_prompt` only. Existing bridges can still connect without a token, but must reload before spawning. `auth.localBridgeOperator: null` explicitly disables delegation. The bridge listener now defaults to `127.0.0.1`; remote bridge deployments must explicitly set `piHost`.
+
+Agents can send text to an already-running pi or Codex session with `POST /api/session/:id/prompt`, JSON `{ "text": "...", "queueNonce": "unique-message-id" }`, and header `x-pi-bridge-token` containing the private `~/.pi/dashboard/bridge-token`. Read the token locally; do not print it, embed it in prompts, or send it to a remote host. Delegation requires a verified token, a loopback socket, no forwarding headers, and the configured operator selector. It does not permit commands, resume (including implicit resume), abort, shutdown, hide/unhide, flow control, or model changes. Delegated turns carry a non-human `local-bridge` speaker and distinct audit records, never the operator's speaker identity.
 
 **Headless** (default) — runs pi as a background process with no terminal attached. Interaction through the web UI.
 
@@ -436,7 +438,7 @@ Codex uses `codex app-server` over structured stdio, with no terminal transport 
 
 Restart the server, then select **Codex** next to a folder's **+Session** button. Browser sign-in is required for spawning. Optional `model` and `baseUrl` select another Responses-compatible endpoint; the default URL is `https://api.openai.com/v1`. Credentials stay in environment variables, not config files.
 
-The dashboard owns `~/.pi/dashboard/codex-home/`; personal `~/.codex/config.toml` is not reused or modified. **Stop** interrupts the current turn. After a dashboard restart, **Resume** reopens the same native thread. In-flight turns do not survive restart.
+The dashboard owns `~/.pi/dashboard/codex-home/`; personal `~/.codex/config.toml` is not reused or modified. Messages sent during a Codex turn enter a server-side FIFO and run in order, using the existing dashboard queue events and `queueNonce` correlation. **Stop** interrupts the current turn and cancels pending messages so queued work cannot restart automatically; cancelled text remains visible as error feedback. Queued turn failures retain their message identity and surface terminal errors. After a dashboard restart, **Resume** reopens the same native thread. In-flight turns and pending queue execution do not survive restart.
 
 This mode supports one active turn per session. Pi commands, model/role controls, and fork are unavailable. Approval and user-input requests receive explicit denial responses; no interactive approval UI is provided. See [architecture](docs/architecture.md) for lifecycle and persistence details.
 

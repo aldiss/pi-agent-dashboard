@@ -106,12 +106,12 @@ describe("independently sufficient spawn authorization", () => {
   }
 });
 
-describe("bridge delegation is an allow-list of exactly spawn", () => {
+describe("bridge delegation is an allow-list of exactly spawn and send_prompt", () => {
   const input = { tokenVerified: true, remoteAddress: "127.0.0.1", operatorUsers: ["owner"], now: 1_000 };
   it("derives scope tests from the real action map, and refuses an unknown future action", () => {
     expect(Object.values(SESSION_WRITE_ACTION_CLASS).filter(v => v === "operator-only").length).toBeGreaterThanOrEqual(25);
     for (const action of [...Object.keys(SESSION_WRITE_ACTION_CLASS), "future-action"]) {
-      expect(deriveDelegatedBridgeOperator({ ...input, action }).status).toBe(action === "spawn" ? "delegated" : "refused");
+      expect(deriveDelegatedBridgeOperator({ ...input, action }).status).toBe(["spawn", "send_prompt"].includes(action) ? "delegated" : "refused");
     }
   });
   it("has explicit refusal and disable outcomes and no remote/token fallback", () => {
