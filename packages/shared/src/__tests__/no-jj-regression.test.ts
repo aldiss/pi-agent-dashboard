@@ -15,7 +15,7 @@ function grep(pattern: string, paths: string[], include: string[]): string {
     const includeArgs = include.map((i) => `--include='${i}'`).join(" ");
     const pathArgs = paths.join(" ");
     return execSync(
-      `grep -rn '${pattern}' ${pathArgs} ${includeArgs} | grep -v node_modules | grep -v '.jj/' | grep -v 'jj-plugin/' | grep -v '.test.ts' | grep -v '__tests__' | grep -v 'specs/'`,
+      `grep -rn --exclude-dir=node_modules --exclude-dir=__tests__ --exclude-dir=specs --exclude-dir=.jj --exclude-dir=jj-plugin '${pattern}' ${pathArgs} ${includeArgs} | grep -v node_modules | grep -v '.jj/' | grep -v 'jj-plugin/' | grep -v '.test.ts' | grep -v '__tests__' | grep -v 'specs/'`,
       { encoding: "utf-8", cwd: PROJECT_ROOT },
     ).trim();
   } catch {

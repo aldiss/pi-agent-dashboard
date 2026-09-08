@@ -56,6 +56,8 @@ Product `ChatView.tsx` remains unchanged by corrections.
 `driver-liveness.ts:pidAlive` delegates to shared `isProcessAlive` instead of direct `process.kill`.
 Shared helper preserves `EPERM` = alive; `platform-process.test.ts` adds regression assertion.
 `no-direct-process-kill.test.ts` remains unchanged.
+`no-jj-regression.test.ts` uses `--exclude-dir` to prune `node_modules`, `__tests__`, `specs`, `.jj`, and `jj-plugin` directories before scanning, rather than only filtering results afterward.
+Include globs, output filters, zero-reference assertions, and timeout remain unchanged.
 `GATE-REPORT.md` records measured acceptance commands, results, failure control, and production-state checks.
 
 ## Commands and proof

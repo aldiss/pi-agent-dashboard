@@ -18,6 +18,7 @@
 | `packages/shared/src/__tests__/config-codex.test.ts` | Tests disabled Codex default, Responses-only config, environment names, and malformed-input refusal. |
 | `packages/shared/src/__tests__/config-spawn-boundary.test.ts` | Pins spawn config defaults, explicit delegation disable, auth-off secret retention, and malformed-setting refusal. |
 | `packages/shared/src/__tests__/config.test.ts` | Tests config loading and defaults; retains signing secret without valid OAuth providers. |
+| `packages/shared/src/__tests__/no-jj-regression.test.ts` | Prunes `node_modules`, `__tests__`, `specs`, `.jj`, and `jj-plugin` directories with `grep --exclude-dir`. Preserves include globs, output filters, zero-reference assertions, and timeout. |
 | `packages/shared/src/__tests__/platform-git.test.ts` | Skips 7 repo-dependent assertions iff root `.git` absent. Keeps pure recipe and non-repo fallback tests enabled. Normal checkout runs all 24 tests. |
 | `packages/shared/src/__tests__/platform-process.test.ts` | Tests shared process primitives. Pins `isProcessAlive` permission-denied `EPERM` result to alive. |
 | `packages/shared/src/__tests__/platform/fs-permissions.test.ts` | Tests POSIX private-mode checks and Windows mode-bit bypass. |
