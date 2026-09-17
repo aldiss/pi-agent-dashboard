@@ -5,6 +5,7 @@ import { mdiAlertOctagon, mdiClipboardText, mdiConsole, mdiDotsHorizontal, mdiEy
 import { Icon } from "@mdi/react";
 import React, { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useImagePaste } from "../../hooks/useImagePaste.js";
+import { useMobile } from "../../hooks/useMobile.js";
 import { LIST_POPOVER_MIN_HEIGHT, usePopoverFlip } from "../../hooks/usePopoverFlip.js";
 import type { ChatMessage, PendingPrompt } from "../../lib/chat/event-reducer.js";
 import { useI18n } from "../../lib/i18n/i18n.js";
@@ -238,6 +239,7 @@ export function CommandInput({ commands: externalCommands, onSend, onListFiles, 
   }, [externalCommands]);
   // Controlled when `draft` prop is provided, otherwise fall back to local state
   // (preserves backward-compat for callers/tests that don't pass `draft`).
+  const isMobile = useMobile();
   const isControlled = draft !== undefined;
   const [localText, setLocalText] = useState("");
   const text = isControlled ? (draft as string) : localText;
@@ -1004,7 +1006,7 @@ export function CommandInput({ commands: externalCommands, onSend, onListFiles, 
              is in flight AND the agent is NOT streaming (idle-send case). */
           disabled={disabled || pendingIdle}
           rows={1}
-          className="focus-ring block w-full bg-transparent px-1.5 py-1 text-sm text-[var(--text-primary)] placeholder-gray-500 resize-none outline-none"
+          className={`focus-ring block w-full bg-transparent px-1.5 py-1 ${isMobile ? "text-base" : "text-sm"} text-[var(--text-primary)] placeholder-gray-500 resize-none outline-none`}
           style={{ minHeight: "38px", maxHeight: "120px" }}
           onInput={(e) => {
             const target = e.target as HTMLTextAreaElement;

@@ -542,11 +542,11 @@ export function ModelSelector({ current, models, onSelect, onRefresh, refreshErr
   }
 
   return (
-    <div ref={containerRef} className="relative" data-testid="model-selector">
+    <div ref={containerRef} className="relative min-w-0" data-testid="model-selector">
       <button
         ref={triggerRef}
         onClick={() => !disabled && setOpen(!open)}
-        className={`flex items-center gap-1 text-xs px-2 py-0.5 rounded ${triggerClass}`}
+        className={`flex max-w-full items-center gap-1 text-xs px-2 py-0.5 rounded ${triggerClass}`}
         disabled={disabled}
         data-testid="model-selector-button"
         aria-haspopup="true"
