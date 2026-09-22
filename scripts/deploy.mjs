@@ -28,13 +28,17 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, rmSync, symlinkSync, readlinkSync, readFileSync, readdirSync, writeFileSync, renameSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { acquireFence, resumeFence, withDeploymentFence } from "./deployment-fence.ts";
+import { runPruneCli } from "./manual-prune.ts";
 
-const REPO = resolve(process.argv[1], "..", "..");
+const REPO = resolve(fileURLToPath(import.meta.url), "..", "..");
 
 function parseArgs(argv) {
   const a = { prodRoot: join(homedir(), ".pi-dashboard-prod"), restart: false, rollback: false, skipTests: false, skipClientBuild: false, archiveGuard: true, registerBridgeOnly: false, noBridgeRegister: false };
   for (let i = 0; i < argv.length; i++) {
     const k = argv[i];
+    if ((k === "--ref" || k === "--prod-root") && (!argv[i + 1] || argv[i + 1].startsWith("--"))) die(`${k} requires a value`);
     if (k === "--ref") a.ref = argv[++i];
     else if (k === "--prod-root") a.prodRoot = resolve(argv[++i]);
     else if (k === "--restart") a.restart = true;
@@ -44,26 +48,28 @@ function parseArgs(argv) {
     else if (k === "--no-archive-guard") a.archiveGuard = false;
     else if (k === "--register-bridge-only") a.registerBridgeOnly = true;
     else if (k === "--no-bridge-register") a.noBridgeRegister = true;
+    else die(`unknown option: ${k}`);
   }
   return a;
 }
 
-function sh(cmd, args, opts = {}) {
-  return execFileSync(cmd, args, { stdio: opts.capture ? "pipe" : "inherit", encoding: "utf8", cwd: opts.cwd ?? REPO, env: opts.env ?? process.env, maxBuffer: 64 * 1024 * 1024 });
+function sh(cmd, args, opts = {}, execute = execFileSync) {
+  return execute(cmd, args, { stdio: opts.capture ? "pipe" : "inherit", encoding: "utf8", cwd: opts.cwd ?? REPO, env: opts.env ?? process.env, maxBuffer: 64 * 1024 * 1024 });
 }
 function log(m) { console.log(`[deploy] ${m}`); }
-function die(m) { console.error(`[deploy] FATAL: ${m}`); process.exit(1); }
+function die(m) { throw new Error(`[deploy] FATAL: ${m}`); }
 
-function resolveRef(ref) {
+function resolveRef(ref, execute) {
   // ref-guard: must be a real committed object; capture the concrete sha.
   let sha;
-  try { sha = sh("git", ["rev-parse", "--verify", `${ref}^{commit}`], { capture: true }).trim(); }
+  try { sha = sh("git", ["rev-parse", "--verify", `${ref}^{commit}`], { capture: true }, execute).trim(); }
   catch { die(`ref '${ref}' does not resolve to a committed object — refusing to deploy a non-committed ref (Fault A: no WIP in prod).`); }
   return sha;
 }
 
-function buildRelease(a) {
-  const sha = resolveRef(a.ref);
+function buildRelease(a, execute) {
+  a.assertFence();
+  const sha = resolveRef(a.ref, execute);
   const releasesDir = join(a.prodRoot, "releases");
   const releaseDir = join(releasesDir, sha);
   mkdirSync(releasesDir, { recursive: true });
@@ -76,8 +82,8 @@ function buildRelease(a) {
     // Streamed archive to a temp tar (binary-safe), then extract. git archive
     // includes ONLY committed tree content (no untracked, no node_modules).
     const tmpTar = join(releasesDir, `.${sha}.tar`);
-    sh("git", ["archive", "--format=tar", "-o", tmpTar, sha]);
-    sh("tar", ["-xf", tmpTar, "-C", releaseDir]);
+    sh("git", ["archive", "--format=tar", "-o", tmpTar, sha], {}, execute);
+    sh("tar", ["-xf", tmpTar, "-C", releaseDir], {}, execute);
     rmSync(tmpTar, { force: true });
   }
   if (a.archiveGuard) {
@@ -92,19 +98,20 @@ function buildRelease(a) {
   // binary — both need scripts + devDeps present. --omit=dev breaks the client
   // prepare ("vite: command not found", code 127). jiti (the kept loader) installs here too.
   log("npm ci (host-native node-pty; recreates workspace symlinks; client prepare runs vite build)");
-  sh("npm", ["ci"], { cwd: releaseDir });
+  sh("npm", ["ci"], { cwd: releaseDir }, execute);
   // The client dist is produced by the packages/client `prepare` during npm ci.
   // Build explicitly only if it did not land (defensive, avoids a double build).
   const clientDist = join(releaseDir, "packages", "client", "dist");
   if (!a.skipClientBuild && !existsSync(clientDist)) {
     log("client dist absent after ci — building explicitly");
-    sh("npm", ["run", "build"], { cwd: releaseDir });
+    sh("npm", ["run", "build"], { cwd: releaseDir }, execute);
   }
   if (!a.skipTests) {
     log("test-gate (HOME-jailed npm test — the pre-swap gate == the nightly nos-regress invocation)");
-    sh("npm", ["test"], { cwd: releaseDir });
+    sh("npm", ["test"], { cwd: releaseDir }, execute);
   }
   // Stamp deploy provenance the server surfaces at /api/health.
+  a.assertFence();
   const stamp = { commit: sha, ref: a.ref, builtAt: new Date().toISOString(), node: process.version };
   writeFileSync(join(releaseDir, "RELEASE.json"), JSON.stringify(stamp, null, 2) + "\n");
   log(`stamped RELEASE.json commit=${sha}`);
@@ -112,6 +119,7 @@ function buildRelease(a) {
 }
 
 function swapCurrent(a, releaseDir) {
+  a.assertFence();
   const current = join(a.prodRoot, "current");
   const previous = join(a.prodRoot, "previous");
   // Retain the outgoing release as `previous` for instant rollback.
@@ -129,6 +137,7 @@ function swapCurrent(a, releaseDir) {
 }
 
 function rollback(a) {
+  a.assertFence();
   const current = join(a.prodRoot, "current");
   const previous = join(a.prodRoot, "previous");
   if (!existsSync(previous)) die("no `previous` release to roll back to");
@@ -152,7 +161,8 @@ function rollback(a) {
 function isRealProdRoot(a) {
   // The REAL prod-root is ~/.pi-dashboard-prod. An isolated/jail build passes a
   // DIFFERENT --prod-root; for those we must never touch the operator's live settings.
-  return resolve(a.prodRoot) === resolve(join(homedir(), ".pi-dashboard-prod"));
+  try { return realpathSync(a.prodRoot) === realpathSync(join(homedir(), ".pi-dashboard-prod")); }
+  catch (err) { if (err.code === "ENOENT") return false; throw err; }
 }
 
 function releasePluginBridges(releaseRoot) {
@@ -184,6 +194,7 @@ function releasePluginBridges(releaseRoot) {
 }
 
 function registerBridge(a) {
+  a.assertFence();
   // JAIL-ISOLATION (X11-a): registerBridge writes the operator's REAL
   // ~/.pi/agent/settings.json. An isolated/jail build (--prod-root != the real
   // ~/.pi-dashboard-prod) or an explicit --no-bridge-register MUST NOT touch the
@@ -205,7 +216,8 @@ function registerBridge(a) {
   // the only safe fresh-{} case; exists-but-unparseable = ABORT, do not touch.
   let settings = {};
   let raw = null;
-  try { raw = readFileSync(settingsPath, "utf8"); } catch { /* absent -> fresh {} is safe */ }
+  try { raw = readFileSync(settingsPath, "utf8"); }
+  catch (err) { if (err.code !== "ENOENT") throw err; }
   if (raw !== null) {
     try { settings = JSON.parse(raw); }
     catch (err) { die(`settings.json exists but did not parse (concurrent write?) — refusing to clobber: ${err}`); }
@@ -245,6 +257,7 @@ function registerBridge(a) {
   for (const [k, v] of Object.entries(releaseBridges)) pbNext[k] = v;
   settings.dashboardPluginBridges = pbNext;
   const tmp = settingsPath + ".deploytmp";
+  a.assertFence();
   writeFileSync(tmp, JSON.stringify(settings, null, 2) + "\n");
   renameSync(tmp, settingsPath);
   log(`bridge boundary: registered ${target}`);
@@ -254,27 +267,58 @@ function registerBridge(a) {
   log(`plugin-bridge boundary: removed ${pbRemoved.length} stale/dev-tree plugin-bridge path(s)${pbRemoved.length ? ": " + pbRemoved.join(", ") : ""}`);
 }
 
-function main() {
-  const a = parseArgs(process.argv.slice(2));
-  if (a.registerBridgeOnly) { registerBridge(a); return; }
-  if (a.rollback) {
-    rollback(a);
-    if (a.restart) log("restart requested: run the supervised restart step by hand (cutover is deliberate).");
-    else log("rolled back. Cut over by restarting prod against <prod-root>/current when ready.");
-    return;
+export function runDeploy(argv = process.argv.slice(2), execute = execFileSync) {
+  if (argv[0] === "--manual-prune") return runPruneCli(argv.slice(1));
+  if (argv[0] === "--deployment-fence") {
+    const [, action, root, token] = argv;
+    if (action === "claim" && argv.length === 3) {
+      const fence = acquireFence(root, "activation");
+      return { root: fence.root, token: fence.token, purpose: "activation", state: "held" };
+    }
+    if (action === "release" && argv.length === 4) {
+      resumeFence(root, token, "activation").release();
+      return { root, state: "released" };
+    }
+    die("--deployment-fence claim ROOT | release ROOT TOKEN (activation ownership only)");
   }
-  if (!a.ref) die("--ref <git-ref> is required (deploy a committed ref, never the working tree).");
-  const { sha, releaseDir } = buildRelease(a);
-  swapCurrent(a, releaseDir);
-  registerBridge(a);
-  log(`BUILD COMPLETE. <prod-root>/current -> release ${sha}.`);
-  if (a.restart) {
-    log("--restart: cutover restart is a DELIBERATE, watched step and is intentionally NOT automated here.");
-    log("Cut over by repointing the launchd wrapper at <prod-root>/current + supervised restart, with rollback armed.");
-  } else {
-    log("No restart (default). Validate the release on a test port, then cut over deliberately.");
-    log(`Validate: PI_DASHBOARD_URL unset, run  node --import <jiti> ${join(releaseDir, "packages/server/src/cli.ts")} start --port <TESTPORT> --pi-port <TESTPIPORT>  and curl /api/health (expect commit=${sha}, version!=unknown, gatewayListening=true).`);
-  }
+  const a = parseArgs(argv);
+  if (!a.registerBridgeOnly && !a.rollback && !a.ref) die("--ref <git-ref> is required (deploy a committed ref, never the working tree).");
+  return withDeploymentFence(a.prodRoot, (fence) => {
+    a.prodRoot = fence.root;
+    a.assertFence = () => fence.assertHeld();
+    const guardedExecute = (...args) => {
+      fence.assertHeld();
+      const result = execute(...args);
+      fence.assertHeld();
+      return result;
+    };
+    if (a.registerBridgeOnly) { registerBridge(a); return; }
+    if (a.rollback) {
+      rollback(a);
+      if (a.restart) log("restart requested: run the supervised restart step by hand (cutover is deliberate).");
+      else log("rolled back. Cut over by restarting prod against <prod-root>/current when ready.");
+      return;
+    }
+    const { sha, releaseDir } = buildRelease(a, guardedExecute);
+    swapCurrent(a, releaseDir);
+    registerBridge(a);
+    log(`BUILD COMPLETE. <prod-root>/current -> release ${sha}.`);
+    if (a.restart) {
+      log("--restart: cutover restart is a DELIBERATE, watched step and is intentionally NOT automated here.");
+      log("Cut over by repointing the launchd wrapper at <prod-root>/current + supervised restart, with rollback armed.");
+    } else {
+      log("No restart (default). Validate the release on a test port, then cut over deliberately.");
+      log(`Validate: PI_DASHBOARD_URL unset, run  node --import <jiti> ${join(releaseDir, "packages/server/src/cli.ts")} start --port <TESTPORT> --pi-port <TESTPIPORT>  and curl /api/health (expect commit=${sha}, version!=unknown, gatewayListening=true).`);
+    }
+  });
 }
 
-main();
+if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  try {
+    const result = runDeploy();
+    if (result !== undefined) console.log(JSON.stringify(result));
+  } catch (err) {
+    console.error(JSON.stringify({ ok: false, code: err.code ?? "DEPLOY_FAILED", error: err.message, nativeExit: err.status ?? err.nativeExit ?? null, ...(err.result ? { result: err.result } : {}) }));
+    process.exitCode = err.exitCode ?? err.status ?? 1;
+  }
+}
