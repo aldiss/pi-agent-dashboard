@@ -104,3 +104,56 @@ describe("runtimeArgvMatches (liveness sub-predicate)", () => {
     expect(runtimeArgvMatches("codex", CLAUDE_CHILD)).toBe(false);
   });
 });
+
+/**
+ * Identity comes from the program being run, never from argument text.
+ *
+ * Real argv observed on socket pi: pi is launched through node, either as its
+ * npm bin or via the guarded pi-releases launcher. Both carry the model name
+ * as an argument, so a model like `claude-opus-5` or `gpt-5.3-codex` used to
+ * label a pi session as an external claude-code/codex session.
+ */
+const NODE_PI_ROOT =
+  "/opt/homebrew/bin/node /opt/homebrew/bin/pi --name Portico-12 --provider github-copilot --model claude-opus-5 --thinking xhigh";
+const GUARDED_PI_ROOT =
+  "/opt/homebrew/bin/node /opt/homebrew/lib/pi-releases/guarded-18197-215-0871/candidate.mjs --name Portico-12 --session /x.jsonl --provider github-copilot --model claude-opus-5 --thinking xhigh";
+const GUARDED_PI_CODEX_MODEL =
+  "/opt/homebrew/bin/node /opt/homebrew/lib/pi-releases/guarded-18197-215-0871/baseline.mjs --name Worker --model gpt-5.3-codex";
+
+describe("program identity, not argument text", () => {
+  it("recognizes a node-launched pi as pi", () => {
+    expect(isPiRootArgv(NODE_PI_ROOT)).toBe(true);
+  });
+
+  it("recognizes the guarded pi-releases launcher as pi", () => {
+    expect(isPiRootArgv(GUARDED_PI_ROOT)).toBe(true);
+    expect(isPiRootArgv(GUARDED_PI_CODEX_MODEL)).toBe(true);
+  });
+
+  it("a model name in the arguments never labels a session", () => {
+    expect(classifyRuntime(["-zsh", "/some/tool --model claude-opus-5"])).toBeNull();
+    expect(classifyRuntime(["-zsh", "node /x/runner.mjs --model gpt-5.3-codex"])).toBeNull();
+  });
+
+  it("a guarded pi pane is skipped, not reported as an external session", () => {
+    expect(classifySession({ rootArgv: GUARDED_PI_ROOT, childArgvs: [] })).toBeNull();
+    expect(classifySession({ rootArgv: GUARDED_PI_CODEX_MODEL, childArgvs: [] })).toBeNull();
+  });
+
+  it("a guarded pi pane with a headless claude child is still skipped (pi wins)", () => {
+    expect(
+      classifySession({ rootArgv: GUARDED_PI_ROOT, childArgvs: [HEADLESS_CLAUDE_CHILD] }),
+    ).toBeNull();
+  });
+
+  it("liveness does not accept a pi process whose arguments mention a runtime", () => {
+    expect(runtimeArgvMatches("claude-code", GUARDED_PI_ROOT)).toBe(false);
+    expect(runtimeArgvMatches("codex", GUARDED_PI_CODEX_MODEL)).toBe(false);
+  });
+
+  it("still classifies real node-launched and pathed agents by their program", () => {
+    expect(classifyRuntime(["-zsh", "node /opt/homebrew/bin/claude --effort max"])).toBe("claude-code");
+    expect(classifyRuntime(["-zsh", "/opt/homebrew/bin/claude --output-format stream-json"])).toBe("claude-code");
+    expect(classifyRuntime(["-zsh", "node --no-warnings /opt/homebrew/bin/codex --yolo"])).toBe("codex");
+  });
+});
